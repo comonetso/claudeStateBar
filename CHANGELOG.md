@@ -2,6 +2,38 @@
 
 All notable changes to the Claude Context Bar extension will be documented in this file.
 
+## [1.5.1] - 2026-05-03
+
+### Fixed
+- **Linux workspace matching**: Added fallback path comparison so sessions are detected even when Claude's directory encoding differs from the computed encoding. Primary match is exact encoded-path comparison; fallback decodes the Claude dir name and compares normalised paths; second fallback checks the last two path segments.
+- **Diagnostics output channel**: Added `Claude Context Bar` output channel with per-refresh logging (workspace folders, encoded paths, Claude dirs found, match/skip decisions). Run `Claude Context Bar: Show Diagnostics` from the command palette to open the channel and trigger a fresh scan.
+
+### Added
+- **New command**: `Claude Context Bar: Show Diagnostics` — opens the output channel and runs a full diagnostic scan, logging workspace paths, their encoded forms, and all Claude project directories found.
+
+## [1.5.0] - 2026-05-03
+
+### Added
+- **Context Menu (QuickPick)**: Clicking a status bar item now opens a menu instead of immediately hiding the session.
+  - Hide this session
+  - Restore all hidden sessions
+  - Restore a specific hidden session
+  - Open settings
+- **Model Display**: The currently used model is shown next to the percentage (e.g., `🧠 Project: 45% · Sonnet 4.5`). Compact mode produces shorter labels (`S4.5`, `O4.7`, `H4.5`).
+- **Effort Indicators**: ⚡ for `/fast` mode, 💭 when extended thinking is detected in recent assistant output.
+- **Two-Tier Idle Behavior**: Idle sessions are no longer hidden immediately.
+  - After `idleTimeout` (default 180s) → session is **dimmed** (grayscale, no warning background) and shows `idle Xm` indicator.
+  - After `hideAfter` (default 3600s / 1 hour) → session is fully hidden.
+- **New Settings**:
+  - `claudeContextBar.showModel` (default `true`)
+  - `claudeContextBar.hideAfter` (default `3600`)
+- **New Commands** (palette):
+  - `Claude Context Bar: Restore All Hidden Sessions`
+
+### Changed
+- `idleTimeout` now controls **dimming**, not hiding. Maximum raised to 7200s.
+- Tooltip now shows speed, extended-thinking detection, and idle status when applicable.
+
 ## [1.4.1] - 2025-12-29
 
 ### Fixed
