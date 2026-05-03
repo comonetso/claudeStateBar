@@ -6,3 +6,15 @@
 **/Thumbs.db
 **/node_modules
 **/*.vsix
+
+# Dev-only files
+.file_history/**
+.github/**
+.vscode/**
+src/**
+**/*.ts
+**/*.map
+tsconfig.json
+.eslintrc*
+whats-next.md
+CLAUDE.md

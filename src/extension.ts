@@ -2,7 +2,6 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import * as readline from 'readline';
 
 interface SessionInfo {
     projectName: string;
@@ -16,10 +15,13 @@ interface SessionInfo {
     percentage: number;
     lastUpdated: Date;
     model: string;
+    speed: string;
+    effortLevel: string;
     contextLimit: number;
     firstMessage: string;
     sessionCreated: Date | null;
     wasCleared: boolean;
+    isIdle: boolean;
 }
 
 interface StatusBarEntry {
@@ -32,17 +34,144 @@ const statusBarItems: Map<string, StatusBarEntry> = new Map();
 const hiddenSessions: Map<string, number> = new Map();
 let fileWatcher: fs.FSWatcher | null = null;
 let refreshInterval: NodeJS.Timeout | null = null;
+let outputChannel: vscode.OutputChannel | null = null;
+
+function log(msg: string) {
+    outputChannel?.appendLine(`[${new Date().toTimeString().slice(0, 8)}] ${msg}`);
+}
 
 export function activate(context: vscode.ExtensionContext) {
-    console.log('Claude Context Bar is now active');
+    outputChannel = vscode.window.createOutputChannel('Claude Context Bar');
+    context.subscriptions.push(outputChannel);
+    log('Claude Context Bar activating');
+    log(`Platform: ${process.platform}, home: ${os.homedir()}`);
 
-    // Register command to hide a session (triggered by clicking status bar item)
+    // Show diagnostics: logs workspace dirs, Claude dirs found, matching result
+    const diagCommand = vscode.commands.registerCommand('claudeContextBar.showDiagnostics', async () => {
+        outputChannel?.show(true);
+        log('=== DIAGNOSTICS ===');
+        const folders = vscode.workspace.workspaceFolders;
+        if (folders) {
+            for (const f of folders) {
+                const encoded = encodeWorkspacePath(f.uri.fsPath);
+                log(`Workspace folder: ${f.uri.fsPath}`);
+                log(`  → encoded: ${encoded}`);
+            }
+        } else {
+            log('No workspace folders open');
+        }
+        const claudeDir = getClaudeProjectsDir();
+        log(`Claude projects dir: ${claudeDir}`);
+        if (fs.existsSync(claudeDir)) {
+            const dirs = fs.readdirSync(claudeDir);
+            log(`Found ${dirs.length} project dirs:`);
+            for (const d of dirs) {
+                log(`  ${d}`);
+            }
+        } else {
+            log('Claude projects dir does not exist!');
+        }
+        log('=== END DIAGNOSTICS ===');
+        await refreshAllSessions();
+    });
+    context.subscriptions.push(diagCommand);
+
+    // Direct hide command (kept for completeness; status bar click now opens the menu)
     const hideCommand = vscode.commands.registerCommand('claudeContextBar.hideSession', (sessionFile: string) => {
+        if (!sessionFile) return;
         hiddenSessions.set(sessionFile, Date.now());
-        // Immediately refresh to hide the item
         refreshAllSessions();
     });
     context.subscriptions.push(hideCommand);
+
+    // Restore a single hidden session
+    const restoreOneCommand = vscode.commands.registerCommand('claudeContextBar.restoreHiddenSession', (sessionFile: string) => {
+        if (!sessionFile) return;
+        hiddenSessions.delete(sessionFile);
+        refreshAllSessions();
+    });
+    context.subscriptions.push(restoreOneCommand);
+
+    // Restore all hidden sessions
+    const restoreAllCommand = vscode.commands.registerCommand('claudeContextBar.restoreAllHidden', () => {
+        if (hiddenSessions.size === 0) {
+            vscode.window.showInformationMessage('Claude Context Bar: no hidden sessions to restore.');
+            return;
+        }
+        hiddenSessions.clear();
+        refreshAllSessions();
+    });
+    context.subscriptions.push(restoreAllCommand);
+
+    // Status bar click → QuickPick menu (hide this / restore hidden / open settings)
+    const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
+        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings'; sessionFile?: string };
+        const items: Item[] = [];
+
+        const clickedEntry = sessionFile ? statusBarItems.get(sessionFile) : undefined;
+        const clickedLabel = clickedEntry?.item.text || (sessionFile ? path.basename(sessionFile) : 'this session');
+
+        if (sessionFile) {
+            items.push({
+                label: '$(eye-closed) Hide this session',
+                description: clickedLabel,
+                action: 'hide'
+            });
+        }
+
+        if (hiddenSessions.size > 0) {
+            items.push({ label: 'Hidden sessions', kind: vscode.QuickPickItemKind.Separator });
+            items.push({
+                label: `$(eye) Restore all hidden (${hiddenSessions.size})`,
+                action: 'restoreAll'
+            });
+            for (const [hiddenPath] of hiddenSessions) {
+                const fileName = path.basename(hiddenPath).replace(/\.jsonl$/, '');
+                const projectDir = path.basename(path.dirname(hiddenPath));
+                items.push({
+                    label: `$(eye) Restore: ${fileName.substring(0, 8)}`,
+                    description: projectDir,
+                    detail: hiddenPath,
+                    action: 'restoreOne',
+                    sessionFile: hiddenPath
+                });
+            }
+        }
+
+        items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+        items.push({
+            label: '$(gear) Open settings…',
+            action: 'settings'
+        });
+
+        const picked = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Claude Context Bar — choose action'
+        });
+        if (!picked) return;
+
+        switch (picked.action) {
+            case 'hide':
+                if (sessionFile) {
+                    hiddenSessions.set(sessionFile, Date.now());
+                    refreshAllSessions();
+                }
+                break;
+            case 'restoreAll':
+                hiddenSessions.clear();
+                refreshAllSessions();
+                break;
+            case 'restoreOne':
+                if (picked.sessionFile) {
+                    hiddenSessions.delete(picked.sessionFile);
+                    refreshAllSessions();
+                }
+                break;
+            case 'settings':
+                vscode.commands.executeCommand('workbench.action.openSettings', 'claudeContextBar');
+                break;
+        }
+    });
+    context.subscriptions.push(menuCommand);
 
     // Listen for configuration changes and refresh immediately
     const configWatcher = vscode.workspace.onDidChangeConfiguration(e => {
@@ -52,6 +181,10 @@ export function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(configWatcher);
 
+    // Re-filter when workspace folders change (e.g., user opens/closes a folder)
+    const wsWatcher = vscode.workspace.onDidChangeWorkspaceFolders(() => refreshAllSessions());
+    context.subscriptions.push(wsWatcher);
+
     // Initial scan
     refreshAllSessions();
 
@@ -59,7 +192,7 @@ export function activate(context: vscode.ExtensionContext) {
     const claudeProjectsDir = getClaudeProjectsDir();
     if (fs.existsSync(claudeProjectsDir)) {
         try {
-            fileWatcher = fs.watch(claudeProjectsDir, { recursive: true }, (event, filename) => {
+            fileWatcher = fs.watch(claudeProjectsDir, { recursive: true }, (_event, filename) => {
                 if (filename?.endsWith('.jsonl')) {
                     refreshAllSessions();
                 }
@@ -103,6 +236,60 @@ export function deactivate() {
 function getClaudeProjectsDir(): string {
     const homeDir = os.homedir();
     return path.join(homeDir, '.claude', 'projects');
+}
+
+// Encode an absolute workspace path into Claude's projects/ directory name format.
+// Example: "F:\\workspace\\Etc Project\\foo" → "f--workspace-Etc-Project-foo"
+//          "/Users/me/my project"            → "-Users-me-my-project"
+function encodeWorkspacePath(p: string): string {
+    let result = p;
+    // Lowercase drive letter on Windows so it matches Claude's lowercase encoding
+    if (/^[a-zA-Z]:/.test(result)) {
+        result = result[0].toLowerCase() + result.slice(1);
+    }
+    // Each colon, slash, backslash, or whitespace becomes a single dash
+    return result.replace(/[:\\/\s_.]/g, '-');
+}
+
+// Returns lowercase encoded directory names for the currently open workspace folders,
+// or null if there are no workspace folders (single-file window).
+function getWorkspaceProjectDirs(): Set<string> | null {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) return null;
+    const dirs = new Set<string>();
+    for (const f of folders) {
+        dirs.add(encodeWorkspacePath(f.uri.fsPath).toLowerCase());
+    }
+    return dirs;
+}
+
+// Check if a Claude project directory name matches a given workspace folder.
+// Primary: exact encoded-path match.
+// Fallback: decode the Claude dir and compare normalised paths (handles encoding edge-cases on Linux).
+function projectDirMatchesFolder(projectDir: string, f: vscode.WorkspaceFolder): boolean {
+    const encoded = encodeWorkspacePath(f.uri.fsPath).toLowerCase();
+    if (projectDir.toLowerCase() === encoded) return true;
+
+    // Fallback: decode Claude's dir name and compare to the workspace path
+    const { fullPath } = decodeProjectPath(projectDir);
+    const norm = (p: string) => p.replace(/[/\\]+$/, '').replace(/\\/g, '/').toLowerCase();
+    if (norm(fullPath) === norm(f.uri.fsPath)) return true;
+
+    // Second fallback: last path segment(s) match
+    const wsParts = f.uri.fsPath.replace(/\\/g, '/').split('/').filter(Boolean);
+    const claudeParts = projectDir.replace(/^-/, '').split('-').filter(Boolean);
+    if (wsParts.length > 0 && claudeParts.length > 0) {
+        const wsLast = wsParts[wsParts.length - 1].toLowerCase();
+        const claudeLast = claudeParts[claudeParts.length - 1].toLowerCase();
+        if (wsLast === claudeLast && wsParts.length >= 2 && claudeParts.length >= 2) {
+            // Also check the parent segment for more confidence
+            const wsParent = wsParts[wsParts.length - 2].toLowerCase();
+            const claudeParent = claudeParts[claudeParts.length - 2].toLowerCase();
+            if (wsParent === claudeParent) return true;
+        }
+    }
+
+    return false;
 }
 
 function decodeProjectPath(encodedName: string): { name: string; fullPath: string } {
@@ -164,75 +351,22 @@ interface TokenUsage {
     cacheCreationTokens: number;
     totalTokens: number;
     model: string;
+    speed: string;          // "standard" | "fast" (Claude Code /fast toggle)
     firstMessage: string;
     sessionCreated: Date | null;
     wasCleared: boolean;  // True if session ended with /clear command
 }
 
-// Determine context limit based on model
-function getContextLimitForModel(model: string, userLimit: number): number {
-    // Sonnet 4.5 1M has 1 million token context
-    if (model.toLowerCase().includes('sonnet') && model.toLowerCase().includes('1m')) {
-        return 1000000;
-    }
-    // All other models (Sonnet 4.5, Opus 4.5, Haiku) have 200K
-    return userLimit;
-}
-
-// Fuzzy emoji matching based on project name
-function getEmojiForProject(projectName: string): string {
-    const name = projectName.toLowerCase();
-
-    // Emoji mappings with keywords
-    const emojiMap: [string[], string][] = [
-        // Music & Audio
-        [['music', 'audio', 'sound', 'song', 'beat', 'dj', 'ableton', 'daw', 'synth', 'midi', 'tone', 'rhythm'], '🎵'],
-        // Games
-        [['game', 'play', 'unity', 'unreal', 'godot', 'arcade', 'puzzle'], '🎮'],
-        // Web & Frontend
-        [['web', 'website', 'frontend', 'react', 'vue', 'angular', 'html', 'css', 'ui', 'ux'], '🌐'],
-        // Backend & API
-        [['api', 'backend', 'server', 'rest', 'graphql', 'microservice'], '⚙️'],
-        // Mobile
-        [['mobile', 'ios', 'android', 'app', 'flutter', 'react-native', 'swift', 'kotlin'], '📱'],
-        // Data & ML
-        [['data', 'ml', 'ai', 'machine', 'learning', 'model', 'train', 'neural', 'tensor'], '🤖'],
-        // Database
-        [['database', 'db', 'sql', 'mongo', 'postgres', 'mysql', 'redis'], '🗄️'],
-        // DevOps & Cloud
-        [['devops', 'cloud', 'aws', 'azure', 'gcp', 'docker', 'kubernetes', 'k8s', 'deploy'], '☁️'],
-        // Security
-        [['security', 'auth', 'crypto', 'encrypt', 'password', 'oauth'], '🔐'],
-        // Testing
-        [['test', 'spec', 'jest', 'mocha', 'cypress', 'selenium'], '🧪'],
-        // Documentation
-        [['doc', 'docs', 'readme', 'wiki', 'guide', 'tutorial'], '📚'],
-        // Tools & Extensions
-        [['tool', 'extension', 'plugin', 'vscode', 'editor'], '🔧'],
-        // Chat & Communication
-        [['chat', 'message', 'slack', 'discord', 'bot'], '💬'],
-        // Finance
-        [['finance', 'money', 'payment', 'bank', 'crypto', 'trade'], '💰'],
-        // Health
-        [['health', 'medical', 'fitness', 'workout'], '❤️'],
-        // E-commerce
-        [['shop', 'store', 'ecommerce', 'cart', 'product'], '🛒'],
-        // Media & Video
-        [['video', 'stream', 'youtube', 'media', 'film', 'movie'], '🎬'],
-        // Art & Design
-        [['art', 'design', 'draw', 'paint', 'sketch', 'creative', 'graphic'], '🎨'],
-    ];
-
-    for (const [keywords, emoji] of emojiMap) {
-        for (const keyword of keywords) {
-            if (name.includes(keyword)) {
-                return emoji;
-            }
-        }
-    }
-
-    // Default brain emoji for coding/AI projects
-    return '🧠';
+// Determine context limit based on model id.
+// 1M-context models (use limitOpus):
+//   - Opus 4.x family (claude-opus-4-5 / 4-6 / 4-7) — confirmed 1M context
+//   - Any model with "1m" in the id (e.g., "claude-sonnet-4-5-1m")
+// All others (Sonnet, Haiku, etc.) use limitDefault.
+function getContextLimitForModel(model: string, limitDefault: number, limitOpus: number): number {
+    const m = model.toLowerCase();
+    if (m.includes('1m')) return limitOpus;
+    if (/opus[-_]?4/.test(m)) return limitOpus;
+    return limitDefault;
 }
 
 // Extract the last syllable from a word for compact naming
@@ -295,7 +429,7 @@ async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
         try {
             const stats = fs.statSync(jsonlPath);
             if (stats.size === 0) {
-                resolve({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', firstMessage: '', sessionCreated: null, wasCleared: false });
+                resolve({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, wasCleared: false });
                 return;
             }
 
@@ -343,6 +477,7 @@ async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
             let firstMessage = '';
             let sessionCreated: Date | null = null;
             let model = '';
+            let speed = '';
             let finalUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0 };
 
             // Forward pass from start index to find metadata and latest usage
@@ -375,6 +510,12 @@ async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
                     if (entry.message?.model) {
                         model = entry.message.model;
                     }
+                    // Capture speed (standard|fast) — set by Claude Code's /fast toggle
+                    if (entry.message?.speed) {
+                        speed = entry.message.speed;
+                    } else if (entry.speed) {
+                        speed = entry.speed;
+                    }
                     if (entry.message?.usage || entry.usage) {
                         const u = entry.message?.usage || entry.usage;
                         finalUsage = {
@@ -395,13 +536,14 @@ async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
                 cacheCreationTokens: finalUsage.cacheCreationTokens,
                 totalTokens: finalUsage.totalTokens,
                 model,
+                speed,
                 firstMessage: firstMessage ? firstMessage + '...' : '',
                 sessionCreated,
                 wasCleared
             });
 
         } catch (e) {
-            resolve({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', firstMessage: '', sessionCreated: null, wasCleared: false });
+            resolve({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, wasCleared: false });
         }
     });
 }
@@ -415,11 +557,40 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
     }
 
     const config = vscode.workspace.getConfiguration('claudeContextBar');
-    const contextLimit = config.get<number>('contextLimit', 200000);
+    const contextLimitDefault = config.get<number>('contextLimitDefault', 200000);
+    const contextLimitOpus = config.get<number>('contextLimitOpus', 1000000);
     const idleTimeout = config.get<number>('idleTimeout', 180);
+    const hideAfterRaw = config.get<number>('hideAfter', 86400);
+    const scope = config.get<string>('scope', 'workspace');  // 'workspace' or 'all'
 
-    // Only look at sessions modified within the idle timeout (active sessions)
-    const cutoffTime = Date.now() - (idleTimeout * 1000);
+    // Guarantee hideAfter >= idleTimeout so dimming happens before hiding
+    const hideAfter = Math.max(hideAfterRaw, idleTimeout);
+
+    const now = Date.now();
+    const idleThreshold = now - (idleTimeout * 1000);  // Older than this → dimmed
+    const hideThreshold = now - (hideAfter * 1000);    // Older than this → fully hidden
+
+    // Read global effort level once per refresh — Claude Code stores this in ~/.claude/settings.json
+    // and applies the same value to every interactive session on this machine.
+    const globalEffortLevel = getGlobalEffortLevel();
+
+    // Filter to only workspace folders if scope='workspace'
+    let workspaceDirs: Set<string> | null = null;
+    // Map from encoded dir name → actual folder basename (for exact display name)
+    const workspaceNameMap = new Map<string, string>();
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (scope === 'workspace') {
+        workspaceDirs = getWorkspaceProjectDirs();
+        if (workspaceFolders) {
+            for (const f of workspaceFolders) {
+                const encoded = encodeWorkspacePath(f.uri.fsPath).toLowerCase();
+                workspaceNameMap.set(encoded, path.basename(f.uri.fsPath));
+                log(`Workspace: ${f.uri.fsPath} → encoded: ${encoded}`);
+            }
+        } else {
+            log('scope=workspace but no workspaceFolders — will show all sessions');
+        }
+    }
 
     try {
         const projectDirs = fs.readdirSync(claudeDir);
@@ -430,36 +601,63 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
 
             if (!stat.isDirectory()) continue;
 
-            // Skip Claude Memory and plugin directories (background agents, not interactive sessions)
+            // Skip Claude Memory, plugin directories, and Claude's own .claude config dir
             if (projectDir.includes('claude-plugins') || projectDir.includes('claude-mem')) continue;
+            if (projectDir.endsWith('--claude')) continue;  // /path/.claude encoded as --claude suffix
+
+            // If scope='workspace', only include projects that match the current workspace folders
+            if (workspaceDirs !== null && workspaceFolders) {
+                const matched = workspaceFolders.some(f => projectDirMatchesFolder(projectDir, f));
+                if (!matched) {
+                    log(`Skip (no workspace match): ${projectDir}`);
+                    continue;
+                }
+                log(`Match: ${projectDir}`);
+            } else if (workspaceDirs !== null) {
+                // No workspace folders open → skip all (scope=workspace with no folder = nothing to show)
+                continue;
+            }
 
             // Find JSONL files modified within cutoff time
-            const files = fs.readdirSync(projectPath)
+            const allJsonl = fs.readdirSync(projectPath)
                 .filter(f => f.endsWith('.jsonl'))
-                // Skip agent files (claude-mem background processes)
-                .filter(f => !f.startsWith('agent-'))
+                .filter(f => !f.startsWith('agent-'));
+            log(`  JSONL files in ${projectDir}: ${allJsonl.length}`);
+            const files = allJsonl
                 .map(f => ({
                     name: f,
                     path: path.join(projectPath, f),
                     mtime: fs.statSync(path.join(projectPath, f)).mtime
                 }))
-                .filter(f => f.mtime.getTime() > cutoffTime)
+                .filter(f => {
+                    const ok = f.mtime.getTime() > hideThreshold;
+                    if (!ok) log(`  Skip (too old, ${Math.round((Date.now() - f.mtime.getTime()) / 60000)}m ago): ${f.name}`);
+                    return ok;
+                })
                 .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
-            if (files.length === 0) continue;
+            if (files.length === 0) { log(`  No recent JSONL files (hideAfter=${hideAfter}s)`); continue; }
 
             // Get token count from EACH active session file (1 per Claude Code tab)
             for (const file of files) {
                 const usage = await getLatestTokenCount(file.path);
+                log(`  ${file.name}: tokens=${usage.totalTokens}, wasCleared=${usage.wasCleared}`);
 
                 if (usage.totalTokens > 0) {
                     const { name, fullPath } = decodeProjectPath(projectDir);
+                    // In workspace mode, use the actual folder basename (exact, no heuristic)
+                    let displayName = workspaceNameMap.get(projectDir.toLowerCase()) || name;
+                    if (scope === 'workspace' && workspaceFolders && displayName === name) {
+                        // Fallback: find the matching folder and use its actual basename
+                        const matchedFolder = workspaceFolders.find(f => projectDirMatchesFolder(projectDir, f));
+                        if (matchedFolder) displayName = path.basename(matchedFolder.uri.fsPath);
+                    }
                     // Extract short session ID from filename
                     const sessionId = file.name.replace('.jsonl', '').substring(0, 8);
                     // Auto-detect context limit based on model
-                    const sessionContextLimit = getContextLimitForModel(usage.model, contextLimit);
+                    const sessionContextLimit = getContextLimitForModel(usage.model, contextLimitDefault, contextLimitOpus);
                     sessions.push({
-                        projectName: name,
+                        projectName: displayName,
                         projectPath: fullPath,
                         sessionId,
                         sessionFile: file.path,
@@ -470,10 +668,13 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                         percentage: Math.round((usage.totalTokens / sessionContextLimit) * 100),
                         lastUpdated: file.mtime,
                         model: usage.model,
+                        speed: usage.speed,
+                        effortLevel: globalEffortLevel,
                         contextLimit: sessionContextLimit,
                         firstMessage: usage.firstMessage,
                         sessionCreated: usage.sessionCreated,
-                        wasCleared: usage.wasCleared
+                        wasCleared: usage.wasCleared,
+                        isIdle: file.mtime.getTime() <= idleThreshold
                     });
                 }
             }
@@ -578,6 +779,70 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
     return visibleSessions.slice(0, 5);
 }
 
+// Shorten a model id like "claude-sonnet-4-5-20250514" → "Sonnet 4.5" (or "S4.5" in compact mode).
+// 1M-context variants get a "1M" suffix. Unknown families fall back to the last token of the id.
+function getShortModelName(model: string, compact: boolean): string {
+    if (!model) return '';
+    const lower = model.toLowerCase();
+    let family = '';
+    let abbrev = '';
+    if (lower.includes('opus')) { family = 'Opus'; abbrev = 'O'; }
+    else if (lower.includes('sonnet')) { family = 'Sonnet'; abbrev = 'S'; }
+    else if (lower.includes('haiku')) { family = 'Haiku'; abbrev = 'H'; }
+    else {
+        const parts = model.split('-');
+        return parts[parts.length - 1] || model;
+    }
+    const verMatch = lower.match(/(\d+)-(\d+)/);
+    const version = verMatch ? `${verMatch[1]}.${verMatch[2]}` : '';
+    const onem = lower.includes('1m') ? '1M' : '';
+    if (compact) {
+        return `${abbrev}${version}${onem}`;
+    }
+    const versionPart = version ? ` ${version}` : '';
+    const onemPart = onem ? ` ${onem}` : '';
+    return `${family}${versionPart}${onemPart}`;
+}
+
+// Read global effort level from ~/.claude/settings.json. Returns lowercase raw value
+// like "low" | "medium" | "high" | "xhigh" | "max", or '' on failure.
+// Note: Claude Code stores this globally; all interactive sessions share the same effort.
+function getGlobalEffortLevel(): string {
+    try {
+        const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+        const raw = fs.readFileSync(settingsPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        const v = parsed?.effortLevel;
+        return typeof v === 'string' ? v.toLowerCase() : '';
+    } catch (e) {
+        return '';
+    }
+}
+
+// Convert a raw effort value to a display label. Always full names (no abbreviation).
+//   low → Low, medium → Medium, high → High, xhigh → xHigh, max → Max
+function getEffortLabel(raw: string): string {
+    switch (raw.toLowerCase()) {
+        case 'low': return 'Low';
+        case 'medium': return 'Medium';
+        case 'high': return 'High';
+        case 'xhigh': return 'xHigh';
+        case 'max': return 'Max';
+        default: return raw;  // Unknown values pass through as-is
+    }
+}
+
+function formatIdleDuration(lastUpdated: Date): string {
+    const ms = Date.now() - lastUpdated.getTime();
+    const min = Math.floor(ms / 60000);
+    if (min < 1) return 'idle';
+    if (min < 60) return `idle ${min}m`;
+    const hr = Math.floor(min / 60);
+    const remMin = min % 60;
+    if (remMin === 0) return `idle ${hr}h`;
+    return `idle ${hr}h${remMin}m`;
+}
+
 function formatTokens(tokens: number): string {
     if (tokens >= 1000000) {
         return (tokens / 1000000).toFixed(1) + 'M';
@@ -592,12 +857,11 @@ async function refreshAllSessions() {
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const warningThreshold = config.get<number>('warningThreshold', 50);
     const dangerThreshold = config.get<number>('dangerThreshold', 75);
-    const contextLimit = config.get<number>('contextLimit', 200000);
     const autoColor = config.get<boolean>('autoColor', true);
     const baseColor = config.get<string>('baseColor', 'White');
-    const showEmoji = config.get<boolean>('showEmoji', true);
     const compactMode = config.get<boolean>('compactMode', false);
     const shortNames = config.get<Record<string, string>>('shortNames', {});
+    const showModel = config.get<boolean>('showModel', true);
 
     // Pastel color palette for auto-coloring
     const pastelPalette = [
@@ -659,9 +923,10 @@ async function refreshAllSessions() {
         let entry = statusBarItems.get(session.sessionFile);
 
         if (!entry) {
-            // Create new status bar item - Right align, very high priority to appear LEFT of Claude's items
-            // Higher priority = further left on right-aligned items
-            const priority = 900 + (sessions.length - i); // Very high = leftmost in right section
+            // Right-aligned: higher priority = more left. Use a small positive value
+            // so we sit RIGHT of editor option items (line/col, encoding, language ≈ 100)
+            // but LEFT of low-priority extension items (Antigravity, etc.).
+            const priority = 10 - i;
             const item = vscode.window.createStatusBarItem(
                 vscode.StatusBarAlignment.Right,
                 priority
@@ -670,44 +935,66 @@ async function refreshAllSessions() {
             statusBarItems.set(session.sessionFile, entry);
         }
 
-        // Update the status bar item with fuzzy emoji matching
-        const icon = showEmoji ? getEmojiForProject(session.projectName) : '';
-        const iconSpace = showEmoji ? ' ' : '';
+        // Build status bar text in the form:  "{name}: {Model} - {Effort} ({pct}%) · idle Xm"
+        // Emoji prefix dropped per user feedback. Effort/model are full names (no abbreviation).
         const displayName = compactMode ? getShortName(session.projectName, shortNames) : session.projectName;
-        entry.item.text = `${icon}${iconSpace}${displayName}: ${session.percentage}%`;
+        const modelLabel = showModel ? getShortModelName(session.model, compactMode) : '';
+        const effortLabel = getEffortLabel(session.effortLevel);
 
-        // Set background color based on thresholds
-        if (session.percentage >= dangerThreshold) {
-            entry.item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-        } else if (session.percentage >= warningThreshold) {
-            entry.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-        } else {
-            entry.item.backgroundColor = undefined;
+        let infoPart = '';
+        if (modelLabel && effortLabel) {
+            infoPart = `: ${modelLabel} - ${effortLabel}`;
+        } else if (modelLabel) {
+            infoPart = `: ${modelLabel}`;
+        } else if (effortLabel) {
+            infoPart = `: ${effortLabel}`;
         }
 
-        // Set text color from project color map
-        entry.item.color = projectColorMap.get(session.projectName) || '#ffffff';
+        const idleSuffix = session.isIdle ? ` · ${formatIdleDuration(session.lastUpdated)}` : '';
+        entry.item.text = `${displayName}${infoPart} (${session.percentage}%)${idleSuffix}`;
+
+        // We never use backgroundColor — too visually loud. Threshold warnings are shown via foreground color instead.
+        entry.item.backgroundColor = undefined;
+
+        if (session.isIdle) {
+            // Idle: muted gray foreground regardless of threshold (the session isn't actively burning context)
+            entry.item.color = new vscode.ThemeColor('disabledForeground');
+        } else if (session.percentage >= dangerThreshold) {
+            entry.item.color = new vscode.ThemeColor('errorForeground');
+        } else if (session.percentage >= warningThreshold) {
+            entry.item.color = new vscode.ThemeColor('editorWarning.foreground');
+        } else {
+            entry.item.color = projectColorMap.get(session.projectName) || '#ffffff';
+        }
 
         // Detailed tooltip with full token breakdown and first message
         const firstMsgLine = session.firstMessage ? `💬 *"${session.firstMessage}"*\n\n` : '';
+        const effortLineText = session.effortLevel ? getEffortLabel(session.effortLevel) : '';
+        const effortLine = effortLineText ? `🎚️ Effort: \`${effortLineText}\`\n\n` : '';
+        // Keep speed only when it's non-standard (i.e., /fast mode active) — otherwise hide noise
+        const speedLine = (session.speed && session.speed !== 'standard') ? `⚡ Speed: \`${session.speed}\`\n\n` : '';
+        const idleLine = session.isIdle ? `😴 **Idle** — ${formatIdleDuration(session.lastUpdated)}\n\n` : '';
         entry.item.tooltip = new vscode.MarkdownString(
             `**${session.projectName}** (${session.sessionId})\n\n` +
+            idleLine +
             firstMsgLine +
             `📁 \`${session.projectPath}\`\n\n` +
             `🤖 Model: \`${session.model || 'Unknown'}\`\n\n` +
+            effortLine +
+            speedLine +
             `📊 **Context Usage: ${session.percentage}%**\n\n` +
             `| Type | Tokens |\n|------|--------|\n` +
             `| Cache Read | ${formatTokens(session.cacheReadTokens)} |\n` +
             `| Cache Creation | ${formatTokens(session.cacheCreationTokens)} |\n` +
             `| **Total** | **${formatTokens(session.totalTokens)}** / ${formatTokens(session.contextLimit)} |\n\n` +
             `🕐 Last updated: ${session.lastUpdated.toLocaleTimeString()}\n\n` +
-            `*Click to hide*`
+            `*Click for menu (hide / restore / settings)*`
         );
 
-        // Click to hide this session
+        // Click opens session menu (hide this / restore hidden / settings)
         entry.item.command = {
-            command: 'claudeContextBar.hideSession',
-            title: 'Hide Session',
+            command: 'claudeContextBar.showSessionMenu',
+            title: 'Session Menu',
             arguments: [session.sessionFile]
         };
 
