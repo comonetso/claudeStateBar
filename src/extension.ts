@@ -248,7 +248,8 @@ function encodeWorkspacePath(p: string): string {
         result = result[0].toLowerCase() + result.slice(1);
     }
     // Each colon, slash, backslash, or whitespace becomes a single dash
-    return result.replace(/[:\\/\s_.]/g, '-');
+    // Claude Code encodes all non-alphanumeric ASCII chars and all non-ASCII (Korean, etc.) as '-'
+    return result.replace(/[:\\/\s_.]|[^\x00-\x7F]|[^a-zA-Z0-9\-]/g, '-');
 }
 
 // Returns lowercase encoded directory names for the currently open workspace folders,
@@ -354,6 +355,7 @@ interface TokenUsage {
     speed: string;          // "standard" | "fast" (Claude Code /fast toggle)
     firstMessage: string;
     sessionCreated: Date | null;
+    lastRealTimestamp: Date | null;  // Last timestamp excluding last-prompt entries
     wasCleared: boolean;  // True if session ended with /clear command
 }
 
@@ -429,7 +431,7 @@ async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
         try {
             const stats = fs.statSync(jsonlPath);
             if (stats.size === 0) {
-                resolve({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, wasCleared: false });
+                resolve({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, wasCleared: false });
                 return;
             }
 
@@ -476,6 +478,7 @@ async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
 
             let firstMessage = '';
             let sessionCreated: Date | null = null;
+            let lastRealTimestamp: Date | null = null;
             let model = '';
             let speed = '';
             let finalUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0 };
@@ -490,6 +493,11 @@ async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
                     // Get session creation timestamp (first valid timestamp after clear)
                     if (!sessionCreated && entry.timestamp) {
                         sessionCreated = new Date(entry.timestamp);
+                    }
+                    // Track last real timestamp (skip last-prompt entries — Claude Code writes
+                    // these to the old file when a new session starts, inflating the mtime)
+                    if (entry.timestamp && entry.type !== 'last-prompt') {
+                        lastRealTimestamp = new Date(entry.timestamp);
                     }
 
                     // Look for first user message (for display)
@@ -539,11 +547,12 @@ async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
                 speed,
                 firstMessage: firstMessage ? firstMessage + '...' : '',
                 sessionCreated,
+                lastRealTimestamp,
                 wasCleared
             });
 
         } catch (e) {
-            resolve({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, wasCleared: false });
+            resolve({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, wasCleared: false });
         }
     });
 }
@@ -666,7 +675,7 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                         cacheCreationTokens: usage.cacheCreationTokens,
                         totalTokens: usage.totalTokens,
                         percentage: Math.round((usage.totalTokens / sessionContextLimit) * 100),
-                        lastUpdated: file.mtime,
+                        lastUpdated: usage.lastRealTimestamp || file.mtime,
                         model: usage.model,
                         speed: usage.speed,
                         effortLevel: globalEffortLevel,
