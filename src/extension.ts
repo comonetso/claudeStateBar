@@ -2,6 +2,11 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as creds from './credentials';
+import { fetchUsage, AuthExpiredError, NormalizedUsage, getTransport } from './planUsage';
+import * as telegram from './telegram';
+import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
+import { getDict, Lang } from './i18n';
 
 interface SessionInfo {
     projectName: string;
@@ -36,15 +41,43 @@ let fileWatcher: fs.FSWatcher | null = null;
 let refreshInterval: NodeJS.Timeout | null = null;
 let outputChannel: vscode.OutputChannel | null = null;
 
+// --- Plan usage (claudeState) state ---
+// Plan usage is merged into the first session status-bar item. When no Claude Code
+// session is active, planFallbackItem shows the plan usage on its own.
+let planFallbackItem: vscode.StatusBarItem | null = null;
+let planRefreshInterval: NodeJS.Timeout | null = null;
+let planTickInterval: NodeJS.Timeout | null = null;
+let lastUsage: NormalizedUsage | null = null;
+type PlanStatus = 'unconfigured' | 'ok' | 'auth_expired' | 'error';
+let planStatus: PlanStatus = 'unconfigured';
+
 function log(msg: string) {
     outputChannel?.appendLine(`[${new Date().toTimeString().slice(0, 8)}] ${msg}`);
 }
 
 export function activate(context: vscode.ExtensionContext) {
-    outputChannel = vscode.window.createOutputChannel('Claude Context Bar');
+    outputChannel = vscode.window.createOutputChannel('claudeStateBar');
     context.subscriptions.push(outputChannel);
-    log('Claude Context Bar activating');
+    log('claudeStateBar activating');
     log(`Platform: ${process.platform}, home: ${os.homedir()}`);
+
+    // Initialise credential store (context.secrets) for the claudeState plan-usage feature
+    creds.initCredentials(context);
+
+    // Open the unified settings webview panel
+    const openSettingsCmd = vscode.commands.registerCommand('claudeContextBar.openSettings', () => {
+        createOrShowSettingsPanel(context, {
+            onPlanSettingsChanged: () => { restartPlanPolling(); refreshPlanUsage(); },
+            onRefreshRequested: () => { refreshPlanUsage(); }
+        });
+    });
+    context.subscriptions.push(openSettingsCmd);
+
+    // Manual plan-usage refresh
+    const refreshPlanCmd = vscode.commands.registerCommand('claudeContextBar.refreshPlanUsage', () => {
+        refreshPlanUsage();
+    });
+    context.subscriptions.push(refreshPlanCmd);
 
     // Show diagnostics: logs workspace dirs, Claude dirs found, matching result
     const diagCommand = vscode.commands.registerCommand('claudeContextBar.showDiagnostics', async () => {
@@ -95,7 +128,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Restore all hidden sessions
     const restoreAllCommand = vscode.commands.registerCommand('claudeContextBar.restoreAllHidden', () => {
         if (hiddenSessions.size === 0) {
-            vscode.window.showInformationMessage('Claude Context Bar: no hidden sessions to restore.');
+            vscode.window.showInformationMessage('claudeStateBar: no hidden sessions to restore.');
             return;
         }
         hiddenSessions.clear();
@@ -141,11 +174,12 @@ export function activate(context: vscode.ExtensionContext) {
         items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
         items.push({
             label: '$(gear) Open settings…',
+            description: 'claudeState + claudeContextBar',
             action: 'settings'
         });
 
         const picked = await vscode.window.showQuickPick(items, {
-            placeHolder: 'Claude Context Bar — choose action'
+            placeHolder: 'claudeStateBar — choose action'
         });
         if (!picked) return;
 
@@ -167,7 +201,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 break;
             case 'settings':
-                vscode.commands.executeCommand('workbench.action.openSettings', 'claudeContextBar');
+                vscode.commands.executeCommand('claudeContextBar.openSettings');
                 break;
         }
     });
@@ -177,6 +211,10 @@ export function activate(context: vscode.ExtensionContext) {
     const configWatcher = vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('claudeContextBar')) {
             refreshAllSessions();
+        }
+        if (e.affectsConfiguration('claudeState')) {
+            restartPlanPolling();
+            refreshPlanUsage();
         }
     });
     context.subscriptions.push(configWatcher);
@@ -207,6 +245,12 @@ export function activate(context: vscode.ExtensionContext) {
     const intervalSeconds = config.get<number>('refreshInterval', 30);
     refreshInterval = setInterval(refreshAllSessions, intervalSeconds * 1000);
 
+    // Start the claudeState plan-usage polling (no-op until enabled + credentials set)
+    restartPlanPolling();
+    refreshPlanUsage();
+    // Recompute the "resets in ..." countdown once a minute without re-fetching
+    planTickInterval = setInterval(() => { if (lastUsage) refreshAllSessions(); }, 60 * 1000);
+
     // Clean up on deactivation
     context.subscriptions.push({
         dispose: () => {
@@ -216,6 +260,13 @@ export function activate(context: vscode.ExtensionContext) {
             if (refreshInterval) {
                 clearInterval(refreshInterval);
             }
+            if (planRefreshInterval) {
+                clearInterval(planRefreshInterval);
+            }
+            if (planTickInterval) {
+                clearInterval(planTickInterval);
+            }
+            planFallbackItem?.dispose();
             statusBarItems.forEach(entry => entry.item.dispose());
             statusBarItems.clear();
         }
@@ -229,6 +280,13 @@ export function deactivate() {
     if (refreshInterval) {
         clearInterval(refreshInterval);
     }
+    if (planRefreshInterval) {
+        clearInterval(planRefreshInterval);
+    }
+    if (planTickInterval) {
+        clearInterval(planTickInterval);
+    }
+    planFallbackItem?.dispose();
     statusBarItems.forEach(entry => entry.item.dispose());
     statusBarItems.clear();
 }
@@ -960,7 +1018,10 @@ async function refreshAllSessions() {
         }
 
         const idleSuffix = session.isIdle ? ` · ${formatIdleDuration(session.lastUpdated)}` : '';
-        entry.item.text = `${displayName}${infoPart} (${session.percentage}%)${idleSuffix}`;
+        // Merge plan usage (claudeState) into the first (most recent) session item only,
+        // so it isn't duplicated across multiple sessions.
+        const planAdd = i === 0 ? planTextSuffix() : '';
+        entry.item.text = `${displayName}${infoPart} (${session.percentage}%)${planAdd}${idleSuffix}`;
 
         // We never use backgroundColor — too visually loud. Threshold warnings are shown via foreground color instead.
         entry.item.backgroundColor = undefined;
@@ -976,8 +1037,8 @@ async function refreshAllSessions() {
             entry.item.color = projectColorMap.get(session.projectName) || '#ffffff';
         }
 
-        // Detailed tooltip with full token breakdown and first message
-        const firstMsgLine = session.firstMessage ? `💬 *"${session.firstMessage}"*\n\n` : '';
+        // Detailed tooltip. The first-message line and project path were removed per
+        // user request; the claudeState plan-usage block takes their place.
         const effortLineText = session.effortLevel ? getEffortLabel(session.effortLevel) : '';
         const effortLine = effortLineText ? `🎚️ Effort: \`${effortLineText}\`\n\n` : '';
         // Keep speed only when it's non-standard (i.e., /fast mode active) — otherwise hide noise
@@ -986,8 +1047,7 @@ async function refreshAllSessions() {
         entry.item.tooltip = new vscode.MarkdownString(
             `**${session.projectName}** (${session.sessionId})\n\n` +
             idleLine +
-            firstMsgLine +
-            `📁 \`${session.projectPath}\`\n\n` +
+            planTooltipBlock() +
             `🤖 Model: \`${session.model || 'Unknown'}\`\n\n` +
             effortLine +
             speedLine +
@@ -1016,5 +1076,219 @@ async function refreshAllSessions() {
             entry.item.dispose();
             statusBarItems.delete(sessionFile);
         }
+    }
+
+    // claudeState fallback: when no context session is shown, display plan usage on its own
+    updatePlanFallback(sessions.length === 0);
+}
+
+// ============================================================================
+// claudeStateBar — plan usage (5-hour session & 7-day weekly) from claude.ai API
+// ============================================================================
+
+function planLang(): Lang {
+    return creds.getLanguage();
+}
+
+// Lang-aware string lookup with {0} substitution (strings only; arrays use weekdayNames()).
+function planT(key: string, ...args: (string | number)[]): string {
+    const dict = getDict(planLang());
+    let v = dict[key];
+    if (typeof v !== 'string') return key;
+    if (args.length) {
+        v = v.replace(/\{(\d+)\}/g, (_, i) => {
+            const val = args[Number(i)];
+            return val == null ? '' : String(val);
+        });
+    }
+    return v;
+}
+
+function weekdayNames(): string[] {
+    const w = getDict(planLang())['sb.weekdays'];
+    return Array.isArray(w) ? w : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+}
+
+// Format an ISO reset timestamp like "PM 4:00" (today) or "PM 8:00 (Sat)" (other day).
+function resetAtLabel(iso: string | null): string {
+    if (!iso) return '--';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '--';
+    const now = new Date();
+    const sameDay =
+        d.getFullYear() === now.getFullYear() &&
+        d.getMonth() === now.getMonth() &&
+        d.getDate() === now.getDate();
+    const h = d.getHours();
+    const ap = h < 12 ? planT('sb.am') : planT('sb.pm');
+    const h12 = h % 12 === 0 ? 12 : h % 12;
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const timePart = `${ap} ${h12}:${mm}`;
+    if (sameDay) return timePart;
+    const days = weekdayNames();
+    return `${timePart} (${days[d.getDay()]})`;
+}
+
+// Human "in 2h 14m" style countdown to the reset time.
+function untilHuman(iso: string | null): string {
+    if (!iso) return '--';
+    const diff = new Date(iso).getTime() - Date.now();
+    if (!Number.isFinite(diff) || diff <= 0) return planT('sb.resetsSoon');
+    const mins = Math.floor(diff / 60000);
+    const days = Math.floor(mins / 1440);
+    const hours = Math.floor((mins % 1440) / 60);
+    const m = mins % 60;
+    if (days >= 1) return planT('sb.daysLater', days, hours);
+    if (hours >= 1) return planT('sb.hoursLater', hours, m);
+    return planT('sb.minsLater', m);
+}
+
+function colorForPercent(percent: number | null): vscode.ThemeColor | undefined {
+    if (percent == null) return undefined;
+    const p = Math.round(percent);
+    if (p >= 90) return new vscode.ThemeColor('errorForeground');
+    if (p >= 70) return new vscode.ThemeColor('editorWarning.foreground');
+    return undefined;
+}
+
+// Suffix appended to the first session item, e.g. " - 27% (in 2h 43m)".
+// Only added when plan usage is OK; setup/error states are surfaced by the dedicated
+// warning item (updatePlanFallback) so the user always sees a clear prompt.
+function planTextSuffix(): string {
+    if (planStatus === 'ok' && lastUsage && lastUsage.sessionPercent != null) {
+        const p = Math.round(lastUsage.sessionPercent);
+        return ` - ${planT('sb.sessionLabel')} ${p}% (${untilHuman(lastUsage.sessionResetAt)})`;
+    }
+    return '';
+}
+
+// Markdown block describing plan usage; inserted into session tooltips. Only populated
+// when plan usage is OK — setup/error prompts live on the dedicated warning item.
+function planTooltipBlock(): string {
+    if (planStatus === 'ok' && lastUsage) {
+        const n = lastUsage;
+        let s = `📊 **${planT('sb.session')}**: ${n.sessionPercent ?? '?'}% — ` +
+            `${resetAtLabel(n.sessionResetAt)} (${untilHuman(n.sessionResetAt)})\n\n`;
+        s += `📅 **${planT('sb.weekly')}**: ${n.weeklyPercent ?? '?'}% — ${resetAtLabel(n.weeklyResetAt)}\n\n`;
+        if (n.sonnetPercent != null) s += `Sonnet: ${n.sonnetPercent}%　Opus: ${n.opusPercent ?? '—'}%\n\n`;
+        return s;
+    }
+    return '';
+}
+
+function ensurePlanFallback() {
+    if (!planFallbackItem) {
+        planFallbackItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 8);
+        planFallbackItem.command = 'claudeContextBar.openSettings';
+    }
+}
+
+// Dedicated plan-usage item. Two jobs:
+//  - OK + no session to merge into → show standalone "S xx% W xx%"
+//  - enabled but unconfigured / expired / error → ALWAYS show a coloured warning so the
+//    user knows credentials are missing (instead of silently showing nothing)
+function updatePlanFallback(noSessions: boolean) {
+    ensurePlanFallback();
+    const item = planFallbackItem!;
+
+    if (planStatus === 'ok') {
+        // When a session item exists, plan usage is merged into it — hide this one.
+        if (!noSessions || !lastUsage) {
+            item.hide();
+            return;
+        }
+        const sp = lastUsage.sessionPercent != null ? Math.round(lastUsage.sessionPercent) : null;
+        const wp = lastUsage.weeklyPercent != null ? Math.round(lastUsage.weeklyPercent) : null;
+        item.text = `$(pulse) claudeStateBar S ${sp ?? '--'}% W ${wp ?? '--'}%`;
+        item.color = colorForPercent(lastUsage.sessionPercent);
+        item.backgroundColor = undefined;
+        item.tooltip = new vscode.MarkdownString(planTooltipBlock() + `*Click to open settings*`);
+        item.show();
+        return;
+    }
+
+    // Warning states — always visible (with a coloured background) regardless of sessions.
+    item.color = undefined;
+    if (planStatus === 'unconfigured') {
+        item.text = `$(warning) claudeStateBar — ${planT('sb.unconfigured')}`;
+        item.tooltip = planT('sb.tooltip.needSettings');
+        item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    } else if (planStatus === 'auth_expired') {
+        item.text = `$(alert) claudeStateBar — ${planT('sb.cookieExpired')}`;
+        item.tooltip = planT('sb.tooltip.authExpired');
+        item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+    } else {
+        item.text = `$(warning) claudeStateBar — ${planT('sb.error')}`;
+        item.tooltip = planT('sb.error');
+        item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    }
+    item.show();
+}
+
+function restartPlanPolling() {
+    if (planRefreshInterval) {
+        clearInterval(planRefreshInterval);
+        planRefreshInterval = null;
+    }
+    // Only poll the network when credentials exist; otherwise the status bar just shows
+    // the setup warning (refreshPlanUsage handles that on its own).
+    if (!creds.getOrgId()) return;
+    const sec = creds.getRefreshIntervalSec();
+    planRefreshInterval = setInterval(refreshPlanUsage, sec * 1000);
+}
+
+async function refreshPlanUsage() {
+    const orgId = creds.getOrgId();
+    const sessionKey = await creds.getSessionKey();
+    if (!orgId || !sessionKey) {
+        planStatus = 'unconfigured';
+        lastUsage = null;
+        notifyUsage('unconfigured');
+        refreshAllSessions();
+        return;
+    }
+
+    log(`[plan] fetching usage (transport=${getTransport()})`);
+    try {
+        const result = await fetchUsage(sessionKey, orgId);
+        lastUsage = result.normalized;
+        planStatus = 'ok';
+        log(`[plan] ok: session=${result.normalized.sessionPercent}% weekly=${result.normalized.weeklyPercent}% via ${result.source}`);
+        notifyUsage('ok', result.source);
+        await detectSessionReset(result.normalized);
+    } catch (e) {
+        lastUsage = null;
+        if (e instanceof AuthExpiredError) {
+            planStatus = 'auth_expired';
+            log(`[plan] auth/cloudflare blocked (transport=${getTransport()}): ${(e as Error).message}`);
+            notifyUsage('auth_expired');
+        } else {
+            const msg = (e as Error)?.message ?? String(e);
+            planStatus = 'error';
+            log(`[plan] error: ${msg}`);
+            notifyUsage('error', msg);
+        }
+    }
+    refreshAllSessions();
+}
+
+// Detect a session reset: the previously-stored reset time has elapsed AND the new
+// reset time differs. Fires a Telegram notification when configured.
+async function detectSessionReset(n: NormalizedUsage) {
+    const prev = creds.getLastSessionResetAt();
+    const current = n.sessionResetAt;
+    if (prev && current && prev !== current) {
+        const prevTime = new Date(prev).getTime();
+        if (Number.isFinite(prevTime) && prevTime <= Date.now()) {
+            const token = await creds.getTelegramToken();
+            const chatId = await creds.getTelegramChatId();
+            if (token && chatId) {
+                const weekly = n.weeklyPercent != null ? String(n.weeklyPercent) : '?';
+                await telegram.sendMessage(token, chatId, planT('tg.resetMsg', weekly));
+            }
+        }
+    }
+    if (current) {
+        await creds.setLastSessionResetAt(current);
     }
 }

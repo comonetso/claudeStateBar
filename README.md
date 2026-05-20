@@ -1,6 +1,6 @@
-# Claude Context Bar
+# claudeStateBar
 
-**Real-time context window monitor for Claude Code sessions in VS Code**
+**Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your VS Code status bar**
 
 ## Features
 

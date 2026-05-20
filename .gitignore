@@ -16,3 +16,4 @@ INTERNAL-DEV-NOTES.md
 .DS_Store
 Thumbs.db
 .claude/
+.file_history/

@@ -1,0 +1,114 @@
+import * as vscode from 'vscode';
+import { Lang } from './i18n';
+
+// Secret keys (stored encrypted via context.secrets / OS keychain).
+const SECRET_SESSION_KEY = 'claudeState.sessionKey';
+const SECRET_TG_TOKEN = 'claudeState.telegramBotToken';
+const SECRET_TG_CHAT = 'claudeState.telegramChatId';
+
+// globalState key for session-reset detection.
+const STATE_LAST_RESET = 'claudeState.lastSessionResetAt';
+
+let ctx: vscode.ExtensionContext | null = null;
+
+export function initCredentials(context: vscode.ExtensionContext) {
+    ctx = context;
+}
+
+function cfg() {
+    return vscode.workspace.getConfiguration('claudeState');
+}
+
+// --- Non-sensitive settings (settings.json) ---
+
+export function getOrgId(): string {
+    return (cfg().get<string>('orgId', '') || '').trim();
+}
+
+export async function setOrgId(orgId: string): Promise<void> {
+    await cfg().update('orgId', orgId.trim(), vscode.ConfigurationTarget.Global);
+}
+
+export function getRefreshIntervalSec(): number {
+    const v = cfg().get<number>('refreshIntervalSec', 300);
+    if (typeof v === 'number' && v >= 10 && v <= 3600) return v;
+    return 300;
+}
+
+export async function setRefreshIntervalSec(sec: number): Promise<void> {
+    const n = Math.max(10, Math.min(3600, Math.round(sec)));
+    await cfg().update('refreshIntervalSec', n, vscode.ConfigurationTarget.Global);
+}
+
+export function getLanguage(): Lang {
+    const v = cfg().get<string>('language', 'en');
+    return v === 'ko' ? 'ko' : 'en';
+}
+
+export async function setLanguage(lang: Lang): Promise<void> {
+    await cfg().update('language', lang === 'ko' ? 'ko' : 'en', vscode.ConfigurationTarget.Global);
+}
+
+// --- Sensitive secrets (context.secrets) ---
+
+export async function getSessionKey(): Promise<string> {
+    if (!ctx) return '';
+    return (await ctx.secrets.get(SECRET_SESSION_KEY)) || '';
+}
+
+export async function setSessionKey(key: string): Promise<void> {
+    if (!ctx) return;
+    const trimmed = (key || '').trim();
+    if (trimmed) {
+        await ctx.secrets.store(SECRET_SESSION_KEY, trimmed);
+    } else {
+        await ctx.secrets.delete(SECRET_SESSION_KEY);
+    }
+}
+
+export async function hasSessionKey(): Promise<boolean> {
+    return (await getSessionKey()).length > 0;
+}
+
+export async function getTelegramToken(): Promise<string> {
+    if (!ctx) return '';
+    return (await ctx.secrets.get(SECRET_TG_TOKEN)) || '';
+}
+
+export async function setTelegramToken(token: string): Promise<void> {
+    if (!ctx) return;
+    const trimmed = (token || '').trim();
+    if (trimmed) {
+        await ctx.secrets.store(SECRET_TG_TOKEN, trimmed);
+    } else {
+        await ctx.secrets.delete(SECRET_TG_TOKEN);
+    }
+}
+
+export async function getTelegramChatId(): Promise<string> {
+    if (!ctx) return '';
+    return (await ctx.secrets.get(SECRET_TG_CHAT)) || '';
+}
+
+export async function setTelegramChatId(chatId: string): Promise<void> {
+    if (!ctx) return;
+    const trimmed = (chatId || '').trim();
+    if (trimmed) {
+        await ctx.secrets.store(SECRET_TG_CHAT, trimmed);
+    } else {
+        await ctx.secrets.delete(SECRET_TG_CHAT);
+    }
+}
+
+// --- Session-reset tracking (globalState) ---
+
+export function getLastSessionResetAt(): string | null {
+    if (!ctx) return null;
+    const v = ctx.globalState.get<string>(STATE_LAST_RESET);
+    return typeof v === 'string' && v ? v : null;
+}
+
+export async function setLastSessionResetAt(iso: string | null): Promise<void> {
+    if (!ctx) return;
+    await ctx.globalState.update(STATE_LAST_RESET, iso || undefined);
+}
