@@ -11,6 +11,7 @@
 .file_history/**
 .github/**
 .vscode/**
+docs/**
 src/**
 **/*.ts
 **/*.map

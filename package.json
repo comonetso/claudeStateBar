@@ -1,8 +1,8 @@
 {
     "name": "claude-context-bar",
-    "displayName": "Claude Context Bar",
-    "description": "Real-time context window usage monitor for Claude Code sessions. See token counts in your status bar with color-coded warnings.",
-    "version": "1.5.1",
+    "displayName": "claudeStateBar",
+    "description": "Claude Code context window usage + Claude.ai plan usage (5-hour session & weekly) in your status bar, with Telegram reset alerts.",
+    "version": "1.6.0",
     "publisher": "ezoosk",
     "author": {
         "name": "Ed Zisk",
@@ -45,23 +45,31 @@
         "commands": [
             {
                 "command": "claudeContextBar.showSessionMenu",
-                "title": "Claude Context Bar: Session Menu"
+                "title": "claudeStateBar: Session Menu"
             },
             {
                 "command": "claudeContextBar.hideSession",
-                "title": "Claude Context Bar: Hide Session"
+                "title": "claudeStateBar: Hide Session"
             },
             {
                 "command": "claudeContextBar.restoreAllHidden",
-                "title": "Claude Context Bar: Restore All Hidden Sessions"
+                "title": "claudeStateBar: Restore All Hidden Sessions"
             },
             {
                 "command": "claudeContextBar.restoreHiddenSession",
-                "title": "Claude Context Bar: Restore Hidden Session"
+                "title": "claudeStateBar: Restore Hidden Session"
             },
             {
                 "command": "claudeContextBar.showDiagnostics",
-                "title": "Claude Context Bar: Show Diagnostics"
+                "title": "claudeStateBar: Show Diagnostics"
+            },
+            {
+                "command": "claudeContextBar.openSettings",
+                "title": "claudeStateBar: Open Settings Panel"
+            },
+            {
+                "command": "claudeContextBar.refreshPlanUsage",
+                "title": "claudeStateBar: Refresh Plan Usage"
             }
         ],
         "menus": {
@@ -81,8 +89,36 @@
             ]
         },
         "configuration": {
-            "title": "Claude Context Bar",
+            "title": "claudeStateBar",
             "properties": {
+                "claudeState.language": {
+                    "type": "string",
+                    "enum": [
+                        "en",
+                        "ko"
+                    ],
+                    "enumDescriptions": [
+                        "English",
+                        "한국어"
+                    ],
+                    "default": "en",
+                    "order": 0,
+                    "description": "Language for the settings panel UI. / 설정 패널 UI 언어."
+                },
+                "claudeState.orgId": {
+                    "type": "string",
+                    "default": "",
+                    "order": 2,
+                    "description": "Claude.ai Organization ID (UUID). Found in claude.ai Network tab under /api/organizations/{UUID}/... Set this together with the Session Key via 'claudeStateBar: Open Settings Panel'. When empty, the status bar shows a setup warning."
+                },
+                "claudeState.refreshIntervalSec": {
+                    "type": "number",
+                    "default": 300,
+                    "minimum": 10,
+                    "maximum": 3600,
+                    "order": 3,
+                    "description": "Plan usage refresh interval in seconds (10–3600). Default: 300 (5 min). Session Key and Telegram Bot Token are stored encrypted via the settings panel, not here."
+                },
                 "claudeContextBar.autoColor": {
                     "type": "boolean",
                     "default": true,
@@ -116,13 +152,13 @@
                 "claudeContextBar.warningThreshold": {
                     "type": "number",
                     "default": 50,
-                    "order": 1,
+                    "order": 11,
                     "description": "Percentage at which to show warning color (yellow)"
                 },
                 "claudeContextBar.dangerThreshold": {
                     "type": "number",
                     "default": 75,
-                    "order": 2,
+                    "order": 12,
                     "description": "Percentage at which to show danger color (red)"
                 },
                 "claudeContextBar.refreshInterval": {
