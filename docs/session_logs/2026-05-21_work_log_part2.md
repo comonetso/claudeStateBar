@@ -166,3 +166,21 @@ A docs/session_logs/2026-05-21_work_log_part2.md [이 로그]
 - **중단 시점**: README/툴팁 마무리 + 새 GitHub repo로 push 단계
 - **미완성 상태**: 없음 (기능 완성, 문서 완성)
 - **다음 세션 시작 시 주의**: remote가 comonetso/claudeStateBar로 바뀜. PAT는 폐기됐을 것(재발급 필요). vault에 Cloudflare-IP-차단 / UI확장-원격fs 노하우 박제됨
+
+---
+
+## 12. 커밋 cdb12f5 이후 추가 작업
+
+### 12-1. GitHub 릴리즈 발행
+- `gh release create v1.7.0 … claudeStateBar-1.7.0.vsix` → 릴리즈 + vsix asset(78KB) 업로드 성공.
+- gh CLI는 `comonetso` 계정 keyring 인증 사용 → 채팅에 노출됐던 PAT와 무관.
+- URL: https://github.com/comonetso/claudeStateBar/releases/tag/v1.7.0
+- 주의: v1.7.0 태그 push로 `publish.yml` CI 트리거 가능 → `VSCE_PAT`/`OVSX_PAT` 시크릿 없으면 마켓 publish job 실패(릴리즈/vsix는 무관, 무시 가능).
+
+### 12-2. 함정: PowerShell `Get-ChildItem -Filter *.vsix`
+- 파일이 실제 존재(`Test-Path` = True)하는데도 `Get-ChildItem -Filter *.vsix`가 빈 결과를 반복 반환. 원인 미규명(provider 캐시/타이밍 의심). → vsix 존재 확인은 `Test-Path`로 교차검증, 패키징 직후 같은 셸에서 업로드까지 연속 실행 권장.
+
+### 12-3. PDF 작업 보류 (별도 트랙)
+- 사용자가 번호이동 양식 PDF(개인정보활용동의서 선택동의 해제 / 서비스신청서 개인사업자 체크 해제) 수정 요청.
+- 현재 워크스페이스가 claudeStateBar라 부적합 → `d:\…\번호이동` 폴더를 워크스페이스로 열고 새 세션 권고. 미착수.
+- 참고: 이전 양식 작업은 [[PyMuPDF Korean PDF Forms And Stamping]](vault). 체크가 폼 필드인지 이미지 스탬프인지 먼저 확인 필요(스탬프면 redaction).
