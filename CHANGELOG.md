@@ -2,6 +2,32 @@
 
 All notable changes to the Claude Context Bar extension will be documented in this file.
 
+## [1.7.0] - 2026-05-21
+
+### Added
+- **Remote-SSH support — plan usage AND token counts in one remote window.** The extension now runs as a UI (local) extension (`extensionKind: ["ui"]`). Plan usage is fetched on the local machine via Electron (which passes Cloudflare), while session token counts are read from the **remote** host's `~/.claude/projects` through `vscode.workspace.fs` (VS Code routes the reads over SSH). Previously, on a remote host plan usage hit a Cloudflare block and token counting scanned the wrong (local) home.
+
+### Changed
+- All `~/.claude` access moved from synchronous Node `fs` to async `vscode.workspace.fs`, so it works on both local and Remote-SSH hosts. The remote home is auto-detected (`/root`, else `/home/*` containing `.claude/projects`). File watching now uses `vscode.workspace.createFileSystemWatcher` (remote-capable) instead of `fs.watch`.
+- `claudeStateBar: Show Diagnostics` logs a remote-fs probe (workspace URI scheme/authority + whether `~/.claude/projects` is reachable), useful for diagnosing remote setups.
+
+## [1.6.1] - 2026-05-21
+
+### Fixed
+- **Remote-SSH "Session Key expired" false alarm**: On a remote/headless extension host, the plan-usage request falls back to plain Node `https`, which Cloudflare blocks with an HTTP 403 bot challenge (or the connection fails outright on some networks). The code used to misreport this as an expired Session Key. A Cloudflare challenge is now distinguished from a genuine auth failure.
+
+### Added
+- New status-bar state **"Plan usage unavailable here"** (warning background) with a tooltip clarifying the host can't reach claude.ai (Cloudflare block / connection failure) and that the Session Key is fine. Plan usage works on desktop VS Code; cloud/datacenter remote hosts (AWS EC2, etc.) can't fetch it regardless of TLS fingerprint — confirmed empirically, so the previously-attempted bundled `curl-impersonate` workaround was dropped.
+
+## [1.6.0] - 2026-05-20
+
+### Added
+- **Claude.ai plan usage in the status bar**: 5-hour session and weekly utilization, fetched from claude.ai (no SDK), merged into the first session item with a tooltip breakdown.
+- **Webview settings panel** with runtime EN/KO language toggle; Session Key / Org ID / Bot Token at the top. Sensitive values stored encrypted via SecretStorage.
+- **Telegram session-reset notifications**.
+- **Cloudflare bypass via Electron `net`** on the desktop (Chromium network stack passes the TLS-fingerprint challenge that blocks plain Node `https`).
+- Display name unified to **claudeStateBar** (identifier and `claudeContextBar.*` setting keys kept for compatibility).
+
 ## [1.5.1] - 2026-05-03
 
 ### Fixed
