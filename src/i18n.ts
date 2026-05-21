@@ -73,9 +73,11 @@ const EN: Dict = {
     'sb.weekdays': ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
     'sb.unconfigured': 'Setup needed',
     'sb.cookieExpired': 'Session Key expired',
+    'sb.blocked': 'Plan usage unavailable here',
     'sb.error': 'Error',
     'sb.tooltip.needSettings': 'Click → Open Settings (enter Session Key / Org ID)',
     'sb.tooltip.authExpired': '⚠ Session Key expired / auth failed. Open Settings and re-enter it.',
+    'sb.tooltip.blocked': '⚠ This host can\'t reach claude.ai\'s usage API (the Session Key is fine): Cloudflare challenges cloud/datacenter IPs (e.g. AWS) and some hosts can\'t connect at all. Plan usage works on desktop VS Code — view it there.',
 
     // claudeContextBar fields (label + short hint)
     'cb.autoColor.label': 'Auto color (rainbow per project)',
@@ -156,9 +158,11 @@ const KO: Dict = {
     'sb.weekdays': ['일', '월', '화', '수', '목', '금', '토'],
     'sb.unconfigured': '설정 필요',
     'sb.cookieExpired': 'Session Key 만료',
+    'sb.blocked': '이 환경에선 플랜 사용량 불가',
     'sb.error': '오류',
     'sb.tooltip.needSettings': '클릭 → 설정 열기 (Session Key / Org ID 입력)',
     'sb.tooltip.authExpired': '⚠ Session Key 만료/인증 실패. 설정을 열어 다시 입력하세요.',
+    'sb.tooltip.blocked': '⚠ 이 호스트에선 claude.ai 사용량 API에 접근할 수 없습니다 (Session Key는 정상). Cloudflare가 클라우드·데이터센터 IP(예: AWS)를 차단하거나, 일부 호스트는 아예 연결이 안 됩니다. 플랜 사용량은 데스크톱 VS Code에서 확인하세요.',
 
     'cb.autoColor.label': '자동 색상 (프로젝트별 무지개)',
     'cb.baseColor.label': '기본 색상 (자동 색상 끌 때)',

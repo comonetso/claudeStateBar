@@ -1,9 +1,8 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as creds from './credentials';
-import { fetchUsage, AuthExpiredError, NormalizedUsage, getTransport } from './planUsage';
+import { fetchUsage, AuthExpiredError, CloudflareBlockedError, NormalizedUsage, getTransport } from './planUsage';
 import * as telegram from './telegram';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
 import { getDict, Lang } from './i18n';
@@ -37,7 +36,6 @@ interface StatusBarEntry {
 const statusBarItems: Map<string, StatusBarEntry> = new Map();
 // Track manually hidden sessions: sessionFile -> timestamp when hidden
 const hiddenSessions: Map<string, number> = new Map();
-let fileWatcher: fs.FSWatcher | null = null;
 let refreshInterval: NodeJS.Timeout | null = null;
 let outputChannel: vscode.OutputChannel | null = null;
 
@@ -48,7 +46,7 @@ let planFallbackItem: vscode.StatusBarItem | null = null;
 let planRefreshInterval: NodeJS.Timeout | null = null;
 let planTickInterval: NodeJS.Timeout | null = null;
 let lastUsage: NormalizedUsage | null = null;
-type PlanStatus = 'unconfigured' | 'ok' | 'auth_expired' | 'error';
+type PlanStatus = 'unconfigured' | 'ok' | 'auth_expired' | 'blocked' | 'error';
 let planStatus: PlanStatus = 'unconfigured';
 
 function log(msg: string) {
@@ -93,17 +91,22 @@ export function activate(context: vscode.ExtensionContext) {
         } else {
             log('No workspace folders open');
         }
-        const claudeDir = getClaudeProjectsDir();
-        log(`Claude projects dir: ${claudeDir}`);
-        if (fs.existsSync(claudeDir)) {
-            const dirs = fs.readdirSync(claudeDir);
-            log(`Found ${dirs.length} project dirs:`);
-            for (const d of dirs) {
-                log(`  ${d}`);
+        const projectsUri = await getClaudeProjectsUri();
+        log(`Claude projects dir: ${projectsUri?.toString()}`);
+        if (projectsUri) {
+            try {
+                const dirs = await vscode.workspace.fs.readDirectory(projectsUri);
+                log(`Found ${dirs.length} project dirs:`);
+                for (const [d] of dirs) {
+                    log(`  ${d}`);
+                }
+            } catch {
+                log('Claude projects dir does not exist!');
             }
-        } else {
-            log('Claude projects dir does not exist!');
         }
+
+        await logRemoteFsProbe();
+
         log('=== END DIAGNOSTICS ===');
         await refreshAllSessions();
     });
@@ -220,25 +223,30 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(configWatcher);
 
     // Re-filter when workspace folders change (e.g., user opens/closes a folder)
-    const wsWatcher = vscode.workspace.onDidChangeWorkspaceFolders(() => refreshAllSessions());
+    const wsWatcher = vscode.workspace.onDidChangeWorkspaceFolders(() => { resetClaudeBaseUri(); refreshAllSessions(); });
     context.subscriptions.push(wsWatcher);
 
     // Initial scan
     refreshAllSessions();
 
-    // Set up file watcher
-    const claudeProjectsDir = getClaudeProjectsDir();
-    if (fs.existsSync(claudeProjectsDir)) {
+    // Set up file watcher. createFileSystemWatcher works for both local (file://) and
+    // Remote-SSH (vscode-remote://) hosts — VS Code routes the watch to the right host.
+    (async () => {
+        const projectsUri = await getClaudeProjectsUri();
+        if (!projectsUri) return;
         try {
-            fileWatcher = fs.watch(claudeProjectsDir, { recursive: true }, (_event, filename) => {
-                if (filename?.endsWith('.jsonl')) {
-                    refreshAllSessions();
-                }
-            });
+            const watcher = vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(projectsUri, '**/*.jsonl')
+            );
+            const onChange = () => { refreshAllSessions(); };
+            watcher.onDidChange(onChange);
+            watcher.onDidCreate(onChange);
+            watcher.onDidDelete(onChange);
+            context.subscriptions.push(watcher);
         } catch (e) {
             console.error('Failed to set up file watcher:', e);
         }
-    }
+    })();
 
     // Set up periodic refresh
     const config = vscode.workspace.getConfiguration('claudeContextBar');
@@ -254,9 +262,6 @@ export function activate(context: vscode.ExtensionContext) {
     // Clean up on deactivation
     context.subscriptions.push({
         dispose: () => {
-            if (fileWatcher) {
-                fileWatcher.close();
-            }
             if (refreshInterval) {
                 clearInterval(refreshInterval);
             }
@@ -273,10 +278,37 @@ export function activate(context: vscode.ExtensionContext) {
     });
 }
 
-export function deactivate() {
-    if (fileWatcher) {
-        fileWatcher.close();
+// PoC probe: when this extension runs as a UI (local) extension over Remote-SSH, can it
+// read the REMOTE ~/.claude/projects via vscode.workspace.fs (which VS Code routes to the
+// remote host)? If yes, plan-usage (local Electron) + token counting (remote fs) can both
+// live in one local instance. Harmless when not remote (logs a single line).
+async function logRemoteFsProbe(): Promise<void> {
+    log('--- REMOTE FS PROBE (PoC) ---');
+    log(`process.platform=${process.platform}, os.homedir()=${os.homedir()}`);
+    const folder0 = vscode.workspace.workspaceFolders?.[0];
+    if (folder0) {
+        const u = folder0.uri;
+        log(`workspace uri: scheme=${u.scheme} authority=${u.authority || '(none)'} path=${u.path}`);
+        if (u.scheme === 'vscode-remote' && u.authority) {
+            const candidates = ['/root/.claude/projects', '/home'];
+            for (const p of candidates) {
+                const probe = u.with({ path: p });
+                try {
+                    const entries = await vscode.workspace.fs.readDirectory(probe);
+                    log(`  ✅ read ${u.scheme}://${u.authority}${p} → ${entries.length} entries`);
+                    for (const [name] of entries.slice(0, 8)) log(`     ${name}`);
+                } catch (e: any) {
+                    log(`  ❌ read ${p} failed: ${e?.message ?? e}`);
+                }
+            }
+        } else {
+            log('  (workspace uri is not vscode-remote — extension is NOT running locally over Remote-SSH)');
+        }
     }
+    log('--- END REMOTE FS PROBE ---');
+}
+
+export function deactivate() {
     if (refreshInterval) {
         clearInterval(refreshInterval);
     }
@@ -291,9 +323,53 @@ export function deactivate() {
     statusBarItems.clear();
 }
 
-function getClaudeProjectsDir(): string {
-    const homeDir = os.homedir();
-    return path.join(homeDir, '.claude', 'projects');
+// The base ~/.claude URI for the host this extension is reading from. As a UI (local)
+// extension over Remote-SSH, vscode.workspace.fs routes reads to the remote host, so we
+// build a vscode-remote URI pointing at the remote home; for a local window we use a
+// file:// URI under os.homedir(). Cached and reset when the workspace folders change.
+let claudeBaseUri: vscode.Uri | null | undefined; // undefined = unresolved
+
+function resetClaudeBaseUri(): void {
+    claudeBaseUri = undefined;
+}
+
+async function getClaudeBaseUri(): Promise<vscode.Uri | null> {
+    if (claudeBaseUri !== undefined) return claudeBaseUri;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (folder && folder.uri.scheme === 'vscode-remote' && folder.uri.authority) {
+        // Remote host: find the home directory that actually holds .claude/projects.
+        const homes = ['/root'];
+        try {
+            const entries = await vscode.workspace.fs.readDirectory(folder.uri.with({ path: '/home' }));
+            for (const [name, ftype] of entries) {
+                if (ftype === vscode.FileType.Directory) homes.push(`/home/${name}`);
+            }
+        } catch { /* /home may not exist */ }
+        for (const home of homes) {
+            try {
+                await vscode.workspace.fs.stat(folder.uri.with({ path: `${home}/.claude/projects` }));
+                claudeBaseUri = folder.uri.with({ path: `${home}/.claude` });
+                log(`[fs] remote ~/.claude → ${home}/.claude (authority=${folder.uri.authority})`);
+                return claudeBaseUri;
+            } catch { /* try next candidate */ }
+        }
+        log('[fs] remote ~/.claude/projects not found under /root or /home/* — defaulting to /root/.claude');
+        claudeBaseUri = folder.uri.with({ path: '/root/.claude' });
+        return claudeBaseUri;
+    }
+    // Local window (file scheme or no folder open).
+    claudeBaseUri = vscode.Uri.file(path.join(os.homedir(), '.claude'));
+    return claudeBaseUri;
+}
+
+async function getClaudeProjectsUri(): Promise<vscode.Uri | null> {
+    const base = await getClaudeBaseUri();
+    return base ? vscode.Uri.joinPath(base, 'projects') : null;
+}
+
+async function readTextFile(uri: vscode.Uri): Promise<string> {
+    const data = await vscode.workspace.fs.readFile(uri);
+    return Buffer.from(data).toString('utf-8');
 }
 
 // Encode an absolute workspace path into Claude's projects/ directory name format.
@@ -484,18 +560,17 @@ function getShortName(projectName: string, customNames: Record<string, string>):
     return shortBase + sessionSuffix;
 }
 
-async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
-    return new Promise((resolve) => {
-        try {
-            const stats = fs.statSync(jsonlPath);
-            if (stats.size === 0) {
-                resolve({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, wasCleared: false });
-                return;
-            }
+async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
+    const empty: TokenUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, wasCleared: false };
+    try {
+        const stat = await vscode.workspace.fs.stat(jsonlUri);
+        if (stat.size === 0) {
+            return empty;
+        }
 
-            // Read the file
-            const content = fs.readFileSync(jsonlPath, 'utf-8');
-            const lines = content.trim().split('\n');
+        // Read the file (routed to the remote host by VS Code when running over Remote-SSH)
+        const content = await readTextFile(jsonlUri);
+        const lines = content.trim().split('\n');
 
             // Scan backwards to find the last /clear command AND check for user activity after it
             let lastClearIndex = -1;
@@ -596,7 +671,7 @@ async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
                 }
             }
 
-            resolve({
+            return {
                 inputTokens: finalUsage.inputTokens,
                 cacheReadTokens: finalUsage.cacheReadTokens,
                 cacheCreationTokens: finalUsage.cacheCreationTokens,
@@ -607,20 +682,21 @@ async function getLatestTokenCount(jsonlPath: string): Promise<TokenUsage> {
                 sessionCreated,
                 lastRealTimestamp,
                 wasCleared
-            });
-
-        } catch (e) {
-            resolve({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, wasCleared: false });
-        }
-    });
+            };
+    } catch (e) {
+        return empty;
+    }
 }
 
 async function findActiveSessions(): Promise<SessionInfo[]> {
     const sessions: SessionInfo[] = [];
-    const claudeDir = getClaudeProjectsDir();
+    const projectsUri = await getClaudeProjectsUri();
+    if (!projectsUri) return sessions;
 
-    if (!fs.existsSync(claudeDir)) {
-        return sessions;
+    try {
+        await vscode.workspace.fs.stat(projectsUri);
+    } catch {
+        return sessions; // ~/.claude/projects doesn't exist on this host
     }
 
     const config = vscode.workspace.getConfiguration('claudeContextBar');
@@ -639,7 +715,7 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
 
     // Read global effort level once per refresh — Claude Code stores this in ~/.claude/settings.json
     // and applies the same value to every interactive session on this machine.
-    const globalEffortLevel = getGlobalEffortLevel();
+    const globalEffortLevel = await getGlobalEffortLevel();
 
     // Filter to only workspace folders if scope='workspace'
     let workspaceDirs: Set<string> | null = null;
@@ -660,13 +736,11 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
     }
 
     try {
-        const projectDirs = fs.readdirSync(claudeDir);
+        const projectEntries = await vscode.workspace.fs.readDirectory(projectsUri);
 
-        for (const projectDir of projectDirs) {
-            const projectPath = path.join(claudeDir, projectDir);
-            const stat = fs.statSync(projectPath);
-
-            if (!stat.isDirectory()) continue;
+        for (const [projectDir, ftype] of projectEntries) {
+            if (ftype !== vscode.FileType.Directory) continue;
+            const projectUri = vscode.Uri.joinPath(projectsUri, projectDir);
 
             // Skip Claude Memory, plugin directories, and Claude's own .claude config dir
             if (projectDir.includes('claude-plugins') || projectDir.includes('claude-mem')) continue;
@@ -686,16 +760,18 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
             }
 
             // Find JSONL files modified within cutoff time
-            const allJsonl = fs.readdirSync(projectPath)
-                .filter(f => f.endsWith('.jsonl'))
-                .filter(f => !f.startsWith('agent-'));
+            const projEntries = await vscode.workspace.fs.readDirectory(projectUri);
+            const allJsonl = projEntries
+                .filter(([n, t]) => t === vscode.FileType.File && n.endsWith('.jsonl') && !n.startsWith('agent-'))
+                .map(([n]) => n);
             log(`  JSONL files in ${projectDir}: ${allJsonl.length}`);
-            const files = allJsonl
-                .map(f => ({
-                    name: f,
-                    path: path.join(projectPath, f),
-                    mtime: fs.statSync(path.join(projectPath, f)).mtime
-                }))
+            const fileStats = await Promise.all(allJsonl.map(async (n) => {
+                const uri = vscode.Uri.joinPath(projectUri, n);
+                let mtime = new Date(0);
+                try { mtime = new Date((await vscode.workspace.fs.stat(uri)).mtime); } catch { /* skip unreadable */ }
+                return { name: n, uri, mtime };
+            }));
+            const files = fileStats
                 .filter(f => {
                     const ok = f.mtime.getTime() > hideThreshold;
                     if (!ok) log(`  Skip (too old, ${Math.round((Date.now() - f.mtime.getTime()) / 60000)}m ago): ${f.name}`);
@@ -707,7 +783,7 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
 
             // Get token count from EACH active session file (1 per Claude Code tab)
             for (const file of files) {
-                const usage = await getLatestTokenCount(file.path);
+                const usage = await getLatestTokenCount(file.uri);
                 log(`  ${file.name}: tokens=${usage.totalTokens}, wasCleared=${usage.wasCleared}`);
 
                 if (usage.totalTokens > 0) {
@@ -727,7 +803,7 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                         projectName: displayName,
                         projectPath: fullPath,
                         sessionId,
-                        sessionFile: file.path,
+                        sessionFile: file.uri.toString(),
                         inputTokens: usage.inputTokens,
                         cacheReadTokens: usage.cacheReadTokens,
                         cacheCreationTokens: usage.cacheCreationTokens,
@@ -874,10 +950,11 @@ function getShortModelName(model: string, compact: boolean): string {
 // Read global effort level from ~/.claude/settings.json. Returns lowercase raw value
 // like "low" | "medium" | "high" | "xhigh" | "max", or '' on failure.
 // Note: Claude Code stores this globally; all interactive sessions share the same effort.
-function getGlobalEffortLevel(): string {
+async function getGlobalEffortLevel(): Promise<string> {
     try {
-        const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-        const raw = fs.readFileSync(settingsPath, 'utf-8');
+        const base = await getClaudeBaseUri();
+        if (!base) return '';
+        const raw = await readTextFile(vscode.Uri.joinPath(base, 'settings.json'));
         const parsed = JSON.parse(raw);
         const v = parsed?.effortLevel;
         return typeof v === 'string' ? v.toLowerCase() : '';
@@ -1044,10 +1121,16 @@ async function refreshAllSessions() {
         // Keep speed only when it's non-standard (i.e., /fast mode active) — otherwise hide noise
         const speedLine = (session.speed && session.speed !== 'standard') ? `⚡ Speed: \`${session.speed}\`\n\n` : '';
         const idleLine = session.isIdle ? `😴 **Idle** — ${formatIdleDuration(session.lastUpdated)}\n\n` : '';
-        entry.item.tooltip = new vscode.MarkdownString(
+        const planBlock = planTooltipBlock();
+        const stateBody = planBlock || (planLang() === 'ko'
+            ? '_이 호스트에선 플랜 사용량을 가져올 수 없습니다_\n\n'
+            : '_Plan usage unavailable on this host_\n\n');
+        const md = new vscode.MarkdownString(
             `**${session.projectName}** (${session.sessionId})\n\n` +
             idleLine +
-            planTooltipBlock() +
+            sectionHeader('claudeState', '#4FC3F7') +
+            stateBody +
+            sectionHeader('claudeContext', '#AED581') +
             `🤖 Model: \`${session.model || 'Unknown'}\`\n\n` +
             effortLine +
             speedLine +
@@ -1059,6 +1142,8 @@ async function refreshAllSessions() {
             `🕐 Last updated: ${session.lastUpdated.toLocaleTimeString()}\n\n` +
             `*Click for menu (hide / restore / settings)*`
         );
+        md.supportHtml = true;
+        entry.item.tooltip = md;
 
         // Click opens session menu (hide this / restore hidden / settings)
         entry.item.command = {
@@ -1162,6 +1247,12 @@ function planTextSuffix(): string {
     return '';
 }
 
+// A coloured section divider for the merged tooltip — visually separates the claudeState
+// (plan usage) block from the claudeContext (token) block. Rendered via supportHtml.
+function sectionHeader(label: string, color: string): string {
+    return `<span style="color:${color};">━━━━━━━━  ${label}  ━━━━━━━━</span>\n\n`;
+}
+
 // Markdown block describing plan usage; inserted into session tooltips. Only populated
 // when plan usage is OK — setup/error prompts live on the dedicated warning item.
 function planTooltipBlock(): string {
@@ -1170,7 +1261,12 @@ function planTooltipBlock(): string {
         let s = `📊 **${planT('sb.session')}**: ${n.sessionPercent ?? '?'}% — ` +
             `${resetAtLabel(n.sessionResetAt)} (${untilHuman(n.sessionResetAt)})\n\n`;
         s += `📅 **${planT('sb.weekly')}**: ${n.weeklyPercent ?? '?'}% — ${resetAtLabel(n.weeklyResetAt)}\n\n`;
-        if (n.sonnetPercent != null) s += `Sonnet: ${n.sonnetPercent}%　Opus: ${n.opusPercent ?? '—'}%\n\n`;
+        // Per-model weekly usage. Only show a model when claude.ai actually returns it
+        // (Opus is often null → omit it rather than printing "—%").
+        const modelParts: string[] = [];
+        if (n.sonnetPercent != null) modelParts.push(`Sonnet: ${n.sonnetPercent}%`);
+        if (n.opusPercent != null) modelParts.push(`Opus: ${n.opusPercent}%`);
+        if (modelParts.length) s += `🧩 ${modelParts.join('　')}\n\n`;
         return s;
     }
     return '';
@@ -1217,6 +1313,10 @@ function updatePlanFallback(noSessions: boolean) {
         item.text = `$(alert) claudeStateBar — ${planT('sb.cookieExpired')}`;
         item.tooltip = planT('sb.tooltip.authExpired');
         item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+    } else if (planStatus === 'blocked') {
+        item.text = `$(cloud) claudeStateBar — ${planT('sb.blocked')}`;
+        item.tooltip = new vscode.MarkdownString(planT('sb.tooltip.blocked'));
+        item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else {
         item.text = `$(warning) claudeStateBar — ${planT('sb.error')}`;
         item.tooltip = planT('sb.error');
@@ -1260,8 +1360,13 @@ async function refreshPlanUsage() {
         lastUsage = null;
         if (e instanceof AuthExpiredError) {
             planStatus = 'auth_expired';
-            log(`[plan] auth/cloudflare blocked (transport=${getTransport()}): ${(e as Error).message}`);
+            log(`[plan] auth expired (transport=${getTransport()}): ${(e as Error).message}`);
             notifyUsage('auth_expired');
+        } else if (e instanceof CloudflareBlockedError) {
+            // NOT an expired key — this host's TLS fingerprint is blocked by Cloudflare.
+            planStatus = 'blocked';
+            log(`[plan] cloudflare blocked (transport=${getTransport()}): ${(e as Error).message} — Session Key is fine; this host cannot reach claude.ai directly`);
+            notifyUsage('error', planT('sb.tooltip.blocked'));
         } else {
             const msg = (e as Error)?.message ?? String(e);
             planStatus = 'error';

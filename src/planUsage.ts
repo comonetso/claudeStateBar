@@ -29,6 +29,16 @@ export class AuthExpiredError extends Error {
     }
 }
 
+// Cloudflare blocked the request (bot challenge) — this is NOT an expired Session Key.
+// It happens when the request originates from a network stack with a non-browser TLS
+// fingerprint (plain Node `https`), typically on a remote/headless extension host.
+export class CloudflareBlockedError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'CloudflareBlockedError';
+    }
+}
+
 interface RawResponse {
     status: number;
     json: any | null;
@@ -60,6 +70,14 @@ function getElectronNet(): any | null {
     return electronNet;
 }
 
+// Distinguish a Cloudflare bot challenge from a genuine API auth rejection. A challenge
+// returns an HTML "Just a moment..." interstitial (or cf-mitigated/challenge-platform
+// markers); a real expired Session Key returns a JSON/empty 401/403 from the origin.
+function isCloudflareChallenge(status: number, body: string): boolean {
+    if (status !== 403 && status !== 503 && status !== 429) return false;
+    return /just a moment|challenge-platform|cf-chl|cdn-cgi\/challenge|_cf_chl|cf-mitigated/i.test(body);
+}
+
 function classify(status: number, body: string): RawResponse {
     if (status >= 200 && status < 300) {
         try {
@@ -67,6 +85,9 @@ function classify(status: number, body: string): RawResponse {
         } catch {
             return { status, json: null, raw: body };
         }
+    }
+    if (isCloudflareChallenge(status, body)) {
+        throw new CloudflareBlockedError(`Cloudflare challenge (HTTP ${status})`);
     }
     if (status === 401 || status === 403) {
         throw new AuthExpiredError(`Auth failed (HTTP ${status})`);
@@ -134,7 +155,8 @@ function request(url: string, sessionCookie: string): Promise<RawResponse> {
     return net ? requestViaElectron(net, url, sessionCookie) : requestViaHttps(url, sessionCookie);
 }
 
-// Which network transport is in use — 'electron' passes Cloudflare, 'https' likely gets a 403.
+// Which network transport is in use — 'electron' (desktop) passes Cloudflare; 'https'
+// (remote/headless host) gets a 403 challenge or, on some networks, a failed connection.
 export function getTransport(): 'electron' | 'https' {
     return getElectronNet() ? 'electron' : 'https';
 }
@@ -184,7 +206,7 @@ export async function fetchUsage(sessionCookie: string, orgId: string): Promise<
                 return { source: url, normalized: normalizeUsage(res.json) };
             }
         } catch (err: any) {
-            if (err instanceof AuthExpiredError) throw err;
+            if (err instanceof AuthExpiredError || err instanceof CloudflareBlockedError) throw err;
             errors.push(`${url} → ${err?.message ?? err}`);
         }
     }
