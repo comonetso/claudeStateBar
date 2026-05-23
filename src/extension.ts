@@ -26,6 +26,7 @@ interface SessionInfo {
     sessionCreated: Date | null;
     wasCleared: boolean;
     isIdle: boolean;
+    isFallback?: boolean;
 }
 
 interface StatusBarEntry {
@@ -690,6 +691,7 @@ async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
 
 async function findActiveSessions(): Promise<SessionInfo[]> {
     const sessions: SessionInfo[] = [];
+    let fallbackCandidate: { uri: vscode.Uri, mtime: Date, projectDir: string } | null = null;
     const projectsUri = await getClaudeProjectsUri();
     if (!projectsUri) return sessions;
 
@@ -771,6 +773,14 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                 try { mtime = new Date((await vscode.workspace.fs.stat(uri)).mtime); } catch { /* skip unreadable */ }
                 return { name: n, uri, mtime };
             }));
+            // Track the newest file across all projects regardless of hideThreshold (fallback use)
+            if (fileStats.length > 0) {
+                const newest = fileStats.reduce((a, b) => a.mtime.getTime() > b.mtime.getTime() ? a : b);
+                if (!fallbackCandidate || newest.mtime.getTime() > fallbackCandidate.mtime.getTime()) {
+                    fallbackCandidate = { uri: newest.uri, mtime: newest.mtime, projectDir };
+                }
+            }
+
             const files = fileStats
                 .filter(f => {
                     const ok = f.mtime.getTime() > hideThreshold;
@@ -918,6 +928,42 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
         }
         return true; // Not hidden
     });
+
+    // No active sessions — show the most recently seen session dimmed (hideAfter exceeded)
+    if (visibleSessions.length === 0 && fallbackCandidate) {
+        const usage = await getLatestTokenCount(fallbackCandidate.uri);
+        if (usage.totalTokens > 0) {
+            const { name, fullPath } = decodeProjectPath(fallbackCandidate.projectDir);
+            let displayName = name;
+            if (scope === 'workspace' && workspaceFolders) {
+                const matchedFolder = workspaceFolders.find(f => projectDirMatchesFolder(fallbackCandidate!.projectDir, f));
+                if (matchedFolder) displayName = path.basename(matchedFolder.uri.fsPath);
+            }
+            const sessionId = fallbackCandidate.uri.path.split('/').pop()?.replace('.jsonl', '').substring(0, 8) || '';
+            const sessionContextLimit = getContextLimitForModel(usage.model, contextLimitDefault, contextLimitOpus);
+            visibleSessions.push({
+                projectName: displayName,
+                projectPath: fullPath,
+                sessionId,
+                sessionFile: fallbackCandidate.uri.toString(),
+                inputTokens: usage.inputTokens,
+                cacheReadTokens: usage.cacheReadTokens,
+                cacheCreationTokens: usage.cacheCreationTokens,
+                totalTokens: usage.totalTokens,
+                percentage: Math.round((usage.totalTokens / sessionContextLimit) * 100),
+                lastUpdated: usage.lastRealTimestamp || fallbackCandidate.mtime,
+                model: usage.model,
+                speed: usage.speed,
+                effortLevel: globalEffortLevel,
+                contextLimit: sessionContextLimit,
+                firstMessage: usage.firstMessage,
+                sessionCreated: usage.sessionCreated,
+                wasCleared: usage.wasCleared,
+                isIdle: true,
+                isFallback: true
+            });
+        }
+    }
 
     return visibleSessions.slice(0, 5);
 }
@@ -1097,7 +1143,8 @@ async function refreshAllSessions() {
         const idleSuffix = session.isIdle ? ` · ${formatIdleDuration(session.lastUpdated)}` : '';
         // Merge plan usage (claudeState) into the first (most recent) session item only,
         // so it isn't duplicated across multiple sessions.
-        const planAdd = i === 0 ? planTextSuffix() : '';
+        // Fallback sessions are dim (no active Claude) — claudeState shown separately via planFallbackItem
+        const planAdd = i === 0 && !session.isFallback ? planTextSuffix(compactMode) : '';
         entry.item.text = `${displayName}${infoPart} (${session.percentage}%)${planAdd}${idleSuffix}`;
 
         // We never use backgroundColor — too visually loud. Threshold warnings are shown via foreground color instead.
@@ -1163,8 +1210,10 @@ async function refreshAllSessions() {
         }
     }
 
-    // claudeState fallback: when no context session is shown, display plan usage on its own
-    updatePlanFallback(sessions.length === 0);
+    // claudeState fallback: show standalone plan item when no real session exists.
+    // Fallback (dim) context sessions don't count — claudeState must stay bright separately.
+    const hasRealSession = sessions.some(s => !s.isFallback);
+    updatePlanFallback(!hasRealSession);
 }
 
 // ============================================================================
@@ -1236,12 +1285,30 @@ function colorForPercent(percent: number | null): vscode.ThemeColor | undefined 
     return undefined;
 }
 
+// Compact "4h 24m" countdown — language-neutral, no "후/later" suffix.
+function untilHumanCompact(iso: string | null): string {
+    if (!iso) return '--';
+    const diff = new Date(iso).getTime() - Date.now();
+    if (!Number.isFinite(diff) || diff <= 0) return 'soon';
+    const mins = Math.floor(diff / 60000);
+    const days = Math.floor(mins / 1440);
+    const hours = Math.floor((mins % 1440) / 60);
+    const m = mins % 60;
+    if (days >= 1) return `${days}d ${hours}h`;
+    if (hours >= 1) return `${hours}h ${m}m`;
+    return `${m}m`;
+}
+
 // Suffix appended to the first session item, e.g. " - 27% (in 2h 43m)".
+// Compact mode drops the label and uses a short time format: " · 27% (4h 24m)".
 // Only added when plan usage is OK; setup/error states are surfaced by the dedicated
 // warning item (updatePlanFallback) so the user always sees a clear prompt.
-function planTextSuffix(): string {
+function planTextSuffix(compact: boolean): string {
     if (planStatus === 'ok' && lastUsage && lastUsage.sessionPercent != null) {
         const p = Math.round(lastUsage.sessionPercent);
+        if (compact) {
+            return ` · ${p}% (${untilHumanCompact(lastUsage.sessionResetAt)})`;
+        }
         return ` - ${planT('sb.sessionLabel')} ${p}% (${untilHuman(lastUsage.sessionResetAt)})`;
     }
     return '';
@@ -1260,13 +1327,12 @@ function planTooltipBlock(): string {
         const n = lastUsage;
         let s = `📊 **${planT('sb.session')}**: ${n.sessionPercent ?? '?'}% — ` +
             `${resetAtLabel(n.sessionResetAt)} (${untilHuman(n.sessionResetAt)})\n\n`;
-        s += `📅 **${planT('sb.weekly')}**: ${n.weeklyPercent ?? '?'}% — ${resetAtLabel(n.weeklyResetAt)}\n\n`;
+        const weeklyTime = `${resetAtLabel(n.weeklyResetAt)} (${untilHuman(n.weeklyResetAt)})`;
+        s += `📅 **${planT('sb.weekly')} Total**: ${n.weeklyPercent ?? '?'}% — ${weeklyTime}\n\n`;
         // Per-model weekly usage. Only show a model when claude.ai actually returns it
         // (Opus is often null → omit it rather than printing "—%").
-        const modelParts: string[] = [];
-        if (n.sonnetPercent != null) modelParts.push(`Sonnet: ${n.sonnetPercent}%`);
-        if (n.opusPercent != null) modelParts.push(`Opus: ${n.opusPercent}%`);
-        if (modelParts.length) s += `🧩 ${modelParts.join('　')}\n\n`;
+        if (n.sonnetPercent != null) s += `🧩 **${planT('sb.weekly')} Sonnet**: ${n.sonnetPercent}% — ${weeklyTime}\n\n`;
+        if (n.opusPercent != null) s += `🧩 **${planT('sb.weekly')} Opus**: ${n.opusPercent}% — ${weeklyTime}\n\n`;
         return s;
     }
     return '';
@@ -1295,7 +1361,12 @@ function updatePlanFallback(noSessions: boolean) {
         }
         const sp = lastUsage.sessionPercent != null ? Math.round(lastUsage.sessionPercent) : null;
         const wp = lastUsage.weeklyPercent != null ? Math.round(lastUsage.weeklyPercent) : null;
-        item.text = `$(pulse) claudeStateBar S ${sp ?? '--'}% W ${wp ?? '--'}%`;
+        const compact = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('compactMode', false);
+        if (compact) {
+            item.text = `$(pulse) claudeStateBar S ${sp ?? '--'}% W ${wp ?? '--'}%`;
+        } else {
+            item.text = `$(pulse) claudeStateBar ${planT('sb.session')} ${sp ?? '--'}% ${planT('sb.weekly')} ${wp ?? '--'}%`;
+        }
         item.color = colorForPercent(lastUsage.sessionPercent);
         item.backgroundColor = undefined;
         item.tooltip = new vscode.MarkdownString(planTooltipBlock() + `*Click to open settings*`);
