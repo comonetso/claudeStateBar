@@ -2,7 +2,7 @@
     "name": "claude-context-bar",
     "displayName": "claudeStateBar",
     "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your status bar. Remote-SSH supported, with Telegram reset alerts.",
-    "version": "1.7.0",
+    "version": "1.7.2",
     "extensionKind": ["ui"],
     "publisher": "ezoosk",
     "author": {
@@ -76,6 +76,10 @@
             {
                 "command": "claudeContextBar.refreshPlanUsage",
                 "title": "claudeStateBar: Refresh Plan Usage"
+            },
+            {
+                "command": "claudeContextBar.testBeep",
+                "title": "claudeStateBar: Test Beep Sound"
             }
         ],
         "menus": {
@@ -210,6 +214,21 @@
                     "type": "object",
                     "default": {},
                     "description": "Custom short names for projects. Keys are project names, values are the short versions (e.g. {\"my-cool-project\": \"MCP\", \"webapp\": \"WA\"})."
+                },
+                "claudeContextBar.soundWarning": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Path to the WAV file played once when context reaches the warning threshold. Leave empty to use the bundled default."
+                },
+                "claudeContextBar.soundDanger": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Path to the WAV file played twice when context reaches the danger threshold. Leave empty to use the bundled default."
+                },
+                "claudeContextBar.soundCompletion": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Path to the WAV file played when Claude finishes a response (stop_reason = end_turn). Leave empty to use the bundled default."
                 }
             }
         }

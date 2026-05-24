@@ -76,6 +76,9 @@
         $('cb-scope').value = cb.scope || 'workspace';
         $('cb-showModel').checked = cb.showModel !== false;
         $('cb-compactMode').checked = !!cb.compactMode;
+        $('sound-warning').value = cb.soundWarning || '';
+        $('sound-danger').value = cb.soundDanger || '';
+        $('sound-completion').value = cb.soundCompletion || '';
     }
 
     // --- Outgoing actions ---
@@ -112,7 +115,10 @@
                 hideAfter: parseInt($('cb-hideAfter').value, 10) || 86400,
                 scope: $('cb-scope').value,
                 showModel: $('cb-showModel').checked,
-                compactMode: $('cb-compactMode').checked
+                compactMode: $('cb-compactMode').checked,
+                soundWarning: $('sound-warning').value.trim(),
+                soundDanger: $('sound-danger').value.trim(),
+                soundCompletion: $('sound-completion').value.trim()
             }
         };
         vscode.postMessage({ type: 'save', payload });
@@ -135,6 +141,37 @@
     $('telegram-test-btn').addEventListener('click', () => {
         $('telegram-test-btn').disabled = true;
         vscode.postMessage({ type: 'telegramTest' });
+    });
+
+    function inputIdFor(kind) {
+        return kind === 'warning' ? 'sound-warning' : kind === 'danger' ? 'sound-danger' : 'sound-completion';
+    }
+
+    // Preview: play the currently typed path (or default if empty)
+    document.querySelectorAll('.sound-preview-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const kind = btn.getAttribute('data-kind');
+            const customPath = ($(inputIdFor(kind)).value || '').trim();
+            setStatus(`미리듣기: ${kind} (${customPath || '기본음'})`, 'ok');
+            vscode.postMessage({ type: 'testBeep', beepType: kind, customPath });
+        });
+    });
+
+    // File picker → settingsPanel sends back 'soundFilePicked' with the chosen path
+    document.querySelectorAll('.sound-pick-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const kind = btn.getAttribute('data-kind');
+            vscode.postMessage({ type: 'pickSoundFile', kind });
+        });
+    });
+
+    // Reset all three sound paths to empty (= use OS defaults)
+    const resetBtn = $('sound-reset-btn');
+    if (resetBtn) resetBtn.addEventListener('click', () => {
+        $('sound-warning').value = '';
+        $('sound-danger').value = '';
+        $('sound-completion').value = '';
+        setStatus('기본값으로 초기화됨 (저장 버튼을 눌러 적용)', 'ok');
     });
 
     // --- Incoming messages ---
@@ -174,6 +211,13 @@
                 hasCookie = true;
                 $('sessionCookie').value = '';
                 $('sessionCookie').placeholder = t('state.cookie.saved');
+                break;
+            case 'soundFilePicked':
+                if (m.path) {
+                    const inputId = m.kind === 'warning' ? 'sound-warning' : m.kind === 'danger' ? 'sound-danger' : 'sound-completion';
+                    $(inputId).value = m.path;
+                    setStatus(`경로 설정됨: ${m.path} (저장 버튼을 눌러 적용)`, 'ok');
+                }
                 break;
         }
     });

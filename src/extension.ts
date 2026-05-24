@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
+import * as cp from 'child_process';
 import * as creds from './credentials';
 import { fetchUsage, AuthExpiredError, CloudflareBlockedError, NormalizedUsage, getTransport } from './planUsage';
 import * as telegram from './telegram';
@@ -27,6 +28,7 @@ interface SessionInfo {
     wasCleared: boolean;
     isIdle: boolean;
     isFallback?: boolean;
+    lastAssistantEndTurnAt: Date | null;
 }
 
 interface StatusBarEntry {
@@ -37,6 +39,9 @@ interface StatusBarEntry {
 const statusBarItems: Map<string, StatusBarEntry> = new Map();
 // Track manually hidden sessions: sessionFile -> timestamp when hidden
 const hiddenSessions: Map<string, number> = new Map();
+const alertedSessions = new Map<string, { warned: boolean; dangered: boolean }>();
+const lastKnownEndTurnAt = new Map<string, number>();
+let isFirstScan = true;
 let refreshInterval: NodeJS.Timeout | null = null;
 let outputChannel: vscode.OutputChannel | null = null;
 
@@ -58,7 +63,7 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('claudeStateBar');
     context.subscriptions.push(outputChannel);
     log('claudeStateBar activating');
-    log(`Platform: ${process.platform}, home: ${os.homedir()}`);
+    log(`Platform: ${process.platform}, home: ${os.homedir()}, remoteName=${vscode.env.remoteName ?? '(none — local UI host)'}`);
 
     // Initialise credential store (context.secrets) for the claudeState plan-usage feature
     creds.initCredentials(context);
@@ -76,6 +81,38 @@ export function activate(context: vscode.ExtensionContext) {
     const refreshPlanCmd = vscode.commands.registerCommand('claudeContextBar.refreshPlanUsage', () => {
         refreshPlanUsage();
     });
+
+    // Internal beep command — called from the settings panel webview.
+    // If a customPath is given, play THAT file (preview before saving); otherwise use the saved setting.
+    const playBeepCmd = vscode.commands.registerCommand('claudeContextBar.playBeep', (beepType: string, customPath?: string) => {
+        log(`[beep] command received: beepType=${beepType}, customPath="${customPath ?? ''}"`);
+        const trimmed = (customPath || '').trim();
+        if (trimmed) {
+            const repeat = beepType === 'danger' ? 2 : 1;
+            playSoundFile(trimmed, repeat, `preview:${beepType}`);
+            return;
+        }
+        if (beepType === 'completion') playCompletionSound();
+        else playBeep(beepType === 'danger' ? 2 : 1);
+    });
+    context.subscriptions.push(playBeepCmd);
+
+    // Test beep sounds (Command Palette: "claudeContextBar: Test Beep")
+    const testBeepCmd = vscode.commands.registerCommand('claudeContextBar.testBeep', async () => {
+        type BeepType = 'warning' | 'danger' | 'completion';
+        const pick = await vscode.window.showQuickPick(
+            [
+                { label: '$(bell) Warning beep (1×)',     description: 'warningThreshold 도달 시 — 단음 800Hz',     type: 'warning' as BeepType },
+                { label: '$(bell) Danger beep (2×)',      description: 'dangerThreshold 도달 시 — 2음 800→1000Hz', type: 'danger' as BeepType },
+                { label: '$(check) 작업 완료 알림 (3음)', description: 'Claude end_turn 감지 시 — 3음 600→800→1000Hz', type: 'completion' as BeepType },
+            ],
+            { placeHolder: '테스트할 비프 종류를 선택하세요' }
+        );
+        if (!pick) return;
+        if (pick.type === 'completion') playCompletionSound();
+        else playBeep(pick.type === 'warning' ? 1 : 2);
+    });
+    context.subscriptions.push(testBeepCmd);
     context.subscriptions.push(refreshPlanCmd);
 
     // Show diagnostics: logs workspace dirs, Claude dirs found, matching result
@@ -309,6 +346,86 @@ async function logRemoteFsProbe(): Promise<void> {
     log('--- END REMOTE FS PROBE ---');
 }
 
+// Play N beeps using OS-native commands (non-blocking, errors silently ignored).
+// count=1: warning (single tone), count=2: danger (two ascending tones).
+function playBeep(count: number): void {
+    const kind = count === 1 ? 'warning' : 'danger';
+    const soundPath = getSoundPath(kind);
+    playSoundFile(soundPath, count, `beep:${kind}`);
+}
+
+// Default WAV paths per platform — used when the user setting is empty.
+const DEFAULT_WAVS = {
+    warning: process.platform === 'win32' ? 'C:\\Windows\\Media\\Windows Notify.wav'
+        : process.platform === 'darwin' ? '/System/Library/Sounds/Glass.aiff' : '',
+    danger:  process.platform === 'win32' ? 'C:\\Windows\\Media\\Windows Critical Stop.wav'
+        : process.platform === 'darwin' ? '/System/Library/Sounds/Glass.aiff' : '',
+    completion: process.platform === 'win32' ? 'C:\\Windows\\Media\\tada.wav'
+        : process.platform === 'darwin' ? '/System/Library/Sounds/Hero.aiff' : ''
+};
+
+function getSoundPath(kind: 'warning' | 'danger' | 'completion'): string {
+    const cfg = vscode.workspace.getConfiguration('claudeContextBar');
+    const key = kind === 'warning' ? 'soundWarning' : kind === 'danger' ? 'soundDanger' : 'soundCompletion';
+    const user = cfg.get<string>(key, '').trim();
+    return user || DEFAULT_WAVS[kind];
+}
+
+// Play a sound file by absolute path. Supports .wav (SoundPlayer.PlaySync — fast & sync)
+// and .mp3 / other formats (WPF MediaPlayer — async, sleeps for media duration).
+//
+// Guard: if this extension instance is running on a remote host (Remote-SSH/WSL/etc.),
+// sounds would play on the REMOTE server's audio device — which the user can't hear.
+// Skip in that case. The local UI instance (where extensionKind=ui places this extension)
+// is the one that should produce audio. See package.json "extensionKind": ["ui"].
+function playSoundFile(soundPath: string, repeat: number = 1, label: string = 'beep'): void {
+    if (vscode.env.remoteName) {
+        log(`[${label}] skipped — running in remote (${vscode.env.remoteName}); sound only plays on local UI host`);
+        return;
+    }
+    log(`[${label}] playSoundFile path="${soundPath}" repeat=${repeat} platform=${process.platform}`);
+    if (process.platform === 'win32') {
+        const escaped = soundPath.replace(/'/g, "''");
+        const isWav = soundPath.toLowerCase().endsWith('.wav');
+        let single: string;
+        if (isWav) {
+            single = `(New-Object System.Media.SoundPlayer '${escaped}').PlaySync()`;
+        } else {
+            // WPF MediaPlayer for MP3/other formats — wait for NaturalDuration to load, then play and sleep
+            single = `Add-Type -AssemblyName presentationCore; $p = [System.Windows.Media.MediaPlayer]::new(); $p.Open([System.Uri]::new('${escaped}')); $i = 0; while(-not $p.NaturalDuration.HasTimeSpan -and $i -lt 30){Start-Sleep -Milliseconds 50; $i++}; $p.Play(); $dur = if($p.NaturalDuration.HasTimeSpan){[Math]::Min($p.NaturalDuration.TimeSpan.TotalMilliseconds + 200, 10000)}else{5000}; Start-Sleep -Milliseconds $dur`;
+        }
+        const cmd = Array.from({ length: repeat }, () => single).join('; ');
+        const full = `powershell -NoProfile -NonInteractive -c "${cmd}"`;
+        log(`[${label}] exec (${isWav ? 'wav' : 'mp3/other'}): ${full.substring(0, 200)}${full.length > 200 ? '...' : ''}`);
+        cp.exec(full, { windowsHide: true, maxBuffer: 1024 * 1024 }, (err, _stdout, stderr) => {
+            if (err) log(`[${label}] exec error: ${err.message}`);
+            if (stderr?.trim()) log(`[${label}] stderr: ${stderr.trim()}`);
+            else log(`[${label}] exec completed`);
+        });
+    } else if (process.platform === 'darwin') {
+        // afplay supports WAV, MP3, AIFF, AAC etc. natively
+        const escaped = soundPath.replace(/"/g, '\\"');
+        const single = `afplay "${escaped}"`;
+        const cmd = Array.from({ length: repeat }, () => single).join(' && sleep 0.3 && ');
+        cp.exec(cmd, (err) => { if (err) log(`[${label}] afplay error: ${err.message}`); });
+    } else {
+        // Linux: try paplay (WAV/OGG) → mpg123/ffplay (MP3) → aplay → fallback bell
+        const esc = soundPath.replace(/"/g, '\\"');
+        const playOne = soundPath
+            ? `paplay "${esc}" 2>/dev/null || mpg123 -q "${esc}" 2>/dev/null || ffplay -nodisp -autoexit -loglevel quiet "${esc}" 2>/dev/null || aplay -q "${esc}" 2>/dev/null || true`
+            : 'paplay /usr/share/sounds/freedesktop/stereo/bell.oga 2>/dev/null || beep 2>/dev/null || true';
+        const cmd = Array.from({ length: repeat }, () => playOne).join('; sleep 0.3; ');
+        cp.exec(cmd, { shell: '/bin/bash' }, (err) => { if (err) log(`[${label}] linux error: ${err.message}`); });
+    }
+}
+
+// 3-note ascending arpeggio (600→800→1000 Hz) — "Claude finished" positive signal,
+// distinct from warning (single) and danger (double ascending pair).
+function playCompletionSound(): void {
+    const soundPath = getSoundPath('completion');
+    playSoundFile(soundPath, 1, 'beep:completion');
+}
+
 export function deactivate() {
     if (refreshInterval) {
         clearInterval(refreshInterval);
@@ -492,6 +609,7 @@ interface TokenUsage {
     sessionCreated: Date | null;
     lastRealTimestamp: Date | null;  // Last timestamp excluding last-prompt entries
     wasCleared: boolean;  // True if session ended with /clear command
+    lastAssistantEndTurnAt: Date | null;  // Timestamp of last end_turn assistant entry
 }
 
 // Determine context limit based on model id.
@@ -562,7 +680,7 @@ function getShortName(projectName: string, customNames: Record<string, string>):
 }
 
 async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
-    const empty: TokenUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, wasCleared: false };
+    const empty: TokenUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, wasCleared: false, lastAssistantEndTurnAt: null };
     try {
         const stat = await vscode.workspace.fs.stat(jsonlUri);
         if (stat.size === 0) {
@@ -613,6 +731,7 @@ async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
             let firstMessage = '';
             let sessionCreated: Date | null = null;
             let lastRealTimestamp: Date | null = null;
+            let lastAssistantEndTurnAt: Date | null = null;
             let model = '';
             let speed = '';
             let finalUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0 };
@@ -667,6 +786,10 @@ async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
                             totalTokens: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0)
                         };
                     }
+                    // Track last complete assistant response (end_turn = tool calls excluded)
+                    if (entry.type === 'assistant' && entry.message?.stop_reason === 'end_turn' && entry.timestamp) {
+                        lastAssistantEndTurnAt = new Date(entry.timestamp);
+                    }
                 } catch (e) {
                     continue;
                 }
@@ -682,7 +805,8 @@ async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
                 firstMessage: firstMessage ? firstMessage + '...' : '',
                 sessionCreated,
                 lastRealTimestamp,
-                wasCleared
+                wasCleared,
+                lastAssistantEndTurnAt
             };
     } catch (e) {
         return empty;
@@ -827,7 +951,8 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                         firstMessage: usage.firstMessage,
                         sessionCreated: usage.sessionCreated,
                         wasCleared: usage.wasCleared,
-                        isIdle: file.mtime.getTime() <= idleThreshold
+                        isIdle: file.mtime.getTime() <= idleThreshold,
+                        lastAssistantEndTurnAt: usage.lastAssistantEndTurnAt
                     });
                 }
             }
@@ -960,7 +1085,8 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                 sessionCreated: usage.sessionCreated,
                 wasCleared: usage.wasCleared,
                 isIdle: true,
-                isFallback: true
+                isFallback: true,
+                lastAssistantEndTurnAt: usage.lastAssistantEndTurnAt
             });
         }
     }
@@ -985,9 +1111,6 @@ function getShortModelName(model: string, compact: boolean): string {
     const verMatch = lower.match(/(\d+)-(\d+)/);
     const version = verMatch ? `${verMatch[1]}.${verMatch[2]}` : '';
     const onem = lower.includes('1m') ? '1M' : '';
-    if (compact) {
-        return `${abbrev}${version}${onem}`;
-    }
     const versionPart = version ? ` ${version}` : '';
     const onemPart = onem ? ` ${onem}` : '';
     return `${family}${versionPart}${onemPart}`;
@@ -1043,6 +1166,8 @@ function formatTokens(tokens: number): string {
 }
 
 async function refreshAllSessions() {
+    const suppressBeep = isFirstScan;
+    isFirstScan = false;
     const sessions = await findActiveSessions();
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const warningThreshold = config.get<number>('warningThreshold', 50);
@@ -1161,6 +1286,35 @@ async function refreshAllSessions() {
             entry.item.color = projectColorMap.get(session.projectName) || '#ffffff';
         }
 
+        // Threshold crossing beep alerts (suppressed on first scan and for idle sessions)
+        if (!suppressBeep && !session.isIdle) {
+            const prev = alertedSessions.get(session.sessionFile) ?? { warned: false, dangered: false };
+            if (session.percentage >= dangerThreshold && !prev.dangered) {
+                playBeep(2);
+                alertedSessions.set(session.sessionFile, { warned: true, dangered: true });
+            } else if (session.percentage >= warningThreshold && !prev.warned) {
+                playBeep(1);
+                alertedSessions.set(session.sessionFile, { warned: true, dangered: false });
+            } else if (session.percentage < warningThreshold && (prev.warned || prev.dangered)) {
+                // Context was cleared / reset — allow alerting again next time
+                alertedSessions.set(session.sessionFile, { warned: false, dangered: false });
+            }
+        }
+
+        // Task completion detection: fire when a new end_turn timestamp appears
+        if (!suppressBeep && session.lastAssistantEndTurnAt) {
+            const curr = session.lastAssistantEndTurnAt.getTime();
+            const prev = lastKnownEndTurnAt.get(session.sessionFile);
+            if (prev === undefined) {
+                log(`[done] first seen ${session.projectName} endTurn=${new Date(curr).toISOString()}`);
+                lastKnownEndTurnAt.set(session.sessionFile, curr);
+            } else if (curr > prev) {
+                log(`[done] new end_turn for ${session.projectName}: ${new Date(prev).toISOString()} -> ${new Date(curr).toISOString()}, firing completion sound`);
+                playCompletionSound();
+                lastKnownEndTurnAt.set(session.sessionFile, curr);
+            }
+        }
+
         // Detailed tooltip. The first-message line and project path were removed per
         // user request; the claudeState plan-usage block takes their place.
         const effortLineText = session.effortLevel ? getEffortLabel(session.effortLevel) : '';
@@ -1207,6 +1361,8 @@ async function refreshAllSessions() {
         if (!seenPaths.has(sessionFile)) {
             entry.item.dispose();
             statusBarItems.delete(sessionFile);
+            alertedSessions.delete(sessionFile);
+            lastKnownEndTurnAt.delete(sessionFile);
         }
     }
 
