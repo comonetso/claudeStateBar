@@ -200,6 +200,31 @@ button.small {
 
 .telegram-status.linked { color: var(--vscode-testing-iconPassed, #4ade80); }
 
+.sound-row {
+    display: grid;
+    grid-template-columns: 120px 1fr auto auto;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.sound-row .sound-label {
+    margin: 0;
+    color: var(--vscode-foreground);
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.sound-row .sound-input {
+    font-size: 11.5px;
+    font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+}
+
+.sound-row button.small {
+    padding: 5px 8px;
+    min-width: 32px;
+}
+
 .telegram-guide {
     font-size: 11.5px;
     color: var(--vscode-descriptionForeground);

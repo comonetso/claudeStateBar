@@ -94,7 +94,10 @@ async function collectState() {
             hideAfter: cbCfg.get('hideAfter', 86400),
             scope: cbCfg.get('scope', 'workspace'),
             showModel: cbCfg.get('showModel', true),
-            compactMode: cbCfg.get('compactMode', false)
+            compactMode: cbCfg.get('compactMode', false),
+            soundWarning: cbCfg.get('soundWarning', ''),
+            soundDanger: cbCfg.get('soundDanger', ''),
+            soundCompletion: cbCfg.get('soundCompletion', '')
         }
     };
 }
@@ -146,6 +149,9 @@ async function handleMessage(msg: any): Promise<void> {
                     await cbCfg.update('scope', p.cb.scope, T);
                     await cbCfg.update('showModel', p.cb.showModel, T);
                     await cbCfg.update('compactMode', p.cb.compactMode, T);
+                    await cbCfg.update('soundWarning', p.cb.soundWarning ?? '', T);
+                    await cbCfg.update('soundDanger', p.cb.soundDanger ?? '', T);
+                    await cbCfg.update('soundCompletion', p.cb.soundCompletion ?? '', T);
                 }
                 callbacks?.onPlanSettingsChanged();
             } catch (e: any) {
@@ -182,6 +188,26 @@ async function handleMessage(msg: any): Promise<void> {
                     error: valid ? 'no_messages' : 'invalid_token'
                 });
             }
+            break;
+        }
+
+        case 'testBeep': {
+            console.log('[settingsPanel] testBeep received, beepType=', msg.beepType, 'customPath=', msg.customPath);
+            vscode.commands.executeCommand('claudeContextBar.playBeep', msg.beepType || 'warning', msg.customPath || undefined);
+            break;
+        }
+
+        case 'pickSoundFile': {
+            const picked = await vscode.window.showOpenDialog({
+                canSelectFiles: true,
+                canSelectFolders: false,
+                canSelectMany: false,
+                openLabel: 'Select sound file',
+                filters: { 'Audio': ['wav', 'mp3'], 'All': ['*'] },
+                defaultUri: vscode.Uri.file(process.platform === 'win32' ? 'C:\\Windows\\Media' : '/')
+            });
+            const filePath = picked && picked[0] ? picked[0].fsPath : '';
+            panel.webview.postMessage({ type: 'soundFilePicked', kind: msg.kind, path: filePath });
             break;
         }
 
@@ -348,6 +374,37 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       </div>
 
       <p class="note" data-i18n="cb.note"></p>
+    </div>
+
+    <!-- Sound settings -->
+    <div class="section">
+      <h2 class="section-header">비프음 설정</h2>
+      <p class="hint" style="margin-bottom:10px;">WAV / MP3 파일 경로 (비워두면 OS 기본음). 로컬 PC에서 재생되며 Remote-SSH·워크스페이스 무관하게 동일하게 적용됩니다.</p>
+
+      <div class="sound-row" data-kind="warning">
+        <label class="sound-label">⚠️ 경고 (1×)</label>
+        <input type="text" id="sound-warning" class="sound-input" placeholder="C:\\Windows\\Media\\Windows Notify.wav (기본)" />
+        <button class="secondary small sound-preview-btn" data-kind="warning" title="미리듣기">▶</button>
+        <button class="secondary small sound-pick-btn"    data-kind="warning" title="파일 찾기">📁</button>
+      </div>
+
+      <div class="sound-row" data-kind="danger">
+        <label class="sound-label">🔴 위험 (2×)</label>
+        <input type="text" id="sound-danger" class="sound-input" placeholder="C:\\Windows\\Media\\Windows Critical Stop.wav (기본)" />
+        <button class="secondary small sound-preview-btn" data-kind="danger" title="미리듣기">▶</button>
+        <button class="secondary small sound-pick-btn"    data-kind="danger" title="파일 찾기">📁</button>
+      </div>
+
+      <div class="sound-row" data-kind="completion">
+        <label class="sound-label">✅ 작업 완료</label>
+        <input type="text" id="sound-completion" class="sound-input" placeholder="C:\\Windows\\Media\\tada.wav (기본)" />
+        <button class="secondary small sound-preview-btn" data-kind="completion" title="미리듣기">▶</button>
+        <button class="secondary small sound-pick-btn"    data-kind="completion" title="파일 찾기">📁</button>
+      </div>
+
+      <div style="margin-top:8px;">
+        <button id="sound-reset-btn" class="secondary small">기본값으로 초기화</button>
+      </div>
     </div>
 
     <div class="status" id="status"></div>
