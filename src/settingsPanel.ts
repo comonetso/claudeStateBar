@@ -97,7 +97,15 @@ async function collectState() {
             compactMode: cbCfg.get('compactMode', false),
             soundWarning: cbCfg.get('soundWarning', ''),
             soundDanger: cbCfg.get('soundDanger', ''),
-            soundCompletion: cbCfg.get('soundCompletion', '')
+            soundCompletion: cbCfg.get('soundCompletion', ''),
+            soundQuestion: cbCfg.get('soundQuestion', ''),
+            soundWarningGain: cbCfg.get('soundWarningGain', 100),
+            soundDangerGain: cbCfg.get('soundDangerGain', 100),
+            soundCompletionGain: cbCfg.get('soundCompletionGain', 100),
+            soundQuestionGain: cbCfg.get('soundQuestionGain', 100),
+            completionBeepSettleMs: cbCfg.get('completionBeepSettleMs', 3000),
+            detectStuckToolUse: cbCfg.get('detectStuckToolUse', false),
+            stuckToolUseThresholdSec: cbCfg.get('stuckToolUseThresholdSec', 90)
         }
     };
 }
@@ -152,6 +160,29 @@ async function handleMessage(msg: any): Promise<void> {
                     await cbCfg.update('soundWarning', p.cb.soundWarning ?? '', T);
                     await cbCfg.update('soundDanger', p.cb.soundDanger ?? '', T);
                     await cbCfg.update('soundCompletion', p.cb.soundCompletion ?? '', T);
+                    await cbCfg.update('soundQuestion', p.cb.soundQuestion ?? '', T);
+                    const clampGain = (v: any) => {
+                        const n = Number(v);
+                        if (!Number.isFinite(n)) return 100;
+                        return Math.max(50, Math.min(5000, Math.round(n)));
+                    };
+                    await cbCfg.update('soundWarningGain', clampGain(p.cb.soundWarningGain), T);
+                    await cbCfg.update('soundDangerGain', clampGain(p.cb.soundDangerGain), T);
+                    await cbCfg.update('soundCompletionGain', clampGain(p.cb.soundCompletionGain), T);
+                    await cbCfg.update('soundQuestionGain', clampGain(p.cb.soundQuestionGain), T);
+                    const clampSettle = (v: any) => {
+                        const n = Number(v);
+                        if (!Number.isFinite(n)) return 3000;
+                        return Math.max(100, Math.min(5000, Math.round(n)));
+                    };
+                    await cbCfg.update('completionBeepSettleMs', clampSettle(p.cb.completionBeepSettleMs), T);
+                    await cbCfg.update('detectStuckToolUse', !!p.cb.detectStuckToolUse, T);
+                    const clampStuck = (v: any) => {
+                        const n = Number(v);
+                        if (!Number.isFinite(n)) return 90;
+                        return Math.max(30, Math.min(600, Math.round(n)));
+                    };
+                    await cbCfg.update('stuckToolUseThresholdSec', clampStuck(p.cb.stuckToolUseThresholdSec), T);
                 }
                 callbacks?.onPlanSettingsChanged();
             } catch (e: any) {
@@ -192,8 +223,9 @@ async function handleMessage(msg: any): Promise<void> {
         }
 
         case 'testBeep': {
-            console.log('[settingsPanel] testBeep received, beepType=', msg.beepType, 'customPath=', msg.customPath);
-            vscode.commands.executeCommand('claudeContextBar.playBeep', msg.beepType || 'warning', msg.customPath || undefined);
+            const gain = (typeof msg.gainPercent === 'number' && Number.isFinite(msg.gainPercent)) ? msg.gainPercent : undefined;
+            console.log('[settingsPanel] testBeep received, beepType=', msg.beepType, 'customPath=', msg.customPath, 'gain=', gain);
+            vscode.commands.executeCommand('claudeContextBar.playBeep', msg.beepType || 'warning', msg.customPath || undefined, gain);
             break;
         }
 
@@ -378,32 +410,66 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
 
     <!-- Sound settings -->
     <div class="section">
-      <h2 class="section-header">비프음 설정</h2>
-      <p class="hint" style="margin-bottom:10px;">WAV / MP3 파일 경로 (비워두면 OS 기본음). 로컬 PC에서 재생되며 Remote-SSH·워크스페이스 무관하게 동일하게 적용됩니다.</p>
+      <h2 class="section-header" data-i18n="sound.title">비프음 설정</h2>
+      <p class="hint" style="margin-bottom:10px;" data-i18n="sound.hint">WAV / MP3 파일 경로 (비워두면 OS 기본음). 볼륨 50~5000% (WAV만 증폭, MP3는 감쇠만). 300% 이상은 클리핑(왜곡) 발생. 로컬 PC에서 재생되며 Remote-SSH·워크스페이스 무관하게 동일하게 적용됩니다.</p>
 
       <div class="sound-row" data-kind="warning">
-        <label class="sound-label">⚠️ 경고 (1×)</label>
+        <label class="sound-label" data-i18n="sound.warning">⚠️ 경고 (1×)</label>
         <input type="text" id="sound-warning" class="sound-input" placeholder="C:\\Windows\\Media\\Windows Notify.wav (기본)" />
+        <input type="number" id="sound-warning-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="warning" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="warning" title="파일 찾기">📁</button>
       </div>
 
       <div class="sound-row" data-kind="danger">
-        <label class="sound-label">🔴 위험 (2×)</label>
+        <label class="sound-label" data-i18n="sound.danger">🔴 위험 (2×)</label>
         <input type="text" id="sound-danger" class="sound-input" placeholder="C:\\Windows\\Media\\Windows Critical Stop.wav (기본)" />
+        <input type="number" id="sound-danger-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="danger" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="danger" title="파일 찾기">📁</button>
       </div>
 
       <div class="sound-row" data-kind="completion">
-        <label class="sound-label">✅ 작업 완료</label>
+        <label class="sound-label" data-i18n="sound.completion">✅ 작업 완료</label>
         <input type="text" id="sound-completion" class="sound-input" placeholder="C:\\Windows\\Media\\tada.wav (기본)" />
+        <input type="number" id="sound-completion-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="completion" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="completion" title="파일 찾기">📁</button>
       </div>
 
+      <div class="sound-row" data-kind="question">
+        <label class="sound-label" data-i18n="sound.question">❓ 질문 대기</label>
+        <input type="text" id="sound-question" class="sound-input" placeholder="C:\\Windows\\Media\\Speech On.wav (기본)" />
+        <input type="number" id="sound-question-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <button class="secondary small sound-preview-btn" data-kind="question" title="미리듣기">▶</button>
+        <button class="secondary small sound-pick-btn"    data-kind="question" title="파일 찾기">📁</button>
+      </div>
+
+      <p class="hint" style="margin-top:10px;" data-i18n="sound.questionHint">질문 대기 비프는 Claude가 AskUserQuestion 또는 ExitPlanMode 도구로 입력을 요구할 때 발사됩니다. 100% 정확.</p>
+
+      <div class="grid-2" style="margin-top:14px;">
+        <div class="field">
+          <label for="cb-completionBeepSettleMs" data-i18n="sound.settleMs.label">완료/질문 비프 settle (ms)</label>
+          <input type="number" id="cb-completionBeepSettleMs" min="100" max="5000" step="100" />
+          <p class="hint" data-i18n="sound.settleMs.hint">end_turn 또는 질문 검출 후 이 시간만큼 대기. 그 사이 새 활동(자동 follow-up, 사용자 즉답)이 발생하면 비프 취소. 0이면 즉시 발사.</p>
+        </div>
+        <div class="field">
+          <label for="cb-stuckToolUseThresholdSec" data-i18n="sound.stuckSec.label">tool_use 멈춤 임계값 (초)</label>
+          <input type="number" id="cb-stuckToolUseThresholdSec" min="30" max="600" step="10" />
+          <p class="hint" data-i18n="sound.stuckSec.hint">아래 휴리스틱이 켜져 있을 때만 적용.</p>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:6px;">
+        <label class="checkbox-label">
+          <input type="checkbox" id="cb-detectStuckToolUse" />
+          <span data-i18n="sound.detectStuck.label">VS Code 권한 팝업 추정 비프 (휴리스틱 — 오탐 위험)</span>
+        </label>
+        <p class="hint" data-i18n="sound.detectStuck.hint">마지막 assistant 항목이 tool_use(Bash·Edit 등)이고 N초 이상 새 활동 없을 때 질문 비프 발사. npm build 등 정상 장기 작업도 오탐 발사함. 기본 꺼짐.</p>
+      </div>
+
       <div style="margin-top:8px;">
-        <button id="sound-reset-btn" class="secondary small">기본값으로 초기화</button>
+        <button id="sound-reset-btn" class="secondary small" data-i18n="sound.reset">기본값으로 초기화</button>
       </div>
     </div>
 

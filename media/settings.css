@@ -202,7 +202,7 @@ button.small {
 
 .sound-row {
     display: grid;
-    grid-template-columns: 120px 1fr auto auto;
+    grid-template-columns: 120px 1fr 84px auto auto;
     gap: 8px;
     align-items: center;
     margin-bottom: 8px;
@@ -218,6 +218,13 @@ button.small {
 .sound-row .sound-input {
     font-size: 11.5px;
     font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+}
+
+.sound-row .sound-gain {
+    width: 100%;
+    text-align: right;
+    font-size: 11.5px;
+    padding: 5px 6px;
 }
 
 .sound-row button.small {
