@@ -2,7 +2,7 @@
     "name": "claude-context-bar",
     "displayName": "claudeStateBar",
     "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your status bar. Remote-SSH supported, with Telegram reset alerts.",
-    "version": "1.7.4",
+    "version": "1.7.6",
     "extensionKind": ["ui"],
     "publisher": "ezoosk",
     "author": {
@@ -80,6 +80,10 @@
             {
                 "command": "claudeContextBar.testBeep",
                 "title": "claudeStateBar: Test Beep Sound"
+            },
+            {
+                "command": "claudeContextBar.cleanupOldVersions",
+                "title": "claudeStateBar: Cleanup Old Extension Versions"
             }
         ],
         "menus": {
@@ -204,6 +208,11 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Show the model name (e.g., Sonnet 4.5) next to the percentage in the status bar. Takes extra space but tells you which model the session is using."
+                },
+                "claudeContextBar.autoCleanupOldVersions": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "On activate, silently delete older versions of any installed VS Code extension (keeping only the highest semver per publisher.name). Prevents stale extension folders piling up after repeated vsix installs. Set to false to disable."
                 },
                 "claudeContextBar.compactMode": {
                     "type": "boolean",

@@ -84,6 +84,85 @@ function log(msg: string) {
     outputChannel?.appendLine(`[${new Date().toTimeString().slice(0, 8)}] ${msg}`);
 }
 
+// Scan ~/.vscode/extensions, group by publisher.name, keep highest semver per group,
+// delete the rest. Self-protective: never deletes the currently-running version of
+// our own extension.
+async function runCleanupOldVersions(opts: { silent: boolean }): Promise<void> {
+    const localExtDir = path.join(os.homedir(), '.vscode', 'extensions');
+
+    const parseSemver = (v: string): number[] => v.split(/[.\-]/).map(p => parseInt(p, 10) || 0);
+    const compareSemver = (a: string, b: string): number => {
+        const av = parseSemver(a), bv = parseSemver(b);
+        for (let i = 0; i < Math.max(av.length, bv.length); i++) {
+            const d = (av[i] ?? 0) - (bv[i] ?? 0);
+            if (d !== 0) return d;
+        }
+        return 0;
+    };
+
+    let entries: fs.Dirent[];
+    try {
+        entries = fs.readdirSync(localExtDir, { withFileTypes: true });
+    } catch {
+        if (!opts.silent) vscode.window.showErrorMessage('claudeStateBar: extensions 폴더를 읽을 수 없습니다.');
+        return;
+    }
+
+    const groups = new Map<string, { version: string; dir: string }[]>();
+    for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        // Match publisher.name-M.m.p with optional suffix (e.g. -win32-x64, -universal, -blueming)
+        const match = entry.name.match(/^(.+?)-(\d+\.\d+\.\d+(?:[.\-][a-zA-Z0-9]+)*)$/);
+        if (!match) continue;
+        const [, name, version] = match;
+        if (!groups.has(name)) groups.set(name, []);
+        groups.get(name)!.push({ version, dir: path.join(localExtDir, entry.name) });
+    }
+
+    const toDelete: string[] = [];
+    for (const [, versions] of groups) {
+        if (versions.length <= 1) continue;
+        versions.sort((a, b) => compareSemver(b.version, a.version));
+        for (const v of versions.slice(1)) toDelete.push(v.dir);
+    }
+
+    if (toDelete.length === 0) {
+        if (!opts.silent) vscode.window.showInformationMessage('claudeStateBar: 정리할 이전 버전이 없습니다.');
+        else log('[cleanup] no old versions to remove');
+        return;
+    }
+
+    log(`[cleanup] candidates (${toDelete.length}):\n${toDelete.map(d => '  • ' + path.basename(d)).join('\n')}`);
+
+    if (!opts.silent) {
+        const answer = await vscode.window.showWarningMessage(
+            `이전 버전 ${toDelete.length}개를 삭제하시겠습니까?\n${toDelete.map(d => '• ' + path.basename(d)).join('\n')}`,
+            { modal: true },
+            '삭제'
+        );
+        if (answer !== '삭제') return;
+    }
+
+    let deleted = 0;
+    const failed: string[] = [];
+    for (const dir of toDelete) {
+        try {
+            fs.rmSync(dir, { recursive: true, force: true });
+            log(`[cleanup] deleted: ${path.basename(dir)}`);
+            deleted++;
+        } catch (e) {
+            failed.push(path.basename(dir));
+            log(`[cleanup] failed: ${path.basename(dir)} — ${e}`);
+        }
+    }
+
+    if (!opts.silent) {
+        vscode.window.showInformationMessage(`claudeStateBar: ${deleted}개 이전 버전 삭제 완료${failed.length ? ` (${failed.length}개 실패)` : ''}.`);
+    } else if (deleted > 0) {
+        log(`[cleanup] auto-removed ${deleted} old version(s) on activate`);
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('claudeStateBar');
     context.subscriptions.push(outputChannel);
@@ -278,6 +357,22 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
     context.subscriptions.push(menuCommand);
+
+    // Cleanup old extension versions: scan ~/.vscode/extensions, keep only the
+    // highest semver per publisher.name, delete the rest. Runs silently on
+    // activate (configurable) and as an interactive command.
+    const cleanupCmd = vscode.commands.registerCommand('claudeContextBar.cleanupOldVersions', async () => {
+        await runCleanupOldVersions({ silent: false });
+    });
+    context.subscriptions.push(cleanupCmd);
+
+    // Auto-cleanup on activate (silent, async — doesn't block startup)
+    const autoCleanup = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('autoCleanupOldVersions', true);
+    if (autoCleanup) {
+        setTimeout(() => {
+            runCleanupOldVersions({ silent: true }).catch(e => log(`[cleanup] auto error: ${e}`));
+        }, 2000);
+    }
 
     // Listen for configuration changes and refresh immediately
     const configWatcher = vscode.workspace.onDidChangeConfiguration(e => {
