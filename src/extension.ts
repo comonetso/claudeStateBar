@@ -75,6 +75,10 @@ let planTickInterval: NodeJS.Timeout | null = null;
 let lastUsage: NormalizedUsage | null = null;
 type PlanStatus = 'unconfigured' | 'ok' | 'auth_expired' | 'blocked' | 'error';
 let planStatus: PlanStatus = 'unconfigured';
+// True only when this extension instance itself runs on a remote host (e.g. extensionKind=workspace
+// over Remote-SSH). When extensionKind=["ui"] (our setting), the extension always runs on the local
+// VS Code UI host even if the workspace is remote — so audio works fine and this stays false.
+let extensionRunsOnRemote = false;
 
 function log(msg: string) {
     outputChannel?.appendLine(`[${new Date().toTimeString().slice(0, 8)}] ${msg}`);
@@ -85,6 +89,8 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(outputChannel);
     log('claudeStateBar activating');
     log(`Platform: ${process.platform}, home: ${os.homedir()}, remoteName=${vscode.env.remoteName ?? '(none — local UI host)'}`);
+    extensionRunsOnRemote = context.extensionUri.scheme !== 'file';
+    log(`extensionUri.scheme=${context.extensionUri.scheme}, extensionRunsOnRemote=${extensionRunsOnRemote}`);
 
     // Initialise credential store (context.secrets) for the claudeState plan-usage feature
     creds.initCredentials(context);
@@ -512,13 +518,15 @@ function amplifyWavToTemp(srcPath: string, gainPercent: number): string {
 // Play a sound file by absolute path. Supports .wav (SoundPlayer.PlaySync — fast & sync)
 // and .mp3 / other formats (WPF MediaPlayer — async, sleeps for media duration).
 //
-// Guard: if this extension instance is running on a remote host (Remote-SSH/WSL/etc.),
+// Guard: if this extension instance itself runs on a remote host (extensionKind=workspace),
 // sounds would play on the REMOTE server's audio device — which the user can't hear.
-// Skip in that case. The local UI instance (where extensionKind=ui places this extension)
-// is the one that should produce audio. See package.json "extensionKind": ["ui"].
+// With extensionKind=["ui"] the extension always runs on the local VS Code host, so audio
+// works even when the workspace is a Remote-SSH folder. We check extensionUri.scheme (set
+// in activate) rather than vscode.env.remoteName, which only reflects the workspace
+// connection — not where the extension process actually lives.
 function playSoundFile(soundPath: string, repeat: number = 1, label: string = 'beep', gainPercent: number = 100): void {
-    if (vscode.env.remoteName) {
-        log(`[${label}] skipped — running in remote (${vscode.env.remoteName}); sound only plays on local UI host`);
+    if (extensionRunsOnRemote) {
+        log(`[${label}] skipped — extension process is on remote host; sound only plays on local UI host`);
         return;
     }
     if (!soundPath) {
