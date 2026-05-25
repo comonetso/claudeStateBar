@@ -79,6 +79,14 @@
         $('sound-warning').value = cb.soundWarning || '';
         $('sound-danger').value = cb.soundDanger || '';
         $('sound-completion').value = cb.soundCompletion || '';
+        $('sound-question').value = cb.soundQuestion || '';
+        $('sound-warning-gain').value = cb.soundWarningGain ?? 100;
+        $('sound-danger-gain').value = cb.soundDangerGain ?? 100;
+        $('sound-completion-gain').value = cb.soundCompletionGain ?? 100;
+        $('sound-question-gain').value = cb.soundQuestionGain ?? 100;
+        $('cb-completionBeepSettleMs').value = cb.completionBeepSettleMs ?? 3000;
+        $('cb-detectStuckToolUse').checked = !!cb.detectStuckToolUse;
+        $('cb-stuckToolUseThresholdSec').value = cb.stuckToolUseThresholdSec ?? 90;
     }
 
     // --- Outgoing actions ---
@@ -118,7 +126,15 @@
                 compactMode: $('cb-compactMode').checked,
                 soundWarning: $('sound-warning').value.trim(),
                 soundDanger: $('sound-danger').value.trim(),
-                soundCompletion: $('sound-completion').value.trim()
+                soundCompletion: $('sound-completion').value.trim(),
+                soundQuestion: $('sound-question').value.trim(),
+                soundWarningGain: parseInt($('sound-warning-gain').value, 10) || 100,
+                soundDangerGain: parseInt($('sound-danger-gain').value, 10) || 100,
+                soundCompletionGain: parseInt($('sound-completion-gain').value, 10) || 100,
+                soundQuestionGain: parseInt($('sound-question-gain').value, 10) || 100,
+                completionBeepSettleMs: parseInt($('cb-completionBeepSettleMs').value, 10) || 1000,
+                detectStuckToolUse: $('cb-detectStuckToolUse').checked,
+                stuckToolUseThresholdSec: parseInt($('cb-stuckToolUseThresholdSec').value, 10) || 90
             }
         };
         vscode.postMessage({ type: 'save', payload });
@@ -144,16 +160,24 @@
     });
 
     function inputIdFor(kind) {
-        return kind === 'warning' ? 'sound-warning' : kind === 'danger' ? 'sound-danger' : 'sound-completion';
+        if (kind === 'warning') return 'sound-warning';
+        if (kind === 'danger') return 'sound-danger';
+        if (kind === 'completion') return 'sound-completion';
+        return 'sound-question';
+    }
+    function gainIdFor(kind) {
+        return inputIdFor(kind) + '-gain';
     }
 
-    // Preview: play the currently typed path (or default if empty)
+    // Preview: play the currently typed path (or default if empty), with the
+    // currently typed gain (so the user can A/B the volume before saving)
     document.querySelectorAll('.sound-preview-btn').forEach((btn) => {
         btn.addEventListener('click', () => {
             const kind = btn.getAttribute('data-kind');
             const customPath = ($(inputIdFor(kind)).value || '').trim();
-            setStatus(`미리듣기: ${kind} (${customPath || '기본음'})`, 'ok');
-            vscode.postMessage({ type: 'testBeep', beepType: kind, customPath });
+            const gainPercent = parseInt($(gainIdFor(kind)).value, 10) || 100;
+            setStatus(`미리듣기: ${kind} (${customPath || '기본음'}) @ ${gainPercent}%`, 'ok');
+            vscode.postMessage({ type: 'testBeep', beepType: kind, customPath, gainPercent });
         });
     });
 
@@ -165,12 +189,13 @@
         });
     });
 
-    // Reset all three sound paths to empty (= use OS defaults)
+    // Reset all four sound paths AND gains to defaults (= empty path, 100% gain)
     const resetBtn = $('sound-reset-btn');
     if (resetBtn) resetBtn.addEventListener('click', () => {
-        $('sound-warning').value = '';
-        $('sound-danger').value = '';
-        $('sound-completion').value = '';
+        ['warning', 'danger', 'completion', 'question'].forEach((k) => {
+            $(inputIdFor(k)).value = '';
+            $(gainIdFor(k)).value = 100;
+        });
         setStatus('기본값으로 초기화됨 (저장 버튼을 눌러 적용)', 'ok');
     });
 
@@ -214,8 +239,7 @@
                 break;
             case 'soundFilePicked':
                 if (m.path) {
-                    const inputId = m.kind === 'warning' ? 'sound-warning' : m.kind === 'danger' ? 'sound-danger' : 'sound-completion';
-                    $(inputId).value = m.path;
+                    $(inputIdFor(m.kind)).value = m.path;
                     setStatus(`경로 설정됨: ${m.path} (저장 버튼을 눌러 적용)`, 'ok');
                 }
                 break;

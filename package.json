@@ -2,7 +2,7 @@
     "name": "claude-context-bar",
     "displayName": "claudeStateBar",
     "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your status bar. Remote-SSH supported, with Telegram reset alerts.",
-    "version": "1.7.2",
+    "version": "1.7.3",
     "extensionKind": ["ui"],
     "publisher": "ezoosk",
     "author": {
@@ -229,6 +229,58 @@
                     "type": "string",
                     "default": "",
                     "description": "Path to the WAV file played when Claude finishes a response (stop_reason = end_turn). Leave empty to use the bundled default."
+                },
+                "claudeContextBar.soundWarningGain": {
+                    "type": "number",
+                    "default": 100,
+                    "minimum": 50,
+                    "maximum": 5000,
+                    "description": "Warning sound volume gain in percent (50–5000). 100 = original WAV volume. Values above 100 amplify samples in-memory above the Windows master volume; values below 100 attenuate. WARNING: gains above ~300 typically cause clipping/distortion — the sound becomes harsher rather than louder. MP3 files only support attenuation (gain ≤ 100)."
+                },
+                "claudeContextBar.soundDangerGain": {
+                    "type": "number",
+                    "default": 100,
+                    "minimum": 50,
+                    "maximum": 5000,
+                    "description": "Danger sound volume gain in percent (50–5000). See soundWarningGain for details."
+                },
+                "claudeContextBar.soundCompletionGain": {
+                    "type": "number",
+                    "default": 100,
+                    "minimum": 50,
+                    "maximum": 5000,
+                    "description": "Completion sound volume gain in percent (50–5000). Useful when watching videos: raise this to hear the completion beep above the video's audio without raising the system master volume. WARNING: gains above ~300 cause clipping."
+                },
+                "claudeContextBar.completionBeepSettleMs": {
+                    "type": "number",
+                    "default": 3000,
+                    "minimum": 100,
+                    "maximum": 5000,
+                    "description": "Settle window (ms) before firing the completion beep. After detecting end_turn, wait this long; if new activity appears (hook follow-up, auto-injected user message, or sub-agent continuation), suppress the beep. Default: 3000. Range: 100–5000."
+                },
+                "claudeContextBar.soundQuestion": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Path to the WAV/MP3 file played when Claude pauses to ask a question (AskUserQuestion or ExitPlanMode tool). Leave empty for the OS default (Speech On.wav on Windows)."
+                },
+                "claudeContextBar.soundQuestionGain": {
+                    "type": "number",
+                    "default": 100,
+                    "minimum": 50,
+                    "maximum": 5000,
+                    "description": "Question sound volume gain in percent (50–5000). See soundWarningGain for details."
+                },
+                "claudeContextBar.detectStuckToolUse": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Heuristic: if the latest assistant entry is a tool_use (e.g., Bash, Edit) and no new activity has appeared for stuckToolUseThresholdSec, treat it as a likely VS Code permission prompt and fire the question beep. WARNING: this is a guess — legitimate long-running tools (builds, large file edits) will also trigger false positives. Off by default."
+                },
+                "claudeContextBar.stuckToolUseThresholdSec": {
+                    "type": "number",
+                    "default": 90,
+                    "minimum": 30,
+                    "maximum": 600,
+                    "description": "Seconds of tool_use silence before the stuck-tool-use heuristic fires the question beep (only when detectStuckToolUse is on). Default: 90."
                 }
             }
         }

@@ -94,7 +94,23 @@ const EN: Dict = {
     'cb.scope.all': 'All sessions',
     'cb.showModel.label': 'Show model name',
     'cb.compactMode.label': 'Compact mode (shorten names)',
-    'cb.note': 'Custom short names (shortNames) can be edited in the standard VS Code settings (Ctrl+,).'
+    'cb.note': 'Custom short names (shortNames) can be edited in the standard VS Code settings (Ctrl+,).',
+
+    // Sound settings
+    'sound.title': 'Beep sounds',
+    'sound.hint': 'WAV / MP3 file path (empty = OS default). Volume 50–5000% (WAV amplifies in-memory above 100%; MP3 only attenuates). Gains above ~300% typically cause clipping/distortion — louder turns into harsher. Plays on the local PC; identical behaviour for Remote-SSH and any workspace.',
+    'sound.warning': '⚠️ Warning (1×)',
+    'sound.danger': '🔴 Danger (2×)',
+    'sound.completion': '✅ Task complete',
+    'sound.question': '❓ Waiting for you',
+    'sound.questionHint': 'The question beep fires when Claude requests input via AskUserQuestion or ExitPlanMode — 100% accurate.',
+    'sound.settleMs.label': 'Completion / question settle (ms)',
+    'sound.settleMs.hint': 'Wait this long after detecting end_turn or a question; if new activity (auto follow-up, immediate user reply) appears, suppress the beep. 0 = fire immediately.',
+    'sound.stuckSec.label': 'tool_use stuck threshold (sec)',
+    'sound.stuckSec.hint': 'Used only when the heuristic below is enabled.',
+    'sound.detectStuck.label': 'Beep on suspected VS Code permission prompt (heuristic — false-positive risk)',
+    'sound.detectStuck.hint': 'When the latest assistant entry is a tool_use (Bash, Edit, etc.) and N seconds pass without new activity, fire the question beep. Long-running legitimate tools (npm build) will also trigger this. Off by default.',
+    'sound.reset': 'Reset to defaults'
 };
 
 const KO: Dict = {
@@ -178,7 +194,23 @@ const KO: Dict = {
     'cb.scope.all': '모든 세션',
     'cb.showModel.label': '모델 이름 표시',
     'cb.compactMode.label': '컴팩트 모드 (이름 축약)',
-    'cb.note': '커스텀 단축 이름(shortNames)은 표준 VS Code 설정(Ctrl+,)에서 편집할 수 있습니다.'
+    'cb.note': '커스텀 단축 이름(shortNames)은 표준 VS Code 설정(Ctrl+,)에서 편집할 수 있습니다.',
+
+    // Sound settings
+    'sound.title': '비프음 설정',
+    'sound.hint': 'WAV / MP3 파일 경로 (비워두면 OS 기본음). 볼륨 50~5000% (WAV만 증폭, MP3는 감쇠만). 300% 이상은 클리핑(파형 왜곡) 발생 — 더 큰 소리가 아니라 거친 소리가 됩니다. 로컬 PC에서 재생되며 Remote-SSH·워크스페이스 무관하게 동일하게 적용됩니다.',
+    'sound.warning': '⚠️ 경고 (1×)',
+    'sound.danger': '🔴 위험 (2×)',
+    'sound.completion': '✅ 작업 완료',
+    'sound.question': '❓ 질문 대기',
+    'sound.questionHint': '질문 대기 비프는 Claude가 AskUserQuestion 또는 ExitPlanMode 도구로 입력을 요구할 때 발사됩니다 — 100% 정확.',
+    'sound.settleMs.label': '완료/질문 비프 settle (ms)',
+    'sound.settleMs.hint': 'end_turn 또는 질문 검출 후 이 시간만큼 대기. 그 사이 새 활동(자동 follow-up, 사용자 즉답)이 발생하면 비프 취소. 0이면 즉시 발사.',
+    'sound.stuckSec.label': 'tool_use 멈춤 임계값 (초)',
+    'sound.stuckSec.hint': '아래 휴리스틱이 켜져 있을 때만 적용.',
+    'sound.detectStuck.label': 'VS Code 권한 팝업 추정 비프 (휴리스틱 — 오탐 위험)',
+    'sound.detectStuck.hint': '마지막 assistant 항목이 tool_use(Bash·Edit 등)이고 N초 이상 새 활동 없을 때 질문 비프 발사. npm build 등 정상 장기 작업도 오탐 발사함. 기본 꺼짐.',
+    'sound.reset': '기본값으로 초기화'
 };
 
 const DICTS: Record<Lang, Dict> = { en: EN, ko: KO };

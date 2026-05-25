@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
+import * as fs from 'fs';
+import * as crypto from 'crypto';
 import * as cp from 'child_process';
 import * as creds from './credentials';
 import { fetchUsage, AuthExpiredError, CloudflareBlockedError, NormalizedUsage, getTransport } from './planUsage';
@@ -29,6 +31,15 @@ interface SessionInfo {
     isIdle: boolean;
     isFallback?: boolean;
     lastAssistantEndTurnAt: Date | null;
+    // Pause-detection signals (for the "question beep"):
+    //   pendingQuestionAt — set when the latest assistant entry is an unanswered
+    //     AskUserQuestion / ExitPlanMode tool_use (100% reliable signal).
+    //   pendingToolUseAt  — set when the latest assistant entry is ANY unanswered
+    //     tool_use (used by the optional stuck-tool-use heuristic).
+    //   pendingToolUseName — the tool name of that unanswered tool_use (for logs).
+    pendingQuestionAt: Date | null;
+    pendingToolUseAt: Date | null;
+    pendingToolUseName: string | null;
 }
 
 interface StatusBarEntry {
@@ -41,6 +52,16 @@ const statusBarItems: Map<string, StatusBarEntry> = new Map();
 const hiddenSessions: Map<string, number> = new Map();
 const alertedSessions = new Map<string, { warned: boolean; dangered: boolean }>();
 const lastKnownEndTurnAt = new Map<string, number>();
+// Pending completion beep timers — debounced so a hook follow-up or auto-injected
+// user message can cancel the beep before it fires.
+type PendingBeep = { timer: NodeJS.Timeout; markerAt: number };
+const pendingCompletion = new Map<string, PendingBeep>();
+// Baseline / pending state for the question beep (AskUserQuestion / ExitPlanMode).
+const lastKnownQuestionAt = new Map<string, number>();
+const pendingQuestion = new Map<string, PendingBeep>();
+// Stuck-tool-use heuristic: remember the timestamp of the unanswered tool_use we
+// already fired a beep for, so we don't re-fire while it stays unanswered.
+const alertedStuckToolUseAt = new Map<string, number>();
 let isFirstScan = true;
 let refreshInterval: NodeJS.Timeout | null = null;
 let outputChannel: vscode.OutputChannel | null = null;
@@ -84,33 +105,37 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Internal beep command — called from the settings panel webview.
     // If a customPath is given, play THAT file (preview before saving); otherwise use the saved setting.
-    const playBeepCmd = vscode.commands.registerCommand('claudeContextBar.playBeep', (beepType: string, customPath?: string) => {
-        log(`[beep] command received: beepType=${beepType}, customPath="${customPath ?? ''}"`);
+    // gainPercent (50–300) is optional and lets the preview reflect the unsaved gain input.
+    const playBeepCmd = vscode.commands.registerCommand('claudeContextBar.playBeep', (beepType: string, customPath?: string, gainPercent?: number) => {
+        log(`[beep] command received: beepType=${beepType}, customPath="${customPath ?? ''}", gain=${gainPercent ?? '(saved)'}`);
+        const kind: SoundKind = beepType === 'danger' ? 'danger'
+            : beepType === 'completion' ? 'completion'
+            : beepType === 'question' ? 'question'
+            : 'warning';
         const trimmed = (customPath || '').trim();
-        if (trimmed) {
-            const repeat = beepType === 'danger' ? 2 : 1;
-            playSoundFile(trimmed, repeat, `preview:${beepType}`);
-            return;
-        }
-        if (beepType === 'completion') playCompletionSound();
-        else playBeep(beepType === 'danger' ? 2 : 1);
+        const repeat = kind === 'danger' ? 2 : 1;
+        const gain = (typeof gainPercent === 'number' && Number.isFinite(gainPercent))
+            ? Math.max(50, Math.min(300, Math.round(gainPercent)))
+            : getSoundGain(kind);
+        const soundPath = trimmed || getSoundPath(kind);
+        playSoundFile(soundPath, repeat, `${trimmed ? 'preview' : 'beep'}:${kind}`, gain);
     });
     context.subscriptions.push(playBeepCmd);
 
     // Test beep sounds (Command Palette: "claudeContextBar: Test Beep")
     const testBeepCmd = vscode.commands.registerCommand('claudeContextBar.testBeep', async () => {
-        type BeepType = 'warning' | 'danger' | 'completion';
+        type BeepType = 'warning' | 'danger' | 'completion' | 'question';
         const pick = await vscode.window.showQuickPick(
             [
-                { label: '$(bell) Warning beep (1×)',     description: 'warningThreshold 도달 시 — 단음 800Hz',     type: 'warning' as BeepType },
-                { label: '$(bell) Danger beep (2×)',      description: 'dangerThreshold 도달 시 — 2음 800→1000Hz', type: 'danger' as BeepType },
-                { label: '$(check) 작업 완료 알림 (3음)', description: 'Claude end_turn 감지 시 — 3음 600→800→1000Hz', type: 'completion' as BeepType },
+                { label: '$(bell) Warning beep (1×)',     description: 'warningThreshold 도달 시',     type: 'warning' as BeepType },
+                { label: '$(bell) Danger beep (2×)',      description: 'dangerThreshold 도달 시',      type: 'danger' as BeepType },
+                { label: '$(check) 작업 완료 알림',       description: 'Claude end_turn 감지 시 (settle 적용)', type: 'completion' as BeepType },
+                { label: '$(question) 질문 대기 알림',     description: 'AskUserQuestion / ExitPlanMode 감지 시',    type: 'question' as BeepType },
             ],
             { placeHolder: '테스트할 비프 종류를 선택하세요' }
         );
         if (!pick) return;
-        if (pick.type === 'completion') playCompletionSound();
-        else playBeep(pick.type === 'warning' ? 1 : 2);
+        vscode.commands.executeCommand('claudeContextBar.playBeep', pick.type);
     });
     context.subscriptions.push(testBeepCmd);
     context.subscriptions.push(refreshPlanCmd);
@@ -309,6 +334,10 @@ export function activate(context: vscode.ExtensionContext) {
             if (planTickInterval) {
                 clearInterval(planTickInterval);
             }
+            for (const [, p] of pendingCompletion) clearTimeout(p.timer);
+            pendingCompletion.clear();
+            for (const [, p] of pendingQuestion) clearTimeout(p.timer);
+            pendingQuestion.clear();
             planFallbackItem?.dispose();
             statusBarItems.forEach(entry => entry.item.dispose());
             statusBarItems.clear();
@@ -351,24 +380,133 @@ async function logRemoteFsProbe(): Promise<void> {
 function playBeep(count: number): void {
     const kind = count === 1 ? 'warning' : 'danger';
     const soundPath = getSoundPath(kind);
-    playSoundFile(soundPath, count, `beep:${kind}`);
+    const gain = getSoundGain(kind);
+    playSoundFile(soundPath, count, `beep:${kind}`, gain);
 }
 
+type SoundKind = 'warning' | 'danger' | 'completion' | 'question';
+
 // Default WAV paths per platform — used when the user setting is empty.
-const DEFAULT_WAVS = {
+const DEFAULT_WAVS: Record<SoundKind, string> = {
     warning: process.platform === 'win32' ? 'C:\\Windows\\Media\\Windows Notify.wav'
         : process.platform === 'darwin' ? '/System/Library/Sounds/Glass.aiff' : '',
     danger:  process.platform === 'win32' ? 'C:\\Windows\\Media\\Windows Critical Stop.wav'
         : process.platform === 'darwin' ? '/System/Library/Sounds/Glass.aiff' : '',
     completion: process.platform === 'win32' ? 'C:\\Windows\\Media\\tada.wav'
-        : process.platform === 'darwin' ? '/System/Library/Sounds/Hero.aiff' : ''
+        : process.platform === 'darwin' ? '/System/Library/Sounds/Hero.aiff' : '',
+    question: process.platform === 'win32' ? 'C:\\Windows\\Media\\Speech On.wav'
+        : process.platform === 'darwin' ? '/System/Library/Sounds/Ping.aiff' : ''
 };
 
-function getSoundPath(kind: 'warning' | 'danger' | 'completion'): string {
+function getSoundPath(kind: SoundKind): string {
     const cfg = vscode.workspace.getConfiguration('claudeContextBar');
-    const key = kind === 'warning' ? 'soundWarning' : kind === 'danger' ? 'soundDanger' : 'soundCompletion';
+    const key = kind === 'warning' ? 'soundWarning'
+        : kind === 'danger' ? 'soundDanger'
+        : kind === 'completion' ? 'soundCompletion'
+        : 'soundQuestion';
     const user = cfg.get<string>(key, '').trim();
     return user || DEFAULT_WAVS[kind];
+}
+
+function getSoundGain(kind: SoundKind): number {
+    const cfg = vscode.workspace.getConfiguration('claudeContextBar');
+    const key = kind === 'warning' ? 'soundWarningGain'
+        : kind === 'danger' ? 'soundDangerGain'
+        : kind === 'completion' ? 'soundCompletionGain'
+        : 'soundQuestionGain';
+    const raw = cfg.get<number>(key, 100);
+    // Clamp to documented range
+    if (!Number.isFinite(raw)) return 100;
+    return Math.max(50, Math.min(300, Math.round(raw)));
+}
+
+// Amplify a WAV file by gainPercent (50–300) by parsing the PCM data chunk and
+// scaling each sample. Returns a path to a cached temp file. Falls back to the
+// original path if anything goes wrong (unsupported format, parse error, etc.).
+//
+// Cache key: source file mtime + size + gain. The cache lives in
+// %TEMP%/claudeContextBar/amplified/ and is invalidated when the source file
+// changes (different mtime/size produces a different key).
+//
+// Supported PCM formats: 16-bit signed, 8-bit unsigned, 32-bit IEEE float.
+// Other formats (24-bit, ADPCM, etc.) fall back to the original file.
+function amplifyWavToTemp(srcPath: string, gainPercent: number): string {
+    if (gainPercent === 100) return srcPath;
+    try {
+        const stat = fs.statSync(srcPath);
+        const cacheDir = path.join(os.tmpdir(), 'claudeContextBar', 'amplified');
+        const keyMaterial = `${srcPath}|${stat.mtimeMs}|${stat.size}|${gainPercent}`;
+        const hash = crypto.createHash('sha1').update(keyMaterial).digest('hex').slice(0, 16);
+        const base = path.basename(srcPath).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const outPath = path.join(cacheDir, `${base}_g${gainPercent}_${hash}.wav`);
+        if (fs.existsSync(outPath)) return outPath;
+
+        const buf = fs.readFileSync(srcPath);
+        // Minimum RIFF/WAVE header sanity
+        if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') {
+            log(`[amp] not a RIFF/WAVE file, skipping: ${srcPath}`);
+            return srcPath;
+        }
+
+        // Walk chunks to find "fmt " and "data"
+        let fmtOffset = -1, fmtSize = 0;
+        let dataOffset = -1, dataSize = 0;
+        let p = 12;
+        while (p + 8 <= buf.length) {
+            const id = buf.toString('ascii', p, p + 4);
+            const size = buf.readUInt32LE(p + 4);
+            if (id === 'fmt ') { fmtOffset = p + 8; fmtSize = size; }
+            else if (id === 'data') { dataOffset = p + 8; dataSize = size; break; }
+            p += 8 + size + (size % 2);  // chunks are 2-byte aligned
+        }
+        if (fmtOffset < 0 || dataOffset < 0 || fmtSize < 16) {
+            log(`[amp] missing fmt/data chunks: ${srcPath}`);
+            return srcPath;
+        }
+
+        const audioFormat = buf.readUInt16LE(fmtOffset);          // 1 = PCM, 3 = IEEE float
+        const bitsPerSample = buf.readUInt16LE(fmtOffset + 14);
+        const out = Buffer.from(buf);  // copy
+        const dataEnd = Math.min(dataOffset + dataSize, out.length);
+        const gain = gainPercent / 100;
+
+        if (audioFormat === 1 && bitsPerSample === 16) {
+            for (let i = dataOffset; i + 2 <= dataEnd; i += 2) {
+                const s = out.readInt16LE(i);
+                let v = Math.round(s * gain);
+                if (v > 32767) v = 32767;
+                else if (v < -32768) v = -32768;
+                out.writeInt16LE(v, i);
+            }
+        } else if (audioFormat === 1 && bitsPerSample === 8) {
+            // 8-bit PCM is unsigned, centred at 128
+            for (let i = dataOffset; i < dataEnd; i++) {
+                const s = out.readUInt8(i) - 128;
+                let v = Math.round(s * gain) + 128;
+                if (v > 255) v = 255;
+                else if (v < 0) v = 0;
+                out.writeUInt8(v, i);
+            }
+        } else if (audioFormat === 3 && bitsPerSample === 32) {
+            for (let i = dataOffset; i + 4 <= dataEnd; i += 4) {
+                let v = out.readFloatLE(i) * gain;
+                if (v > 1) v = 1;
+                else if (v < -1) v = -1;
+                out.writeFloatLE(v, i);
+            }
+        } else {
+            log(`[amp] unsupported WAV format (audioFormat=${audioFormat}, bits=${bitsPerSample}), skipping: ${srcPath}`);
+            return srcPath;
+        }
+
+        fs.mkdirSync(cacheDir, { recursive: true });
+        fs.writeFileSync(outPath, out);
+        log(`[amp] cached ${outPath} (gain=${gainPercent}%, ${bitsPerSample}-bit fmt=${audioFormat})`);
+        return outPath;
+    } catch (e: any) {
+        log(`[amp] failed for ${srcPath}: ${e?.message ?? e}`);
+        return srcPath;
+    }
 }
 
 // Play a sound file by absolute path. Supports .wav (SoundPlayer.PlaySync — fast & sync)
@@ -378,21 +516,34 @@ function getSoundPath(kind: 'warning' | 'danger' | 'completion'): string {
 // sounds would play on the REMOTE server's audio device — which the user can't hear.
 // Skip in that case. The local UI instance (where extensionKind=ui places this extension)
 // is the one that should produce audio. See package.json "extensionKind": ["ui"].
-function playSoundFile(soundPath: string, repeat: number = 1, label: string = 'beep'): void {
+function playSoundFile(soundPath: string, repeat: number = 1, label: string = 'beep', gainPercent: number = 100): void {
     if (vscode.env.remoteName) {
         log(`[${label}] skipped — running in remote (${vscode.env.remoteName}); sound only plays on local UI host`);
         return;
     }
-    log(`[${label}] playSoundFile path="${soundPath}" repeat=${repeat} platform=${process.platform}`);
+    if (!soundPath) {
+        log(`[${label}] empty soundPath, skipping`);
+        return;
+    }
+    const isWav = soundPath.toLowerCase().endsWith('.wav');
+    // WAV gets in-memory PCM amplification (can go above 100%, real volume boost).
+    // MP3/other formats can only be ATTENUATED via the media player's Volume property
+    // (0–1 range); we can't amplify them without re-encoding.
+    let effectivePath = soundPath;
+    if (isWav && gainPercent !== 100) {
+        effectivePath = amplifyWavToTemp(soundPath, gainPercent);
+    }
+    log(`[${label}] playSoundFile path="${effectivePath}" repeat=${repeat} gain=${gainPercent}% platform=${process.platform}`);
     if (process.platform === 'win32') {
-        const escaped = soundPath.replace(/'/g, "''");
-        const isWav = soundPath.toLowerCase().endsWith('.wav');
+        const escaped = effectivePath.replace(/'/g, "''");
         let single: string;
         if (isWav) {
             single = `(New-Object System.Media.SoundPlayer '${escaped}').PlaySync()`;
         } else {
-            // WPF MediaPlayer for MP3/other formats — wait for NaturalDuration to load, then play and sleep
-            single = `Add-Type -AssemblyName presentationCore; $p = [System.Windows.Media.MediaPlayer]::new(); $p.Open([System.Uri]::new('${escaped}')); $i = 0; while(-not $p.NaturalDuration.HasTimeSpan -and $i -lt 30){Start-Sleep -Milliseconds 50; $i++}; $p.Play(); $dur = if($p.NaturalDuration.HasTimeSpan){[Math]::Min($p.NaturalDuration.TimeSpan.TotalMilliseconds + 200, 10000)}else{5000}; Start-Sleep -Milliseconds $dur`;
+            // WPF MediaPlayer for MP3/other formats. Volume is 0–1 (no amplification possible).
+            // For gain > 100, we fall back to original volume; for gain < 100, attenuate.
+            const volume = Math.min(1, Math.max(0, gainPercent / 100));
+            single = `Add-Type -AssemblyName presentationCore; $p = [System.Windows.Media.MediaPlayer]::new(); $p.Volume = ${volume.toFixed(3)}; $p.Open([System.Uri]::new('${escaped}')); $i = 0; while(-not $p.NaturalDuration.HasTimeSpan -and $i -lt 30){Start-Sleep -Milliseconds 50; $i++}; $p.Play(); $dur = if($p.NaturalDuration.HasTimeSpan){[Math]::Min($p.NaturalDuration.TimeSpan.TotalMilliseconds + 200, 10000)}else{5000}; Start-Sleep -Milliseconds $dur`;
         }
         const cmd = Array.from({ length: repeat }, () => single).join('; ');
         const full = `powershell -NoProfile -NonInteractive -c "${cmd}"`;
@@ -403,16 +554,20 @@ function playSoundFile(soundPath: string, repeat: number = 1, label: string = 'b
             else log(`[${label}] exec completed`);
         });
     } else if (process.platform === 'darwin') {
-        // afplay supports WAV, MP3, AIFF, AAC etc. natively
-        const escaped = soundPath.replace(/"/g, '\\"');
-        const single = `afplay "${escaped}"`;
+        // afplay supports WAV, MP3, AIFF, AAC etc. natively. --volume 0..2.
+        // For WAV we already amplified the file; pass volume 1.0. For MP3, pass gain/100 capped at 2.
+        const escaped = effectivePath.replace(/"/g, '\\"');
+        const afVol = isWav ? 1 : Math.min(2, Math.max(0, gainPercent / 100));
+        const single = `afplay --volume ${afVol.toFixed(3)} "${escaped}"`;
         const cmd = Array.from({ length: repeat }, () => single).join(' && sleep 0.3 && ');
         cp.exec(cmd, (err) => { if (err) log(`[${label}] afplay error: ${err.message}`); });
     } else {
-        // Linux: try paplay (WAV/OGG) → mpg123/ffplay (MP3) → aplay → fallback bell
-        const esc = soundPath.replace(/"/g, '\\"');
+        // Linux: try paplay (WAV/OGG) → mpg123/ffplay (MP3) → aplay → fallback bell.
+        // paplay has --volume (0–65536, 65536 = 100%); for gain > 100 we cap at ~200%.
+        const esc = effectivePath.replace(/"/g, '\\"');
+        const paVolStr = isWav ? '' : ` --volume=${Math.round(Math.min(2, Math.max(0, gainPercent / 100)) * 65536)}`;
         const playOne = soundPath
-            ? `paplay "${esc}" 2>/dev/null || mpg123 -q "${esc}" 2>/dev/null || ffplay -nodisp -autoexit -loglevel quiet "${esc}" 2>/dev/null || aplay -q "${esc}" 2>/dev/null || true`
+            ? `paplay${paVolStr} "${esc}" 2>/dev/null || mpg123 -q "${esc}" 2>/dev/null || ffplay -nodisp -autoexit -loglevel quiet "${esc}" 2>/dev/null || aplay -q "${esc}" 2>/dev/null || true`
             : 'paplay /usr/share/sounds/freedesktop/stereo/bell.oga 2>/dev/null || beep 2>/dev/null || true';
         const cmd = Array.from({ length: repeat }, () => playOne).join('; sleep 0.3; ');
         cp.exec(cmd, { shell: '/bin/bash' }, (err) => { if (err) log(`[${label}] linux error: ${err.message}`); });
@@ -422,8 +577,14 @@ function playSoundFile(soundPath: string, repeat: number = 1, label: string = 'b
 // 3-note ascending arpeggio (600→800→1000 Hz) — "Claude finished" positive signal,
 // distinct from warning (single) and danger (double ascending pair).
 function playCompletionSound(): void {
-    const soundPath = getSoundPath('completion');
-    playSoundFile(soundPath, 1, 'beep:completion');
+    playSoundFile(getSoundPath('completion'), 1, 'beep:completion', getSoundGain('completion'));
+}
+
+// Distinct chime for "Claude is paused waiting on the user" (AskUserQuestion /
+// ExitPlanMode / optional stuck-tool-use heuristic). Default Speech On.wav on
+// Windows — a short, clearly different tone from tada.wav.
+function playQuestionSound(): void {
+    playSoundFile(getSoundPath('question'), 1, 'beep:question', getSoundGain('question'));
 }
 
 export function deactivate() {
@@ -436,6 +597,10 @@ export function deactivate() {
     if (planTickInterval) {
         clearInterval(planTickInterval);
     }
+    for (const [, p] of pendingCompletion) clearTimeout(p.timer);
+    pendingCompletion.clear();
+    for (const [, p] of pendingQuestion) clearTimeout(p.timer);
+    pendingQuestion.clear();
     planFallbackItem?.dispose();
     statusBarItems.forEach(entry => entry.item.dispose());
     statusBarItems.clear();
@@ -610,6 +775,9 @@ interface TokenUsage {
     lastRealTimestamp: Date | null;  // Last timestamp excluding last-prompt entries
     wasCleared: boolean;  // True if session ended with /clear command
     lastAssistantEndTurnAt: Date | null;  // Timestamp of last end_turn assistant entry
+    pendingQuestionAt: Date | null;  // See SessionInfo
+    pendingToolUseAt: Date | null;
+    pendingToolUseName: string | null;
 }
 
 // Determine context limit based on model id.
@@ -680,7 +848,7 @@ function getShortName(projectName: string, customNames: Record<string, string>):
 }
 
 async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
-    const empty: TokenUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, wasCleared: false, lastAssistantEndTurnAt: null };
+    const empty: TokenUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, wasCleared: false, lastAssistantEndTurnAt: null, pendingQuestionAt: null, pendingToolUseAt: null, pendingToolUseName: null };
     try {
         const stat = await vscode.workspace.fs.stat(jsonlUri);
         if (stat.size === 0) {
@@ -795,6 +963,53 @@ async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
                 }
             }
 
+            // --- Pause detection: scan from the end of the file for an unanswered tool_use ---
+            //
+            // Claude Code's tool flow always looks like:
+            //   assistant entry (stop_reason="tool_use", content ends with one or more tool_use blocks)
+            //   user entry     (content = tool_result blocks for each tool_use id)
+            // While Claude is waiting on the user — either because it explicitly asked
+            // (AskUserQuestion / ExitPlanMode) or because VS Code popped a permission
+            // prompt for a tool like Bash — the tool_result entry has not been written yet.
+            //
+            // So: walk backwards from the end skipping empty lines. The first entry we hit
+            // wins. If it is an assistant entry whose final content block is `tool_use`, we
+            // are paused waiting on the user. The block's `name` tells us whether it's a
+            // deliberate question (AskUserQuestion / ExitPlanMode) or any other tool (the
+            // optional stuck-tool-use heuristic uses the latter).
+            let pendingQuestionAt: Date | null = null;
+            let pendingToolUseAt: Date | null = null;
+            let pendingToolUseName: string | null = null;
+            for (let i = lines.length - 1; i >= 0; i--) {
+                const raw = lines[i];
+                if (!raw.trim()) continue;
+                try {
+                    const e = JSON.parse(raw);
+                    if (e.type !== 'assistant' && e.type !== 'user') continue;
+                    // The newest meaningful entry — answer the pending question:
+                    if (e.type === 'assistant' && e.message?.stop_reason === 'tool_use') {
+                        const content = e.message?.content;
+                        if (Array.isArray(content)) {
+                            // Find the last tool_use block in the message
+                            let lastTu: any = null;
+                            for (let k = content.length - 1; k >= 0; k--) {
+                                if (content[k]?.type === 'tool_use') { lastTu = content[k]; break; }
+                            }
+                            if (lastTu) {
+                                const tsRaw = e.timestamp;
+                                const ts = tsRaw ? new Date(tsRaw) : null;
+                                pendingToolUseAt = ts;
+                                pendingToolUseName = typeof lastTu.name === 'string' ? lastTu.name : null;
+                                if (lastTu.name === 'AskUserQuestion' || lastTu.name === 'ExitPlanMode') {
+                                    pendingQuestionAt = ts;
+                                }
+                            }
+                        }
+                    }
+                    break; // First non-empty entry decides; stop scanning
+                } catch { /* malformed line — skip */ }
+            }
+
             return {
                 inputTokens: finalUsage.inputTokens,
                 cacheReadTokens: finalUsage.cacheReadTokens,
@@ -806,7 +1021,10 @@ async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
                 sessionCreated,
                 lastRealTimestamp,
                 wasCleared,
-                lastAssistantEndTurnAt
+                lastAssistantEndTurnAt,
+                pendingQuestionAt,
+                pendingToolUseAt,
+                pendingToolUseName
             };
     } catch (e) {
         return empty;
@@ -952,7 +1170,10 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                         sessionCreated: usage.sessionCreated,
                         wasCleared: usage.wasCleared,
                         isIdle: file.mtime.getTime() <= idleThreshold,
-                        lastAssistantEndTurnAt: usage.lastAssistantEndTurnAt
+                        lastAssistantEndTurnAt: usage.lastAssistantEndTurnAt,
+                        pendingQuestionAt: usage.pendingQuestionAt,
+                        pendingToolUseAt: usage.pendingToolUseAt,
+                        pendingToolUseName: usage.pendingToolUseName
                     });
                 }
             }
@@ -1086,7 +1307,10 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                 wasCleared: usage.wasCleared,
                 isIdle: true,
                 isFallback: true,
-                lastAssistantEndTurnAt: usage.lastAssistantEndTurnAt
+                lastAssistantEndTurnAt: usage.lastAssistantEndTurnAt,
+                pendingQuestionAt: usage.pendingQuestionAt,
+                pendingToolUseAt: usage.pendingToolUseAt,
+                pendingToolUseName: usage.pendingToolUseName
             });
         }
     }
@@ -1301,18 +1525,121 @@ async function refreshAllSessions() {
             }
         }
 
-        // Task completion detection: fire when a new end_turn timestamp appears
+        // --- Task completion detection (debounced) ---
+        // The legacy logic fired the beep the instant a new end_turn timestamp appeared.
+        // That produced false positives when a hook or skill auto-injected a follow-up
+        // user message right after end_turn (Claude effectively kept working but we'd
+        // already beeped). The new logic waits `completionBeepSettleMs`; any new activity
+        // for the session inside that window cancels the pending beep.
+        const completionSettleMs = config.get<number>('completionBeepSettleMs', 3000);
         if (!suppressBeep && session.lastAssistantEndTurnAt) {
             const curr = session.lastAssistantEndTurnAt.getTime();
+            const lastActivity = session.lastUpdated.getTime();
             const prev = lastKnownEndTurnAt.get(session.sessionFile);
+            const existing = pendingCompletion.get(session.sessionFile);
+
             if (prev === undefined) {
+                // First time seeing this session — baseline silently
+                lastKnownEndTurnAt.set(session.sessionFile, curr);
                 log(`[done] first seen ${session.projectName} endTurn=${new Date(curr).toISOString()}`);
-                lastKnownEndTurnAt.set(session.sessionFile, curr);
             } else if (curr > prev) {
-                log(`[done] new end_turn for ${session.projectName}: ${new Date(prev).toISOString()} -> ${new Date(curr).toISOString()}, firing completion sound`);
-                playCompletionSound();
-                lastKnownEndTurnAt.set(session.sessionFile, curr);
+                if (existing) clearTimeout(existing.timer);
+                pendingCompletion.delete(session.sessionFile);
+                // If activity already exists after this end_turn, suppress immediately
+                // (a follow-up landed before we even got here)
+                const newerActivityExists = lastActivity > curr + 500;
+                if (newerActivityExists) {
+                    log(`[done] suppressed for ${session.projectName} — newer activity at ${new Date(lastActivity).toISOString()}`);
+                    lastKnownEndTurnAt.set(session.sessionFile, curr);
+                } else if (completionSettleMs <= 0) {
+                    log(`[done] new end_turn for ${session.projectName} (settle=0): firing immediately`);
+                    playCompletionSound();
+                    lastKnownEndTurnAt.set(session.sessionFile, curr);
+                } else {
+                    log(`[done] scheduled beep for ${session.projectName} in ${completionSettleMs}ms`);
+                    const timer = setTimeout(() => {
+                        log(`[done] settled → beep for ${session.projectName}`);
+                        playCompletionSound();
+                        lastKnownEndTurnAt.set(session.sessionFile, curr);
+                        pendingCompletion.delete(session.sessionFile);
+                    }, completionSettleMs);
+                    pendingCompletion.set(session.sessionFile, { timer, markerAt: curr });
+                }
+            } else if (existing && lastActivity > existing.markerAt + 500) {
+                // Pending beep but new activity arrived → cancel
+                log(`[done] cancelled pending for ${session.projectName} — new activity at ${new Date(lastActivity).toISOString()}`);
+                clearTimeout(existing.timer);
+                pendingCompletion.delete(session.sessionFile);
+                lastKnownEndTurnAt.set(session.sessionFile, existing.markerAt);
             }
+        }
+
+        // --- Question detection (AskUserQuestion / ExitPlanMode) ---
+        // Same debounce shape as completion: if the user types a reply within the settle
+        // window, no beep. Uses the same completionBeepSettleMs setting.
+        if (!suppressBeep && session.pendingQuestionAt) {
+            const curr = session.pendingQuestionAt.getTime();
+            const lastActivity = session.lastUpdated.getTime();
+            const prev = lastKnownQuestionAt.get(session.sessionFile);
+            const existing = pendingQuestion.get(session.sessionFile);
+
+            if (prev === undefined) {
+                lastKnownQuestionAt.set(session.sessionFile, curr);
+                log(`[q] first seen ${session.projectName} question=${session.pendingToolUseName} at=${new Date(curr).toISOString()}`);
+            } else if (curr > prev) {
+                if (existing) clearTimeout(existing.timer);
+                pendingQuestion.delete(session.sessionFile);
+                const newerActivityExists = lastActivity > curr + 500;
+                if (newerActivityExists) {
+                    log(`[q] suppressed for ${session.projectName} — newer activity at ${new Date(lastActivity).toISOString()}`);
+                    lastKnownQuestionAt.set(session.sessionFile, curr);
+                } else if (completionSettleMs <= 0) {
+                    log(`[q] new question for ${session.projectName} (${session.pendingToolUseName}): firing immediately`);
+                    playQuestionSound();
+                    lastKnownQuestionAt.set(session.sessionFile, curr);
+                } else {
+                    log(`[q] scheduled question beep for ${session.projectName} (${session.pendingToolUseName}) in ${completionSettleMs}ms`);
+                    const timer = setTimeout(() => {
+                        log(`[q] settled → question beep for ${session.projectName}`);
+                        playQuestionSound();
+                        lastKnownQuestionAt.set(session.sessionFile, curr);
+                        pendingQuestion.delete(session.sessionFile);
+                    }, completionSettleMs);
+                    pendingQuestion.set(session.sessionFile, { timer, markerAt: curr });
+                }
+            } else if (existing && lastActivity > existing.markerAt + 500) {
+                log(`[q] cancelled pending for ${session.projectName} — new activity at ${new Date(lastActivity).toISOString()}`);
+                clearTimeout(existing.timer);
+                pendingQuestion.delete(session.sessionFile);
+                lastKnownQuestionAt.set(session.sessionFile, existing.markerAt);
+            }
+        }
+
+        // --- Optional: stuck-tool-use heuristic ---
+        // The latest assistant entry is an unanswered tool_use (NOT AskUserQuestion/
+        // ExitPlanMode, which the block above handles) AND no new activity has happened
+        // for stuckToolUseThresholdSec. The likely cause is a VS Code permission prompt
+        // (Bash, Edit, etc.) blocking Claude. This is a heuristic and WILL fire on long-
+        // running legitimate tools (npm build, etc.). Off by default.
+        const detectStuck = config.get<boolean>('detectStuckToolUse', false);
+        if (!suppressBeep && detectStuck && session.pendingToolUseAt && !session.pendingQuestionAt) {
+            const stuckThresholdSec = config.get<number>('stuckToolUseThresholdSec', 90);
+            const stuckThresholdMs = stuckThresholdSec * 1000;
+            const toolUseAt = session.pendingToolUseAt.getTime();
+            const ageMs = Date.now() - toolUseAt;
+            const alreadyAlerted = alertedStuckToolUseAt.get(session.sessionFile) === toolUseAt;
+            if (!alreadyAlerted && ageMs >= stuckThresholdMs) {
+                log(`[q-stuck] tool_use stuck for ${Math.round(ageMs / 1000)}s (${session.pendingToolUseName}) — firing heuristic question beep`);
+                playQuestionSound();
+                alertedStuckToolUseAt.set(session.sessionFile, toolUseAt);
+            }
+        }
+        // Clear stuck marker when the pending tool_use changes (got answered or moved on)
+        if (!session.pendingToolUseAt) {
+            alertedStuckToolUseAt.delete(session.sessionFile);
+        } else if (alertedStuckToolUseAt.has(session.sessionFile)
+                   && alertedStuckToolUseAt.get(session.sessionFile) !== session.pendingToolUseAt.getTime()) {
+            alertedStuckToolUseAt.delete(session.sessionFile);
         }
 
         // Detailed tooltip. The first-message line and project path were removed per
@@ -1363,6 +1690,12 @@ async function refreshAllSessions() {
             statusBarItems.delete(sessionFile);
             alertedSessions.delete(sessionFile);
             lastKnownEndTurnAt.delete(sessionFile);
+            lastKnownQuestionAt.delete(sessionFile);
+            alertedStuckToolUseAt.delete(sessionFile);
+            const pc = pendingCompletion.get(sessionFile);
+            if (pc) { clearTimeout(pc.timer); pendingCompletion.delete(sessionFile); }
+            const pq = pendingQuestion.get(sessionFile);
+            if (pq) { clearTimeout(pq.timer); pendingQuestion.delete(sessionFile); }
         }
     }
 
