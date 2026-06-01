@@ -8,6 +8,7 @@ import * as creds from './credentials';
 import { fetchUsage, AuthExpiredError, CloudflareBlockedError, NormalizedUsage, getTransport } from './planUsage';
 import * as telegram from './telegram';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
+import { createOrShowWorkflowPanel, pushWorkflows, getTrackedSessionFile } from './workflowPanel';
 import { getDict, Lang } from './i18n';
 
 interface SessionInfo {
@@ -45,6 +46,21 @@ interface SessionInfo {
 interface StatusBarEntry {
     item: vscode.StatusBarItem;
     sessionFile: string;
+}
+
+interface WorkflowAgentInfo {
+    agentId: string;
+    status: 'running' | 'done';
+    summary: string;  // final result (done) or current activity (running)
+    durationMs: number;  // first→last message span from the agent log; 0 if unknown
+}
+
+interface WorkflowInfo {
+    wfId: string;
+    name: string;
+    description: string;
+    phases: string[];
+    agents: WorkflowAgentInfo[];
 }
 
 const statusBarItems: Map<string, StatusBarEntry> = new Map();
@@ -87,8 +103,24 @@ function log(msg: string) {
 // Scan ~/.vscode/extensions, group by publisher.name, keep highest semver per group,
 // delete the rest. Self-protective: never deletes the currently-running version of
 // our own extension.
-async function runCleanupOldVersions(opts: { silent: boolean }): Promise<void> {
+//
+// `currentExtDir` is the fsPath of the currently-running extension folder
+// (context.extensionUri.fsPath / context.extensionPath). It is excluded from the delete
+// candidates so we never remove the folder we are executing from — doing so unregisters
+// our own commands and produces "command not found" zombie toasts. Returns the number of
+// folders actually deleted.
+async function runCleanupOldVersions(opts: { silent: boolean; currentExtDir?: string }): Promise<number> {
     const localExtDir = path.join(os.homedir(), '.vscode', 'extensions');
+
+    // Normalise the running extension folder path for case/separator-insensitive comparison,
+    // plus a helper to test "is `dir` the running folder or inside it".
+    const normalize = (p: string): string => path.resolve(p).replace(/[/\\]+$/, '').toLowerCase();
+    const runningDir = opts.currentExtDir ? normalize(opts.currentExtDir) : '';
+    const isProtected = (dir: string): boolean => {
+        if (!runningDir) return false;
+        const d = normalize(dir);
+        return d === runningDir || d.startsWith(runningDir + path.sep.toLowerCase()) || d.startsWith(runningDir + '/');
+    };
 
     const parseSemver = (v: string): number[] => v.split(/[.\-]/).map(p => parseInt(p, 10) || 0);
     const compareSemver = (a: string, b: string): number => {
@@ -105,7 +137,7 @@ async function runCleanupOldVersions(opts: { silent: boolean }): Promise<void> {
         entries = fs.readdirSync(localExtDir, { withFileTypes: true });
     } catch {
         if (!opts.silent) vscode.window.showErrorMessage('claudeStateBar: extensions 폴더를 읽을 수 없습니다.');
-        return;
+        return 0;
     }
 
     const groups = new Map<string, { version: string; dir: string }[]>();
@@ -123,13 +155,21 @@ async function runCleanupOldVersions(opts: { silent: boolean }): Promise<void> {
     for (const [, versions] of groups) {
         if (versions.length <= 1) continue;
         versions.sort((a, b) => compareSemver(b.version, a.version));
-        for (const v of versions.slice(1)) toDelete.push(v.dir);
+        for (const v of versions.slice(1)) {
+            // [핵심 가드] 현재 실행 중인 확장 폴더(또는 그 하위)는 절대 삭제하지 않는다.
+            // 이 폴더를 지우면 명령 등록이 깨져 "command not found" 좀비 토스트가 발생한다.
+            if (isProtected(v.dir)) {
+                log(`[cleanup] skip (running extension folder): ${path.basename(v.dir)}`);
+                continue;
+            }
+            toDelete.push(v.dir);
+        }
     }
 
     if (toDelete.length === 0) {
         if (!opts.silent) vscode.window.showInformationMessage('claudeStateBar: 정리할 이전 버전이 없습니다.');
         else log('[cleanup] no old versions to remove');
-        return;
+        return 0;
     }
 
     log(`[cleanup] candidates (${toDelete.length}):\n${toDelete.map(d => '  • ' + path.basename(d)).join('\n')}`);
@@ -140,7 +180,7 @@ async function runCleanupOldVersions(opts: { silent: boolean }): Promise<void> {
             { modal: true },
             '삭제'
         );
-        if (answer !== '삭제') return;
+        if (answer !== '삭제') return 0;
     }
 
     let deleted = 0;
@@ -161,6 +201,7 @@ async function runCleanupOldVersions(opts: { silent: boolean }): Promise<void> {
     } else if (deleted > 0) {
         log(`[cleanup] auto-removed ${deleted} old version(s) on activate`);
     }
+    return deleted;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -289,10 +330,28 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Status bar click → QuickPick menu (hide this / restore hidden / open settings)
     const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
-        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings'; sessionFile?: string };
+        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows'; sessionFile?: string };
         const items: Item[] = [];
 
         const clickedEntry = sessionFile ? statusBarItems.get(sessionFile) : undefined;
+
+        // [좀비 클릭 안내] sessionFile이 전달됐는데 현재 statusBarItems 맵에 없으면, 옛/중복
+        // 인스턴스가 남긴 좀비 상태바 아이템을 클릭한 것으로 추정한다. 일반 메뉴 대신 창 재로드를
+        // 안내해 좀비 아이템을 정리하도록 유도한다.
+        // 주의: 명령(showSessionMenu) 자체가 사라진 좀비는 이 핸들러가 아예 호출되지 않고
+        // "command not found" 토스트만 뜬다. 그 경우의 주 정리 경로는 커맨드 팔레트의
+        // 'claudeContextBar.cleanupGhostItems' 명령이다.
+        if (sessionFile && !clickedEntry) {
+            const pick = await vscode.window.showWarningMessage(
+                '오래된 항목입니다. 창을 다시 로드해 정리할까요?',
+                '다시 로드'
+            );
+            if (pick === '다시 로드') {
+                await vscode.commands.executeCommand('workbench.action.reloadWindow');
+            }
+            return;
+        }
+
         const clickedLabel = clickedEntry?.item.text || (sessionFile ? path.basename(sessionFile) : 'this session');
 
         if (sessionFile) {
@@ -318,6 +377,23 @@ export function activate(context: vscode.ExtensionContext) {
                     detail: hiddenPath,
                     action: 'restoreOne',
                     sessionFile: hiddenPath
+                });
+            }
+        }
+
+        // Workflows section — a single entry that opens the live panel (which lists all
+        // workflows + their agents). The panel auto-refreshes with the status bar.
+        if (sessionFile) {
+            const workflows = await findWorkflowsForSession(sessionFile);
+            if (workflows.length > 0) {
+                const runningWf = workflows.filter(w => w.agents.some(a => a.status === 'running')).length;
+                const icon = runningWf > 0 ? '$(sync~spin)' : '$(circuit-board)';
+                items.push({ label: 'Workflows', kind: vscode.QuickPickItemKind.Separator });
+                items.push({
+                    label: `${icon} View workflows (${workflows.length})`,
+                    description: runningWf > 0 ? `${runningWf} running` : 'all done',
+                    detail: 'Open the live workflow panel',
+                    action: 'workflows'
                 });
             }
         }
@@ -354,6 +430,23 @@ export function activate(context: vscode.ExtensionContext) {
             case 'settings':
                 vscode.commands.executeCommand('claudeContextBar.openSettings');
                 break;
+            case 'workflows':
+                if (sessionFile) {
+                    const workflows = await findWorkflowsForSession(sessionFile);
+                    createOrShowWorkflowPanel(context, sessionFile, workflows, {
+                        onDelete: async (wfId: string) => {
+                            const confirm = await vscode.window.showWarningMessage(
+                                `워크플로우 기록을 삭제할까요?\n${wfId}\n\n이 워크플로우의 로그·결과가 영구 삭제됩니다.`,
+                                { modal: true },
+                                '삭제'
+                            );
+                            if (confirm !== '삭제') return;
+                            await deleteWorkflowDir(sessionFile, wfId);
+                            pushWorkflows(await findWorkflowsForSession(sessionFile));
+                        }
+                    });
+                }
+                break;
         }
     });
     context.subscriptions.push(menuCommand);
@@ -361,16 +454,51 @@ export function activate(context: vscode.ExtensionContext) {
     // Cleanup old extension versions: scan ~/.vscode/extensions, keep only the
     // highest semver per publisher.name, delete the rest. Runs silently on
     // activate (configurable) and as an interactive command.
+    const currentExtDir = context.extensionUri.fsPath || context.extensionPath;
     const cleanupCmd = vscode.commands.registerCommand('claudeContextBar.cleanupOldVersions', async () => {
-        await runCleanupOldVersions({ silent: false });
+        await runCleanupOldVersions({ silent: false, currentExtDir });
     });
     context.subscriptions.push(cleanupCmd);
+
+    // [유령 항목 정리 — 주 정리 경로]
+    // 좀비 상태바 아이템은 옛/중복 인스턴스가 만든 것이라 그 인스턴스의 명령이 현재
+    // 레지스트리에 없을 수 있다. 좀비 아이템 클릭은 "command not found" 토스트만 띄우고
+    // showSessionMenu 핸들러가 호출되지 않을 수 있으므로, 사용자가 토스트와 무관하게
+    // 커맨드 팔레트에서 직접 실행할 수 있는 정리 명령을 제공한다.
+    // 동작: 옛 버전 정리 → 모달 확인 후 창 재로드(모든 인스턴스 재기동 → 좀비 아이템 제거).
+    const cleanupGhostCmd = vscode.commands.registerCommand('claudeContextBar.cleanupGhostItems', async () => {
+        await runCleanupOldVersions({ silent: false, currentExtDir });
+        const answer = await vscode.window.showWarningMessage(
+            '유령/오래된 상태바 항목을 정리하려면 창을 다시 로드해야 합니다. 지금 다시 로드할까요?',
+            { modal: true },
+            '다시 로드'
+        );
+        if (answer === '다시 로드') {
+            await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
+    });
+    context.subscriptions.push(cleanupGhostCmd);
 
     // Auto-cleanup on activate (silent, async — doesn't block startup)
     const autoCleanup = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('autoCleanupOldVersions', true);
     if (autoCleanup) {
         setTimeout(() => {
-            runCleanupOldVersions({ silent: true }).catch(e => log(`[cleanup] auto error: ${e}`));
+            runCleanupOldVersions({ silent: true, currentExtDir })
+                .then(deleted => {
+                    // [삭제 후 재시작 안내] 자동 정리가 실제로 옛 폴더를 삭제했다면, 화면에 남은
+                    // 좀비 상태바 아이템은 창을 재로드해야 사라진다. 1회 안내한다.
+                    if (deleted > 0) {
+                        vscode.window.showInformationMessage(
+                            `claudeStateBar: 이전 버전 ${deleted}개를 정리했습니다. 화면에 남은 오래된 항목을 제거하려면 창을 다시 로드하세요.`,
+                            '다시 로드'
+                        ).then(answer => {
+                            if (answer === '다시 로드') {
+                                vscode.commands.executeCommand('workbench.action.reloadWindow');
+                            }
+                        });
+                    }
+                })
+                .catch(e => log(`[cleanup] auto error: ${e}`));
         }, 2000);
     }
 
@@ -758,6 +886,199 @@ async function readTextFile(uri: vscode.Uri): Promise<string> {
     return Buffer.from(data).toString('utf-8');
 }
 
+// Turn an agent's journal `result` (a string for plain agents, an object for
+// schema-validated ones) into a short one-line preview for the panel.
+function summarizeResult(result: any): string {
+    if (result == null) return '';
+    let text: string;
+    if (typeof result === 'string') {
+        text = result;
+    } else {
+        // Structured output — prefer a human-ish field if present, else stringify.
+        const obj = result as Record<string, any>;
+        const pick = obj.summary ?? obj.title ?? obj.description ?? obj.reason;
+        text = typeof pick === 'string' ? pick : JSON.stringify(result);
+    }
+    text = text.replace(/\s+/g, ' ').trim();
+    return text.length > 160 ? text.slice(0, 160) + '…' : text;
+}
+
+// Read an agent's log (agent-<id>.jsonl, appended in real time) and extract:
+//   - durationMs: span between its first and last message timestamps
+//   - activity: what it's doing right now (last tool call / last text) — used for
+//     running agents (done agents show their journal result instead)
+async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string }> {
+    let firstTs = 0;
+    let lastTs = 0;
+    let activity = '작업 중…';
+    try {
+        const content = await readTextFile(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`));
+        const lines = content.trim().split('\n');
+
+        // First timestamp = start.
+        for (let i = 0; i < lines.length; i++) {
+            if (!lines[i].trim()) continue;
+            try {
+                const e = JSON.parse(lines[i]);
+                if (e.timestamp) { firstTs = new Date(e.timestamp).getTime(); break; }
+            } catch { /* skip */ }
+        }
+
+        // Walk backwards for the last timestamp and the latest assistant activity.
+        let foundActivity = false;
+        for (let i = lines.length - 1; i >= 0; i--) {
+            if (!lines[i].trim()) continue;
+            try {
+                const e = JSON.parse(lines[i]);
+                if (e.timestamp && !lastTs) lastTs = new Date(e.timestamp).getTime();
+                if (!foundActivity && e.type === 'assistant' && e.message?.content) {
+                    const blocks = e.message.content;
+                    if (Array.isArray(blocks)) {
+                        for (let k = blocks.length - 1; k >= 0; k--) {
+                            const b = blocks[k];
+                            if (b?.type === 'tool_use') {
+                                const arg = b.input?.file_path || b.input?.path || b.input?.command || b.input?.pattern || b.input?.description;
+                                const argStr = typeof arg === 'string' ? ` — ${arg.replace(/\s+/g, ' ').slice(0, 60)}` : '';
+                                activity = `🔧 ${b.name}${argStr}`;
+                                foundActivity = true;
+                                break;
+                            }
+                            if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
+                                const t = b.text.replace(/\s+/g, ' ').trim();
+                                activity = t.length > 140 ? t.slice(0, 140) + '…' : t;
+                                foundActivity = true;
+                                break;
+                            }
+                        }
+                    } else if (typeof blocks === 'string' && blocks.trim()) {
+                        const t = blocks.replace(/\s+/g, ' ').trim();
+                        activity = t.length > 140 ? t.slice(0, 140) + '…' : t;
+                        foundActivity = true;
+                    }
+                }
+                if (lastTs && foundActivity) break;
+            } catch { /* skip malformed line */ }
+        }
+    } catch { /* agent log not readable yet */ }
+    const durationMs = (firstTs && lastTs && lastTs >= firstTs) ? lastTs - firstTs : 0;
+    return { durationMs, activity };
+}
+
+function parseWorkflowScriptMeta(js: string): { name: string; description: string; phases: string[] } {
+    let name = '';
+    let description = '';
+    const phases: string[] = [];
+    try {
+        const nameMatch = js.match(/name\s*:\s*['"]([^'"]+)['"]/);
+        if (nameMatch) name = nameMatch[1];
+        const descMatch = js.match(/description\s*:\s*['"]([^'"]+)['"]/);
+        if (descMatch) description = descMatch[1];
+        for (const m of js.matchAll(/title\s*:\s*['"]([^'"]+)['"]/g)) phases.push(m[1]);
+    } catch { /* fallback */ }
+    return { name, description, phases };
+}
+
+async function findWorkflowsForSession(sessionFileUri: string): Promise<WorkflowInfo[]> {
+    // Collect with each workflow's journal mtime so we can sort newest-activity-first.
+    const wfList: { wf: WorkflowInfo; mtime: number }[] = [];
+    try {
+        const uri = vscode.Uri.parse(sessionFileUri);
+        // The session JSONL lives at projects/<slug>/<session-uuid>.jsonl, while its
+        // workflow data lives in the sibling directory projects/<slug>/<session-uuid>/.
+        // So the session dir is the JSONL path with its .jsonl extension stripped — NOT
+        // the parent folder.
+        const sessionDirUri = uri.with({ path: uri.path.replace(/\.jsonl$/, '') });
+
+        const workflowsDirUri = vscode.Uri.joinPath(sessionDirUri, 'subagents', 'workflows');
+        let wfDirs: [string, vscode.FileType][];
+        try {
+            wfDirs = await vscode.workspace.fs.readDirectory(workflowsDirUri);
+        } catch {
+            return [];
+        }
+
+        const scriptsDirUri = vscode.Uri.joinPath(sessionDirUri, 'workflows', 'scripts');
+        let scriptEntries: [string, vscode.FileType][] = [];
+        try {
+            scriptEntries = await vscode.workspace.fs.readDirectory(scriptsDirUri);
+        } catch { /* no scripts dir */ }
+
+        for (const [wfId, ftype] of wfDirs) {
+            if (ftype !== vscode.FileType.Directory || !wfId.startsWith('wf_')) continue;
+
+            const wfDirUri = vscode.Uri.joinPath(workflowsDirUri, wfId);
+            const agents: WorkflowAgentInfo[] = [];
+            try {
+                const journalContent = await readTextFile(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'));
+                const startedIds = new Set<string>();
+                const doneSummary = new Map<string, string>();
+                for (const line of journalContent.trim().split('\n')) {
+                    if (!line.trim()) continue;
+                    try {
+                        const rec = JSON.parse(line);
+                        if (rec.type === 'started' && rec.agentId) startedIds.add(rec.agentId);
+                        else if (rec.type === 'result' && rec.agentId) {
+                            doneSummary.set(rec.agentId, summarizeResult(rec.result));
+                        }
+                    } catch { /* skip malformed line */ }
+                }
+                for (const id of startedIds) {
+                    const isDone = doneSummary.has(id);
+                    const timing = await getAgentTiming(wfDirUri, id);
+                    const summary = isDone ? (doneSummary.get(id) || '') : timing.activity;
+                    agents.push({ agentId: id, status: isDone ? 'done' : 'running', summary, durationMs: timing.durationMs });
+                }
+            } catch { /* journal unreadable */ }
+
+            let name = wfId;
+            let description = '';
+            let phases: string[] = [];
+            const scriptEntry = scriptEntries.find(([n]) => n.endsWith(`-${wfId}.js`));
+            if (scriptEntry) {
+                try {
+                    const js = await readTextFile(vscode.Uri.joinPath(scriptsDirUri, scriptEntry[0]));
+                    const parsed = parseWorkflowScriptMeta(js);
+                    name = parsed.name || wfId;
+                    description = parsed.description;
+                    phases = parsed.phases;
+                } catch { /* fallback to wfId */ }
+            }
+
+            // Stable agent order (same on every refresh) instead of journal-append order.
+            agents.sort((a, b) => a.agentId.localeCompare(b.agentId));
+
+            let mtime = 0;
+            try {
+                mtime = (await vscode.workspace.fs.stat(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'))).mtime;
+            } catch { /* no journal yet */ }
+
+            wfList.push({ wf: { wfId, name, description, phases, agents }, mtime });
+        }
+    } catch (e) {
+        log(`[workflows] scan error: ${e}`);
+    }
+    // Newest activity first — the workflow you just launched floats to the top.
+    wfList.sort((a, b) => b.mtime - a.mtime);
+    return wfList.map(x => x.wf);
+}
+
+// Delete a workflow's data directory (.../subagents/workflows/<wfId>/). Used by the
+// panel's delete button. Returns true on success.
+async function deleteWorkflowDir(sessionFileUri: string, wfId: string): Promise<boolean> {
+    if (!wfId.startsWith('wf_')) return false;
+    try {
+        const uri = vscode.Uri.parse(sessionFileUri);
+        const sessionDirUri = uri.with({ path: uri.path.replace(/\.jsonl$/, '') });
+        const wfDirUri = vscode.Uri.joinPath(sessionDirUri, 'subagents', 'workflows', wfId);
+        await vscode.workspace.fs.delete(wfDirUri, { recursive: true, useTrash: false });
+        log(`[workflows] deleted ${wfId}`);
+        return true;
+    } catch (e) {
+        log(`[workflows] delete failed for ${wfId}: ${e}`);
+        return false;
+    }
+}
+
 // Encode an absolute workspace path into Claude's projects/ directory name format.
 // Example: "F:\\workspace\\Etc Project\\foo" → "f--workspace-Etc-Project-foo"
 //          "/Users/me/my project"            → "-Users-me-my-project"
@@ -1057,9 +1378,23 @@ async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
                             totalTokens: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0)
                         };
                     }
-                    // Track last complete assistant response (end_turn = tool calls excluded)
+                    // Track last complete assistant response (end_turn = tool calls excluded).
+                    // IMPORTANT: thinking-enabled responses split ONE turn into a [thinking]-only
+                    // line and a [text] line, BOTH carrying stop_reason='end_turn'. The
+                    // thinking-only end_turn is an intermediate signal (Claude is still generating
+                    // the answer), so treating it as completion fires the beep mid-work. Only count
+                    // an end_turn whose content has at least one type==='text' block; ignore
+                    // end_turn entries that contain solely thinking/redacted_thinking/tool_use.
+                    // (Verified against 60 real sessions: 540 thinking-only end_turns = false
+                    // triggers, 994 text end_turns = real completions, 0 missed.)
                     if (entry.type === 'assistant' && entry.message?.stop_reason === 'end_turn' && entry.timestamp) {
-                        lastAssistantEndTurnAt = new Date(entry.timestamp);
+                        const c = entry.message?.content;
+                        const hasTextBlock = Array.isArray(c)
+                            ? c.some((b: any) => b?.type === 'text')
+                            : typeof c === 'string' && c.length > 0;
+                        if (hasTextBlock) {
+                            lastAssistantEndTurnAt = new Date(entry.timestamp);
+                        }
                     }
                 } catch (e) {
                     continue;
@@ -1635,7 +1970,11 @@ async function refreshAllSessions() {
         // already beeped). The new logic waits `completionBeepSettleMs`; any new activity
         // for the session inside that window cancels the pending beep.
         const completionSettleMs = config.get<number>('completionBeepSettleMs', 3000);
-        if (!suppressBeep && session.lastAssistantEndTurnAt) {
+        // Safety net: never fire the completion beep while the session is waiting on the user
+        // (an unanswered tool_use or a deliberate question). In those states only the question
+        // beep should sound — the work isn't actually "done".
+        const awaitingUser = !!(session.pendingToolUseAt || session.pendingQuestionAt);
+        if (!suppressBeep && !awaitingUser && session.lastAssistantEndTurnAt) {
             const curr = session.lastAssistantEndTurnAt.getTime();
             const lastActivity = session.lastUpdated.getTime();
             const prev = lastKnownEndTurnAt.get(session.sessionFile);
@@ -1806,6 +2145,12 @@ async function refreshAllSessions() {
     // Fallback (dim) context sessions don't count — claudeState must stay bright separately.
     const hasRealSession = sessions.some(s => !s.isFallback);
     updatePlanFallback(!hasRealSession);
+
+    // Keep the workflow panel (if open) in sync — re-scan the tracked session and push.
+    const tracked = getTrackedSessionFile();
+    if (tracked) {
+        findWorkflowsForSession(tracked).then(pushWorkflows).catch(e => log(`[workflows] push error: ${e}`));
+    }
 }
 
 // ============================================================================
