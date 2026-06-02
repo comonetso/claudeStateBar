@@ -31,6 +31,11 @@ interface SessionInfo {
     wasCleared: boolean;
     isIdle: boolean;
     isFallback?: boolean;
+    // Beep-gate activity clock: timestamp of the last REAL conversation entry
+    // (assistant|user only). Unlike lastUpdated/lastRealTimestamp it excludes
+    // noise entries (system/stop_hook_summary, queue-operation, …) that get
+    // written ~0.6s after a turn completes and would otherwise suppress the beep.
+    lastActivityAt: Date | null;
     lastAssistantEndTurnAt: Date | null;
     // Pause-detection signals (for the "question beep"):
     //   pendingQuestionAt — set when the latest assistant entry is an unanswered
@@ -385,14 +390,23 @@ export function activate(context: vscode.ExtensionContext) {
         // workflows + their agents). The panel auto-refreshes with the status bar.
         if (sessionFile) {
             const workflows = await findWorkflowsForSession(sessionFile);
+            items.push({ label: 'Workflows', kind: vscode.QuickPickItemKind.Separator });
             if (workflows.length > 0) {
                 const runningWf = workflows.filter(w => w.agents.some(a => a.status === 'running')).length;
                 const icon = runningWf > 0 ? '$(sync~spin)' : '$(circuit-board)';
-                items.push({ label: 'Workflows', kind: vscode.QuickPickItemKind.Separator });
                 items.push({
                     label: `${icon} View workflows (${workflows.length})`,
                     description: runningWf > 0 ? `${runningWf} running` : 'all done',
                     detail: 'Open the live workflow panel',
+                    action: 'workflows'
+                });
+            } else {
+                // Still clickable — opens the (empty) panel so the user gets a consistent
+                // place to look, instead of the menu just closing on click.
+                items.push({
+                    label: '$(circuit-board) 진행 중인 워크플로우 없음',
+                    description: '',
+                    detail: '워크플로우 패널 열기',
                     action: 'workflows'
                 });
             }
@@ -1197,6 +1211,7 @@ interface TokenUsage {
     firstMessage: string;
     sessionCreated: Date | null;
     lastRealTimestamp: Date | null;  // Last timestamp excluding last-prompt entries
+    lastActivityAt: Date | null;  // Beep-gate clock: last assistant|user entry (excludes stop_hook/queue-op noise)
     wasCleared: boolean;  // True if session ended with /clear command
     lastAssistantEndTurnAt: Date | null;  // Timestamp of last end_turn assistant entry
     pendingQuestionAt: Date | null;  // See SessionInfo
@@ -1272,7 +1287,7 @@ function getShortName(projectName: string, customNames: Record<string, string>):
 }
 
 async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
-    const empty: TokenUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, wasCleared: false, lastAssistantEndTurnAt: null, pendingQuestionAt: null, pendingToolUseAt: null, pendingToolUseName: null };
+    const empty: TokenUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, lastActivityAt: null, wasCleared: false, lastAssistantEndTurnAt: null, pendingQuestionAt: null, pendingToolUseAt: null, pendingToolUseName: null };
     try {
         const stat = await vscode.workspace.fs.stat(jsonlUri);
         if (stat.size === 0) {
@@ -1323,6 +1338,7 @@ async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
             let firstMessage = '';
             let sessionCreated: Date | null = null;
             let lastRealTimestamp: Date | null = null;
+            let lastActivityAt: Date | null = null;  // beep-gate clock (assistant|user only)
             let lastAssistantEndTurnAt: Date | null = null;
             let model = '';
             let speed = '';
@@ -1343,6 +1359,15 @@ async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
                     // these to the old file when a new session starts, inflating the mtime)
                     if (entry.timestamp && entry.type !== 'last-prompt') {
                         lastRealTimestamp = new Date(entry.timestamp);
+                    }
+                    // Beep-gate activity clock: only real conversation turns count as
+                    // "activity". The codex stop-review-gate-hook writes a
+                    // system/stop_hook_summary entry ~0.6s after every completed turn;
+                    // counting it (or queue-operation / file-history-snapshot / attachment)
+                    // as activity pushes lastActivity past curr+500ms and suppresses the
+                    // completion beep on every turn. Restrict to assistant|user.
+                    if (entry.timestamp && (entry.type === 'assistant' || entry.type === 'user')) {
+                        lastActivityAt = new Date(entry.timestamp);
                     }
 
                     // Look for first user message (for display)
@@ -1458,6 +1483,7 @@ async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
                 firstMessage: firstMessage ? firstMessage + '...' : '',
                 sessionCreated,
                 lastRealTimestamp,
+                lastActivityAt,
                 wasCleared,
                 lastAssistantEndTurnAt,
                 pendingQuestionAt,
@@ -1608,6 +1634,7 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                         sessionCreated: usage.sessionCreated,
                         wasCleared: usage.wasCleared,
                         isIdle: file.mtime.getTime() <= idleThreshold,
+                        lastActivityAt: usage.lastActivityAt,
                         lastAssistantEndTurnAt: usage.lastAssistantEndTurnAt,
                         pendingQuestionAt: usage.pendingQuestionAt,
                         pendingToolUseAt: usage.pendingToolUseAt,
@@ -1745,6 +1772,7 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                 wasCleared: usage.wasCleared,
                 isIdle: true,
                 isFallback: true,
+                lastActivityAt: usage.lastActivityAt,
                 lastAssistantEndTurnAt: usage.lastAssistantEndTurnAt,
                 pendingQuestionAt: usage.pendingQuestionAt,
                 pendingToolUseAt: usage.pendingToolUseAt,
@@ -1976,7 +2004,10 @@ async function refreshAllSessions() {
         const awaitingUser = !!(session.pendingToolUseAt || session.pendingQuestionAt);
         if (!suppressBeep && !awaitingUser && session.lastAssistantEndTurnAt) {
             const curr = session.lastAssistantEndTurnAt.getTime();
-            const lastActivity = session.lastUpdated.getTime();
+            // Use the beep-gate activity clock (assistant|user only), NOT lastUpdated.
+            // lastUpdated includes the stop_hook system entry written ~0.6s after the
+            // turn, which would falsely count as "newer activity" and suppress the beep.
+            const lastActivity = (session.lastActivityAt ?? session.lastUpdated).getTime();
             const prev = lastKnownEndTurnAt.get(session.sessionFile);
             const existing = pendingCompletion.get(session.sessionFile);
 
@@ -2019,16 +2050,23 @@ async function refreshAllSessions() {
         // --- Question detection (AskUserQuestion / ExitPlanMode) ---
         // Same debounce shape as completion: if the user types a reply within the settle
         // window, no beep. Uses the same completionBeepSettleMs setting.
-        if (!suppressBeep && session.pendingQuestionAt) {
+        if (session.pendingQuestionAt) {
             const curr = session.pendingQuestionAt.getTime();
-            const lastActivity = session.lastUpdated.getTime();
+            // Same beep-gate clock as completion (excludes stop_hook noise).
+            const lastActivity = (session.lastActivityAt ?? session.lastUpdated).getTime();
             const prev = lastKnownQuestionAt.get(session.sessionFile);
             const existing = pendingQuestion.get(session.sessionFile);
 
-            if (prev === undefined) {
+            if (suppressBeep) {
+                // First scan after activate/reload: a question already on screen is treated
+                // as stale — baseline it silently so we don't beep for a question the user
+                // is already looking at.
                 lastKnownQuestionAt.set(session.sessionFile, curr);
-                log(`[q] first seen ${session.projectName} question=${session.pendingToolUseName} at=${new Date(curr).toISOString()}`);
-            } else if (curr > prev) {
+            } else if (prev === undefined || curr > prev) {
+                // prev===undefined while the extension is already running means we are seeing
+                // THIS session's question for the first time at runtime = a brand-new question
+                // → it must beep. (Without this, the first question of a session after a reload
+                // was silently baselined and never sounded.) curr>prev is a subsequent new question.
                 if (existing) clearTimeout(existing.timer);
                 pendingQuestion.delete(session.sessionFile);
                 const newerActivityExists = lastActivity > curr + 500;
