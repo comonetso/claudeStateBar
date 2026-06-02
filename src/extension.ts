@@ -335,7 +335,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Status bar click → QuickPick menu (hide this / restore hidden / open settings)
     const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
-        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows'; sessionFile?: string };
+        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'cleanupGhosts'; sessionFile?: string };
         const items: Item[] = [];
 
         const clickedEntry = sessionFile ? statusBarItems.get(sessionFile) : undefined;
@@ -413,6 +413,15 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+        // 좀비(죽은 인스턴스가 남긴) 상태바 항목 정리. 좀비 아이템 자체는 죽은 command라
+        // 클릭이 안 먹으므로(command not found), 살아있는 항목의 이 메뉴를 통로로 제공한다.
+        // 선택 시 즉시 창을 다시 로드해 좀비를 100% 제거한다.
+        items.push({
+            label: '$(trash) 오래된/좀비 항목 정리 (창 다시 로드)',
+            description: '회색으로 남은 항목 제거',
+            detail: '죽은 인스턴스가 남긴 상태바 항목은 창을 다시 로드해야 사라집니다 — 누르면 바로 다시 로드',
+            action: 'cleanupGhosts'
+        });
         items.push({
             label: '$(gear) Open settings…',
             description: 'claudeState + claudeContextBar',
@@ -444,6 +453,12 @@ export function activate(context: vscode.ExtensionContext) {
             case 'settings':
                 vscode.commands.executeCommand('claudeContextBar.openSettings');
                 break;
+            case 'cleanupGhosts':
+                // 죽은 인스턴스가 남긴 좀비 StatusBarItem은 VS Code API로 직접 제거 불가 →
+                // extension host 재시작(창 다시 로드)이 유일한 제거 수단. 메뉴에서 선택한 것
+                // 자체가 명시적 의도이므로 추가 확인 없이 바로 리로드한다.
+                vscode.commands.executeCommand('workbench.action.reloadWindow');
+                break;
             case 'workflows':
                 if (sessionFile) {
                     const workflows = await findWorkflowsForSession(sessionFile);
@@ -469,6 +484,21 @@ export function activate(context: vscode.ExtensionContext) {
     // highest semver per publisher.name, delete the rest. Runs silently on
     // activate (configurable) and as an interactive command.
     const currentExtDir = context.extensionUri.fsPath || context.extensionPath;
+
+    // [업데이트 직후 좀비 자동 안내] 좀비 상태바 항목은 버전 교체(업데이트) 직후 옛 인스턴스가
+    // 정상 deactivate 없이 죽으며 가장 많이 생긴다. 직전 활성 버전과 현재 버전이 다르면(=방금
+    // 업데이트됨) 1회 리로드를 권유해, 좀비가 화면에 머무는 시간을 최소화한다. 좀비 픽셀은
+    // 창 다시 로드(extension host 재시작)로만 제거 가능하다 (VS Code API 한계).
+    const curVer = context.extension?.packageJSON?.version ?? '';
+    const lastVer = context.globalState.get<string>('claudeStateBar.lastActivatedVersion');
+    if (lastVer && curVer && lastVer !== curVer) {
+        vscode.window.showWarningMessage(
+            `claudeStateBar가 ${lastVer} → ${curVer}로 업데이트됐습니다. 상태바에 오래된(좀비) 항목이 남아있을 수 있습니다. 창을 다시 로드하면 정리됩니다.`,
+            '다시 로드'
+        ).then(a => { if (a === '다시 로드') vscode.commands.executeCommand('workbench.action.reloadWindow'); });
+    }
+    void context.globalState.update('claudeStateBar.lastActivatedVersion', curVer);
+
     const cleanupCmd = vscode.commands.registerCommand('claudeContextBar.cleanupOldVersions', async () => {
         await runCleanupOldVersions({ silent: false, currentExtDir });
     });
