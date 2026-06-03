@@ -1,10 +1,10 @@
 # claudeStateBar
 
-**Claude Code 컨텍스트 사용량 + Claude.ai 플랜 사용량(5시간 세션 & 주간)을 VS Code 상태바에서 한눈에 — Remote‑SSH 지원, 텔레그램 리셋 알림, 한/영 설정 패널 포함.**
+**Claude Code 컨텍스트 사용량 + Claude.ai 플랜 사용량(5시간 세션 & 주간)을 VS Code 상태바에서 한눈에 — 실시간 워크플로우/에이전트 뷰어 패널, 사운드 알림, Remote‑SSH 지원, 텔레그램 리셋 알림, 한/영 설정 패널 포함.**
 
 🇬🇧 English: [README.md](README.md)
 
-> **포크 안내.** 이 확장은 **Ed Zisk([@ezoosk](https://github.com/ezoosk))** 님의 [**claude-context-bar**](https://marketplace.visualstudio.com/items?itemName=ezoosk.claude-context-bar)를 **포크**한 것입니다. 원작은 컨텍스트 모니터링 코어를 제공합니다. 여기에 **Blueming**이 Claude.ai 플랜 사용량, Remote‑SSH 지원, 텔레그램 알림, 웹뷰 설정 패널을 추가·유지보수합니다. 마켓 식별자(`ezoosk.claude-context-bar`)와 `claudeContextBar.*` 설정 키는 업데이트 호환을 위해 그대로 둡니다.
+> **포크 안내.** 이 확장은 **Ed Zisk([@ezoosk](https://github.com/ezoosk))** 님의 [**claude-context-bar**](https://marketplace.visualstudio.com/items?itemName=ezoosk.claude-context-bar)를 **포크**한 것입니다. 원작은 컨텍스트 모니터링 코어를 제공합니다. 여기에 **Blueming**이 Claude.ai 플랜 사용량, Remote‑SSH 지원, 텔레그램 알림, 웹뷰 설정 패널, 워크플로우/에이전트 뷰어, 사운드 알림을 추가·유지보수합니다. 마켓 식별자(`ezoosk.claude-context-bar`)와 `claudeContextBar.*` 설정 키는 업데이트 호환을 위해 그대로 둡니다.
 
 ---
 
@@ -16,8 +16,8 @@ claudeStateBar는 서로 보완되는 두 가지를 보여주며, 하나의 호�
 Claude Code의 세션 로그(`~/.claude/projects/*.jsonl`)를 읽어 활성 탭별로 표시:
 - **실시간 컨텍스트 사용량 %** (사용 토큰 vs 모델 한도)
 - **탭별 모니터링** — Claude Code 세션마다 독립 상태바 아이템
-- **모델 인식 한도** — Sonnet 4.5 **1M** → 1,000,000 토큰, 그 외 → 200,000 (설정 가능)
-- **모델 + Effort + 속도** — 예: `Opus 4.7 · High · ⚡fast`
+- **모델 인식 한도** — Opus 4.x / ID에 `1m`이 포함된 모델 → 1,000,000 토큰, 그 외 → 200,000 (설정 가능)
+- **모델 + Effort + 속도** — 예: `Opus 4.7 · xHigh⁺ · ⚡fast` ([Effort 표시](#️-effort-레벨-표시-v150) 참조)
 - **색상 경고** — 정상 / 경고(≥50%) / 위험(≥75%) 배경색
 - **2단계 idle** — `idleTimeout`(기본 180초) 후 흐려지고, `hideAfter` 후 완전히 숨김
 - **유령 세션 감지** — `/clear`나 탭 종료 후 오래된 세션 숨김, 새 활동 시 자동 복원
@@ -39,7 +39,57 @@ Claude Code의 세션 로그(`~/.claude/projects/*.jsonl`)를 읽어 활성 탭�
 - **플랜 사용량**은 **로컬 PC**의 Electron 네트워크 스택으로 가져옵니다 — 이게 Cloudflare 봇 챌린지를 통과합니다. (원격/헤드리스 호스트의 순수 Node `https`는 Cloudflare `403`을 받고, AWS EC2 같은 클라우드·데이터센터 IP는 TLS 핑거프린트와 무관하게 차단됩니다. 그래서 로컬에서 가져오는 것이 확실한 길입니다.)
 - **토큰 카운트**는 **원격** 호스트의 `~/.claude/projects`를 `vscode.workspace.fs`로 읽습니다. VS Code가 이 읽기를 SSH 너머로 자동 라우팅합니다. 원격 홈은 자동 탐색(`/root`, 없으면 `/home/*`)합니다.
 
+**로컬에 한 번 설치하면 모든 Remote‑SSH 창에 자동 적용됩니다.** `ui`-kind 확장이므로 서버마다 재설치할 필요가 없습니다. 로컬 설치 한 번으로 모든 원격 창이 업데이트됩니다.
+
 결과적으로 Remote‑SSH 창에서 **원격 세션 토큰 사용량과 플랜 사용량을 한곳에서** 봅니다. 만약 어떤 호스트가 정말 claude.ai에 도달할 수 없으면, 오해를 주는 "만료" 오류 대신 "이 환경에선 플랜 사용량 불가"라는 정직한 안내가 뜹니다(Session Key는 정상).
+
+---
+
+## 🎬 워크플로우 & Task 에이전트 뷰어 패널 (v1.7.7+)
+
+세션 QuickPick 메뉴에서 **워크플로우 뷰어**를 열면 활성 Claude Code 워크플로우와 Task(Agent 도구) 서브에이전트를 실시간으로 보여주는 WebView 패널이 열립니다:
+
+- **워크플로우 진행 상황** — 각 워크플로우가 카드로 표시되며 페이즈, 실행 중/완료 에이전트, 에이전트별 요약, 경과 시간, 실시간 활동이 보임
+- **결과 전체 펼치기** — 긴 최종 보고서는 `▶ 요약` 토글로 접혀 있어 필요할 때 전체를 읽을 수 있음
+- **역할 라벨** — 각 에이전트의 역할이 프롬프트 헤더에서 자동 추출됨(`deriveAgentRoleLabels`). "에이전트-1" 대신 "렌즈A: 버그 탐지" 형식으로 표시
+- **Task(Agent 도구) 서브에이전트** — Claude Code의 Agent 도구로 실행된 서브에이전트를 **시작 시각 기준 배치로 묶어** 별도 표시. 5분 이상 간격이면 새 배치로 분리, 헤더에 `서브에이전트 14:35 (3마리)` 형식으로 표시
+- **배치별 🗑 정리** — 특정 배치의 완료된 Task 에이전트 로그만 삭제. 실행 중인 에이전트는 보존
+- **Details 열림 유지** — 실시간 재렌더 중에도 펼쳐진 `<details>` 패널의 열림 상태가 유지됨
+- **글꼴 크기 조절** — `A−` / `A+` 버튼으로 패널 글자 크기 조절
+
+---
+
+## 🎚️ Effort 레벨 표시 (v1.5.0+)
+
+상태바와 툴팁에 Claude Code의 현재 effort 레벨이 표시됩니다:
+
+| `effortLevel` 값 | 상태바 표시 | 의미 |
+|---|---|---|
+| `xhigh` | `xHigh⁺` | xhigh가 디스크에 영속. `/ultracode` 활성화 시 dynamic workflows는 런타임 전용이라 순수 xhigh와 구분 불가 — `⁺`가 이 근사를 표시. |
+| `ultracode` / `ultra` | `🚀 Ultra` | 세션 스코프 ultracode 플래그가 런타임에 감지될 때 표시. |
+| `high` / `medium` / `low` / `max` | 그대로 표시 | 표준 effort 레벨 |
+
+추가 속도 표시:
+- **⚡** — `/fast` 모드 활성화
+- **💭** — 최근 응답에 `thinking` 블록 포함 (확장 사고)
+
+---
+
+## 🔔 사운드 알림 (v1.7.x)
+
+claudeStateBar는 주요 이벤트에 설정 가능한 WAV 사운드를 재생합니다:
+
+| 이벤트 | 기본 사운드 | 관련 설정 |
+|---|---|---|
+| 컨텍스트가 경고 임계값 도달 | `Ring01.wav` | `soundWarning` / `soundWarningGain` |
+| 컨텍스트가 위험 임계값 도달 | `Ring02.wav` | `soundDanger` / `soundDangerGain` |
+| Claude가 응답 완료 (`end_turn`) | `tada.wav` | `soundCompletion` / `soundCompletionGain` |
+| Claude가 질문하려고 멈춤 | `Speech On.wav` | `soundQuestion` / `soundQuestionGain` |
+| 워크플로우/Task 에이전트 전체 완료 | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
+
+모든 사운드 경로를 자신의 WAV 파일로 교체할 수 있습니다. 게인은 50%~5000% 조절 가능(~300% 초과 시 왜곡 가능). 명령 팔레트의 **`claudeStateBar: Test Beep Sound`**로 미리 듣기 가능.
+
+**워크플로우 완료 비프 게이트** — 이번 세션에서 실제로 워크플로우가 실행 중 → 완료로 전환되는 것을 확인했을 때만 비프가 울립니다. VS Code 시작 전부터 이미 완료된 워크플로우는 자동으로 베이스라인 처리되어 무음입니다.
 
 ---
 
@@ -55,7 +105,7 @@ sported_new (379508f7)
 Sonnet: 4%  Opus: —%
 ──────── claudeContext ────────    ← 컨텍스트 사용량 (초록 구분선)
 🤖 Model: claude-opus-4-7
-🎚️ Effort: High
+🎚️ Effort: xHigh⁺ — xhigh (ultracode면 dynamic workflows 결합, 런타임 전용이라 구분 불가)
 📊 Context Usage: 4%
 | Cache Read | 8K |  | Cache Creation | 28K |  | Total | 37K / 1.0M |
 🕐 Last updated: 오후 2:10:58
@@ -66,7 +116,7 @@ Click for menu (hide / restore / settings)
 
 ## ⚙️ 설정 패널 (웹뷰, 한/영)
 
-명령 팔레트에서 **`claudeStateBar: Open Settings`**를 열면, 런타임 **English / 한국어** 토글이 있는 단일 패널이 뜹니다. Org ID, Session Key, 새로고침 간격, 텔레그램 Bot Token(Chat ID 자동 감지), 컨텍스트 모니터 옵션을 한 곳에서 입력합니다. 민감 값은 암호화 SecretStorage로, 나머지는 표준 VS Code 설정과 동기화됩니다.
+명령 팔레트에서 **`claudeStateBar: Open Settings Panel`**를 열면, 런타임 **English / 한국어** 토글이 있는 단일 패널이 뜹니다. Org ID, Session Key, 새로고침 간격, 텔레그램 Bot Token(Chat ID 자동 감지), 사운드 설정(미리듣기 포함), 컨텍스트 모니터 옵션을 한 곳에서 입력합니다. 민감 값은 암호화 SecretStorage로, 나머지는 표준 VS Code 설정과 동기화됩니다.
 
 ### 자격증명 얻는 법
 - **Org ID** — claude.ai → 개발자도구 → Network → `/api/organizations/{UUID}/…` 요청
@@ -80,30 +130,68 @@ Click for menu (hide / restore / settings)
 
 ---
 
+## 🧹 좀비 상태바 항목 정리 (v1.7.11)
+
+VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인스턴스의 상태바 아이템이 클릭에 반응하지 않는 "좀비" 픽셀로 남을 수 있습니다. claudeStateBar는 두 가지 방법으로 처리합니다:
+
+1. **버전 변경 감지** — 활성화 시 마지막 실행 버전이 바뀌었으면 "창 다시 로드해서 오래된 항목 정리?" 알림을 1회 표시합니다.
+2. **QuickPick 정리** — 세션 메뉴에 항상 **🗑 오래된/좀비 항목 정리 (창 다시 로드)** 항목이 있습니다. 죽은 인스턴스가 소유한 아이템을 제거하는 유일한 방법인 extension host 재시작(window reload)을 실행합니다.
+
+---
+
 ## 설정 항목
 
 모든 키는 `claudeContextBar.*`(호환 유지) 또는 `claudeState.*` 접두사를 씁니다.
+
+### 핵심 표시 설정
 
 | 설정 | 기본값 | 설명 |
 |------|--------|------|
 | `claudeContextBar.autoColor` | `true` | 프로젝트별 고유 파스텔 색 |
 | `claudeContextBar.baseColor` | `White` | 자동 색상 끌 때 기본 색 |
 | `claudeContextBar.contextLimitDefault` | `200000` | 표준 모델 컨텍스트 한도 |
-| `claudeContextBar.contextLimitOpus` | `1000000` | 1M 컨텍스트 모델 한도 |
+| `claudeContextBar.contextLimitOpus` | `1000000` | 1M 컨텍스트 모델 한도 (Opus 4.x) |
 | `claudeContextBar.warningThreshold` | `50` | 노란 경고 배경 % |
 | `claudeContextBar.dangerThreshold` | `75` | 빨간 위험 배경 % |
 | `claudeContextBar.refreshInterval` | `30` | 새로고침 간격(초) |
 | `claudeContextBar.idleTimeout` | `180` | 세션이 **흐려지는** 시간(초) |
-| `claudeContextBar.hideAfter` | `3600` | 세션이 **숨겨지는** 시간(초) |
+| `claudeContextBar.hideAfter` | `86400` | 세션이 **숨겨지는** 시간(초, ≥ idleTimeout) |
 | `claudeContextBar.scope` | `workspace` | `workspace`(현재 폴더만) 또는 `all` |
 | `claudeContextBar.showModel` | `true` | 퍼센트 옆에 모델명 표시 |
 | `claudeContextBar.compactMode` | `false` | 프로젝트 이름 축약 |
 | `claudeContextBar.shortNames` | `{}` | 커스텀 약칭, 예: `{"my-project":"MP"}` |
+| `claudeContextBar.autoCleanupOldVersions` | `true` | 활성화 시 이전 버전 자동 정리 |
+
+### 사운드 알림
+
+| 설정 | 기본값 | 설명 |
+|------|--------|------|
+| `claudeContextBar.soundWarning` | `""` | 경고 임계값 알림 WAV 경로 (비우면 기본음) |
+| `claudeContextBar.soundWarningGain` | `100` | 경고음 게인 % (50–5000) |
+| `claudeContextBar.soundDanger` | `""` | 위험 임계값 알림 WAV 경로 |
+| `claudeContextBar.soundDangerGain` | `100` | 위험음 게인 % |
+| `claudeContextBar.soundCompletion` | `""` | 응답 완료(`end_turn`) 비프 WAV 경로 |
+| `claudeContextBar.soundCompletionGain` | `100` | 완료음 게인 % |
+| `claudeContextBar.completionBeepSettleMs` | `3000` | 완료 비프 발동 전 안정 대기 시간(ms) |
+| `claudeContextBar.soundQuestion` | `""` | 질문 일시정지 비프 WAV 경로 |
+| `claudeContextBar.soundQuestionGain` | `100` | 질문음 게인 % |
+| `claudeContextBar.soundWorkflow` | `""` | 워크플로우/에이전트 전체 완료 비프 WAV 경로 |
+| `claudeContextBar.soundWorkflowGain` | `100` | 워크플로우 완료음 게인 % |
+| `claudeContextBar.workflowCompleteBeep` | `true` | 워크플로우/Task 에이전트 전체 완료 시 비프 |
+| `claudeContextBar.detectStuckToolUse` | `false` | 휴리스틱: tool_use 이후 일정 시간 무활동 시 질문 비프 |
+| `claudeContextBar.stuckToolUseThresholdSec` | `90` | stuck-tool 휴리스틱 발동 임계 시간(초) |
+
+### 플랜 사용량
+
+| 설정 | 기본값 | 설명 |
+|------|--------|------|
 | `claudeState.orgId` | `""` | claude.ai Organization ID |
 | `claudeState.language` | `en` | 설정 패널 언어(`en` / `ko`) |
-| `claudeState.refreshInterval` | `300` | 플랜 사용량 폴링 간격(초) |
+| `claudeState.refreshIntervalSec` | `300` | 플랜 사용량 폴링 간격(초) |
 
 (Session Key, Bot Token, Chat ID는 settings.json이 아니라 SecretStorage에 저장됩니다.)
+
+---
 
 ## 요구사항
 
@@ -113,12 +201,12 @@ Click for menu (hide / restore / settings)
 
 ## 동작 원리
 
-선택적 claude.ai 플랜 사용량 조회와 텔레그램을 제외하면 네트워크 호출이 없습니다. 컨텍스트 모니터링은 `vscode.workspace.fs`로 Claude Code의 JSONL 로그를 읽는 순수 디스크 작업입니다(로컬/원격). 플랜 사용량은 Electron의 Chromium 네트워크 스택으로 claude.ai usage 엔드포인트를 호출하며(Cloudflare 통과), 순수 `https` 폴백을 둡니다.
+선택적 claude.ai 플랜 사용량 조회와 텔레그램을 제외하면 네트워크 호출이 없습니다. 컨텍스트 모니터링은 `vscode.workspace.fs`로 Claude Code의 JSONL 로그를 읽는 순수 디스크 작업입니다(로컬/원격). 플랜 사용량은 Electron의 Chromium 네트워크 스택으로 claude.ai usage 엔드포인트를 호출하며(Cloudflare 통과), 순수 `https` 폴백을 둡니다. 워크플로우 뷰어는 `~/.claude/projects/<slug>/<uuid>/subagents/workflows/` 및 `subagents/agent-*.jsonl`을 디스크에서 직접 읽습니다.
 
 ## 크레딧 & 포크
 
 - 원작 **claude-context-bar** 코어 © [Ed Zisk (@ezoosk)](https://github.com/ezoosk) — 이 확장이 기반하는 컨텍스트 모니터링 토대.
-- 이 포크 — 플랜 사용량, Remote‑SSH 지원, 텔레그램, 웹뷰 설정 — by **Blueming**.
+- 이 포크 — 플랜 사용량, Remote‑SSH 지원, 텔레그램, 웹뷰 설정, 워크플로우 뷰어, 사운드 알림 — by **Blueming**.
 
 ## 라이선스
 
