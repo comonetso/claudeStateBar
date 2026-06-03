@@ -4,8 +4,10 @@ import * as vscode from 'vscode';
 export interface WorkflowAgentView {
     agentId: string;
     status: 'running' | 'done';
-    summary: string;
+    summary: string;        // 160-char preview
+    fullSummary?: string;   // untruncated full text — rendered inside an expandable <details>
     durationMs: number;
+    name?: string;          // display label (Task agents); undefined → "에이전트 N"
 }
 
 export interface WorkflowView {
@@ -26,6 +28,31 @@ let callbacks: WorkflowPanelCallbacks | null = null;
 // The session whose workflows the panel is currently showing. extension.ts reads this
 // each refresh so it knows which session to re-scan and push.
 let trackedSessionFile: string | null = null;
+// Signature of the last payload actually posted to the webview. Polling re-pushes the
+// same data every refresh; for a finished workflow the data never changes, so re-rendering
+// would needlessly collapse whatever the user expanded. We skip the postMessage when the
+// signature is unchanged — only genuinely changed data (a running workflow advancing,
+// or a workflow finishing) reaches the webview and triggers a re-render.
+let lastPushedSignature: string | null = null;
+
+// Build a content signature that captures every field the webview renders. If two scans
+// produce the same signature the rendered DOM would be identical, so the push is skipped.
+// A still-running workflow's summary / duration keeps changing → its signature changes →
+// it keeps updating. Only data that is byte-for-byte stable (i.e. finished, no longer
+// mutating) collapses to a stable signature and stops re-rendering.
+function workflowsSignature(workflows: WorkflowView[]): string {
+    return JSON.stringify((workflows || []).map(wf => ({
+        i: wf.wfId,
+        n: wf.name,
+        d: wf.description,
+        p: wf.phases,
+        // Include summary/duration: a RUNNING agent's live activity must keep updating in the
+        // panel — that's what the user watches mid-run (more important than mid-run expand).
+        // A finished agent stops changing → its signature stabilises → no re-render → an
+        // expanded report stays open. So running = live updates, done = stable & expandable.
+        a: wf.agents.map(a => [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name]),
+    })));
+}
 
 export function getTrackedSessionFile(): string | null {
     return panel ? trackedSessionFile : null;
@@ -50,6 +77,8 @@ export function createOrShowWorkflowPanel(
 
     if (panel) {
         panel.reveal(vscode.ViewColumn.Active);
+        // The webview already holds rendered state, so the normal dedup applies — only push
+        // if the data actually changed since the last push.
         pushWorkflows(workflows);
         return;
     }
@@ -61,18 +90,29 @@ export function createOrShowWorkflowPanel(
         { enableScripts: true, retainContextWhenHidden: true }
     );
 
+    // Brand-new webview: clear the dedup baseline so the very first push always lands,
+    // even if the data matches what a previous (now-disposed) panel last showed.
+    lastPushedSignature = null;
     panel.webview.html = getHtml(panel.webview);
-    panel.onDidDispose(() => { panel = null; trackedSessionFile = null; }, null, context.subscriptions);
+    panel.onDidDispose(() => { panel = null; trackedSessionFile = null; lastPushedSignature = null; }, null, context.subscriptions);
     panel.webview.onDidReceiveMessage((msg) => {
-        // The webview signals 'ready' once its script loads; only then can it receive data.
-        if (msg?.type === 'ready') pushWorkflows(workflows);
+        // The webview signals 'ready' once its script loads; its DOM is empty until the first
+        // render, so force that render through even if the signature would otherwise dedup.
+        if (msg?.type === 'ready') { lastPushedSignature = null; pushWorkflows(workflows); }
         else if (msg?.type === 'delete' && typeof msg.wfId === 'string') callbacks?.onDelete(msg.wfId);
     }, null, context.subscriptions);
 }
 
-// Push fresh workflow data into the open panel. No-op when the panel is closed.
+// Push fresh workflow data into the open panel. No-op when the panel is closed or when
+// the data is identical to what was last pushed (see lastPushedSignature). The dedup is the
+// primary fix for "auto-refresh collapses the card I just expanded": a finished workflow
+// re-scanned every poll yields the same signature, so the webview never re-renders and the
+// user's expand/collapse state survives untouched.
 export function pushWorkflows(workflows: WorkflowView[]): void {
     if (!panel) return;
+    const sig = workflowsSignature(workflows);
+    if (sig === lastPushedSignature) return;  // unchanged data → don't disturb the webview
+    lastPushedSignature = sig;
     panel.webview.postMessage({ type: 'workflows', workflows });
 }
 
@@ -117,6 +157,11 @@ function getHtml(webview: vscode.Webview): string {
   .label { font-weight: 600; }
   .dur { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
   .summary { color: var(--vscode-descriptionForeground); margin: 3px 0 0 17px; line-height: 1.45; font-size: 0.92em; }
+  details.summary-wrap { margin: 3px 0 0 17px; }
+  details.summary-wrap > summary { color: var(--vscode-descriptionForeground); line-height: 1.45; font-size: 0.92em; cursor: pointer; list-style: revert; }
+  details.summary-wrap > summary::marker { color: var(--vscode-descriptionForeground); }
+  details.summary-wrap[open] > summary { color: var(--vscode-foreground); font-weight: 600; }
+  .full { margin: 6px 0 2px 0; padding: 8px 10px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.1)); border-radius: 4px; white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family); font-size: 0.88em; line-height: 1.5; max-height: 420px; overflow: auto; }
   .empty { color: var(--vscode-descriptionForeground); font-style: italic; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 </style>
@@ -146,6 +191,22 @@ function getHtml(webview: vscode.Webview): string {
   // wfId -> true(expanded)/false(collapsed); only set when the user clicks. Default
   // expansion (top one open, rest collapsed) applies when a wfId isn't in here.
   const userToggled = {};
+  // Open per-agent report <details> elements, keyed "wfId agentId". innerHTML rebuilds
+  // lose native <details open> state, so we record which ones are open and reapply after each
+  // render — otherwise auto-refresh would snap shut the report a user expanded to read.
+  const openDetails = {};
+  // Signature of the data the webview last actually rendered. A second guard behind the
+  // extension-side dedup: if an identical payload still arrives, skip the DOM rebuild.
+  let lastRenderedSig = null;
+  function sigOf(workflows) {
+    return JSON.stringify((workflows || []).map(function (wf) {
+      return [wf.wfId, wf.name, wf.description, wf.phases,
+        // Mirror workflowsSignature: include summary/duration so a running agent's live
+        // activity keeps refreshing. Done agents are stable, so their expanded report stays open.
+        wf.agents.map(function (a) { return [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name]; })];
+    }));
+  }
+  function detailsKey(wfId, agentId) { return wfId + ' ' + agentId; }
 
   function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
@@ -163,8 +224,23 @@ function getHtml(webview: vscode.Webview): string {
     return index === 0;  // default: newest (top) expanded, rest collapsed
   }
 
-  function render(workflows) {
-    lastWorkflows = workflows || [];
+  // Record which report <details> are currently open so we can restore them after the
+  // innerHTML rebuild below wipes their native open state.
+  function captureOpenDetails() {
+    document.querySelectorAll('details.summary-wrap[data-dkey]').forEach(function (d) {
+      openDetails[d.getAttribute('data-dkey')] = d.open;
+    });
+  }
+  // force=true bypasses the unchanged-data skip (used for local toggle clicks, where the
+  // workflow data is the same but userToggled changed).
+  function render(workflows, force) {
+    const incoming = workflows || [];
+    const sig = sigOf(incoming);
+    if (!force && sig === lastRenderedSig) { lastWorkflows = incoming; return; }
+    lastRenderedSig = sig;
+    // Snapshot open report panels before we blow away the DOM.
+    captureOpenDetails();
+    lastWorkflows = incoming;
     const list = document.getElementById('list');
     const sub = document.getElementById('sub');
     if (!lastWorkflows.length) {
@@ -184,27 +260,52 @@ function getHtml(webview: vscode.Webview): string {
       const phases = (wf.phases && wf.phases.length)
         ? '<div class="phases">' + wf.phases.map(p => '<span class="phase-chip">' + esc(p) + '</span>').join('') + '</div>'
         : '';
+      // Count agents sharing each label so identical labels (e.g. role names that
+      // truncate to the same 50 chars) get a number appended to stay distinguishable.
+      const labelCounts = {};
+      wf.agents.forEach(a => { const k = (a.name && a.name.trim()) || ''; if (k) labelCounts[k] = (labelCounts[k] || 0) + 1; });
       const agents = wf.agents.length
         ? '<div class="agents">' + wf.agents.map((a, i) => {
             const dur = fmtDur(a.durationMs);
             const durStr = dur ? ' <span class="dur">· ' + (a.status === 'running' ? '경과 ' : '') + dur + '</span>' : '';
+            const nm = (a.name && a.name.trim()) || '';
+            const labelText = nm ? (labelCounts[nm] > 1 ? nm + ' (' + (i + 1) + ')' : nm) : ('에이전트 ' + (i + 1));
+            // Full report expander: when fullSummary is meaningfully longer than the
+            // 160-char preview, wrap it in <details> so the user can read the whole thing.
+            let summaryHtml = '';
+            const full = a.fullSummary;
+            if (a.summary && full && full.length > a.summary.length) {
+              const dkey = detailsKey(wf.wfId, a.agentId);
+              const openAttr = openDetails[dkey] ? ' open' : '';
+              summaryHtml = '<details class="summary-wrap" data-dkey="' + esc(dkey) + '"' + openAttr + '><summary>' + esc(a.summary) +
+                '</summary><div class="full">' + esc(full) + '</div></details>';
+            } else if (a.summary) {
+              summaryHtml = '<div class="summary">' + esc(a.summary) + '</div>';
+            }
             return '<div class="agent">' +
               '<div class="agent-head"><span class="dot ' + a.status + '"></span>' +
-              '<span class="label">에이전트 ' + (i + 1) + '</span>' + durStr + '</div>' +
-              (a.summary ? '<div class="summary">' + esc(a.summary) + '</div>' : '') +
+              '<span class="label">' + esc(labelText) + '</span>' + durStr + '</div>' +
+              summaryHtml +
             '</div>';
           }).join('') + '</div>'
         : '<div class="empty">아직 시작된 에이전트가 없습니다.</div>';
       const expanded = isExpanded(wf.wfId, index);
+      // Real workflows (wf_*) delete their whole dir; the Task pseudo-bundle ('tasks')
+      // clears its COMPLETED agent logs (running ones are kept).
+      const delBtn = wf.wfId.indexOf('wf_') === 0
+        ? '<button class="del-btn" data-del="' + esc(wf.wfId) + '" title="삭제">🗑</button>'
+        : wf.wfId.indexOf('tasks:') === 0
+        ? '<button class="del-btn" data-del="' + esc(wf.wfId) + '" title="이 묶음의 완료된 Task 정리">🗑</button>'
+        : '';
       return '<div class="wf' + (expanded ? '' : ' collapsed') + '" data-wfid="' + esc(wf.wfId) + '">' +
         '<div class="wf-head">' +
           '<span class="arrow">▾</span>' +
           '<span class="wf-name">' + esc(wf.name) + '</span>' +
           badge +
-          '<button class="del-btn" data-del="' + esc(wf.wfId) + '" title="삭제">🗑</button>' +
+          delBtn +
         '</div>' +
         '<div class="wf-body">' +
-          '<div class="wf-id">' + esc(wf.wfId) + '</div>' +
+          (wf.wfId.indexOf('wf_') === 0 ? '<div class="wf-id">' + esc(wf.wfId) + '</div>' : '') +
           (wf.description ? '<div class="wf-desc">' + esc(wf.description) + '</div>' : '') +
           phases + agents +
         '</div>' +
@@ -230,9 +331,18 @@ function getHtml(webview: vscode.Webview): string {
       const id = card.getAttribute('data-wfid');
       const index = lastWorkflows.findIndex(w => w.wfId === id);
       userToggled[id] = !isExpanded(id, index);
-      render(lastWorkflows);
+      render(lastWorkflows, true);  // data unchanged but toggle state changed → force
     }
   });
+
+  // Native <details> fire 'toggle' on open/close; remember the state so the next
+  // auto-refresh render restores it instead of snapping the report shut.
+  document.addEventListener('toggle', e => {
+    const d = e.target;
+    if (d && d.matches && d.matches('details.summary-wrap[data-dkey]')) {
+      openDetails[d.getAttribute('data-dkey')] = d.open;
+    }
+  }, true);
 
   window.addEventListener('message', e => {
     const m = e.data;

@@ -2,7 +2,7 @@
     "name": "claude-context-bar",
     "displayName": "claudeStateBar",
     "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your status bar. Remote-SSH supported, with Telegram reset alerts.",
-    "version": "1.7.11",
+    "version": "1.7.16",
     "extensionKind": ["ui"],
     "publisher": "ezoosk",
     "author": {
@@ -282,6 +282,23 @@
                     "minimum": 50,
                     "maximum": 5000,
                     "description": "Question sound volume gain in percent (50–5000). See soundWarningGain for details."
+                },
+                "claudeContextBar.soundWorkflow": {
+                    "type": "string",
+                    "default": "",
+                    "description": "워크플로우/서브에이전트 전체 완료 시 재생할 wav 경로(비우면 기본음)"
+                },
+                "claudeContextBar.soundWorkflowGain": {
+                    "type": "number",
+                    "default": 100,
+                    "minimum": 50,
+                    "maximum": 5000,
+                    "description": "워크플로우 완료 비프 게인(%)"
+                },
+                "claudeContextBar.workflowCompleteBeep": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "워크플로우/서브에이전트가 모두 완료되면 비프로 알림"
                 },
                 "claudeContextBar.detectStuckToolUse": {
                     "type": "boolean",

@@ -99,10 +99,13 @@ async function collectState() {
             soundDanger: cbCfg.get('soundDanger', ''),
             soundCompletion: cbCfg.get('soundCompletion', ''),
             soundQuestion: cbCfg.get('soundQuestion', ''),
+            soundWorkflow: cbCfg.get('soundWorkflow', ''),
             soundWarningGain: cbCfg.get('soundWarningGain', 100),
             soundDangerGain: cbCfg.get('soundDangerGain', 100),
             soundCompletionGain: cbCfg.get('soundCompletionGain', 100),
             soundQuestionGain: cbCfg.get('soundQuestionGain', 100),
+            soundWorkflowGain: cbCfg.get('soundWorkflowGain', 100),
+            workflowCompleteBeep: cbCfg.get('workflowCompleteBeep', true),
             completionBeepSettleMs: cbCfg.get('completionBeepSettleMs', 3000),
             detectStuckToolUse: cbCfg.get('detectStuckToolUse', false),
             stuckToolUseThresholdSec: cbCfg.get('stuckToolUseThresholdSec', 90)
@@ -161,6 +164,7 @@ async function handleMessage(msg: any): Promise<void> {
                     await cbCfg.update('soundDanger', p.cb.soundDanger ?? '', T);
                     await cbCfg.update('soundCompletion', p.cb.soundCompletion ?? '', T);
                     await cbCfg.update('soundQuestion', p.cb.soundQuestion ?? '', T);
+                    await cbCfg.update('soundWorkflow', p.cb.soundWorkflow ?? '', T);
                     const clampGain = (v: any) => {
                         const n = Number(v);
                         if (!Number.isFinite(n)) return 100;
@@ -170,6 +174,8 @@ async function handleMessage(msg: any): Promise<void> {
                     await cbCfg.update('soundDangerGain', clampGain(p.cb.soundDangerGain), T);
                     await cbCfg.update('soundCompletionGain', clampGain(p.cb.soundCompletionGain), T);
                     await cbCfg.update('soundQuestionGain', clampGain(p.cb.soundQuestionGain), T);
+                    await cbCfg.update('soundWorkflowGain', clampGain(p.cb.soundWorkflowGain), T);
+                    await cbCfg.update('workflowCompleteBeep', !!p.cb.workflowCompleteBeep, T);
                     const clampSettle = (v: any) => {
                         const n = Number(v);
                         if (!Number.isFinite(n)) return 3000;
@@ -443,6 +449,22 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
         <input type="number" id="sound-question-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="question" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="question" title="파일 찾기">📁</button>
+      </div>
+
+      <div class="sound-row" data-kind="workflow">
+        <label class="sound-label" data-i18n="sound.workflow">🔁 워크플로우 완료음</label>
+        <input type="text" id="sound-workflow" class="sound-input" placeholder="C:\\Windows\\Media\\Ring06.wav (기본)" />
+        <input type="number" id="sound-workflow-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <button class="secondary small sound-preview-btn" data-kind="workflow" title="미리듣기">▶</button>
+        <button class="secondary small sound-pick-btn"    data-kind="workflow" title="파일 찾기">📁</button>
+      </div>
+
+      <div class="field" style="margin-top:6px;">
+        <label class="checkbox-label">
+          <input type="checkbox" id="cb-workflowCompleteBeep" />
+          <span data-i18n="sound.workflowComplete.label">워크플로우/서브에이전트가 모두 완료되면 비프로 알림</span>
+        </label>
+        <p class="hint" data-i18n="sound.workflowComplete.hint">멀티 에이전트 워크플로우 또는 서브에이전트(Task)가 전부 끝나면 1회 비프합니다.</p>
       </div>
 
       <p class="hint" style="margin-top:10px;" data-i18n="sound.questionHint">질문 대기 비프는 Claude가 AskUserQuestion 또는 ExitPlanMode 도구로 입력을 요구할 때 발사됩니다. 100% 정확.</p>

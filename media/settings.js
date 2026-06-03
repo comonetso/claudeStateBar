@@ -80,10 +80,13 @@
         $('sound-danger').value = cb.soundDanger || '';
         $('sound-completion').value = cb.soundCompletion || '';
         $('sound-question').value = cb.soundQuestion || '';
+        $('sound-workflow').value = cb.soundWorkflow || '';
         $('sound-warning-gain').value = cb.soundWarningGain ?? 100;
         $('sound-danger-gain').value = cb.soundDangerGain ?? 100;
         $('sound-completion-gain').value = cb.soundCompletionGain ?? 100;
         $('sound-question-gain').value = cb.soundQuestionGain ?? 100;
+        $('sound-workflow-gain').value = cb.soundWorkflowGain ?? 100;
+        $('cb-workflowCompleteBeep').checked = cb.workflowCompleteBeep !== false;
         $('cb-completionBeepSettleMs').value = cb.completionBeepSettleMs ?? 3000;
         $('cb-detectStuckToolUse').checked = !!cb.detectStuckToolUse;
         $('cb-stuckToolUseThresholdSec').value = cb.stuckToolUseThresholdSec ?? 90;
@@ -128,10 +131,13 @@
                 soundDanger: $('sound-danger').value.trim(),
                 soundCompletion: $('sound-completion').value.trim(),
                 soundQuestion: $('sound-question').value.trim(),
+                soundWorkflow: $('sound-workflow').value.trim(),
                 soundWarningGain: parseInt($('sound-warning-gain').value, 10) || 100,
                 soundDangerGain: parseInt($('sound-danger-gain').value, 10) || 100,
                 soundCompletionGain: parseInt($('sound-completion-gain').value, 10) || 100,
                 soundQuestionGain: parseInt($('sound-question-gain').value, 10) || 100,
+                soundWorkflowGain: parseInt($('sound-workflow-gain').value, 10) || 100,
+                workflowCompleteBeep: $('cb-workflowCompleteBeep').checked,
                 completionBeepSettleMs: parseInt($('cb-completionBeepSettleMs').value, 10) || 1000,
                 detectStuckToolUse: $('cb-detectStuckToolUse').checked,
                 stuckToolUseThresholdSec: parseInt($('cb-stuckToolUseThresholdSec').value, 10) || 90
@@ -163,6 +169,7 @@
         if (kind === 'warning') return 'sound-warning';
         if (kind === 'danger') return 'sound-danger';
         if (kind === 'completion') return 'sound-completion';
+        if (kind === 'workflow') return 'sound-workflow';
         return 'sound-question';
     }
     function gainIdFor(kind) {
@@ -192,7 +199,7 @@
     // Reset all four sound paths AND gains to defaults (= empty path, 100% gain)
     const resetBtn = $('sound-reset-btn');
     if (resetBtn) resetBtn.addEventListener('click', () => {
-        ['warning', 'danger', 'completion', 'question'].forEach((k) => {
+        ['warning', 'danger', 'completion', 'question', 'workflow'].forEach((k) => {
             $(inputIdFor(k)).value = '';
             $(gainIdFor(k)).value = 100;
         });
