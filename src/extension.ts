@@ -56,8 +56,10 @@ interface StatusBarEntry {
 interface WorkflowAgentInfo {
     agentId: string;
     status: 'running' | 'done';
-    summary: string;  // final result (done) or current activity (running)
+    summary: string;  // final result (done) or current activity (running) — 160-char preview
+    fullSummary?: string;  // untruncated full text (final report / activity) for the expandable <details>
     durationMs: number;  // first→last message span from the agent log; 0 if unknown
+    name?: string;  // display label (Task agents: meta.json description); workflow agents leave undefined → "에이전트 N"
 }
 
 interface WorkflowInfo {
@@ -83,6 +85,18 @@ const pendingQuestion = new Map<string, PendingBeep>();
 // Stuck-tool-use heuristic: remember the timestamp of the unanswered tool_use we
 // already fired a beep for, so we don't re-fire while it stays unanswered.
 const alertedStuckToolUseAt = new Map<string, number>();
+// Workflow-complete beep gate: once a workflow (or the Task pseudo-workflow,
+// wfId 'tasks') reaches "all agents done", we beep ONCE and record it here so the
+// next polling pass — where the already-finished workflow still reads as done —
+// doesn't re-fire. Key: `${sessionFile}|${wfId}`, value: the done agent count
+// (a changing count means new agents finished, which is still the same gate event
+// but lets us see the latest baseline in logs).
+const alertedWorkflowDone = new Map<string, number>();
+// Keys observed in a RUNNING state this runtime. Only a genuine running→done transition
+// we actually watched should beep; a workflow first seen already-done (stale work from
+// another project, or pre-existing on first scan) is baselined silently so it never
+// beeps as if it just finished.
+const seenRunningWorkflowKeys = new Set<string>();
 let isFirstScan = true;
 let refreshInterval: NodeJS.Timeout | null = null;
 let outputChannel: vscode.OutputChannel | null = null;
@@ -242,6 +256,7 @@ export function activate(context: vscode.ExtensionContext) {
         const kind: SoundKind = beepType === 'danger' ? 'danger'
             : beepType === 'completion' ? 'completion'
             : beepType === 'question' ? 'question'
+            : beepType === 'workflow' ? 'workflow'
             : 'warning';
         const trimmed = (customPath || '').trim();
         const repeat = kind === 'danger' ? 2 : 1;
@@ -255,13 +270,14 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Test beep sounds (Command Palette: "claudeContextBar: Test Beep")
     const testBeepCmd = vscode.commands.registerCommand('claudeContextBar.testBeep', async () => {
-        type BeepType = 'warning' | 'danger' | 'completion' | 'question';
+        type BeepType = 'warning' | 'danger' | 'completion' | 'question' | 'workflow';
         const pick = await vscode.window.showQuickPick(
             [
                 { label: '$(bell) Warning beep (1×)',     description: 'warningThreshold 도달 시',     type: 'warning' as BeepType },
                 { label: '$(bell) Danger beep (2×)',      description: 'dangerThreshold 도달 시',      type: 'danger' as BeepType },
                 { label: '$(check) 작업 완료 알림',       description: 'Claude end_turn 감지 시 (settle 적용)', type: 'completion' as BeepType },
                 { label: '$(question) 질문 대기 알림',     description: 'AskUserQuestion / ExitPlanMode 감지 시',    type: 'question' as BeepType },
+                { label: '$(sync) 워크플로우 완료 알림',   description: '워크플로우/서브에이전트 전체 완료 시',    type: 'workflow' as BeepType },
             ],
             { placeHolder: '테스트할 비프 종류를 선택하세요' }
         );
@@ -464,6 +480,18 @@ export function activate(context: vscode.ExtensionContext) {
                     const workflows = await findWorkflowsForSession(sessionFile);
                     createOrShowWorkflowPanel(context, sessionFile, workflows, {
                         onDelete: async (wfId: string) => {
+                            if (wfId.startsWith('tasks:')) {
+                                const ok = await vscode.window.showWarningMessage(
+                                    `이 묶음의 완료된 서브에이전트(Task) 기록을 정리할까요?\n\n완료된 에이전트 로그가 영구 삭제됩니다. 진행 중인 에이전트는 보존됩니다.`,
+                                    { modal: true },
+                                    '정리'
+                                );
+                                if (ok !== '정리') return;
+                                const n = await deleteDoneTaskAgents(sessionFile, wfId);
+                                log(`[tasks] cleared ${n} completed task-agent log(s) in ${wfId}`);
+                                pushWorkflows(await findWorkflowsForSession(sessionFile));
+                                return;
+                            }
                             const confirm = await vscode.window.showWarningMessage(
                                 `워크플로우 기록을 삭제할까요?\n${wfId}\n\n이 워크플로우의 로그·결과가 영구 삭제됩니다.`,
                                 { modal: true },
@@ -657,7 +685,7 @@ function playBeep(count: number): void {
     playSoundFile(soundPath, count, `beep:${kind}`, gain);
 }
 
-type SoundKind = 'warning' | 'danger' | 'completion' | 'question';
+type SoundKind = 'warning' | 'danger' | 'completion' | 'question' | 'workflow';
 
 // Default WAV paths per platform — used when the user setting is empty.
 const DEFAULT_WAVS: Record<SoundKind, string> = {
@@ -668,7 +696,10 @@ const DEFAULT_WAVS: Record<SoundKind, string> = {
     completion: process.platform === 'win32' ? 'C:\\Windows\\Media\\tada.wav'
         : process.platform === 'darwin' ? '/System/Library/Sounds/Hero.aiff' : '',
     question: process.platform === 'win32' ? 'C:\\Windows\\Media\\Speech On.wav'
-        : process.platform === 'darwin' ? '/System/Library/Sounds/Ping.aiff' : ''
+        : process.platform === 'darwin' ? '/System/Library/Sounds/Ping.aiff' : '',
+    // Workflow/subagent "all done" — distinct tone from tada.wav (completion).
+    workflow: process.platform === 'win32' ? 'C:\\Windows\\Media\\Ring06.wav'
+        : process.platform === 'darwin' ? '/System/Library/Sounds/Funk.aiff' : ''
 };
 
 function getSoundPath(kind: SoundKind): string {
@@ -676,6 +707,7 @@ function getSoundPath(kind: SoundKind): string {
     const key = kind === 'warning' ? 'soundWarning'
         : kind === 'danger' ? 'soundDanger'
         : kind === 'completion' ? 'soundCompletion'
+        : kind === 'workflow' ? 'soundWorkflow'
         : 'soundQuestion';
     const user = cfg.get<string>(key, '').trim();
     return user || DEFAULT_WAVS[kind];
@@ -686,6 +718,7 @@ function getSoundGain(kind: SoundKind): number {
     const key = kind === 'warning' ? 'soundWarningGain'
         : kind === 'danger' ? 'soundDangerGain'
         : kind === 'completion' ? 'soundCompletionGain'
+        : kind === 'workflow' ? 'soundWorkflowGain'
         : 'soundQuestionGain';
     const raw = cfg.get<number>(key, 100);
     // Clamp to documented range
@@ -855,6 +888,13 @@ function playCompletionSound(): void {
     playSoundFile(getSoundPath('completion'), 1, 'beep:completion', getSoundGain('completion'));
 }
 
+// Distinct chime for "the entire workflow / all subagents finished" — a one-shot
+// gate signal (not the per-activity completion beep). Default Ring06.wav on
+// Windows, intentionally a different tone from tada.wav (completion).
+function playWorkflowCompleteSound(): void {
+    playSoundFile(getSoundPath('workflow'), 1, 'beep:workflow', getSoundGain('workflow'));
+}
+
 // Distinct chime for "Claude is paused waiting on the user" (AskUserQuestion /
 // ExitPlanMode / optional stuck-tool-use heuristic). Default Speech On.wav on
 // Windows — a short, clearly different tone from tada.wav.
@@ -930,31 +970,158 @@ async function readTextFile(uri: vscode.Uri): Promise<string> {
     return Buffer.from(data).toString('utf-8');
 }
 
-// Turn an agent's journal `result` (a string for plain agents, an object for
-// schema-validated ones) into a short one-line preview for the panel.
-function summarizeResult(result: any): string {
-    if (result == null) return '';
-    let text: string;
-    if (typeof result === 'string') {
-        text = result;
-    } else {
-        // Structured output — prefer a human-ish field if present, else stringify.
-        const obj = result as Record<string, any>;
-        const pick = obj.summary ?? obj.title ?? obj.description ?? obj.reason;
-        text = typeof pick === 'string' ? pick : JSON.stringify(result);
+// Render a structured result object as readable "key: value" multiline text instead
+// of a raw JSON.stringify blob. Nested objects/arrays are JSON-encoded inline.
+function serializeResultObject(obj: Record<string, any>): string {
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(obj)) {
+        if (v == null) continue;
+        let val: string;
+        if (typeof v === 'string') val = v;
+        else if (typeof v === 'number' || typeof v === 'boolean') val = String(v);
+        else val = JSON.stringify(v);
+        parts.push(`${k}: ${val}`);
     }
-    text = text.replace(/\s+/g, ' ').trim();
-    return text.length > 160 ? text.slice(0, 160) + '…' : text;
+    return parts.join('\n');
+}
+
+// Turn an agent's journal `result` (a string for plain agents, an object for
+// schema-validated ones) into both a 160-char preview and the untruncated full text.
+//   full    — complete report (newlines preserved) for the expandable panel <details>
+//   preview — single-line, whitespace-collapsed, 160-char cap (legacy display)
+function summarizeResultFull(result: any): { preview: string; full: string } {
+    if (result == null) return { preview: '', full: '' };
+    let full: string;
+    if (typeof result === 'string') {
+        full = result;
+    } else {
+        // Structured output — prefer a human-ish field if present, else a readable
+        // key: value serialization (NOT a raw JSON.stringify blob).
+        const obj = result as Record<string, any>;
+        const pick = obj.summary ?? obj.title ?? obj.description ?? obj.reason
+            ?? obj.verdict ?? obj.recommendation ?? obj.rootCause ?? obj.evidence;
+        full = typeof pick === 'string' ? pick : serializeResultObject(obj);
+        if (!full) full = JSON.stringify(result);
+    }
+    full = full.trim();
+    const oneLine = full.replace(/\s+/g, ' ').trim();
+    const preview = oneLine.length > 160 ? oneLine.slice(0, 160) + '…' : oneLine;
+    return { preview, full };
+}
+
+// Extract the FIRST user-message text from an agent log (agent-<id>.jsonl). This is the
+// prompt the orchestrator handed the subagent — it carries the agent's role. Journal-based
+// workflow agents record NO label anywhere on disk (journal `started` entries hold only
+// {key, agentId}; the meta.json sidecar holds only {agentType:"workflow-subagent"}), so the
+// prompt is the only available role signal. Returns '' when no user text is found.
+async function getAgentFirstPromptText(wfDirUri: vscode.Uri, agentId: string): Promise<string> {
+    try {
+        const content = await readTextFile(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`));
+        for (const line of content.trim().split('\n')) {
+            if (!line.trim()) continue;
+            let e: any;
+            try { e = JSON.parse(line); } catch { continue; }
+            if (e.type !== 'user' || !e.message) continue;
+            const c = e.message.content;
+            let text = '';
+            if (typeof c === 'string') text = c;
+            else if (Array.isArray(c)) {
+                for (const b of c) {
+                    if (b?.type === 'text' && typeof b.text === 'string') text += b.text;
+                }
+            }
+            if (text.trim()) return text;
+        }
+    } catch { /* agent log not readable yet */ }
+    return '';
+}
+
+// Derive a short, deterministic role label for each journal-based workflow agent from its
+// first prompt. Workflow subagents in the same workflow share a big boilerplate preamble
+// (e.g. "# 프로젝트", "# 출력 형식") and differ only in one task-specific heading (e.g.
+// "# 렌즈 A: 비프 오발", "# 너의 단독 작업 (...)"). Strategy:
+//   1. collect each agent's markdown `#` headings,
+//   2. drop headings shared by ≥2 agents (boilerplate) — the first remaining unique heading
+//      is the role,
+//   3. if an agent has no unique heading, fall back to its first meaningful prose line.
+// Output is deterministic (same logs → same labels) so it never destabilises the panel's
+// push-dedup signature. Returns a Map<agentId, label>; agents with no signal are omitted.
+function deriveAgentRoleLabels(prompts: Map<string, string>): Map<string, string> {
+    const cleanHeading = (h: string): string => {
+        // Keep any trailing parenthetical — it is often the role's distinguishing detail
+        // (e.g. "너의 단독 작업 (설정 정의)" vs "너의 단독 작업 (비프 재생)"): dropping it would
+        // collapse two distinct roles into one identical label.
+        const s = h.replace(/^#+\s*/, '').replace(/[★⚠️]/g, '').trim();
+        return s.length > 50 ? s.slice(0, 50).trim() + '…' : s;
+    };
+    const cleanProse = (line: string): string => {
+        const s = line.replace(/^[#>\-*\s]+/, '').replace(/[★⚠️]/g, '').trim();
+        return s.length > 50 ? s.slice(0, 50).trim() + '…' : s;
+    };
+
+    // Skip the shared preamble (절대규칙/존댓말 lines and any heading) when scanning prose.
+    const isPreamble = (t: string): boolean =>
+        t.startsWith('⚠️') || /^#{1,6}\s/.test(t) || /절대규칙|존댓말|한국어로 (작성|출력)/.test(t);
+
+    // Per-agent heading lists + a global count of each raw heading. Also count each prose
+    // line across agents so the fallback (step 3) can skip lines shared by ≥2 agents.
+    const headings = new Map<string, string[]>();
+    const headingCount = new Map<string, number>();
+    const proseCount = new Map<string, number>();
+    for (const [id, text] of prompts) {
+        const hs: string[] = [];
+        const seenProse = new Set<string>();
+        for (const ln of text.split('\n')) {
+            const t = ln.trim();
+            if (/^#{1,6}\s+\S/.test(t)) { hs.push(t); continue; }
+            if (t && !isPreamble(t) && !seenProse.has(t)) {
+                seenProse.add(t);
+                proseCount.set(t, (proseCount.get(t) || 0) + 1);
+            }
+        }
+        headings.set(id, hs);
+        for (const h of new Set(hs)) headingCount.set(h, (headingCount.get(h) || 0) + 1);
+    }
+
+    // Role headings usually read like "# 너의 임무", "# 너의 단독 작업", "# 렌즈 A: …",
+    // "# 역할". Prefer a unique heading that looks like one of those over a merely-incidental
+    // unique heading (e.g. "# 사전 확정 사실") that happens to differ between agents.
+    const ROLE_HINT = /너의|임무|작업|렌즈|역할|관점|담당|단독/;
+    const labels = new Map<string, string>();
+    for (const [id, text] of prompts) {
+        let label = '';
+        const uniqueHeadings = (headings.get(id) || []).filter(h => (headingCount.get(h) || 0) < 2);
+        // 1+2. prefer a role-looking unique heading; else the first unique heading.
+        const roleHeading = uniqueHeadings.find(h => ROLE_HINT.test(h)) || uniqueHeadings[0];
+        if (roleHeading) label = cleanHeading(roleHeading);
+        // 3. fallback: first UNIQUE meaningful prose line. Cross-compare like headings —
+        // skip lines shared by ≥2 agents (boilerplate) so a fan-out that opens with an
+        // identical paragraph doesn't collapse every agent to the same label. If every
+        // prose line is shared, leave it unset → the panel's distinct "에이전트 N" beats
+        // N identical labels.
+        if (!label) {
+            for (const ln of text.split('\n')) {
+                const t = ln.trim();
+                if (!t || isPreamble(t)) continue;
+                if ((proseCount.get(t) || 0) >= 2) continue;  // shared boilerplate — skip
+                label = cleanProse(t);
+                if (label) break;
+            }
+        }
+        if (label) labels.set(id, label);
+    }
+    return labels;
 }
 
 // Read an agent's log (agent-<id>.jsonl, appended in real time) and extract:
 //   - durationMs: span between its first and last message timestamps
 //   - activity: what it's doing right now (last tool call / last text) — used for
 //     running agents (done agents show their journal result instead)
-async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string }> {
+async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; fullActivity: string }> {
     let firstTs = 0;
     let lastTs = 0;
     let activity = '작업 중…';
+    let fullActivity = '';
     try {
         const content = await readTextFile(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`));
         const lines = content.trim().split('\n');
@@ -984,12 +1151,14 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
                                 const arg = b.input?.file_path || b.input?.path || b.input?.command || b.input?.pattern || b.input?.description;
                                 const argStr = typeof arg === 'string' ? ` — ${arg.replace(/\s+/g, ' ').slice(0, 60)}` : '';
                                 activity = `🔧 ${b.name}${argStr}`;
+                                fullActivity = activity;
                                 foundActivity = true;
                                 break;
                             }
                             if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
                                 const t = b.text.replace(/\s+/g, ' ').trim();
                                 activity = t.length > 140 ? t.slice(0, 140) + '…' : t;
+                                fullActivity = b.text.trim();
                                 foundActivity = true;
                                 break;
                             }
@@ -997,6 +1166,7 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
                     } else if (typeof blocks === 'string' && blocks.trim()) {
                         const t = blocks.replace(/\s+/g, ' ').trim();
                         activity = t.length > 140 ? t.slice(0, 140) + '…' : t;
+                        fullActivity = blocks.trim();
                         foundActivity = true;
                     }
                 }
@@ -1005,7 +1175,190 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
         }
     } catch { /* agent log not readable yet */ }
     const durationMs = (firstTs && lastTs && lastTs >= firstTs) ? lastTs - firstTs : 0;
-    return { durationMs, activity };
+    return { durationMs, activity, fullActivity };
+}
+
+// Parse a single Task-subagent log (subagents/agent-<id>.jsonl + its sibling
+// agent-<id>.meta.json) into a WorkflowAgentInfo. These are the agents the user
+// launches via the Agent/Task tool — they live directly under subagents/ (NOT under
+// subagents/workflows/) and are NOT recorded in any journal.jsonl.
+//
+// Completion rule: the agent is `done` when its LAST assistant entry is a FINAL text
+// report that isn't mid-tool-call. stop_reason 'end_turn' is an explicit completion →
+// done immediately. Newer Claude Code also ends a finished agent with sr=null — BUT so
+// do mid-tool "explanation" text entries (flushed as a separate line ~0.6s before the
+// next tool entry). They're separable by size + settle: measured across 14 agents / 181
+// intermediate entries, intermediate text is ≤634 chars with another entry following
+// within ~0.6s median, while final reports are ≥3169 chars. So the sr=null case requires
+// a substantial report (≥1500 chars) that has also settled (≥4s idle). Strict 'end_turn'
+// alone caused silent beeps (null-final missed); accepting ANY null text caused false-done
+// mid-work (early/duplicate beeps). This threads both.
+async function parseTaskAgent(
+    subagentsDirUri: vscode.Uri,
+    jsonlName: string
+): Promise<{ agent: WorkflowAgentInfo; mtime: number; firstTs: number } | null> {
+    const idMatch = jsonlName.match(/^agent-(.+)\.jsonl$/);
+    if (!idMatch) return null;
+    let agentId = idMatch[1];
+
+    let content: string;
+    try {
+        content = await readTextFile(vscode.Uri.joinPath(subagentsDirUri, jsonlName));
+    } catch {
+        return null;  // unreadable / vanished
+    }
+    const lines = content.trim().split('\n');
+    if (lines.length === 0 || !lines[0].trim()) return null;
+
+    // Display name from the meta.json sidecar (description preferred, then agentType).
+    let displayName = '';
+    try {
+        const metaRaw = await readTextFile(vscode.Uri.joinPath(subagentsDirUri, jsonlName.replace(/\.jsonl$/, '.meta.json')));
+        const meta = JSON.parse(metaRaw);
+        if (typeof meta?.description === 'string' && meta.description.trim()) displayName = meta.description.trim();
+        else if (typeof meta?.agentType === 'string' && meta.agentType.trim()) displayName = meta.agentType.trim();
+    } catch { /* no/invalid meta — fall back below */ }
+
+    // First & last timestamps for duration; recover agentId from the log if needed.
+    let firstTs = 0;
+    let lastTs = 0;
+    for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        try {
+            const e = JSON.parse(lines[i]);
+            if (typeof e.agentId === 'string' && e.agentId) agentId = e.agentId;
+            if (e.timestamp) { firstTs = new Date(e.timestamp).getTime(); break; }
+        } catch { /* skip */ }
+    }
+    for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].trim()) continue;
+        try {
+            const e = JSON.parse(lines[i]);
+            if (e.timestamp) { lastTs = new Date(e.timestamp).getTime(); break; }
+        } catch { /* skip */ }
+    }
+
+    // Find the last assistant entry; decide done/running and extract its text.
+    let isDone = false;
+    let fullText = '';
+    let activity = '작업 중…';
+    let fullActivity = '';
+    for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].trim()) continue;
+        let e: any;
+        try { e = JSON.parse(lines[i]); } catch { continue; }
+        if (e.type !== 'assistant' || !e.message) continue;
+
+        const blocks = Array.isArray(e.message.content) ? e.message.content : [];
+        const textBlock = blocks.find((b: any) => b?.type === 'text' && typeof b.text === 'string' && b.text.trim());
+        const toolUseBlock = blocks.find((b: any) => b?.type === 'tool_use');
+        const sr = e.message.stop_reason;
+        // See the "Completion rule" comment above. end_turn → done now; sr=null → done only
+        // if it's a substantial final report (≥1500 chars) that has settled (≥4s idle),
+        // which excludes the short, quickly-superseded mid-tool text entries.
+        const longFinal = !!textBlock && textBlock.text.trim().length >= 1500;
+        const settled = lastTs > 0 && (Date.now() - lastTs) >= 4000;
+        if (textBlock && !toolUseBlock && sr !== 'tool_use' && (sr === 'end_turn' || (longFinal && settled))) {
+            isDone = true;
+            fullText = textBlock.text.trim();
+        } else {
+            // Still running — surface the latest activity (last tool_use or text).
+            for (let k = blocks.length - 1; k >= 0; k--) {
+                const b = blocks[k];
+                if (b?.type === 'tool_use') {
+                    const arg = b.input?.file_path || b.input?.path || b.input?.command || b.input?.pattern || b.input?.description;
+                    const argStr = typeof arg === 'string' ? ` — ${arg.replace(/\s+/g, ' ').slice(0, 60)}` : '';
+                    activity = `🔧 ${b.name}${argStr}`;
+                    fullActivity = activity;
+                    break;
+                }
+                if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
+                    const t = b.text.replace(/\s+/g, ' ').trim();
+                    activity = t.length > 140 ? t.slice(0, 140) + '…' : t;
+                    fullActivity = b.text.trim();
+                    break;
+                }
+            }
+        }
+        break;  // only inspect the latest assistant entry
+    }
+
+    const durationMs = (firstTs && lastTs && lastTs >= firstTs) ? lastTs - firstTs : 0;
+    const oneLine = fullText.replace(/\s+/g, ' ').trim();
+    const preview = oneLine.length > 160 ? oneLine.slice(0, 160) + '…' : oneLine;
+
+    const agent: WorkflowAgentInfo = {
+        agentId,
+        status: isDone ? 'done' : 'running',
+        summary: isDone ? preview : activity,
+        fullSummary: isDone ? fullText : fullActivity,
+        durationMs,
+        name: displayName || 'agent',
+    };
+    let mtime = 0;
+    try {
+        mtime = (await vscode.workspace.fs.stat(vscode.Uri.joinPath(subagentsDirUri, jsonlName))).mtime;
+    } catch { /* ignore */ }
+    return { agent, mtime, firstTs };
+}
+
+// Scan subagents/ for Task-subagent logs (agent-*.jsonl, NOT under workflows/) and
+// bundle them into a single pseudo-workflow. wfId = 'tasks' (does NOT start with
+// 'wf_'), so the delete path (deleteWorkflowDir) naturally refuses it. Returns null
+// when there are no Task agents.
+// Bundle the flat subagents/agent-*.jsonl logs into ONE pseudo-workflow PER BATCH. Agents
+// spun up together (a fan-out) share a near-identical start time; a batch launched later
+// (after a gap) becomes its own group with its own header — so the user can tell "the
+// agents I just launched" apart from an unrelated batch run an hour ago. Each batch's wfId
+// is 'tasks:<batchStartTs>' (unique, starts with 'tasks:' so the panel/delete paths spot it).
+async function findTaskAgentBundles(sessionDirUri: vscode.Uri): Promise<{ wf: WorkflowInfo; mtime: number }[]> {
+    const subagentsDirUri = vscode.Uri.joinPath(sessionDirUri, 'subagents');
+    let entries: [string, vscode.FileType][];
+    try {
+        entries = await vscode.workspace.fs.readDirectory(subagentsDirUri);
+    } catch {
+        return [];  // no subagents dir
+    }
+    const parsed: { agent: WorkflowAgentInfo; mtime: number; firstTs: number }[] = [];
+    for (const [name, ftype] of entries) {
+        if (ftype !== vscode.FileType.File) continue;
+        if (!/^agent-.+\.jsonl$/.test(name)) continue;  // skip .meta.json, workflows/, etc.
+        try {
+            const p = await parseTaskAgent(subagentsDirUri, name);
+            if (p) parsed.push(p);
+        } catch { /* skip this agent */ }
+    }
+    if (parsed.length === 0) return [];
+    // Cluster by start-time gap: consecutive starts >5 min apart begin a new batch.
+    parsed.sort((a, b) => a.firstTs - b.firstTs);
+    const GAP_MS = 5 * 60 * 1000;
+    const batches: { agent: WorkflowAgentInfo; mtime: number; firstTs: number }[][] = [];
+    let cur: { agent: WorkflowAgentInfo; mtime: number; firstTs: number }[] = [];
+    for (const p of parsed) {
+        if (cur.length && (p.firstTs - cur[cur.length - 1].firstTs) > GAP_MS) {
+            batches.push(cur);
+            cur = [];
+        }
+        cur.push(p);
+    }
+    if (cur.length) batches.push(cur);
+    // One WorkflowInfo per batch, labelled by its start clock so batches are distinguishable.
+    return batches.map(batch => {
+        const startTs = batch[0].firstTs;
+        const newestMtime = batch.reduce((m, x) => Math.max(m, x.mtime), 0);
+        const agents = batch.map(x => x.agent).sort((a, b) => a.agentId.localeCompare(b.agentId));
+        const d = new Date(startTs);
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        const wf: WorkflowInfo = {
+            wfId: 'tasks:' + startTs,
+            name: `서브에이전트 ${hh}:${mm} (${agents.length}마리)`,
+            description: '',
+            phases: [],
+            agents,
+        };
+        return { wf, mtime: newestMtime };
+    });
 }
 
 function parseWorkflowScriptMeta(js: string): { name: string; description: string; phases: string[] } {
@@ -1034,11 +1387,12 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
         const sessionDirUri = uri.with({ path: uri.path.replace(/\.jsonl$/, '') });
 
         const workflowsDirUri = vscode.Uri.joinPath(sessionDirUri, 'subagents', 'workflows');
-        let wfDirs: [string, vscode.FileType][];
+        let wfDirs: [string, vscode.FileType][] = [];
         try {
             wfDirs = await vscode.workspace.fs.readDirectory(workflowsDirUri);
         } catch {
-            return [];
+            // No workflows/ dir — that's fine; Task subagents (below) may still exist.
+            wfDirs = [];
         }
 
         const scriptsDirUri = vscode.Uri.joinPath(sessionDirUri, 'workflows', 'scripts');
@@ -1055,22 +1409,33 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
             try {
                 const journalContent = await readTextFile(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'));
                 const startedIds = new Set<string>();
-                const doneSummary = new Map<string, string>();
+                const doneSummary = new Map<string, { preview: string; full: string }>();
                 for (const line of journalContent.trim().split('\n')) {
                     if (!line.trim()) continue;
                     try {
                         const rec = JSON.parse(line);
                         if (rec.type === 'started' && rec.agentId) startedIds.add(rec.agentId);
                         else if (rec.type === 'result' && rec.agentId) {
-                            doneSummary.set(rec.agentId, summarizeResult(rec.result));
+                            doneSummary.set(rec.agentId, summarizeResultFull(rec.result));
                         }
                     } catch { /* skip malformed line */ }
                 }
+                // Derive per-agent role labels from their first prompts (no label is stored
+                // on disk — see deriveAgentRoleLabels). Done once per workflow so unique vs.
+                // boilerplate headings can be told apart by cross-comparing the agents.
+                const promptTexts = new Map<string, string>();
+                for (const id of startedIds) {
+                    promptTexts.set(id, await getAgentFirstPromptText(wfDirUri, id));
+                }
+                const roleLabels = deriveAgentRoleLabels(promptTexts);
                 for (const id of startedIds) {
                     const isDone = doneSummary.has(id);
                     const timing = await getAgentTiming(wfDirUri, id);
-                    const summary = isDone ? (doneSummary.get(id) || '') : timing.activity;
-                    agents.push({ agentId: id, status: isDone ? 'done' : 'running', summary, durationMs: timing.durationMs });
+                    const res = doneSummary.get(id);
+                    const summary = isDone ? (res?.preview || '') : timing.activity;
+                    const fullSummary = isDone ? (res?.full || '') : timing.fullActivity;
+                    const name = roleLabels.get(id);  // undefined → panel falls back to "에이전트 N"
+                    agents.push({ agentId: id, status: isDone ? 'done' : 'running', summary, fullSummary, durationMs: timing.durationMs, ...(name ? { name } : {}) });
                 }
             } catch { /* journal unreadable */ }
 
@@ -1098,6 +1463,15 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
 
             wfList.push({ wf: { wfId, name, description, phases, agents }, mtime });
         }
+
+        // Task subagents (Agent tool) — bundle the flat subagents/agent-*.jsonl logs into
+        // one pseudo-workflow PER BATCH (grouped by start-time gap) alongside the journals.
+        try {
+            const taskBundles = await findTaskAgentBundles(sessionDirUri);
+            for (const b of taskBundles) wfList.push(b);
+        } catch (e) {
+            log(`[workflows] task-agent scan error: ${e}`);
+        }
     } catch (e) {
         log(`[workflows] scan error: ${e}`);
     }
@@ -1120,6 +1494,38 @@ async function deleteWorkflowDir(sessionFileUri: string, wfId: string): Promise<
     } catch (e) {
         log(`[workflows] delete failed for ${wfId}: ${e}`);
         return false;
+    }
+}
+
+// Clear the COMPLETED Task-subagent logs (agent-*.jsonl + paired .meta.json) for a
+// session's pseudo-workflow ('tasks'). Running agents are kept so we never remove a log
+// a live agent is still appending to. Returns the number of agents cleared.
+async function deleteDoneTaskAgents(sessionFileUri: string, wfId: string): Promise<number> {
+    try {
+        const uri = vscode.Uri.parse(sessionFileUri);
+        const sessionDirUri = uri.with({ path: uri.path.replace(/\.jsonl$/, '') });
+        // Clear only the COMPLETED agents in THIS batch (wfId 'tasks:<startTs>'); running ones
+        // and other batches stay untouched.
+        const bundles = await findTaskAgentBundles(sessionDirUri);
+        const batch = bundles.find(b => b.wf.wfId === wfId);
+        if (!batch) return 0;
+        const subagentsDirUri = vscode.Uri.joinPath(sessionDirUri, 'subagents');
+        let cleared = 0;
+        for (const agent of batch.wf.agents) {
+            if (agent.status !== 'done') continue;  // keep running agents
+            const jsonlName = 'agent-' + agent.agentId + '.jsonl';
+            try {
+                await vscode.workspace.fs.delete(vscode.Uri.joinPath(subagentsDirUri, jsonlName), { useTrash: false });
+                cleared++;
+            } catch (e) { log(`[tasks] delete failed for ${jsonlName}: ${e}`); }
+            try {
+                await vscode.workspace.fs.delete(vscode.Uri.joinPath(subagentsDirUri, 'agent-' + agent.agentId + '.meta.json'), { useTrash: false });
+            } catch { /* meta may not exist */ }
+        }
+        return cleared;
+    } catch (e) {
+        log(`[tasks] delete error: ${e}`);
+        return 0;
     }
 }
 
@@ -1853,15 +2259,25 @@ async function getGlobalEffortLevel(): Promise<string> {
 }
 
 // Convert a raw effort value to a display label. Always full names (no abbreviation).
-//   low → Low, medium → Medium, high → High, xhigh → xHigh, max → Max
+//   low → Low, medium → Medium, high → High, max → Max, ultracode/ultra → 🚀 Ultra
+// xhigh → "xHigh⁺": settings.json persists "xhigh" for BOTH plain xhigh AND ultracode
+// (= xhigh + runtime dynamic workflows). The ultracode bit itself never persists to disk
+// (CLI schema: "interactive toggles never persist it"), so we cannot distinguish them from
+// settings.json alone — the ⁺ hints "may be ultracode" without asserting it. The tooltip
+// carries the full explanation. (case 'ultracode'/'ultra' stays for a hypothetical future
+// build that DOES persist the flag — harmless until then.)
 function getEffortLabel(raw: string): string {
     switch (raw.toLowerCase()) {
         case 'low': return 'Low';
         case 'medium': return 'Medium';
         case 'high': return 'High';
-        case 'xhigh': return 'xHigh';
+        case 'xhigh': return 'xHigh⁺';
         case 'max': return 'Max';
-        default: return raw;  // Unknown values pass through as-is
+        case 'ultracode': return '🚀 Ultra';
+        case 'ultra': return '🚀 Ultra';  // tolerate abbreviation/typo
+        default:
+            // Unknown values: prettify by capitalizing the first letter instead of raw passthrough
+            return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw;
     }
 }
 
@@ -2155,7 +2571,13 @@ async function refreshAllSessions() {
         // Detailed tooltip. The first-message line and project path were removed per
         // user request; the claudeState plan-usage block takes their place.
         const effortLineText = session.effortLevel ? getEffortLabel(session.effortLevel) : '';
-        const effortLine = effortLineText ? `🎚️ Effort: \`${effortLineText}\`\n\n` : '';
+        // xHigh⁺ = persisted "xhigh", which is also what ultracode stores. The "+workflows"
+        // half of ultracode is runtime-only and never written to disk, so we can't tell plain
+        // xhigh and ultracode apart — the note spells that out.
+        const effortNote = (session.effortLevel || '').toLowerCase() === 'xhigh'
+            ? ' — xhigh (ultracode면 dynamic workflows 결합, 런타임 전용이라 구분 불가)'
+            : '';
+        const effortLine = effortLineText ? `🎚️ Effort: \`${effortLineText}\`${effortNote}\n\n` : '';
         // Keep speed only when it's non-standard (i.e., /fast mode active) — otherwise hide noise
         const speedLine = (session.speed && session.speed !== 'standard') ? `⚡ Speed: \`${session.speed}\`\n\n` : '';
         const idleLine = session.isIdle ? `😴 **Idle** — ${formatIdleDuration(session.lastUpdated)}\n\n` : '';
@@ -2193,6 +2615,60 @@ async function refreshAllSessions() {
         entry.item.show();
     }
 
+    // --- Workflow-complete beep (incl. Task pseudo-workflow wfId 'tasks') ---
+    // For every tracked session, scan its workflows; when a workflow flips to
+    // "all agents done" we fire playWorkflowCompleteSound() exactly once. The
+    // user's core ask: "beep me when all the subagents I spun up have finished."
+    // First scan / suppressBeep only baselines (silent) so an already-finished
+    // workflow that was done before the extension loaded doesn't beep on startup.
+    const wfBeepEnabled = config.get<boolean>('workflowCompleteBeep', true);
+    // Cache the tracked session's workflow scan so the panel-sync push below can
+    // reuse it instead of hitting disk a second time.
+    const trackedSessionFile = getTrackedSessionFile();
+    let trackedWorkflowsCache: WorkflowInfo[] | undefined;
+    for (const sessionFile of seenPaths) {
+        let workflows: WorkflowInfo[];
+        try {
+            workflows = await findWorkflowsForSession(sessionFile);
+        } catch (e) {
+            log(`[wf-done] scan error for session: ${e}`);
+            continue;
+        }
+        if (sessionFile === trackedSessionFile) trackedWorkflowsCache = workflows;
+        for (const wf of workflows) {
+            const key = `${sessionFile}|${wf.wfId}`;
+            const allDone = wf.agents.length > 0 && wf.agents.every(a => a.status === 'done');
+            if (!allDone) {
+                // Still running (or no agents yet). Remember we've seen this key running
+                // so a later flip to done counts as a real completion. If it had been
+                // gated as done but is active again (new agents started), drop the gate
+                // so the next completion can beep again.
+                seenRunningWorkflowKeys.add(key);
+                if (alertedWorkflowDone.has(key)) {
+                    alertedWorkflowDone.delete(key);
+                    log(`[wf-done] reset gate for ${wf.wfId} — workflow active again`);
+                }
+                continue;
+            }
+            const doneCount = wf.agents.length;
+            if (alertedWorkflowDone.has(key)) continue; // already handled this completion
+            // Beep ONLY for a running→done transition we actually observed this runtime.
+            // A workflow first seen already-done (first scan, or stale work from another
+            // project surfacing later) is baselined silently — it never beeps as if it
+            // just finished. Same "don't beep pre-existing completions" guard the
+            // task-completion beep uses.
+            const observedRunning = seenRunningWorkflowKeys.has(key);
+            alertedWorkflowDone.set(key, doneCount);
+            if (!suppressBeep && observedRunning && wfBeepEnabled) {
+                log(`[wf-done] all ${doneCount} agents done for ${wf.wfId} → beep`);
+                playWorkflowCompleteSound();
+            } else {
+                const why = suppressBeep ? 'first-scan' : !observedRunning ? 'never-saw-running' : 'beep-disabled';
+                log(`[wf-done] baseline (silent, ${why}) ${wf.wfId} — ${doneCount} agents done`);
+            }
+        }
+    }
+
     // Remove status bar items for sessions that are no longer active
     for (const [sessionFile, entry] of statusBarItems) {
         if (!seenPaths.has(sessionFile)) {
@@ -2202,6 +2678,13 @@ async function refreshAllSessions() {
             lastKnownEndTurnAt.delete(sessionFile);
             lastKnownQuestionAt.delete(sessionFile);
             alertedStuckToolUseAt.delete(sessionFile);
+            // Drop every workflow-done gate belonging to this vanished session.
+            for (const k of [...alertedWorkflowDone.keys()]) {
+                if (k.startsWith(`${sessionFile}|`)) alertedWorkflowDone.delete(k);
+            }
+            for (const k of [...seenRunningWorkflowKeys]) {
+                if (k.startsWith(`${sessionFile}|`)) seenRunningWorkflowKeys.delete(k);
+            }
             const pc = pendingCompletion.get(sessionFile);
             if (pc) { clearTimeout(pc.timer); pendingCompletion.delete(sessionFile); }
             const pq = pendingQuestion.get(sessionFile);
@@ -2214,10 +2697,16 @@ async function refreshAllSessions() {
     const hasRealSession = sessions.some(s => !s.isFallback);
     updatePlanFallback(!hasRealSession);
 
-    // Keep the workflow panel (if open) in sync — re-scan the tracked session and push.
-    const tracked = getTrackedSessionFile();
-    if (tracked) {
-        findWorkflowsForSession(tracked).then(pushWorkflows).catch(e => log(`[workflows] push error: ${e}`));
+    // Keep the workflow panel (if open) in sync. The workflow-done loop above
+    // already scanned the tracked session, so reuse that result instead of hitting
+    // disk again. (Fall back to a fresh scan only if the cache somehow missed.)
+    if (trackedSessionFile) {
+        if (trackedWorkflowsCache !== undefined) {
+            try { pushWorkflows(trackedWorkflowsCache); }
+            catch (e) { log(`[workflows] push error: ${e}`); }
+        } else {
+            findWorkflowsForSession(trackedSessionFile).then(pushWorkflows).catch(e => log(`[workflows] push error: ${e}`));
+        }
     }
 }
 
