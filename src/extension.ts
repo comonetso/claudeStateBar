@@ -57,7 +57,7 @@ interface WorkflowAgentInfo {
     agentId: string;
     status: 'running' | 'done';
     summary: string;  // final result (done) or current activity (running) — 160-char preview
-    fullSummary?: string;  // untruncated full text (final report / activity) for the expandable <details>
+    fullSummary?: string;  // untruncated full text (final report / activity) — panel expands it via <details> on done agents
     durationMs: number;  // first→last message span from the agent log; 0 if unknown
     name?: string;  // display label (Task agents: meta.json description); workflow agents leave undefined → "에이전트 N"
 }
@@ -68,6 +68,8 @@ interface WorkflowInfo {
     description: string;
     phases: string[];
     agents: WorkflowAgentInfo[];
+    startedAt?: number;  // epoch ms — earliest agent start across the workflow (title clock)
+    endedAt?: number;    // epoch ms — latest agent activity; final elapsed = endedAt - startedAt once all done
 }
 
 const statusBarItems: Map<string, StatusBarEntry> = new Map();
@@ -1117,7 +1119,7 @@ function deriveAgentRoleLabels(prompts: Map<string, string>): Map<string, string
 //   - durationMs: span between its first and last message timestamps
 //   - activity: what it's doing right now (last tool call / last text) — used for
 //     running agents (done agents show their journal result instead)
-async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; fullActivity: string }> {
+async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; fullActivity: string; firstTs: number; lastTs: number }> {
     let firstTs = 0;
     let lastTs = 0;
     let activity = '작업 중…';
@@ -1175,7 +1177,7 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
         }
     } catch { /* agent log not readable yet */ }
     const durationMs = (firstTs && lastTs && lastTs >= firstTs) ? lastTs - firstTs : 0;
-    return { durationMs, activity, fullActivity };
+    return { durationMs, activity, fullActivity, firstTs, lastTs };
 }
 
 // Parse a single Task-subagent log (subagents/agent-<id>.jsonl + its sibling
@@ -1196,7 +1198,7 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
 async function parseTaskAgent(
     subagentsDirUri: vscode.Uri,
     jsonlName: string
-): Promise<{ agent: WorkflowAgentInfo; mtime: number; firstTs: number } | null> {
+): Promise<{ agent: WorkflowAgentInfo; mtime: number; firstTs: number; lastTs: number } | null> {
     const idMatch = jsonlName.match(/^agent-(.+)\.jsonl$/);
     if (!idMatch) return null;
     let agentId = idMatch[1];
@@ -1299,7 +1301,7 @@ async function parseTaskAgent(
     try {
         mtime = (await vscode.workspace.fs.stat(vscode.Uri.joinPath(subagentsDirUri, jsonlName))).mtime;
     } catch { /* ignore */ }
-    return { agent, mtime, firstTs };
+    return { agent, mtime, firstTs, lastTs };
 }
 
 // Scan subagents/ for Task-subagent logs (agent-*.jsonl, NOT under workflows/) and
@@ -1319,7 +1321,7 @@ async function findTaskAgentBundles(sessionDirUri: vscode.Uri): Promise<{ wf: Wo
     } catch {
         return [];  // no subagents dir
     }
-    const parsed: { agent: WorkflowAgentInfo; mtime: number; firstTs: number }[] = [];
+    const parsed: { agent: WorkflowAgentInfo; mtime: number; firstTs: number; lastTs: number }[] = [];
     for (const [name, ftype] of entries) {
         if (ftype !== vscode.FileType.File) continue;
         if (!/^agent-.+\.jsonl$/.test(name)) continue;  // skip .meta.json, workflows/, etc.
@@ -1332,8 +1334,8 @@ async function findTaskAgentBundles(sessionDirUri: vscode.Uri): Promise<{ wf: Wo
     // Cluster by start-time gap: consecutive starts >5 min apart begin a new batch.
     parsed.sort((a, b) => a.firstTs - b.firstTs);
     const GAP_MS = 5 * 60 * 1000;
-    const batches: { agent: WorkflowAgentInfo; mtime: number; firstTs: number }[][] = [];
-    let cur: { agent: WorkflowAgentInfo; mtime: number; firstTs: number }[] = [];
+    const batches: { agent: WorkflowAgentInfo; mtime: number; firstTs: number; lastTs: number }[][] = [];
+    let cur: { agent: WorkflowAgentInfo; mtime: number; firstTs: number; lastTs: number }[] = [];
     for (const p of parsed) {
         if (cur.length && (p.firstTs - cur[cur.length - 1].firstTs) > GAP_MS) {
             batches.push(cur);
@@ -1345,6 +1347,7 @@ async function findTaskAgentBundles(sessionDirUri: vscode.Uri): Promise<{ wf: Wo
     // One WorkflowInfo per batch, labelled by its start clock so batches are distinguishable.
     return batches.map(batch => {
         const startTs = batch[0].firstTs;
+        const endTs = batch.reduce((m, x) => Math.max(m, x.lastTs), 0);
         const newestMtime = batch.reduce((m, x) => Math.max(m, x.mtime), 0);
         const agents = batch.map(x => x.agent).sort((a, b) => a.agentId.localeCompare(b.agentId));
         const d = new Date(startTs);
@@ -1356,6 +1359,8 @@ async function findTaskAgentBundles(sessionDirUri: vscode.Uri): Promise<{ wf: Wo
             description: '',
             phases: [],
             agents,
+            ...(startTs ? { startedAt: startTs } : {}),
+            ...(endTs ? { endedAt: endTs } : {}),
         };
         return { wf, mtime: newestMtime };
     });
@@ -1406,6 +1411,8 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
 
             const wfDirUri = vscode.Uri.joinPath(workflowsDirUri, wfId);
             const agents: WorkflowAgentInfo[] = [];
+            let wfStartedAt = 0;  // earliest agent firstTs; endedAt = latest agent lastTs
+            let wfEndedAt = 0;
             try {
                 const journalContent = await readTextFile(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'));
                 const startedIds = new Set<string>();
@@ -1431,6 +1438,8 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                 for (const id of startedIds) {
                     const isDone = doneSummary.has(id);
                     const timing = await getAgentTiming(wfDirUri, id);
+                    if (timing.firstTs && (!wfStartedAt || timing.firstTs < wfStartedAt)) wfStartedAt = timing.firstTs;
+                    if (timing.lastTs > wfEndedAt) wfEndedAt = timing.lastTs;
                     const res = doneSummary.get(id);
                     const summary = isDone ? (res?.preview || '') : timing.activity;
                     const fullSummary = isDone ? (res?.full || '') : timing.fullActivity;
@@ -1461,7 +1470,7 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                 mtime = (await vscode.workspace.fs.stat(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'))).mtime;
             } catch { /* no journal yet */ }
 
-            wfList.push({ wf: { wfId, name, description, phases, agents }, mtime });
+            wfList.push({ wf: { wfId, name, description, phases, agents, ...(wfStartedAt ? { startedAt: wfStartedAt } : {}), ...(wfEndedAt ? { endedAt: wfEndedAt } : {}) }, mtime });
         }
 
         // Task subagents (Agent tool) — bundle the flat subagents/agent-*.jsonl logs into
