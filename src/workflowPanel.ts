@@ -5,7 +5,7 @@ export interface WorkflowAgentView {
     agentId: string;
     status: 'running' | 'done';
     summary: string;        // 160-char preview
-    fullSummary?: string;   // untruncated full text — rendered inside an expandable <details>
+    fullSummary?: string;   // untruncated full text — expandable via <details> on done agents
     durationMs: number;
     name?: string;          // display label (Task agents); undefined → "에이전트 N"
 }
@@ -16,6 +16,8 @@ export interface WorkflowView {
     description: string;
     phases: string[];
     agents: WorkflowAgentView[];
+    startedAt?: number;  // epoch ms — workflow start clock shown next to the title
+    endedAt?: number;    // epoch ms — final elapsed (endedAt - startedAt) once all agents are done
 }
 
 export interface WorkflowPanelCallbacks {
@@ -46,6 +48,9 @@ function workflowsSignature(workflows: WorkflowView[]): string {
         n: wf.name,
         d: wf.description,
         p: wf.phases,
+        s: wf.startedAt || 0,
+        // endedAt only matters once finished; the running→done status flip already changes the
+        // signature, so we don't include endedAt here (avoids re-render churn while running).
         // Include summary/duration: a RUNNING agent's live activity must keep updating in the
         // panel — that's what the user watches mid-run (more important than mid-run expand).
         // A finished agent stops changing → its signature stabilises → no re-render → an
@@ -136,7 +141,9 @@ function getHtml(webview: vscode.Webview): string {
   .wf-head { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
   .arrow { flex-shrink: 0; width: 12px; color: var(--vscode-descriptionForeground); transition: transform 0.12s; }
   .wf.collapsed .arrow { transform: rotate(-90deg); }
-  .wf-name { font-weight: 600; font-size: 1.05em; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wf-name { font-weight: 600; font-size: 1.05em; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wf-time { flex-shrink: 0; color: var(--vscode-descriptionForeground); font-size: 0.8em; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .wf-spacer { flex: 1 1 auto; }
   .badge { font-size: 0.8em; padding: 2px 9px; border-radius: 10px; white-space: nowrap; flex-shrink: 0; }
   .badge.running { background: var(--vscode-statusBarItem-warningBackground); color: var(--vscode-statusBarItem-warningForeground); }
   .badge.done { background: var(--vscode-testing-iconPassed, #3fb950); color: #fff; }
@@ -156,9 +163,9 @@ function getHtml(webview: vscode.Webview): string {
   .dot.done { background: #3fb950; }
   .label { font-weight: 600; }
   .dur { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
-  .summary { color: var(--vscode-descriptionForeground); margin: 3px 0 0 17px; line-height: 1.45; font-size: 0.92em; }
+  .summary { color: var(--vscode-descriptionForeground); margin: 3px 0 0 17px; line-height: 1.45; font-size: 0.92em; white-space: pre-wrap; word-break: break-word; }
   details.summary-wrap { margin: 3px 0 0 17px; }
-  details.summary-wrap > summary { color: var(--vscode-descriptionForeground); line-height: 1.45; font-size: 0.92em; cursor: pointer; list-style: revert; }
+  details.summary-wrap > summary { color: var(--vscode-descriptionForeground); line-height: 1.45; font-size: 0.92em; cursor: pointer; list-style: revert; white-space: pre-wrap; word-break: break-word; }
   details.summary-wrap > summary::marker { color: var(--vscode-descriptionForeground); }
   details.summary-wrap[open] > summary { color: var(--vscode-foreground); font-weight: 600; }
   .full { margin: 6px 0 2px 0; padding: 8px 10px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.1)); border-radius: 4px; white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family); font-size: 0.88em; line-height: 1.5; max-height: 420px; overflow: auto; }
@@ -200,7 +207,7 @@ function getHtml(webview: vscode.Webview): string {
   let lastRenderedSig = null;
   function sigOf(workflows) {
     return JSON.stringify((workflows || []).map(function (wf) {
-      return [wf.wfId, wf.name, wf.description, wf.phases,
+      return [wf.wfId, wf.name, wf.description, wf.phases, wf.startedAt || 0,
         // Mirror workflowsSignature: include summary/duration so a running agent's live
         // activity keeps refreshing. Done agents are stable, so their expanded report stays open.
         wf.agents.map(function (a) { return [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name]; })];
@@ -218,6 +225,38 @@ function getHtml(webview: vscode.Webview): string {
     const rem = Math.round(s % 60);
     return m + 'm ' + rem + 's';
   }
+
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  // Start clock H:i:s for the title row.
+  function fmtClock(ms) {
+    const d = new Date(ms);
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+  // Elapsed i:s (mm:ss; adds h: prefix past an hour).
+  function fmtElapsed(ms) {
+    if (!ms || ms < 0) ms = 0;
+    const total = Math.floor(ms / 1000);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return h > 0 ? h + ':' + pad2(m) + ':' + pad2(s) : pad2(m) + ':' + pad2(s);
+  }
+  // Update every .wf-time span once a second. Running workflows count up from data-started;
+  // finished ones (data-done set) freeze at the final run time. Runs independently of render,
+  // so the clock ticks even when the workflow data itself hasn't changed.
+  function tickElapsed() {
+    const now = Date.now();
+    document.querySelectorAll('.wf-time[data-started]').forEach(function (el) {
+      const started = Number(el.getAttribute('data-started'));
+      if (!started) return;
+      const clock = el.getAttribute('data-clock') || '';
+      const doneEnd = el.getAttribute('data-done');
+      const elapsed = doneEnd ? (Number(doneEnd) - started) : (now - started);
+      const label = doneEnd ? '소요 ' : '경과 ';
+      el.textContent = '🕘 ' + clock + ' · ' + label + fmtElapsed(elapsed);
+    });
+  }
+  setInterval(tickElapsed, 1000);
 
   function isExpanded(wfId, index) {
     if (wfId in userToggled) return userToggled[wfId];
@@ -297,10 +336,19 @@ function getHtml(webview: vscode.Webview): string {
         : wf.wfId.indexOf('tasks:') === 0
         ? '<button class="del-btn" data-del="' + esc(wf.wfId) + '" title="이 묶음의 완료된 Task 정리">🗑</button>'
         : '';
+      // Title-row clock: start time (H:i:s) + elapsed (i:s). While running, a 1s timer
+      // (tickElapsed) counts up from data-started; once all agents are done, data-done holds
+      // the final endedAt so the elapsed freezes at the total run time.
+      const allDone = wf.agents.length > 0 && wf.agents.every(a => a.status === 'done');
+      const timeHtml = wf.startedAt
+        ? '<span class="wf-time" data-started="' + wf.startedAt + '" data-clock="' + esc(fmtClock(wf.startedAt)) + '" data-done="' + (allDone && wf.endedAt ? wf.endedAt : '') + '"></span>'
+        : '';
       return '<div class="wf' + (expanded ? '' : ' collapsed') + '" data-wfid="' + esc(wf.wfId) + '">' +
         '<div class="wf-head">' +
           '<span class="arrow">▾</span>' +
           '<span class="wf-name">' + esc(wf.name) + '</span>' +
+          timeHtml +
+          '<span class="wf-spacer"></span>' +
           badge +
           delBtn +
         '</div>' +
@@ -311,6 +359,7 @@ function getHtml(webview: vscode.Webview): string {
         '</div>' +
       '</div>';
     }).join('');
+    tickElapsed();  // fill the title clocks immediately instead of waiting for the next tick
   }
 
   document.addEventListener('click', e => {
