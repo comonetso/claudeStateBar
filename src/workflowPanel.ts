@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { getDict } from './i18n';
+import * as creds from './credentials';
 
 // A workflow agent's live state, mirrored from journal.jsonl (started/result records).
 export interface WorkflowAgentView {
@@ -8,6 +10,7 @@ export interface WorkflowAgentView {
     fullSummary?: string;   // untruncated full text — expandable via <details> on done agents
     durationMs: number;
     name?: string;          // display label (Task agents); undefined → "에이전트 N"
+    fullName?: string;      // untruncated role/task text — shown as a hover tooltip on the label
 }
 
 export interface WorkflowView {
@@ -55,7 +58,7 @@ function workflowsSignature(workflows: WorkflowView[]): string {
         // panel — that's what the user watches mid-run (more important than mid-run expand).
         // A finished agent stops changing → its signature stabilises → no re-render → an
         // expanded report stays open. So running = live updates, done = stable & expandable.
-        a: wf.agents.map(a => [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name]),
+        a: wf.agents.map(a => [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name, a.fullName]),
     })));
 }
 
@@ -102,8 +105,11 @@ export function createOrShowWorkflowPanel(
     panel.onDidDispose(() => { panel = null; trackedSessionFile = null; lastPushedSignature = null; }, null, context.subscriptions);
     panel.webview.onDidReceiveMessage((msg) => {
         // The webview signals 'ready' once its script loads; its DOM is empty until the first
-        // render, so force that render through even if the signature would otherwise dedup.
-        if (msg?.type === 'ready') { lastPushedSignature = null; pushWorkflows(workflows); }
+        // render, so send the i18n dict first, then force that render through.
+        if (msg?.type === 'ready') {
+            panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()) });
+            lastPushedSignature = null; pushWorkflows(workflows);
+        }
         else if (msg?.type === 'delete' && typeof msg.wfId === 'string') callbacks?.onDelete(msg.wfId);
     }, null, context.subscriptions);
 }
@@ -119,6 +125,13 @@ export function pushWorkflows(workflows: WorkflowView[]): void {
     if (sig === lastPushedSignature) return;  // unchanged data → don't disturb the webview
     lastPushedSignature = sig;
     panel.webview.postMessage({ type: 'workflows', workflows });
+}
+
+// Push the current language's dictionary to an open panel (called when the user changes
+// the language setting so the panel re-localises live without needing a reopen).
+export function pushLanguage(): void {
+    if (!panel) return;
+    panel.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()) });
 }
 
 function getHtml(webview: vscode.Webview): string {
@@ -175,15 +188,36 @@ function getHtml(webview: vscode.Webview): string {
 </head>
 <body>
   <div class="toolbar">
-    <span class="flabel">글자 크기</span>
-    <button class="fbtn" data-font="dec" title="작게">A−</button>
-    <button class="fbtn" data-font="inc" title="크게">A+</button>
+    <span class="flabel" data-i18n="wf.fontSize">Font size</span>
+    <button class="fbtn" data-font="dec" data-i18n-title="wf.fontSmaller" title="Smaller">A−</button>
+    <button class="fbtn" data-font="inc" data-i18n-title="wf.fontLarger" title="Larger">A+</button>
   </div>
-  <h1>⚡ Claude 워크플로우</h1>
-  <div class="sub" id="sub">상태바와 함께 자동 갱신 중…</div>
+  <h1 data-i18n="wf.title">⚡ Claude Workflows</h1>
+  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
   <div id="list"></div>
 <script nonce="${nonce}">
   const vscodeApi = acquireVsCodeApi();
+  // i18n: dict is pushed from the extension (settings webview pattern). t() mirrors i18n.ts t().
+  // NOTE: this whole script lives inside a host template literal — the {0} substitution regex
+  // MUST use doubled backslashes (\\{ \\d \\}) so the compiled webview JS gets a valid /\{(\d+)\}/g.
+  let dict = {};
+  function t(key) {
+    let v = dict[key];
+    if (v == null) return key;
+    const args = Array.prototype.slice.call(arguments, 1);
+    if (typeof v === 'string' && args.length) {
+      v = v.replace(/\\{(\\d+)\\}/g, function (_, i) { const val = args[Number(i)]; return val == null ? '' : String(val); });
+    }
+    return v;
+  }
+  function applyI18n() {
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      const v = dict[el.getAttribute('data-i18n')]; if (typeof v === 'string') el.textContent = v;
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
+      const v = dict[el.getAttribute('data-i18n-title')]; if (typeof v === 'string') el.title = v;
+    });
+  }
   // Font size — adjustable via the +/- toolbar, persisted across reloads via webview state.
   // Default 15px (≈ +2 over the VS Code 13px default) since the user finds the base too small.
   const savedState = vscodeApi.getState() || {};
@@ -210,7 +244,7 @@ function getHtml(webview: vscode.Webview): string {
       return [wf.wfId, wf.name, wf.description, wf.phases, wf.startedAt || 0,
         // Mirror workflowsSignature: include summary/duration so a running agent's live
         // activity keeps refreshing. Done agents are stable, so their expanded report stays open.
-        wf.agents.map(function (a) { return [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name]; })];
+        wf.agents.map(function (a) { return [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name, a.fullName]; })];
     }));
   }
   function detailsKey(wfId, agentId) { return wfId + ' ' + agentId; }
@@ -252,7 +286,7 @@ function getHtml(webview: vscode.Webview): string {
       const clock = el.getAttribute('data-clock') || '';
       const doneEnd = el.getAttribute('data-done');
       const elapsed = doneEnd ? (Number(doneEnd) - started) : (now - started);
-      const label = doneEnd ? '소요 ' : '경과 ';
+      const label = doneEnd ? t('wf.took') : t('wf.elapsed');
       el.textContent = '🕘 ' + clock + ' · ' + label + fmtElapsed(elapsed);
     });
   }
@@ -283,19 +317,19 @@ function getHtml(webview: vscode.Webview): string {
     const list = document.getElementById('list');
     const sub = document.getElementById('sub');
     if (!lastWorkflows.length) {
-      list.innerHTML = '<div class="empty">이 세션에 아직 워크플로우가 없습니다.</div>';
+      list.innerHTML = '<div class="empty">' + esc(t('wf.empty')) + '</div>';
       sub.textContent = '';
       return;
     }
     const runningWf = lastWorkflows.filter(w => w.agents.some(a => a.status === 'running')).length;
-    sub.textContent = '워크플로우 ' + lastWorkflows.length + '개 · 진행 중 ' + runningWf + '개 · 자동 갱신';
+    sub.textContent = t('wf.summary', lastWorkflows.length, runningWf);
     list.innerHTML = lastWorkflows.map((wf, index) => {
       const done = wf.agents.filter(a => a.status === 'done').length;
       const total = wf.agents.length;
       const running = wf.agents.some(a => a.status === 'running');
       const badge = running
-        ? '<span class="badge running">' + done + '/' + total + ' 진행 중</span>'
-        : '<span class="badge done">' + done + '/' + total + ' 완료</span>';
+        ? '<span class="badge running">' + done + '/' + total + ' ' + esc(t('wf.running')) + '</span>'
+        : '<span class="badge done">' + done + '/' + total + ' ' + esc(t('wf.done')) + '</span>';
       const phases = (wf.phases && wf.phases.length)
         ? '<div class="phases">' + wf.phases.map(p => '<span class="phase-chip">' + esc(p) + '</span>').join('') + '</div>'
         : '';
@@ -306,9 +340,11 @@ function getHtml(webview: vscode.Webview): string {
       const agents = wf.agents.length
         ? '<div class="agents">' + wf.agents.map((a, i) => {
             const dur = fmtDur(a.durationMs);
-            const durStr = dur ? ' <span class="dur">· ' + (a.status === 'running' ? '경과 ' : '') + dur + '</span>' : '';
+            const durStr = dur ? ' <span class="dur">· ' + (a.status === 'running' ? esc(t('wf.elapsed')) : '') + dur + '</span>' : '';
             const nm = (a.name && a.name.trim()) || '';
-            const labelText = nm ? (labelCounts[nm] > 1 ? nm + ' (' + (i + 1) + ')' : nm) : ('에이전트 ' + (i + 1));
+            const labelText = nm ? (labelCounts[nm] > 1 ? nm + ' (' + (i + 1) + ')' : nm) : t('wf.agentN', i + 1);
+            // Hover tooltip on the (50-char-clipped) label so the full role/task is readable.
+            const labelTitle = (a.fullName && a.fullName.trim()) ? a.fullName : labelText;
             // Full report expander: when fullSummary is meaningfully longer than the
             // 160-char preview, wrap it in <details> so the user can read the whole thing.
             let summaryHtml = '';
@@ -323,18 +359,18 @@ function getHtml(webview: vscode.Webview): string {
             }
             return '<div class="agent">' +
               '<div class="agent-head"><span class="dot ' + a.status + '"></span>' +
-              '<span class="label">' + esc(labelText) + '</span>' + durStr + '</div>' +
+              '<span class="label" title="' + esc(labelTitle) + '">' + esc(labelText) + '</span>' + durStr + '</div>' +
               summaryHtml +
             '</div>';
           }).join('') + '</div>'
-        : '<div class="empty">아직 시작된 에이전트가 없습니다.</div>';
+        : '<div class="empty">' + esc(t('wf.noAgents')) + '</div>';
       const expanded = isExpanded(wf.wfId, index);
       // Real workflows (wf_*) delete their whole dir; the Task pseudo-bundle ('tasks')
       // clears its COMPLETED agent logs (running ones are kept).
       const delBtn = wf.wfId.indexOf('wf_') === 0
-        ? '<button class="del-btn" data-del="' + esc(wf.wfId) + '" title="삭제">🗑</button>'
+        ? '<button class="del-btn" data-del="' + esc(wf.wfId) + '" title="' + esc(t('common.delete')) + '">🗑</button>'
         : wf.wfId.indexOf('tasks:') === 0
-        ? '<button class="del-btn" data-del="' + esc(wf.wfId) + '" title="이 묶음의 완료된 Task 정리">🗑</button>'
+        ? '<button class="del-btn" data-del="' + esc(wf.wfId) + '" title="' + esc(t('wf.clearTasks')) + '">🗑</button>'
         : '';
       // Title-row clock: start time (H:i:s) + elapsed (i:s). While running, a 1s timer
       // (tickElapsed) counts up from data-started; once all agents are done, data-done holds
@@ -343,10 +379,13 @@ function getHtml(webview: vscode.Webview): string {
       const timeHtml = wf.startedAt
         ? '<span class="wf-time" data-started="' + wf.startedAt + '" data-clock="' + esc(fmtClock(wf.startedAt)) + '" data-done="' + (allDone && wf.endedAt ? wf.endedAt : '') + '"></span>'
         : '';
+      // Title tooltip: hovering the (possibly ellipsis-truncated) name floats the full name,
+      // plus the description so a collapsed card still reveals what the workflow is on hover.
+      const wfTitle = esc(wf.name) + (wf.description ? '\\n' + esc(wf.description) : '');
       return '<div class="wf' + (expanded ? '' : ' collapsed') + '" data-wfid="' + esc(wf.wfId) + '">' +
         '<div class="wf-head">' +
           '<span class="arrow">▾</span>' +
-          '<span class="wf-name">' + esc(wf.name) + '</span>' +
+          '<span class="wf-name" title="' + wfTitle + '">' + esc(wf.name) + '</span>' +
           timeHtml +
           '<span class="wf-spacer"></span>' +
           badge +
@@ -395,7 +434,8 @@ function getHtml(webview: vscode.Webview): string {
 
   window.addEventListener('message', e => {
     const m = e.data;
-    if (m && m.type === 'workflows') render(m.workflows);
+    if (m && m.type === 'i18n') { dict = m.dict || {}; applyI18n(); render(lastWorkflows, true); }
+    else if (m && m.type === 'workflows') render(m.workflows);
   });
   vscodeApi.postMessage({ type: 'ready' });
 </script>
