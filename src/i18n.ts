@@ -113,7 +113,80 @@ const EN: Dict = {
     'sound.stuckSec.hint': 'Used only when the heuristic below is enabled.',
     'sound.detectStuck.label': 'Beep on suspected VS Code permission prompt (heuristic — false-positive risk)',
     'sound.detectStuck.hint': 'When the latest assistant entry is a tool_use (Bash, Edit, etc.) and N seconds pass without new activity, fire the question beep. Long-running legitimate tools (npm build) will also trigger this. Off by default.',
-    'sound.reset': 'Reset to defaults'
+    'sound.reset': 'Reset to defaults',
+
+    // Shared action labels (also reused as modal button text → must match the comparison)
+    'common.delete': 'Delete',
+    'common.cleanup': 'Clean up',
+    'common.reload': 'Reload',
+
+    // Workflow panel (webview) + dynamic agent labels generated in extension.ts
+    'wf.title': '⚡ Claude Workflows',
+    'wf.fontSize': 'Font size',
+    'wf.fontSmaller': 'Smaller',
+    'wf.fontLarger': 'Larger',
+    'wf.autoRefreshing': 'Auto-refreshing with the status bar…',
+    'wf.empty': 'No workflows in this session yet.',
+    'wf.noAgents': 'No agents started yet.',
+    'wf.summary': '{0} workflows · {1} running · auto-refresh',
+    'wf.running': 'running',
+    'wf.done': 'done',
+    'wf.elapsed': 'elapsed ',
+    'wf.took': 'took ',
+    'wf.agentN': 'Agent {0}',
+    'wf.clearTasks': 'Clear completed Tasks in this bundle',
+    'wf.working': 'Working…',
+    'wf.taskBundle': 'Sub-agents {0} ({1})',
+
+    // Status-bar click QuickPick menu (the "Q-Panel")
+    'menu.hide': 'Hide this session',
+    'menu.sepHidden': 'Hidden sessions',
+    'menu.restoreAll': 'Restore all hidden ({0})',
+    'menu.restoreOne': 'Restore: {0}',
+    'menu.sepWorkflows': 'Workflows',
+    'menu.viewWorkflows': 'View workflows ({0})',
+    'menu.running': '{0} running',
+    'menu.allDone': 'all done',
+    'menu.viewDetail': 'Open the live workflow panel',
+    'menu.noWorkflows': 'No active workflows',
+    'menu.openPanelDetail': 'Open workflow panel',
+    'menu.cleanupGhosts': 'Clean up stale/zombie items (reload window)',
+    'menu.cleanupGhostsDesc': 'Remove leftover grayed-out items',
+    'menu.cleanupGhostsDetail': 'Status-bar items left by dead instances clear only on window reload — clicking reloads immediately',
+    'menu.openSettings': 'Open settings…',
+    'menu.openSettingsDesc': 'claudeState + claudeContextBar',
+    'menu.placeholder': 'claudeStateBar — choose action',
+    'menu.staleItem': 'This is a stale item. Reload the window to clean it up?',
+
+    // Test-beep QuickPick
+    'beep.warning': 'Warning beep (1×)',
+    'beep.warningDesc': 'When warningThreshold is reached',
+    'beep.danger': 'Danger beep (2×)',
+    'beep.dangerDesc': 'When dangerThreshold is reached',
+    'beep.completion': 'Task complete alert',
+    'beep.completionDesc': 'On Claude end_turn detection (settle applied)',
+    'beep.question': 'Waiting-for-input alert',
+    'beep.questionDesc': 'On AskUserQuestion / ExitPlanMode detection',
+    'beep.workflow': 'Workflow complete alert',
+    'beep.workflowDesc': 'When a workflow / all sub-agents finish',
+    'beep.placeholder': 'Select a beep type to test',
+
+    // Toasts / modal confirmations
+    'msg.cleanupReadFail': 'claudeStateBar: cannot read the extensions folder.',
+    'msg.cleanupNone': 'claudeStateBar: no old versions to clean up.',
+    'msg.cleanupConfirm': 'Delete {0} old version(s)?\n{1}',
+    'msg.cleanupDone': 'claudeStateBar: deleted {0} old version(s){1}.',
+    'msg.cleanupFailedSuffix': ' ({0} failed)',
+    'msg.noHidden': 'claudeStateBar: no hidden sessions to restore.',
+    'msg.tasksClearConfirm': 'Clean up completed sub-agent (Task) records in this bundle?\n\nCompleted agent logs are permanently deleted. Running agents are kept.',
+    'msg.wfDeleteConfirm': 'Delete this workflow record?\n{0}\n\nThis workflow\'s logs and results are permanently deleted.',
+    'msg.updatedZombie': 'claudeStateBar updated {0} → {1}. Stale (zombie) items may remain in the status bar. Reload the window to clean them up.',
+    'msg.cleanupGhostsConfirm': 'To clean up ghost/stale status-bar items, the window must be reloaded. Reload now?',
+    'msg.autoCleanupDone': 'claudeStateBar: cleaned up {0} old version(s). Reload the window to remove stale items still on screen.',
+
+    // Status-bar tooltip
+    'tt.effortXhighNote': ' — xhigh (if ultracode, combined with dynamic workflows; runtime-only, indistinguishable)',
+    'tt.planUnavailable': '_Plan usage unavailable on this host_'
 };
 
 const KO: Dict = {
@@ -216,7 +289,80 @@ const KO: Dict = {
     'sound.stuckSec.hint': '아래 휴리스틱이 켜져 있을 때만 적용.',
     'sound.detectStuck.label': 'VS Code 권한 팝업 추정 비프 (휴리스틱 — 오탐 위험)',
     'sound.detectStuck.hint': '마지막 assistant 항목이 tool_use(Bash·Edit 등)이고 N초 이상 새 활동 없을 때 질문 비프 발사. npm build 등 정상 장기 작업도 오탐 발사함. 기본 꺼짐.',
-    'sound.reset': '기본값으로 초기화'
+    'sound.reset': '기본값으로 초기화',
+
+    // 공용 동작 라벨 (모달 버튼 텍스트로도 재사용 → 반환값 비교와 반드시 일치)
+    'common.delete': '삭제',
+    'common.cleanup': '정리',
+    'common.reload': '다시 로드',
+
+    // 워크플로우 패널(webview) + extension.ts에서 생성되는 동적 라벨
+    'wf.title': '⚡ Claude 워크플로우',
+    'wf.fontSize': '글자 크기',
+    'wf.fontSmaller': '작게',
+    'wf.fontLarger': '크게',
+    'wf.autoRefreshing': '상태바와 함께 자동 갱신 중…',
+    'wf.empty': '이 세션에 아직 워크플로우가 없습니다.',
+    'wf.noAgents': '아직 시작된 에이전트가 없습니다.',
+    'wf.summary': '워크플로우 {0}개 · 진행 중 {1}개 · 자동 갱신',
+    'wf.running': '진행 중',
+    'wf.done': '완료',
+    'wf.elapsed': '경과 ',
+    'wf.took': '소요 ',
+    'wf.agentN': '에이전트 {0}',
+    'wf.clearTasks': '이 묶음의 완료된 Task 정리',
+    'wf.working': '작업 중…',
+    'wf.taskBundle': '서브에이전트 {0} ({1}마리)',
+
+    // 상태바 클릭 QuickPick 메뉴 ("Q-Panel")
+    'menu.hide': '이 세션 숨기기',
+    'menu.sepHidden': '숨긴 세션',
+    'menu.restoreAll': '숨긴 세션 모두 복원 ({0})',
+    'menu.restoreOne': '복원: {0}',
+    'menu.sepWorkflows': '워크플로우',
+    'menu.viewWorkflows': '워크플로우 보기 ({0})',
+    'menu.running': '{0}개 진행 중',
+    'menu.allDone': '모두 완료',
+    'menu.viewDetail': '실시간 워크플로우 패널 열기',
+    'menu.noWorkflows': '진행 중인 워크플로우 없음',
+    'menu.openPanelDetail': '워크플로우 패널 열기',
+    'menu.cleanupGhosts': '오래된/좀비 항목 정리 (창 다시 로드)',
+    'menu.cleanupGhostsDesc': '회색으로 남은 항목 제거',
+    'menu.cleanupGhostsDetail': '죽은 인스턴스가 남긴 상태바 항목은 창을 다시 로드해야 사라집니다 — 누르면 바로 다시 로드',
+    'menu.openSettings': '설정 열기…',
+    'menu.openSettingsDesc': 'claudeState + claudeContextBar',
+    'menu.placeholder': 'claudeStateBar — 동작 선택',
+    'menu.staleItem': '오래된 항목입니다. 창을 다시 로드해 정리할까요?',
+
+    // 비프 테스트 QuickPick
+    'beep.warning': '경고 비프 (1×)',
+    'beep.warningDesc': 'warningThreshold 도달 시',
+    'beep.danger': '위험 비프 (2×)',
+    'beep.dangerDesc': 'dangerThreshold 도달 시',
+    'beep.completion': '작업 완료 알림',
+    'beep.completionDesc': 'Claude end_turn 감지 시 (settle 적용)',
+    'beep.question': '질문 대기 알림',
+    'beep.questionDesc': 'AskUserQuestion / ExitPlanMode 감지 시',
+    'beep.workflow': '워크플로우 완료 알림',
+    'beep.workflowDesc': '워크플로우/서브에이전트 전체 완료 시',
+    'beep.placeholder': '테스트할 비프 종류를 선택하세요',
+
+    // 토스트 / 모달 확인창
+    'msg.cleanupReadFail': 'claudeStateBar: extensions 폴더를 읽을 수 없습니다.',
+    'msg.cleanupNone': 'claudeStateBar: 정리할 이전 버전이 없습니다.',
+    'msg.cleanupConfirm': '이전 버전 {0}개를 삭제하시겠습니까?\n{1}',
+    'msg.cleanupDone': 'claudeStateBar: {0}개 이전 버전 삭제 완료{1}.',
+    'msg.cleanupFailedSuffix': ' ({0}개 실패)',
+    'msg.noHidden': 'claudeStateBar: 복원할 숨긴 세션이 없습니다.',
+    'msg.tasksClearConfirm': '이 묶음의 완료된 서브에이전트(Task) 기록을 정리할까요?\n\n완료된 에이전트 로그가 영구 삭제됩니다. 진행 중인 에이전트는 보존됩니다.',
+    'msg.wfDeleteConfirm': '워크플로우 기록을 삭제할까요?\n{0}\n\n이 워크플로우의 로그·결과가 영구 삭제됩니다.',
+    'msg.updatedZombie': 'claudeStateBar가 {0} → {1}로 업데이트됐습니다. 상태바에 오래된(좀비) 항목이 남아있을 수 있습니다. 창을 다시 로드하면 정리됩니다.',
+    'msg.cleanupGhostsConfirm': '유령/오래된 상태바 항목을 정리하려면 창을 다시 로드해야 합니다. 지금 다시 로드할까요?',
+    'msg.autoCleanupDone': 'claudeStateBar: 이전 버전 {0}개를 정리했습니다. 화면에 남은 오래된 항목을 제거하려면 창을 다시 로드하세요.',
+
+    // 상태바 tooltip
+    'tt.effortXhighNote': ' — xhigh (ultracode면 dynamic workflows 결합, 런타임 전용이라 구분 불가)',
+    'tt.planUnavailable': '_이 호스트에선 플랜 사용량을 가져올 수 없습니다_'
 };
 
 const DICTS: Record<Lang, Dict> = { en: EN, ko: KO };

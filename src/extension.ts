@@ -8,7 +8,7 @@ import * as creds from './credentials';
 import { fetchUsage, AuthExpiredError, CloudflareBlockedError, NormalizedUsage, getTransport } from './planUsage';
 import * as telegram from './telegram';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
-import { createOrShowWorkflowPanel, pushWorkflows, getTrackedSessionFile } from './workflowPanel';
+import { createOrShowWorkflowPanel, pushWorkflows, getTrackedSessionFile, pushLanguage } from './workflowPanel';
 import { getDict, Lang } from './i18n';
 
 interface SessionInfo {
@@ -60,6 +60,7 @@ interface WorkflowAgentInfo {
     fullSummary?: string;  // untruncated full text (final report / activity) — panel expands it via <details> on done agents
     durationMs: number;  // first→last message span from the agent log; 0 if unknown
     name?: string;  // display label (Task agents: meta.json description); workflow agents leave undefined → "에이전트 N"
+    fullName?: string;  // untruncated role/task text (name is capped at 50 chars) — panel shows it as a hover tooltip
 }
 
 interface WorkflowInfo {
@@ -157,7 +158,7 @@ async function runCleanupOldVersions(opts: { silent: boolean; currentExtDir?: st
     try {
         entries = fs.readdirSync(localExtDir, { withFileTypes: true });
     } catch {
-        if (!opts.silent) vscode.window.showErrorMessage('claudeStateBar: extensions 폴더를 읽을 수 없습니다.');
+        if (!opts.silent) vscode.window.showErrorMessage(planT('msg.cleanupReadFail'));
         return 0;
     }
 
@@ -188,7 +189,7 @@ async function runCleanupOldVersions(opts: { silent: boolean; currentExtDir?: st
     }
 
     if (toDelete.length === 0) {
-        if (!opts.silent) vscode.window.showInformationMessage('claudeStateBar: 정리할 이전 버전이 없습니다.');
+        if (!opts.silent) vscode.window.showInformationMessage(planT('msg.cleanupNone'));
         else log('[cleanup] no old versions to remove');
         return 0;
     }
@@ -196,12 +197,13 @@ async function runCleanupOldVersions(opts: { silent: boolean; currentExtDir?: st
     log(`[cleanup] candidates (${toDelete.length}):\n${toDelete.map(d => '  • ' + path.basename(d)).join('\n')}`);
 
     if (!opts.silent) {
+        const deleteBtn = planT('common.delete');
         const answer = await vscode.window.showWarningMessage(
-            `이전 버전 ${toDelete.length}개를 삭제하시겠습니까?\n${toDelete.map(d => '• ' + path.basename(d)).join('\n')}`,
+            planT('msg.cleanupConfirm', toDelete.length, toDelete.map(d => '• ' + path.basename(d)).join('\n')),
             { modal: true },
-            '삭제'
+            deleteBtn
         );
-        if (answer !== '삭제') return 0;
+        if (answer !== deleteBtn) return 0;
     }
 
     let deleted = 0;
@@ -218,7 +220,7 @@ async function runCleanupOldVersions(opts: { silent: boolean; currentExtDir?: st
     }
 
     if (!opts.silent) {
-        vscode.window.showInformationMessage(`claudeStateBar: ${deleted}개 이전 버전 삭제 완료${failed.length ? ` (${failed.length}개 실패)` : ''}.`);
+        vscode.window.showInformationMessage(planT('msg.cleanupDone', deleted, failed.length ? planT('msg.cleanupFailedSuffix', failed.length) : ''));
     } else if (deleted > 0) {
         log(`[cleanup] auto-removed ${deleted} old version(s) on activate`);
     }
@@ -275,13 +277,13 @@ export function activate(context: vscode.ExtensionContext) {
         type BeepType = 'warning' | 'danger' | 'completion' | 'question' | 'workflow';
         const pick = await vscode.window.showQuickPick(
             [
-                { label: '$(bell) Warning beep (1×)',     description: 'warningThreshold 도달 시',     type: 'warning' as BeepType },
-                { label: '$(bell) Danger beep (2×)',      description: 'dangerThreshold 도달 시',      type: 'danger' as BeepType },
-                { label: '$(check) 작업 완료 알림',       description: 'Claude end_turn 감지 시 (settle 적용)', type: 'completion' as BeepType },
-                { label: '$(question) 질문 대기 알림',     description: 'AskUserQuestion / ExitPlanMode 감지 시',    type: 'question' as BeepType },
-                { label: '$(sync) 워크플로우 완료 알림',   description: '워크플로우/서브에이전트 전체 완료 시',    type: 'workflow' as BeepType },
+                { label: '$(bell) ' + planT('beep.warning'),      description: planT('beep.warningDesc'),    type: 'warning' as BeepType },
+                { label: '$(bell) ' + planT('beep.danger'),       description: planT('beep.dangerDesc'),     type: 'danger' as BeepType },
+                { label: '$(check) ' + planT('beep.completion'),  description: planT('beep.completionDesc'), type: 'completion' as BeepType },
+                { label: '$(question) ' + planT('beep.question'), description: planT('beep.questionDesc'),   type: 'question' as BeepType },
+                { label: '$(sync) ' + planT('beep.workflow'),     description: planT('beep.workflowDesc'),   type: 'workflow' as BeepType },
             ],
-            { placeHolder: '테스트할 비프 종류를 선택하세요' }
+            { placeHolder: planT('beep.placeholder') }
         );
         if (!pick) return;
         vscode.commands.executeCommand('claudeContextBar.playBeep', pick.type);
@@ -343,7 +345,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Restore all hidden sessions
     const restoreAllCommand = vscode.commands.registerCommand('claudeContextBar.restoreAllHidden', () => {
         if (hiddenSessions.size === 0) {
-            vscode.window.showInformationMessage('claudeStateBar: no hidden sessions to restore.');
+            vscode.window.showInformationMessage(planT('msg.noHidden'));
             return;
         }
         hiddenSessions.clear();
@@ -365,11 +367,12 @@ export function activate(context: vscode.ExtensionContext) {
         // "command not found" 토스트만 뜬다. 그 경우의 주 정리 경로는 커맨드 팔레트의
         // 'claudeContextBar.cleanupGhostItems' 명령이다.
         if (sessionFile && !clickedEntry) {
+            const reloadBtn = planT('common.reload');
             const pick = await vscode.window.showWarningMessage(
-                '오래된 항목입니다. 창을 다시 로드해 정리할까요?',
-                '다시 로드'
+                planT('menu.staleItem'),
+                reloadBtn
             );
-            if (pick === '다시 로드') {
+            if (pick === reloadBtn) {
                 await vscode.commands.executeCommand('workbench.action.reloadWindow');
             }
             return;
@@ -379,23 +382,23 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (sessionFile) {
             items.push({
-                label: '$(eye-closed) Hide this session',
+                label: '$(eye-closed) ' + planT('menu.hide'),
                 description: clickedLabel,
                 action: 'hide'
             });
         }
 
         if (hiddenSessions.size > 0) {
-            items.push({ label: 'Hidden sessions', kind: vscode.QuickPickItemKind.Separator });
+            items.push({ label: planT('menu.sepHidden'), kind: vscode.QuickPickItemKind.Separator });
             items.push({
-                label: `$(eye) Restore all hidden (${hiddenSessions.size})`,
+                label: '$(eye) ' + planT('menu.restoreAll', hiddenSessions.size),
                 action: 'restoreAll'
             });
             for (const [hiddenPath] of hiddenSessions) {
                 const fileName = path.basename(hiddenPath).replace(/\.jsonl$/, '');
                 const projectDir = path.basename(path.dirname(hiddenPath));
                 items.push({
-                    label: `$(eye) Restore: ${fileName.substring(0, 8)}`,
+                    label: '$(eye) ' + planT('menu.restoreOne', fileName.substring(0, 8)),
                     description: projectDir,
                     detail: hiddenPath,
                     action: 'restoreOne',
@@ -408,23 +411,23 @@ export function activate(context: vscode.ExtensionContext) {
         // workflows + their agents). The panel auto-refreshes with the status bar.
         if (sessionFile) {
             const workflows = await findWorkflowsForSession(sessionFile);
-            items.push({ label: 'Workflows', kind: vscode.QuickPickItemKind.Separator });
+            items.push({ label: planT('menu.sepWorkflows'), kind: vscode.QuickPickItemKind.Separator });
             if (workflows.length > 0) {
                 const runningWf = workflows.filter(w => w.agents.some(a => a.status === 'running')).length;
                 const icon = runningWf > 0 ? '$(sync~spin)' : '$(circuit-board)';
                 items.push({
-                    label: `${icon} View workflows (${workflows.length})`,
-                    description: runningWf > 0 ? `${runningWf} running` : 'all done',
-                    detail: 'Open the live workflow panel',
+                    label: icon + ' ' + planT('menu.viewWorkflows', workflows.length),
+                    description: runningWf > 0 ? planT('menu.running', runningWf) : planT('menu.allDone'),
+                    detail: planT('menu.viewDetail'),
                     action: 'workflows'
                 });
             } else {
                 // Still clickable — opens the (empty) panel so the user gets a consistent
                 // place to look, instead of the menu just closing on click.
                 items.push({
-                    label: '$(circuit-board) 진행 중인 워크플로우 없음',
+                    label: '$(circuit-board) ' + planT('menu.noWorkflows'),
                     description: '',
-                    detail: '워크플로우 패널 열기',
+                    detail: planT('menu.openPanelDetail'),
                     action: 'workflows'
                 });
             }
@@ -435,19 +438,19 @@ export function activate(context: vscode.ExtensionContext) {
         // 클릭이 안 먹으므로(command not found), 살아있는 항목의 이 메뉴를 통로로 제공한다.
         // 선택 시 즉시 창을 다시 로드해 좀비를 100% 제거한다.
         items.push({
-            label: '$(trash) 오래된/좀비 항목 정리 (창 다시 로드)',
-            description: '회색으로 남은 항목 제거',
-            detail: '죽은 인스턴스가 남긴 상태바 항목은 창을 다시 로드해야 사라집니다 — 누르면 바로 다시 로드',
+            label: '$(trash) ' + planT('menu.cleanupGhosts'),
+            description: planT('menu.cleanupGhostsDesc'),
+            detail: planT('menu.cleanupGhostsDetail'),
             action: 'cleanupGhosts'
         });
         items.push({
-            label: '$(gear) Open settings…',
-            description: 'claudeState + claudeContextBar',
+            label: '$(gear) ' + planT('menu.openSettings'),
+            description: planT('menu.openSettingsDesc'),
             action: 'settings'
         });
 
         const picked = await vscode.window.showQuickPick(items, {
-            placeHolder: 'claudeStateBar — choose action'
+            placeHolder: planT('menu.placeholder')
         });
         if (!picked) return;
 
@@ -483,23 +486,25 @@ export function activate(context: vscode.ExtensionContext) {
                     createOrShowWorkflowPanel(context, sessionFile, workflows, {
                         onDelete: async (wfId: string) => {
                             if (wfId.startsWith('tasks:')) {
+                                const cleanupBtn = planT('common.cleanup');
                                 const ok = await vscode.window.showWarningMessage(
-                                    `이 묶음의 완료된 서브에이전트(Task) 기록을 정리할까요?\n\n완료된 에이전트 로그가 영구 삭제됩니다. 진행 중인 에이전트는 보존됩니다.`,
+                                    planT('msg.tasksClearConfirm'),
                                     { modal: true },
-                                    '정리'
+                                    cleanupBtn
                                 );
-                                if (ok !== '정리') return;
+                                if (ok !== cleanupBtn) return;
                                 const n = await deleteDoneTaskAgents(sessionFile, wfId);
                                 log(`[tasks] cleared ${n} completed task-agent log(s) in ${wfId}`);
                                 pushWorkflows(await findWorkflowsForSession(sessionFile));
                                 return;
                             }
+                            const deleteBtn = planT('common.delete');
                             const confirm = await vscode.window.showWarningMessage(
-                                `워크플로우 기록을 삭제할까요?\n${wfId}\n\n이 워크플로우의 로그·결과가 영구 삭제됩니다.`,
+                                planT('msg.wfDeleteConfirm', wfId),
                                 { modal: true },
-                                '삭제'
+                                deleteBtn
                             );
-                            if (confirm !== '삭제') return;
+                            if (confirm !== deleteBtn) return;
                             await deleteWorkflowDir(sessionFile, wfId);
                             pushWorkflows(await findWorkflowsForSession(sessionFile));
                         }
@@ -522,10 +527,11 @@ export function activate(context: vscode.ExtensionContext) {
     const curVer = context.extension?.packageJSON?.version ?? '';
     const lastVer = context.globalState.get<string>('claudeStateBar.lastActivatedVersion');
     if (lastVer && curVer && lastVer !== curVer) {
+        const reloadBtn = planT('common.reload');
         vscode.window.showWarningMessage(
-            `claudeStateBar가 ${lastVer} → ${curVer}로 업데이트됐습니다. 상태바에 오래된(좀비) 항목이 남아있을 수 있습니다. 창을 다시 로드하면 정리됩니다.`,
-            '다시 로드'
-        ).then(a => { if (a === '다시 로드') vscode.commands.executeCommand('workbench.action.reloadWindow'); });
+            planT('msg.updatedZombie', lastVer, curVer),
+            reloadBtn
+        ).then(a => { if (a === reloadBtn) vscode.commands.executeCommand('workbench.action.reloadWindow'); });
     }
     void context.globalState.update('claudeStateBar.lastActivatedVersion', curVer);
 
@@ -542,12 +548,13 @@ export function activate(context: vscode.ExtensionContext) {
     // 동작: 옛 버전 정리 → 모달 확인 후 창 재로드(모든 인스턴스 재기동 → 좀비 아이템 제거).
     const cleanupGhostCmd = vscode.commands.registerCommand('claudeContextBar.cleanupGhostItems', async () => {
         await runCleanupOldVersions({ silent: false, currentExtDir });
+        const reloadBtn = planT('common.reload');
         const answer = await vscode.window.showWarningMessage(
-            '유령/오래된 상태바 항목을 정리하려면 창을 다시 로드해야 합니다. 지금 다시 로드할까요?',
+            planT('msg.cleanupGhostsConfirm'),
             { modal: true },
-            '다시 로드'
+            reloadBtn
         );
-        if (answer === '다시 로드') {
+        if (answer === reloadBtn) {
             await vscode.commands.executeCommand('workbench.action.reloadWindow');
         }
     });
@@ -562,11 +569,12 @@ export function activate(context: vscode.ExtensionContext) {
                     // [삭제 후 재시작 안내] 자동 정리가 실제로 옛 폴더를 삭제했다면, 화면에 남은
                     // 좀비 상태바 아이템은 창을 재로드해야 사라진다. 1회 안내한다.
                     if (deleted > 0) {
+                        const reloadBtn = planT('common.reload');
                         vscode.window.showInformationMessage(
-                            `claudeStateBar: 이전 버전 ${deleted}개를 정리했습니다. 화면에 남은 오래된 항목을 제거하려면 창을 다시 로드하세요.`,
-                            '다시 로드'
+                            planT('msg.autoCleanupDone', deleted),
+                            reloadBtn
                         ).then(answer => {
-                            if (answer === '다시 로드') {
+                            if (answer === reloadBtn) {
                                 vscode.commands.executeCommand('workbench.action.reloadWindow');
                             }
                         });
@@ -584,6 +592,12 @@ export function activate(context: vscode.ExtensionContext) {
         if (e.affectsConfiguration('claudeState')) {
             restartPlanPolling();
             refreshPlanUsage();
+        }
+        // Language change: re-localise the open workflow panel + status-bar labels/tooltips live.
+        // (The QuickPick menu rebuilds on each click, so it already picks up the new language.)
+        if (e.affectsConfiguration('claudeState.language')) {
+            pushLanguage();
+            refreshAllSessions();
         }
     });
     context.subscriptions.push(configWatcher);
@@ -1048,18 +1062,18 @@ async function getAgentFirstPromptText(wfDirUri: vscode.Uri, agentId: string): P
 //   3. if an agent has no unique heading, fall back to its first meaningful prose line.
 // Output is deterministic (same logs → same labels) so it never destabilises the panel's
 // push-dedup signature. Returns a Map<agentId, label>; agents with no signal are omitted.
-function deriveAgentRoleLabels(prompts: Map<string, string>): Map<string, string> {
-    const cleanHeading = (h: string): string => {
-        // Keep any trailing parenthetical — it is often the role's distinguishing detail
-        // (e.g. "너의 단독 작업 (설정 정의)" vs "너의 단독 작업 (비프 재생)"): dropping it would
-        // collapse two distinct roles into one identical label.
-        const s = h.replace(/^#+\s*/, '').replace(/[★⚠️]/g, '').trim();
-        return s.length > 50 ? s.slice(0, 50).trim() + '…' : s;
+function deriveAgentRoleLabels(prompts: Map<string, string>): Map<string, { label: string; full: string }> {
+    // Returns both the 50-char display label and the untruncated full text. The panel shows
+    // `label` and uses `full` as a hover tooltip so a clipped role/task is still fully readable.
+    const clean = (raw: string): { label: string; full: string } => {
+        const s = raw.replace(/[★⚠️]/g, '').trim();
+        return { label: s.length > 50 ? s.slice(0, 50).trim() + '…' : s, full: s };
     };
-    const cleanProse = (line: string): string => {
-        const s = line.replace(/^[#>\-*\s]+/, '').replace(/[★⚠️]/g, '').trim();
-        return s.length > 50 ? s.slice(0, 50).trim() + '…' : s;
-    };
+    // Keep any trailing parenthetical — it is often the role's distinguishing detail
+    // (e.g. "너의 단독 작업 (설정 정의)" vs "너의 단독 작업 (비프 재생)"): dropping it would
+    // collapse two distinct roles into one identical label.
+    const cleanHeading = (h: string) => clean(h.replace(/^#+\s*/, ''));
+    const cleanProse = (line: string) => clean(line.replace(/^[#>\-*\s]+/, ''));
 
     // Skip the shared preamble (절대규칙/존댓말 lines and any heading) when scanning prose.
     const isPreamble = (t: string): boolean =>
@@ -1089,9 +1103,9 @@ function deriveAgentRoleLabels(prompts: Map<string, string>): Map<string, string
     // "# 역할". Prefer a unique heading that looks like one of those over a merely-incidental
     // unique heading (e.g. "# 사전 확정 사실") that happens to differ between agents.
     const ROLE_HINT = /너의|임무|작업|렌즈|역할|관점|담당|단독/;
-    const labels = new Map<string, string>();
+    const labels = new Map<string, { label: string; full: string }>();
     for (const [id, text] of prompts) {
-        let label = '';
+        let label: { label: string; full: string } | null = null;
         const uniqueHeadings = (headings.get(id) || []).filter(h => (headingCount.get(h) || 0) < 2);
         // 1+2. prefer a role-looking unique heading; else the first unique heading.
         const roleHeading = uniqueHeadings.find(h => ROLE_HINT.test(h)) || uniqueHeadings[0];
@@ -1106,11 +1120,11 @@ function deriveAgentRoleLabels(prompts: Map<string, string>): Map<string, string
                 const t = ln.trim();
                 if (!t || isPreamble(t)) continue;
                 if ((proseCount.get(t) || 0) >= 2) continue;  // shared boilerplate — skip
-                label = cleanProse(t);
-                if (label) break;
+                const c = cleanProse(t);
+                if (c.label) { label = c; break; }
             }
         }
-        if (label) labels.set(id, label);
+        if (label && label.label) labels.set(id, label);
     }
     return labels;
 }
@@ -1119,14 +1133,48 @@ function deriveAgentRoleLabels(prompts: Map<string, string>): Map<string, string
 //   - durationMs: span between its first and last message timestamps
 //   - activity: what it's doing right now (last tool call / last text) — used for
 //     running agents (done agents show their journal result instead)
-async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; fullActivity: string; firstTs: number; lastTs: number }> {
+// Collect EVERY assistant step (tool calls + text blocks) in chronological order from an
+// agent's jsonl lines, joined into one report. Used only for a DONE agent's full view so the
+// user can see the agent's whole sequence of actions — not just its final message. A running
+// agent still shows only its latest activity: the earlier steps aren't reliably all present
+// until completion (agent jsonl is appended per finished message, not streamed), and the live
+// "what is it doing right now" signal is what matters mid-run. Tool-using agents yield many
+// steps; a pure-discussion agent (no tools) yields a single text block — that's a data limit,
+// not a bug.
+function collectAgentSteps(lines: string[]): string {
+    const steps: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        let e: any;
+        try { e = JSON.parse(lines[i]); } catch { continue; }
+        if (e.type !== 'assistant' || !e.message) continue;
+        const content = e.message.content;
+        const blocks = Array.isArray(content)
+            ? content
+            : (typeof content === 'string' && content.trim() ? [{ type: 'text', text: content }] : []);
+        for (const b of blocks) {
+            if (b?.type === 'tool_use') {
+                const arg = b.input?.file_path || b.input?.path || b.input?.command || b.input?.pattern || b.input?.description;
+                const argStr = typeof arg === 'string' ? ` — ${arg.replace(/\s+/g, ' ').slice(0, 80)}` : '';
+                steps.push(`🔧 ${b.name}${argStr}`);
+            } else if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
+                steps.push(b.text.trim());
+            }
+        }
+    }
+    return steps.join('\n\n');
+}
+
+async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; fullActivity: string; fullSteps: string; firstTs: number; lastTs: number }> {
     let firstTs = 0;
     let lastTs = 0;
-    let activity = '작업 중…';
+    let activity = planT('wf.working');
     let fullActivity = '';
+    let fullSteps = '';
     try {
         const content = await readTextFile(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`));
         const lines = content.trim().split('\n');
+        fullSteps = collectAgentSteps(lines);
 
         // First timestamp = start.
         for (let i = 0; i < lines.length; i++) {
@@ -1177,7 +1225,7 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
         }
     } catch { /* agent log not readable yet */ }
     const durationMs = (firstTs && lastTs && lastTs >= firstTs) ? lastTs - firstTs : 0;
-    return { durationMs, activity, fullActivity, firstTs, lastTs };
+    return { durationMs, activity, fullActivity, fullSteps, firstTs, lastTs };
 }
 
 // Parse a single Task-subagent log (subagents/agent-<id>.jsonl + its sibling
@@ -1243,7 +1291,7 @@ async function parseTaskAgent(
     // Find the last assistant entry; decide done/running and extract its text.
     let isDone = false;
     let fullText = '';
-    let activity = '작업 중…';
+    let activity = planT('wf.working');
     let fullActivity = '';
     for (let i = lines.length - 1; i >= 0; i--) {
         if (!lines[i].trim()) continue;
@@ -1293,7 +1341,9 @@ async function parseTaskAgent(
         agentId,
         status: isDone ? 'done' : 'running',
         summary: isDone ? preview : activity,
-        fullSummary: isDone ? fullText : fullActivity,
+        // Done → full chronological steps (every tool call + text) so the user sees the whole
+        // run, falling back to the final report text if steps came up empty. Running → latest only.
+        fullSummary: isDone ? (collectAgentSteps(lines) || fullText) : fullActivity,
         durationMs,
         name: displayName || 'agent',
     };
@@ -1355,7 +1405,7 @@ async function findTaskAgentBundles(sessionDirUri: vscode.Uri): Promise<{ wf: Wo
         const mm = String(d.getMinutes()).padStart(2, '0');
         const wf: WorkflowInfo = {
             wfId: 'tasks:' + startTs,
-            name: `서브에이전트 ${hh}:${mm} (${agents.length}마리)`,
+            name: planT('wf.taskBundle', `${hh}:${mm}`, agents.length),
             description: '',
             phases: [],
             agents,
@@ -1442,9 +1492,16 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                     if (timing.lastTs > wfEndedAt) wfEndedAt = timing.lastTs;
                     const res = doneSummary.get(id);
                     const summary = isDone ? (res?.preview || '') : timing.activity;
-                    const fullSummary = isDone ? (res?.full || '') : timing.fullActivity;
-                    const name = roleLabels.get(id);  // undefined → panel falls back to "에이전트 N"
-                    agents.push({ agentId: id, status: isDone ? 'done' : 'running', summary, fullSummary, durationMs: timing.durationMs, ...(name ? { name } : {}) });
+                    // Done → show the agent's full chronological steps (all tool calls + text),
+                    // so the user can see everything it did. Fall back to the journal result's
+                    // full text if step collection came up empty. Running → latest activity only.
+                    const fullSummary = isDone ? (timing.fullSteps || res?.full || '') : timing.fullActivity;
+                    const role = roleLabels.get(id);  // undefined → panel falls back to "에이전트 N"
+                    const name = role?.label;
+                    // Only surface fullName when it actually differs (i.e. the label was clipped),
+                    // so unchanged labels don't carry a redundant tooltip.
+                    const fullName = role && role.full !== role.label ? role.full : undefined;
+                    agents.push({ agentId: id, status: isDone ? 'done' : 'running', summary, fullSummary, durationMs: timing.durationMs, ...(name ? { name } : {}), ...(fullName ? { fullName } : {}) });
                 }
             } catch { /* journal unreadable */ }
 
@@ -2584,16 +2641,14 @@ async function refreshAllSessions() {
         // half of ultracode is runtime-only and never written to disk, so we can't tell plain
         // xhigh and ultracode apart — the note spells that out.
         const effortNote = (session.effortLevel || '').toLowerCase() === 'xhigh'
-            ? ' — xhigh (ultracode면 dynamic workflows 결합, 런타임 전용이라 구분 불가)'
+            ? planT('tt.effortXhighNote')
             : '';
         const effortLine = effortLineText ? `🎚️ Effort: \`${effortLineText}\`${effortNote}\n\n` : '';
         // Keep speed only when it's non-standard (i.e., /fast mode active) — otherwise hide noise
         const speedLine = (session.speed && session.speed !== 'standard') ? `⚡ Speed: \`${session.speed}\`\n\n` : '';
         const idleLine = session.isIdle ? `😴 **Idle** — ${formatIdleDuration(session.lastUpdated)}\n\n` : '';
         const planBlock = planTooltipBlock();
-        const stateBody = planBlock || (planLang() === 'ko'
-            ? '_이 호스트에선 플랜 사용량을 가져올 수 없습니다_\n\n'
-            : '_Plan usage unavailable on this host_\n\n');
+        const stateBody = planBlock || (planT('tt.planUnavailable') + '\n\n');
         const md = new vscode.MarkdownString(
             `**${session.projectName}** (${session.sessionId})\n\n` +
             idleLine +

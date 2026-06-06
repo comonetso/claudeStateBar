@@ -2,7 +2,7 @@
     "name": "claude-context-bar",
     "displayName": "claudeStateBar",
     "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your status bar. Remote-SSH supported, with Telegram reset alerts.",
-    "version": "1.7.19",
+    "version": "1.7.24",
     "extensionKind": ["ui"],
     "publisher": "ezoosk",
     "author": {
