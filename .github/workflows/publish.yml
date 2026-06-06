@@ -24,14 +24,21 @@ jobs:
       - name: Package VSIX
         run: npx @vscode/vsce package
 
-      - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish -p ${{ secrets.VSCE_PAT }}
-
-      - name: Publish to Open VSX
-        run: npx ovsx publish -p ${{ secrets.OVSX_PAT }}
-
+      # GitHub Release first — it only needs the auto-provided GITHUB_TOKEN, so it succeeds
+      # even when the marketplace PATs are missing. Keeps "attach VSIX to a release" working
+      # independently of marketplace publishing.
       - name: GitHub Release (attach VSIX)
         uses: softprops/action-gh-release@v2
         with:
           files: '*.vsix'
           generate_release_notes: true
+
+      # Marketplace / Open VSX need secrets (VSCE_PAT / OVSX_PAT). continue-on-error so a
+      # missing/expired token doesn't fail the whole run (and doesn't block the Release above).
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish -p ${{ secrets.VSCE_PAT }}
+        continue-on-error: true
+
+      - name: Publish to Open VSX
+        run: npx ovsx publish -p ${{ secrets.OVSX_PAT }}
+        continue-on-error: true
