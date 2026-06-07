@@ -110,6 +110,15 @@ let outputChannel: vscode.OutputChannel | null = null;
 let planFallbackItem: vscode.StatusBarItem | null = null;
 let planRefreshInterval: NodeJS.Timeout | null = null;
 let planTickInterval: NodeJS.Timeout | null = null;
+
+// "Is it alive?" status-bar item: shows the active session's phase icon + elapsed seconds,
+// ticked every second so the counter keeps climbing during Claude's silent thinking (when the
+// file watcher never fires). This is the whole feature — no panel, just a live counter.
+let stageStatusItem: vscode.StatusBarItem | null = null;
+let stageTickInterval: NodeJS.Timeout | null = null;
+let stagePhase: 'tool' | 'thinking' | null = null;
+let stageBaseAt: number | null = null;
+const STAGE_STUCK_SEC = 240;
 let lastUsage: NormalizedUsage | null = null;
 type PlanStatus = 'unconfigured' | 'ok' | 'auth_expired' | 'blocked' | 'error';
 let planStatus: PlanStatus = 'unconfigured';
@@ -638,6 +647,8 @@ export function activate(context: vscode.ExtensionContext) {
     refreshPlanUsage();
     // Recompute the "resets in ..." countdown once a minute without re-fetching
     planTickInterval = setInterval(() => { if (lastUsage) refreshAllSessions(); }, 60 * 1000);
+    // Tick the "is it alive?" elapsed counter every second (no disk reads — uses cached marker).
+    stageTickInterval = setInterval(() => { tickStageItem(); }, 1000);
 
     // Clean up on deactivation
     context.subscriptions.push({
@@ -651,11 +662,15 @@ export function activate(context: vscode.ExtensionContext) {
             if (planTickInterval) {
                 clearInterval(planTickInterval);
             }
+            if (stageTickInterval) {
+                clearInterval(stageTickInterval);
+            }
             for (const [, p] of pendingCompletion) clearTimeout(p.timer);
             pendingCompletion.clear();
             for (const [, p] of pendingQuestion) clearTimeout(p.timer);
             pendingQuestion.clear();
             planFallbackItem?.dispose();
+            stageStatusItem?.dispose();
             statusBarItems.forEach(entry => entry.item.dispose());
             statusBarItems.clear();
         }
@@ -928,11 +943,15 @@ export function deactivate() {
     if (planTickInterval) {
         clearInterval(planTickInterval);
     }
+    if (stageTickInterval) {
+        clearInterval(stageTickInterval);
+    }
     for (const [, p] of pendingCompletion) clearTimeout(p.timer);
     pendingCompletion.clear();
     for (const [, p] of pendingQuestion) clearTimeout(p.timer);
     pendingQuestion.clear();
     planFallbackItem?.dispose();
+    stageStatusItem?.dispose();
     statusBarItems.forEach(entry => entry.item.dispose());
     statusBarItems.clear();
 }
@@ -2761,6 +2780,9 @@ async function refreshAllSessions() {
     const hasRealSession = sessions.some(s => !s.isFallback);
     updatePlanFallback(!hasRealSession);
 
+    // "Is it alive?" — drive the live elapsed counter from the most recent active session.
+    updateStageItem(sessions.find(s => !s.isFallback) ?? null);
+
     // Keep the workflow panel (if open) in sync. The workflow-done loop above
     // already scanned the tracked session, so reuse that result instead of hitting
     // disk again. (Fall back to a fresh scan only if the cache somehow missed.)
@@ -2894,6 +2916,50 @@ function planTooltipBlock(): string {
         return s;
     }
     return '';
+}
+
+function ensureStageItem() {
+    if (!stageStatusItem) {
+        // priority 5: right of the session items (10..6) and the plan item (8); never collides.
+        stageStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 5);
+    }
+}
+
+// Decide what the active session is doing right now from fields already on SessionInfo
+// (zero extra disk reads). Only tool/thinking show a live counter; done/waiting/idle hide.
+function updateStageItem(active: SessionInfo | null) {
+    ensureStageItem();
+    if (!active || active.isFallback) {
+        stagePhase = null; stageBaseAt = null;
+    } else if (active.pendingToolUseAt) {
+        stagePhase = 'tool'; stageBaseAt = active.pendingToolUseAt.getTime();
+    } else if (active.pendingQuestionAt) {
+        stagePhase = null; stageBaseAt = null;  // waiting for the user — not "working"
+    } else if (active.lastAssistantEndTurnAt && (!active.lastActivityAt || active.lastAssistantEndTurnAt.getTime() >= active.lastActivityAt.getTime())) {
+        stagePhase = null; stageBaseAt = null;  // finished a turn (text-bearing end_turn)
+    } else if (active.lastActivityAt) {
+        stagePhase = 'thinking'; stageBaseAt = active.lastActivityAt.getTime();
+    } else {
+        stagePhase = null; stageBaseAt = null;
+    }
+    tickStageItem();
+}
+
+// Re-render text/color from the cached marker every second WITHOUT touching disk — this is
+// what keeps the counter alive through Claude's long silent thinking.
+function tickStageItem() {
+    if (!stageStatusItem) return;
+    if (stagePhase == null || stageBaseAt == null) { stageStatusItem.hide(); return; }
+    const elapsedSec = Math.max(0, Math.round((Date.now() - stageBaseAt) / 1000));
+    const icon = stagePhase === 'tool' ? '🔧' : '🤔';
+    stageStatusItem.text = `${icon} ${elapsedSec}s`;
+    const stuck = elapsedSec > STAGE_STUCK_SEC;
+    stageStatusItem.backgroundColor = stuck ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
+    const ko = planLang() === 'ko';
+    stageStatusItem.tooltip = stuck
+        ? (ko ? 'Claude가 비정상적으로 오래 작업 중 — 멈춤 의심' : 'Claude has been working unusually long — possibly stuck')
+        : (ko ? 'Claude 작업 중 — 마지막 활동 이후 경과 초 (멈추면 완료/대기)' : 'Claude is working — seconds since last activity (stops when done/idle)');
+    stageStatusItem.show();
 }
 
 function ensurePlanFallback() {
