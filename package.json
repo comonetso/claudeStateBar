@@ -1,10 +1,10 @@
 {
-    "name": "claude-context-bar",
-    "displayName": "claudeStateBar",
-    "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your status bar. Remote-SSH supported, with Telegram reset alerts.",
-    "version": "1.7.25",
+    "name": "claude-state-bar",
+    "displayName": "Claude State Bar",
+    "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your VS Code status bar — with a live Workflow/Agent viewer, sound alerts, Remote-SSH support, and Telegram reset alerts.",
+    "version": "1.7.26",
     "extensionKind": ["ui"],
-    "publisher": "ezoosk",
+    "publisher": "blueming",
     "author": {
         "name": "Blueming"
     },
@@ -17,11 +17,11 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/ezoosk/claude-context-bar"
+        "url": "https://github.com/comonetso/claudeStateBar"
     },
-    "homepage": "https://github.com/ezoosk/claude-context-bar#readme",
+    "homepage": "https://github.com/comonetso/claudeStateBar#readme",
     "bugs": {
-        "url": "https://github.com/ezoosk/claude-context-bar/issues"
+        "url": "https://github.com/comonetso/claudeStateBar/issues"
     },
     "icon": "images/icon.png",
     "galleryBanner": {
@@ -87,7 +87,7 @@
             },
             {
                 "command": "claudeContextBar.cleanupGhostItems",
-                "title": "claudeStateBar: 유령/오래된 상태바 항목 정리"
+                "title": "Claude State Bar: Clean Up Ghost/Stale Status Bar Items"
             }
         ],
         "menus": {
@@ -121,7 +121,7 @@
                     ],
                     "default": "en",
                     "order": 0,
-                    "description": "Language for the settings panel UI. / 설정 패널 UI 언어."
+                    "description": "Language for the settings panel UI."
                 },
                 "claudeState.orgId": {
                     "type": "string",
@@ -286,19 +286,19 @@
                 "claudeContextBar.soundWorkflow": {
                     "type": "string",
                     "default": "",
-                    "description": "워크플로우/서브에이전트 전체 완료 시 재생할 wav 경로(비우면 기본음)"
+                    "description": "Path to the WAV file played when all workflow/task-agent sub-agents complete. Leave empty for the bundled default."
                 },
                 "claudeContextBar.soundWorkflowGain": {
                     "type": "number",
                     "default": 100,
                     "minimum": 50,
                     "maximum": 5000,
-                    "description": "워크플로우 완료 비프 게인(%)"
+                    "description": "Workflow complete sound volume gain in percent (50–5000). See soundWarningGain for details."
                 },
                 "claudeContextBar.workflowCompleteBeep": {
                     "type": "boolean",
                     "default": true,
-                    "description": "워크플로우/서브에이전트가 모두 완료되면 비프로 알림"
+                    "description": "Play a beep sound when all workflow/task-agent sub-agents complete."
                 },
                 "claudeContextBar.detectStuckToolUse": {
                     "type": "boolean",
