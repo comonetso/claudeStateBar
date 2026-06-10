@@ -2315,12 +2315,14 @@ function getShortModelName(model: string, compact: boolean): string {
     if (lower.includes('opus')) { family = 'Opus'; abbrev = 'O'; }
     else if (lower.includes('sonnet')) { family = 'Sonnet'; abbrev = 'S'; }
     else if (lower.includes('haiku')) { family = 'Haiku'; abbrev = 'H'; }
+    else if (lower.includes('fable')) { family = 'Fable'; abbrev = 'F'; }
     else {
         const parts = model.split('-');
         return parts[parts.length - 1] || model;
     }
     const verMatch = lower.match(/(\d+)-(\d+)/);
-    const version = verMatch ? `${verMatch[1]}.${verMatch[2]}` : '';
+    const singleVerMatch = verMatch ? null : lower.match(/[^\d](\d+)$/);
+    const version = verMatch ? `${verMatch[1]}.${verMatch[2]}` : (singleVerMatch ? singleVerMatch[1] : '');
     const onem = lower.includes('1m') ? '1M' : '';
     const versionPart = version ? ` ${version}` : '';
     const onemPart = onem ? ` ${onem}` : '';

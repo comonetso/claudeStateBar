@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.7.27] - 2026-06-10
+
+### Fixed
+- **Fable 5 model name display** — model `claude-fable-5` now correctly shows as "Fable 5" (compact: "F5") in the status bar instead of just "5".
+
+---
+
+## [1.7.26] - 2026-06-09
+
+### Changed
+- **Publisher rebranding** — extension identifier changed from `ezoosk.claude-context-bar` to `blueming.claude-state-bar`; display name updated to "Claude State Bar".
+- **README and changelog rewrite** — fork notice moved to a single Credits line at the bottom; pre-1.5.0 changelog entries collapsed to one line.
+- **Configuration descriptions** — remaining Korean-language descriptions in `contributes.configuration` converted to English for Marketplace consistency.
+
+---
+
 ## [1.7.25] - 2026-06-07
 
 ### Added
