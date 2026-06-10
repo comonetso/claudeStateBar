@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.28] - 2026-06-10
+
+### Fixed
+- **Fable 5 context limit** — `claude-fable-5` now uses 1M token context limit instead of the default 200K.
+
+---
+
 ## [1.7.27] - 2026-06-10
 
 ### Fixed

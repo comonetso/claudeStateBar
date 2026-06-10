@@ -1743,12 +1743,14 @@ interface TokenUsage {
 // Determine context limit based on model id.
 // 1M-context models (use limitOpus):
 //   - Opus 4.x family (claude-opus-4-5 / 4-6 / 4-7) — confirmed 1M context
+//   - Fable family (claude-fable-5) — confirmed 1M context
 //   - Any model with "1m" in the id (e.g., "claude-sonnet-4-5-1m")
 // All others (Sonnet, Haiku, etc.) use limitDefault.
 function getContextLimitForModel(model: string, limitDefault: number, limitOpus: number): number {
     const m = model.toLowerCase();
     if (m.includes('1m')) return limitOpus;
     if (/opus[-_]?4/.test(m)) return limitOpus;
+    if (m.includes('fable')) return limitOpus;
     return limitDefault;
 }
 
