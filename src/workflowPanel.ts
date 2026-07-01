@@ -5,7 +5,7 @@ import * as creds from './credentials';
 // A workflow agent's live state, mirrored from journal.jsonl (started/result records).
 export interface WorkflowAgentView {
     agentId: string;
-    status: 'running' | 'done';
+    status: 'running' | 'done' | 'stopped';  // stopped = killed/interrupted
     summary: string;        // 160-char preview
     fullSummary?: string;   // untruncated full text — expandable via <details> on done agents
     durationMs: number;
@@ -160,6 +160,7 @@ function getHtml(webview: vscode.Webview): string {
   .badge { font-size: 0.8em; padding: 2px 9px; border-radius: 10px; white-space: nowrap; flex-shrink: 0; }
   .badge.running { background: var(--vscode-statusBarItem-warningBackground); color: var(--vscode-statusBarItem-warningForeground); }
   .badge.done { background: var(--vscode-testing-iconPassed, #3fb950); color: #fff; }
+  .badge.stopped { background: var(--vscode-descriptionForeground, #8b949e); color: var(--vscode-editor-background, #1e1e1e); }
   .del-btn { flex-shrink: 0; background: transparent; border: none; color: var(--vscode-descriptionForeground); cursor: pointer; font-size: 1em; padding: 2px 6px; border-radius: 4px; }
   .del-btn:hover { background: var(--vscode-statusBarItem-errorBackground); color: #fff; }
   .wf-body { margin-top: 8px; }
@@ -174,8 +175,10 @@ function getHtml(webview: vscode.Webview): string {
   .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
   .dot.running { background: #e3b341; animation: pulse 1.2s ease-in-out infinite; }
   .dot.done { background: #3fb950; }
+  .dot.stopped { background: #8b949e; }
   .label { font-weight: 600; }
   .dur { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
+  .stopped-tag { color: #d29922; font-size: 0.85em; font-weight: 600; }
   .summary { color: var(--vscode-descriptionForeground); margin: 3px 0 0 17px; line-height: 1.45; font-size: 0.92em; white-space: pre-wrap; word-break: break-word; }
   details.summary-wrap { margin: 3px 0 0 17px; }
   details.summary-wrap > summary { color: var(--vscode-descriptionForeground); line-height: 1.45; font-size: 0.92em; cursor: pointer; list-style: revert; white-space: pre-wrap; word-break: break-word; }
@@ -325,11 +328,16 @@ function getHtml(webview: vscode.Webview): string {
     sub.textContent = t('wf.summary', lastWorkflows.length, runningWf);
     list.innerHTML = lastWorkflows.map((wf, index) => {
       const done = wf.agents.filter(a => a.status === 'done').length;
+      const stopped = wf.agents.filter(a => a.status === 'stopped').length;
       const total = wf.agents.length;
       const running = wf.agents.some(a => a.status === 'running');
+      // Running takes priority (workflow still live). Once nothing is running, if any agent was
+      // killed show "N done · M stopped"; otherwise the plain all-done badge.
       const badge = running
         ? '<span class="badge running">' + done + '/' + total + ' ' + esc(t('wf.running')) + '</span>'
-        : '<span class="badge done">' + done + '/' + total + ' ' + esc(t('wf.done')) + '</span>';
+        : stopped > 0
+          ? '<span class="badge stopped">' + esc(t('wf.doneStopped', done, stopped)) + '</span>'
+          : '<span class="badge done">' + done + '/' + total + ' ' + esc(t('wf.done')) + '</span>';
       const phases = (wf.phases && wf.phases.length)
         ? '<div class="phases">' + wf.phases.map(p => '<span class="phase-chip">' + esc(p) + '</span>').join('') + '</div>'
         : '';
@@ -341,6 +349,9 @@ function getHtml(webview: vscode.Webview): string {
         ? '<div class="agents">' + wf.agents.map((a, i) => {
             const dur = fmtDur(a.durationMs);
             const durStr = dur ? ' <span class="dur">· ' + (a.status === 'running' ? esc(t('wf.elapsed')) : '') + dur + '</span>' : '';
+            // Killed agent → a "· stopped" tag next to the label so it reads as intentionally
+            // ended, not still working (the whole point of the stopped state).
+            const stoppedTag = a.status === 'stopped' ? ' <span class="stopped-tag">· ' + esc(t('wf.stopped')) + '</span>' : '';
             const nm = (a.name && a.name.trim()) || '';
             const labelText = nm ? (labelCounts[nm] > 1 ? nm + ' (' + (i + 1) + ')' : nm) : t('wf.agentN', i + 1);
             // Hover tooltip on the (50-char-clipped) label so the full role/task is readable.
@@ -359,7 +370,7 @@ function getHtml(webview: vscode.Webview): string {
             }
             return '<div class="agent">' +
               '<div class="agent-head"><span class="dot ' + a.status + '"></span>' +
-              '<span class="label" title="' + esc(labelTitle) + '">' + esc(labelText) + '</span>' + durStr + '</div>' +
+              '<span class="label" title="' + esc(labelTitle) + '">' + esc(labelText) + '</span>' + durStr + stoppedTag + '</div>' +
               summaryHtml +
             '</div>';
           }).join('') + '</div>'
@@ -375,9 +386,11 @@ function getHtml(webview: vscode.Webview): string {
       // Title-row clock: start time (H:i:s) + elapsed (i:s). While running, a 1s timer
       // (tickElapsed) counts up from data-started; once all agents are done, data-done holds
       // the final endedAt so the elapsed freezes at the total run time.
-      const allDone = wf.agents.length > 0 && wf.agents.every(a => a.status === 'done');
+      // "Finished" = nothing still running (done OR stopped). A killed agent ends the
+      // workflow too, so the elapsed clock must freeze on stopped as well, not only all-done.
+      const allFinished = wf.agents.length > 0 && wf.agents.every(a => a.status !== 'running');
       const timeHtml = wf.startedAt
-        ? '<span class="wf-time" data-started="' + wf.startedAt + '" data-clock="' + esc(fmtClock(wf.startedAt)) + '" data-done="' + (allDone && wf.endedAt ? wf.endedAt : '') + '"></span>'
+        ? '<span class="wf-time" data-started="' + wf.startedAt + '" data-clock="' + esc(fmtClock(wf.startedAt)) + '" data-done="' + (allFinished && wf.endedAt ? wf.endedAt : '') + '"></span>'
         : '';
       // Title tooltip: hovering the (possibly ellipsis-truncated) name floats the full name,
       // plus the description so a collapsed card still reveals what the workflow is on hover.

@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7.29] - 2026-07-01
+
+### Fixed
+- **Killed agents stuck as "running"** — a TaskStop-killed workflow/Task agent kept showing as running forever, so the whole workflow stayed "N/M running" indefinitely. It's now detected via the `[Request interrupted]` marker left in the agent log (an explicit signal, not a time-based/stale heuristic) and shown as a distinct **stopped** state: gray dot, "stopped" tag, and an "N done · M stopped" badge. Applies to both Task subagents and journal-based (`wf_*`) workflows; stopped agents no longer count toward the "running" total.
+- **Short final answers stuck as "running"** — a completed Task agent whose final reply was short (under ~1500 chars) and ended with `stop_reason:null` was never recognized as done and stayed "running" indefinitely. Completion detection is now settle-based (a text-only last assistant entry idle ≥4s counts as final) and size-agnostic, so short completions like "핑 완료" register as done.
+- **Title elapsed clock never froze when an agent was stopped** — the workflow's title-row elapsed time kept counting up if any agent was `stopped`, because it only froze when *every* agent was `done`. It now freezes once nothing is running (done or stopped), showing the final "took" duration.
+
+---
+
 ## [1.7.28] - 2026-06-10
 
 ### Fixed

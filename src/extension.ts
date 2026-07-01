@@ -55,8 +55,8 @@ interface StatusBarEntry {
 
 interface WorkflowAgentInfo {
     agentId: string;
-    status: 'running' | 'done';
-    summary: string;  // final result (done) or current activity (running) — 160-char preview
+    status: 'running' | 'done' | 'stopped';  // stopped = killed/interrupted (see agentWasInterrupted)
+    summary: string;  // final result (done) or current activity (running/stopped) — 160-char preview
     fullSummary?: string;  // untruncated full text (final report / activity) — panel expands it via <details> on done agents
     durationMs: number;  // first→last message span from the agent log; 0 if unknown
     name?: string;  // display label (Task agents: meta.json description); workflow agents leave undefined → "에이전트 N"
@@ -1184,16 +1184,43 @@ function collectAgentSteps(lines: string[]): string {
     return steps.join('\n\n');
 }
 
-async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; fullActivity: string; fullSteps: string; firstTs: number; lastTs: number }> {
+// Detect a killed/interrupted agent. When the user stops a running Task/workflow agent
+// (TaskStop), Claude Code appends a trailing user record to its agent-<id>.jsonl carrying
+// the literal text "[Request interrupted by user ...]" — and NO journal `result` / final
+// assistant report ever lands. This marker is the explicit kill signal, so we detect it
+// directly instead of guessing from elapsed time (a stale timeout would misjudge a long
+// single tool call as dead). Verified by killing a live agent AND cross-checking three
+// pre-existing dead workflows: every journal-result-less agent had exactly this marker.
+function agentWasInterrupted(lines: string[]): boolean {
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const ln = lines[i];
+        if (!ln || !ln.trim()) continue;
+        if (ln.indexOf('Request interrupted') === -1) continue;  // cheap pre-filter before parse
+        try {
+            const e = JSON.parse(ln);
+            if (e.type !== 'user') continue;
+            const content = e.message?.content;
+            const text = Array.isArray(content)
+                ? content.map((b: any) => (b && b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join(' ')
+                : (typeof content === 'string' ? content : '');
+            if (text.indexOf('Request interrupted') !== -1) return true;
+        } catch { /* skip malformed line */ }
+    }
+    return false;
+}
+
+async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; fullActivity: string; fullSteps: string; firstTs: number; lastTs: number; interrupted: boolean }> {
     let firstTs = 0;
     let lastTs = 0;
     let activity = planT('wf.working');
     let fullActivity = '';
     let fullSteps = '';
+    let interrupted = false;
     try {
         const content = await readTextFile(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`));
         const lines = content.trim().split('\n');
         fullSteps = collectAgentSteps(lines);
+        interrupted = agentWasInterrupted(lines);
 
         // First timestamp = start.
         for (let i = 0; i < lines.length; i++) {
@@ -1244,7 +1271,7 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
         }
     } catch { /* agent log not readable yet */ }
     const durationMs = (firstTs && lastTs && lastTs >= firstTs) ? lastTs - firstTs : 0;
-    return { durationMs, activity, fullActivity, fullSteps, firstTs, lastTs };
+    return { durationMs, activity, fullActivity, fullSteps, firstTs, lastTs, interrupted };
 }
 
 // Parse a single Task-subagent log (subagents/agent-<id>.jsonl + its sibling
@@ -1255,13 +1282,12 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
 // Completion rule: the agent is `done` when its LAST assistant entry is a FINAL text
 // report that isn't mid-tool-call. stop_reason 'end_turn' is an explicit completion →
 // done immediately. Newer Claude Code also ends a finished agent with sr=null — BUT so
-// do mid-tool "explanation" text entries (flushed as a separate line ~0.6s before the
-// next tool entry). They're separable by size + settle: measured across 14 agents / 181
-// intermediate entries, intermediate text is ≤634 chars with another entry following
-// within ~0.6s median, while final reports are ≥3169 chars. So the sr=null case requires
-// a substantial report (≥1500 chars) that has also settled (≥4s idle). Strict 'end_turn'
-// alone caused silent beeps (null-final missed); accepting ANY null text caused false-done
-// mid-work (early/duplicate beeps). This threads both.
+// do mid-tool "explanation" text entries (flushed ~0.6s before the next tool entry).
+// They're separated by SETTLE time, not size: a mid-tool text is followed by its tool
+// entry within ~0.6s, so once a text-only last assistant entry has stayed idle ≥4s it is
+// a final answer. (An earlier version also required ≥1500 chars, but that wrongly missed
+// short finals like "핑 완료", leaving completed agents stuck as running.) A killed agent
+// instead carries a "[Request interrupted]" marker → stopped (see agentWasInterrupted).
 async function parseTaskAgent(
     subagentsDirUri: vscode.Uri,
     jsonlName: string
@@ -1322,12 +1348,13 @@ async function parseTaskAgent(
         const textBlock = blocks.find((b: any) => b?.type === 'text' && typeof b.text === 'string' && b.text.trim());
         const toolUseBlock = blocks.find((b: any) => b?.type === 'tool_use');
         const sr = e.message.stop_reason;
-        // See the "Completion rule" comment above. end_turn → done now; sr=null → done only
-        // if it's a substantial final report (≥1500 chars) that has settled (≥4s idle),
-        // which excludes the short, quickly-superseded mid-tool text entries.
-        const longFinal = !!textBlock && textBlock.text.trim().length >= 1500;
+        // See the "Completion rule" comment above. end_turn → done now; sr=null → done once
+        // the entry has SETTLED (≥4s idle): a mid-tool "explanation" text is followed by its
+        // tool entry within ~0.6s, so a text-only last assistant entry that stays idle ≥4s is
+        // a final answer. Size-agnostic — an earlier ≥1500-char gate wrongly missed short
+        // finals (e.g. "핑 완료"), leaving completed agents stuck as running.
         const settled = lastTs > 0 && (Date.now() - lastTs) >= 4000;
-        if (textBlock && !toolUseBlock && sr !== 'tool_use' && (sr === 'end_turn' || (longFinal && settled))) {
+        if (textBlock && !toolUseBlock && sr !== 'tool_use' && (sr === 'end_turn' || settled)) {
             isDone = true;
             fullText = textBlock.text.trim();
         } else {
@@ -1356,13 +1383,18 @@ async function parseTaskAgent(
     const oneLine = fullText.replace(/\s+/g, ' ').trim();
     const preview = oneLine.length > 160 ? oneLine.slice(0, 160) + '…' : oneLine;
 
+    // Not done and carrying a "[Request interrupted]" marker → killed (stopped), not running.
+    const interrupted = agentWasInterrupted(lines);
+    const status: 'running' | 'done' | 'stopped' = isDone ? 'done' : (interrupted ? 'stopped' : 'running');
+
     const agent: WorkflowAgentInfo = {
         agentId,
-        status: isDone ? 'done' : 'running',
-        summary: isDone ? preview : activity,
-        // Done → full chronological steps (every tool call + text) so the user sees the whole
-        // run, falling back to the final report text if steps came up empty. Running → latest only.
-        fullSummary: isDone ? (collectAgentSteps(lines) || fullText) : fullActivity,
+        status,
+        summary: status === 'done' ? preview : activity,
+        // done/stopped → full chronological steps (every tool call + text) so the user sees the
+        // whole run (a killed agent's last actions too), falling back to the final report text.
+        // Running → latest activity only.
+        fullSummary: status === 'running' ? fullActivity : (collectAgentSteps(lines) || fullText || fullActivity),
         durationMs,
         name: displayName || 'agent',
     };
@@ -1509,18 +1541,23 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                     const timing = await getAgentTiming(wfDirUri, id);
                     if (timing.firstTs && (!wfStartedAt || timing.firstTs < wfStartedAt)) wfStartedAt = timing.firstTs;
                     if (timing.lastTs > wfEndedAt) wfEndedAt = timing.lastTs;
+                    // A journal `result` = completed; else a "[Request interrupted]" marker in the
+                    // agent log = killed (stopped); with neither it is genuinely still running.
+                    const status: 'running' | 'done' | 'stopped' = isDone ? 'done' : (timing.interrupted ? 'stopped' : 'running');
                     const res = doneSummary.get(id);
-                    const summary = isDone ? (res?.preview || '') : timing.activity;
-                    // Done → show the agent's full chronological steps (all tool calls + text),
-                    // so the user can see everything it did. Fall back to the journal result's
-                    // full text if step collection came up empty. Running → latest activity only.
-                    const fullSummary = isDone ? (timing.fullSteps || res?.full || '') : timing.fullActivity;
+                    const summary = status === 'done' ? (res?.preview || '') : timing.activity;
+                    // done/stopped → show the agent's full chronological steps (all tool calls +
+                    // text), so the user sees everything it did (a killed agent's last actions
+                    // included). Fall back to the journal result's full text. Running → latest only.
+                    const fullSummary = status === 'running'
+                        ? timing.fullActivity
+                        : (timing.fullSteps || (status === 'done' ? (res?.full || '') : timing.fullActivity));
                     const role = roleLabels.get(id);  // undefined → panel falls back to "에이전트 N"
                     const name = role?.label;
                     // Only surface fullName when it actually differs (i.e. the label was clipped),
                     // so unchanged labels don't carry a redundant tooltip.
                     const fullName = role && role.full !== role.label ? role.full : undefined;
-                    agents.push({ agentId: id, status: isDone ? 'done' : 'running', summary, fullSummary, durationMs: timing.durationMs, ...(name ? { name } : {}), ...(fullName ? { fullName } : {}) });
+                    agents.push({ agentId: id, status, summary, fullSummary, durationMs: timing.durationMs, ...(name ? { name } : {}), ...(fullName ? { fullName } : {}) });
                 }
             } catch { /* journal unreadable */ }
 
