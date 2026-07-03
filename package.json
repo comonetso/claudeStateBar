@@ -2,7 +2,7 @@
     "name": "claude-state-bar",
     "displayName": "Claude State Bar",
     "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your VS Code status bar — with a live Workflow/Agent viewer, sound alerts, Remote-SSH support, and Telegram reset alerts.",
-    "version": "1.7.29",
+    "version": "1.7.30",
     "extensionKind": ["ui"],
     "publisher": "blueming",
     "author": {
@@ -165,7 +165,7 @@
                 "claudeContextBar.contextLimitOpus": {
                     "type": "number",
                     "default": 1000000,
-                    "description": "Context window size (tokens) for 1M-context models — Opus 4.x and any model with '1m' in its id."
+                    "description": "Context window size (tokens) for 1M-context models — Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+, and any model with '1m' in its id."
                 },
                 "claudeContextBar.warningThreshold": {
                     "type": "number",

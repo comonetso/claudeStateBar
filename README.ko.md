@@ -14,7 +14,7 @@ Claude State Bar는 서로 보완되는 두 가지를 보여주며, 하나의 �
 Claude Code의 세션 로그(`~/.claude/projects/*.jsonl`)를 읽어 활성 세션별로 표시:
 - **실시간 컨텍스트 사용량 %** (사용 토큰 vs 모델 한도)
 - **세션별 모니터링** — Claude Code 세션마다 독립 상태바 아이템
-- **모델 인식 한도** — Opus 4.x / ID에 `1m`이 포함된 모델 → 1,000,000 토큰, 그 외 → 200,000 (설정 가능)
+- **모델 인식 한도** — Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+, ID에 `1m`이 포함된 모델 → 1,000,000 토큰, 그 외(Sonnet 4.5 이하, Haiku 등) → 200,000 (설정 가능)
 - **모델 + Effort + 속도** — 예: `Opus 4.7 · xHigh⁺ · ⚡fast` ([Effort 표시](#️-effort-레벨-표시) 참조)
 - **색상 경고** — 정상 / 경고(≥50%) / 위험(≥75%) 배경색
 - **2단계 idle** — `idleTimeout`(기본 180초) 후 흐려지고, `hideAfter` 후 완전히 숨김
@@ -150,7 +150,7 @@ VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인�
 | `claudeContextBar.autoColor` | `true` | 프로젝트별 고유 파스텔 색 |
 | `claudeContextBar.baseColor` | `White` | 자동 색상 끌 때 기본 색 |
 | `claudeContextBar.contextLimitDefault` | `200000` | 표준 모델 컨텍스트 한도 |
-| `claudeContextBar.contextLimitOpus` | `1000000` | 1M 컨텍스트 모델 한도 (Opus 4.x) |
+| `claudeContextBar.contextLimitOpus` | `1000000` | 1M 컨텍스트 모델 한도 (Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+) |
 | `claudeContextBar.warningThreshold` | `50` | 노란 경고 배경 % |
 | `claudeContextBar.dangerThreshold` | `75` | 빨간 위험 배경 % |
 | `claudeContextBar.refreshInterval` | `30` | 새로고침 간격(초) |

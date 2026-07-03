@@ -14,7 +14,7 @@ Claude State Bar shows two complementary things, merged into a single hover tool
 Reads Claude Code's local session logs (`~/.claude/projects/*.jsonl`) and shows, per active session:
 - **Live context usage %** (tokens used vs. the model's limit)
 - **Per‑session monitoring** — each Claude Code session gets its own status‑bar item
-- **Model‑aware limits** — Opus 4.x / models with `1m` in their ID → 1,000,000 tokens; others → 200,000 (configurable)
+- **Model‑aware limits** — Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+, or models with `1m` in their ID → 1,000,000 tokens; others (Sonnet ≤4.5, Haiku, etc.) → 200,000 (configurable)
 - **Model + effort + speed** — e.g. `Opus 4.7 · xHigh⁺ · ⚡fast` (see [Effort display](#️-effort-level-display))
 - **Color‑coded warnings** — normal / warning (≥50%) / danger (≥75%) backgrounds
 - **Two‑tier idle** — sessions dim after `idleTimeout` (default 180s) and fully hide after `hideAfter`
@@ -150,7 +150,7 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 | `claudeContextBar.autoColor` | `true` | Assign a unique pastel colour per project |
 | `claudeContextBar.baseColor` | `White` | Base colour when auto‑colour is off |
 | `claudeContextBar.contextLimitDefault` | `200000` | Context limit for standard models |
-| `claudeContextBar.contextLimitOpus` | `1000000` | Context limit for 1M‑context models (Opus 4.x) |
+| `claudeContextBar.contextLimitOpus` | `1000000` | Context limit for 1M‑context models (Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+) |
 | `claudeContextBar.warningThreshold` | `50` | % for yellow warning background |
 | `claudeContextBar.dangerThreshold` | `75` | % for red danger background |
 | `claudeContextBar.refreshInterval` | `30` | Refresh interval (seconds) |

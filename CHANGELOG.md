@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.30] - 2026-07-03
+
+### Fixed
+- **Sonnet 5 / 4.6 context limit** — `claude-sonnet-5` and `claude-sonnet-4-6` now use the 1M token context limit instead of the default 200K (Sonnet 4.5 and earlier are unaffected and still default to 200K). Also recognizes `claude-mythos-5` (Fable-equivalent) as 1M.
+
+---
+
 ## [1.7.29] - 2026-07-01
 
 ### Fixed
