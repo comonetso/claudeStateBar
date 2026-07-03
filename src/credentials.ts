@@ -42,11 +42,12 @@ export async function setRefreshIntervalSec(sec: number): Promise<void> {
 
 export function getLanguage(): Lang {
     const v = cfg().get<string>('language', 'en');
-    return v === 'ko' ? 'ko' : 'en';
+    return v === 'ko' ? 'ko' : v === 'zh' ? 'zh' : 'en';
 }
 
 export async function setLanguage(lang: Lang): Promise<void> {
-    await cfg().update('language', lang === 'ko' ? 'ko' : 'en', vscode.ConfigurationTarget.Global);
+    const v = lang === 'ko' ? 'ko' : lang === 'zh' ? 'zh' : 'en';
+    await cfg().update('language', v, vscode.ConfigurationTarget.Global);
 }
 
 // --- Sensitive secrets (context.secrets) ---

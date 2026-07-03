@@ -129,7 +129,7 @@ async function handleMessage(msg: any): Promise<void> {
         }
 
         case 'setLanguage': {
-            const lang: Lang = msg.lang === 'ko' ? 'ko' : 'en';
+            const lang: Lang = msg.lang === 'ko' ? 'ko' : msg.lang === 'zh' ? 'zh' : 'en';
             await creds.setLanguage(lang);
             panel.webview.postMessage({ type: 'i18n', lang, dict: getDict(lang) });
             break;
@@ -288,6 +288,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       <select id="language" style="width:auto; min-width:140px;">
         <option value="en">English</option>
         <option value="ko">한국어</option>
+        <option value="zh">简体中文</option>
       </select>
     </div>
 

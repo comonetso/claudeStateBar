@@ -1,8 +1,9 @@
 // Lightweight i18n for the settings webview and status-bar plan-usage labels.
-// English is the default; Korean is a full translation. The dictionary is sent
-// to the webview verbatim (postMessage) so the webview can render with its own t().
+// English is the default; Korean and Simplified Chinese are full translations.
+// The dictionary is sent to the webview verbatim (postMessage) so the webview
+// can render with its own t().
 
-export type Lang = 'en' | 'ko';
+export type Lang = 'en' | 'ko' | 'zh';
 
 export type Dict = Record<string, string | string[]>;
 
@@ -369,7 +370,192 @@ const KO: Dict = {
     'tt.planUnavailable': '_이 호스트에선 플랜 사용량을 가져올 수 없습니다_'
 };
 
-const DICTS: Record<Lang, Dict> = { en: EN, ko: KO };
+const ZH: Dict = {
+    // Panel chrome
+    'panel.title': 'claudeStateBar',
+    'lang.label': '语言',
+    'common.save': '保存',
+    'common.refresh': '立即刷新',
+    'common.test': '测试',
+
+    // Section headers
+    'section.claudeState': 'claudeStateBar — 套餐用量',
+    'section.claudeContextBar': 'claudeContextBar — 上下文监控',
+    'section.telegram': 'Telegram 通知',
+
+    // claudeState fields
+    'state.orgId.label': '组织 ID',
+    'state.orgId.placeholder': '例如 da39b20c-1aee-4add-bbc6-7d876b5492fb',
+    'state.orgId.hint': '在 claude.ai 网络面板中 /api/organizations/{UUID}/... 路径里看到的 UUID',
+    'state.cookie.label': '会话密钥（sessionKey cookie）',
+    'state.cookie.placeholder': 'sk-ant-sid02-...',
+    'state.cookie.hint': 'claude.ai 开发者工具 → Application → Cookies → sessionKey 的值',
+    'state.cookie.saved': '（已保存密钥 — 留空保留原值，输入新值则覆盖）',
+    'state.interval.label': '刷新间隔（秒）',
+    'state.interval.hint': '范围：10 ~ 3600 秒 / 默认：300（5 分钟）',
+    'state.note': '会话密钥和 Bot Token 通过编辑器安全存储（SecretStorage）加密保存。',
+
+    // claudeState validation / status messages
+    'state.err.noOrgId': '必须填写组织 ID',
+    'state.err.noCookie': '必须填写会话密钥',
+    'state.err.badInterval': '刷新间隔必须在 10 到 3600 秒之间',
+    'state.msg.saving': '已保存。正在刷新...',
+    'state.msg.saveFailed': '保存失败：{0}',
+    'state.msg.refreshRequested': '已请求刷新',
+    'state.msg.ok': '✓ 成功（来源：{0}）',
+    'state.msg.authExpired': '⚠ 会话密钥已过期 — 请重新输入',
+    'state.msg.err': '✗ {0}',
+    'state.msg.needSettings': '需要配置',
+
+    // Telegram
+    'tg.token.label': 'Bot Token',
+    'tg.token.placeholder': '1234567890:ABCdef...',
+    'tg.token.hint': '在 Telegram 找 @BotFather → /newbot 获取',
+    'tg.guide': '<b>配置步骤</b><br>① 在 Telegram 中搜索 <b>@BotFather</b> → 发送 <b>/newbot</b> → 选择名称/用户名 → 复制 token<br>② 将 token 粘贴到上方输入框<br>③ 在 Telegram 中打开 <b>你刚创建的机器人</b>，发送 <b>/start</b> 或任意消息<br>④ 点击下方 <b>"绑定我的 Telegram"</b> — 自动检测 Chat ID<br>⑤ 点击 <b>"发送测试消息"</b> 验证<br><br>✅ 绑定后，每次 Claude 5 小时会话重置时你都会收到 Telegram 通知。',
+    'tg.link': '绑定我的 Telegram',
+    'tg.linked': '已绑定：{0}',
+    'tg.notLinked': '未绑定',
+    'tg.linking': '请先向你的机器人发送任意消息，然后点击按钮...',
+    'tg.linkFail': '绑定失败 — 请先向机器人发送一条消息',
+    'tg.invalidToken': '无效的 token',
+    'tg.test': '发送测试消息',
+    'tg.testSent': '✓ 测试消息已发送',
+    'tg.testFail': '发送失败',
+    'tg.resetMsg': '✅ <b>Claude 会话已重置</b>\n\n你的 5 小时窗口已完全可用。\n周用量：{0}%',
+
+    // Status-bar plan usage labels
+    'sb.sessionLabel': '会话额度',
+    'sb.session': '会话',
+    'sb.weekly': '周',
+    'sb.reset': '重置',
+    'sb.resetsSoon': '即将重置',
+    'sb.daysLater': '{0}天{1}小时后',
+    'sb.hoursLater': '{0}小时{1}分后',
+    'sb.minsLater': '{0}分后',
+    'sb.am': '上午',
+    'sb.pm': '下午',
+    'sb.weekdays': ['日', '一', '二', '三', '四', '五', '六'],
+    'sb.unconfigured': '需要配置',
+    'sb.cookieExpired': '会话密钥已过期',
+    'sb.blocked': '此环境无法查看套餐用量',
+    'sb.error': '错误',
+    'sb.tooltip.needSettings': '点击 → 打开设置（输入会话密钥 / 组织 ID）',
+    'sb.tooltip.authExpired': '⚠ 会话密钥已过期/认证失败。请打开设置重新输入。',
+    'sb.tooltip.blocked': '⚠ 此主机无法访问 claude.ai 的用量 API（会话密钥本身正常）：Cloudflare 会拦截云/数据中心 IP（如 AWS），部分主机根本无法连接。请在桌面版 VS Code 中查看套餐用量。',
+
+    // claudeContextBar fields (label + short hint)
+    'cb.autoColor.label': '自动配色（每个项目彩虹色）',
+    'cb.baseColor.label': '基础颜色（关闭自动配色时使用）',
+    'cb.contextLimitDefault.label': '上下文上限 — 标准模型（token）',
+    'cb.contextLimitOpus.label': '上下文上限 — 1M 模型（token）',
+    'cb.warningThreshold.label': '警告阈值 (%)',
+    'cb.dangerThreshold.label': '危险阈值 (%)',
+    'cb.refreshInterval.label': '刷新间隔（秒）',
+    'cb.idleTimeout.label': '空闲变暗超时（秒）',
+    'cb.hideAfter.label': '多久后隐藏（秒）',
+    'cb.scope.label': '会话范围',
+    'cb.scope.workspace': '仅当前工作区',
+    'cb.scope.all': '所有会话',
+    'cb.showModel.label': '显示模型名称',
+    'cb.compactMode.label': '紧凑模式（缩写名称）',
+    'cb.note': '自定义简称（shortNames）可在标准 VS Code 设置（Ctrl+,）中编辑。',
+
+    // Sound settings
+    'sound.title': '提示音设置',
+    'sound.hint': 'WAV / MP3 文件路径（留空 = 系统默认音）。音量 50~5000%（WAV 在 100% 以上会内存放大；MP3 仅衰减）。超过约 300% 通常会产生削波/失真 — 更大反而更刺耳。在本地 PC 播放；Remote-SSH 与任意工作区行为一致。',
+    'sound.warning': '⚠️ 警告 (1×)',
+    'sound.danger': '🔴 危险 (2×)',
+    'sound.completion': '✅ 任务完成',
+    'sound.question': '❓ 等待你输入',
+    'sound.questionHint': '当 Claude 通过 AskUserQuestion 或 ExitPlanMode 请求输入时触发问题提示音 — 100% 准确。',
+    'sound.workflow': '🔁 工作流完成',
+    'sound.workflowComplete.label': '工作流 / 所有子代理完成时提示',
+    'sound.workflowComplete.hint': '当多代理工作流或其子代理（Task）全部完成时提示一次。',
+    'sound.settleMs.label': '完成/问题提示音延迟 (ms)',
+    'sound.settleMs.hint': '检测到 end_turn 或问题后等待此时长；若期间出现新活动（自动追问、用户立即回复）则抑制提示音。0 = 立即触发。',
+    'sound.stuckSec.label': 'tool_use 卡住阈值（秒）',
+    'sound.stuckSec.hint': '仅在下方启发式开启时使用。',
+    'sound.detectStuck.label': '疑似 VS Code 权限弹窗时提示（启发式 — 有误报风险）',
+    'sound.detectStuck.hint': '当最新 assistant 条目是 tool_use（Bash、Edit 等）且 N 秒内无新活动时，触发问题提示音。长时间运行的正版工具（如 npm build）也会触发。默认关闭。',
+    'sound.reset': '恢复默认',
+
+    // 共用操作标签（也作为模态按钮文本复用 → 必须与返回值比较一致）
+    'common.delete': '删除',
+    'common.cleanup': '清理',
+    'common.reload': '重新加载',
+
+    // 工作流面板(webview) + extension.ts 中生成的动态标签
+    'wf.title': '⚡ Claude 工作流',
+    'wf.fontSize': '字号',
+    'wf.fontSmaller': '缩小',
+    'wf.fontLarger': '放大',
+    'wf.autoRefreshing': '与状态栏一起自动刷新中…',
+    'wf.empty': '本会话暂无工作流。',
+    'wf.noAgents': '尚未启动任何代理。',
+    'wf.summary': '共 {0} 个工作流 · {1} 个进行中 · 自动刷新',
+    'wf.running': '进行中',
+    'wf.done': '已完成',
+    'wf.stopped': '已停止',
+    'wf.doneStopped': '{0} 完成 · {1} 停止',
+    'wf.elapsed': '用时 ',
+    'wf.took': '耗时 ',
+    'wf.agentN': '代理 {0}',
+    'wf.clearTasks': '清除此捆绑中已完成的 Task',
+    'wf.working': '工作中…',
+    'wf.taskBundle': '子代理 {0}（{1}）',
+
+    // 状态栏点击 QuickPick 菜单（"Q-Panel"）
+    'menu.hide': '隐藏此会话',
+    'menu.sepHidden': '已隐藏的会话',
+    'menu.restoreAll': '恢复全部已隐藏（{0}）',
+    'menu.restoreOne': '恢复：{0}',
+    'menu.sepWorkflows': '工作流',
+    'menu.viewWorkflows': '查看工作流（{0}）',
+    'menu.running': '{0} 个进行中',
+    'menu.allDone': '全部完成',
+    'menu.viewDetail': '打开实时工作流面板',
+    'menu.noWorkflows': '没有进行中的工作流',
+    'menu.openPanelDetail': '打开工作流面板',
+    'menu.cleanupGhosts': '清理过期/僵尸项（重载窗口）',
+    'menu.cleanupGhostsDesc': '移除灰显的残留项',
+    'menu.cleanupGhostsDetail': '已死实例遗留的状态栏项只能在重载窗口后清除 — 点击立即重载',
+    'menu.openSettings': '打开设置…',
+    'menu.openSettingsDesc': 'claudeState + claudeContextBar',
+    'menu.placeholder': 'claudeStateBar — 选择操作',
+    'menu.staleItem': '这是一个过期项。要重载窗口来清理吗？',
+
+    // 提示音测试 QuickPick
+    'beep.warning': '警告提示音 (1×)',
+    'beep.warningDesc': '达到 warningThreshold 时',
+    'beep.danger': '危险提示音 (2×)',
+    'beep.dangerDesc': '达到 dangerThreshold 时',
+    'beep.completion': '任务完成提示',
+    'beep.completionDesc': '检测到 Claude end_turn 时（应用延迟）',
+    'beep.question': '等待输入提示',
+    'beep.questionDesc': '检测到 AskUserQuestion / ExitPlanMode 时',
+    'beep.workflow': '工作流完成提示',
+    'beep.workflowDesc': '工作流/所有子代理完成时',
+    'beep.placeholder': '选择要测试的提示音类型',
+
+    // Toast / 模态确认框
+    'msg.cleanupReadFail': 'claudeStateBar：无法读取 extensions 文件夹。',
+    'msg.cleanupNone': 'claudeStateBar：没有旧版本可清理。',
+    'msg.cleanupConfirm': '要删除 {0} 个旧版本吗？\n{1}',
+    'msg.cleanupDone': 'claudeStateBar：已删除 {0} 个旧版本{1}。',
+    'msg.cleanupFailedSuffix': '（{0} 个失败）',
+    'msg.noHidden': 'claudeStateBar：没有可恢复的隐藏会话。',
+    'msg.tasksClearConfirm': '清除本捆绑中已完成的子代理（Task）记录吗？\n\n已完成的代理日志将被永久删除。运行中的代理会保留。',
+    'msg.wfDeleteConfirm': '删除此工作流记录吗？\n{0}\n\n此工作流的日志和结果将被永久删除。',
+    'msg.updatedZombie': 'claudeStateBar 已从 {0} 更新到 {1}。状态栏可能残留过期（僵尸）项。重载窗口即可清理。',
+    'msg.cleanupGhostsConfirm': '要清理幽灵/过期状态栏项，需要重载窗口。现在重载吗？',
+    'msg.autoCleanupDone': 'claudeStateBar：已清理 {0} 个旧版本。要移除屏幕上残留的过期项，请重载窗口。',
+
+    // 状态栏 tooltip
+    'tt.effortXhighNote': ' — xhigh（若开启 ultracode，则与 dynamic workflows 结合；仅运行时，无法区分）',
+    'tt.planUnavailable': '_此主机无法获取套餐用量_'
+};
+
+const DICTS: Record<Lang, Dict> = { en: EN, ko: KO, zh: ZH };
 
 export function getDict(lang: Lang): Dict {
     return DICTS[lang] || EN;

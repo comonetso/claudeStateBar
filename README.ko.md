@@ -2,7 +2,7 @@
 
 **Claude Code 컨텍스트 사용량 + Claude.ai 플랜 사용량(5시간 세션 & 주간)을 VS Code 상태바에서 한눈에 — 실시간 워크플로우/에이전트 뷰어 패널, 사운드 알림, Remote‑SSH 지원, 텔레그램 리셋 알림, 한/영 설정 패널 포함.**
 
-🇬🇧 English: [README.md](README.md)
+🇬🇧 English: [README.en.md](README.en.md) · 🇨🇳 简体中文: [README.md](README.md)
 
 ---
 

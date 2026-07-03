@@ -2996,10 +2996,14 @@ function tickStageItem() {
     stageStatusItem.text = `${icon} ${elapsedSec}s`;
     const stuck = elapsedSec > STAGE_STUCK_SEC;
     stageStatusItem.backgroundColor = stuck ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
-    const ko = planLang() === 'ko';
+    const lang = planLang();
     stageStatusItem.tooltip = stuck
-        ? (ko ? 'Claude가 비정상적으로 오래 작업 중 — 멈춤 의심' : 'Claude has been working unusually long — possibly stuck')
-        : (ko ? 'Claude 작업 중 — 마지막 활동 이후 경과 초 (멈추면 완료/대기)' : 'Claude is working — seconds since last activity (stops when done/idle)');
+        ? (lang === 'ko' ? 'Claude가 비정상적으로 오래 작업 중 — 멈춤 의심'
+            : lang === 'zh' ? 'Claude 工作时间异常过长 — 疑似卡住'
+            : 'Claude has been working unusually long — possibly stuck')
+        : (lang === 'ko' ? 'Claude 작업 중 — 마지막 활동 이후 경과 초 (멈추면 완료/대기)'
+            : lang === 'zh' ? 'Claude 工作中 — 距上次活动的秒数（完成/空闲时停止）'
+            : 'Claude is working — seconds since last activity (stops when done/idle)');
     stageStatusItem.show();
 }
 

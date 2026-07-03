@@ -4,6 +4,11 @@
     let dict = {};
     let hasCookie = false;
 
+    // Accept 'en' | 'ko' | 'zh'; collapse anything else to 'en'.
+    function normalizeLang(v) {
+        return v === 'ko' ? 'ko' : v === 'zh' ? 'zh' : 'en';
+    }
+
     function t(key, ...args) {
         let v = dict[key];
         if (v == null) return key;
@@ -57,7 +62,7 @@
         // claudeState
         $('orgId').value = state.orgId || '';
         $('refreshInterval').value = state.refreshIntervalSec || 300;
-        $('language').value = state.language === 'ko' ? 'ko' : 'en';
+        $('language').value = normalizeLang(state.language);
         if (hasCookie) $('sessionCookie').placeholder = t('state.cookie.saved');
         // telegram
         $('telegramToken').value = state.telegramToken || '';
@@ -95,7 +100,7 @@
     // --- Outgoing actions ---
 
     $('language').addEventListener('change', () => {
-        const lang = $('language').value === 'ko' ? 'ko' : 'en';
+        const lang = normalizeLang($('language').value);
         vscode.postMessage({ type: 'setLanguage', lang });
     });
 
