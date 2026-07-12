@@ -6,6 +6,14 @@ const USER_AGENT =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
     '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
+// One per-model weekly bucket (seven_day_sonnet, seven_day_opus, seven_day_fable, ...).
+export interface ModelUsage {
+    key: string;
+    label: string;
+    percent: number;
+    resetAt: string | null;
+}
+
 export interface NormalizedUsage {
     sessionPercent: number | null;
     sessionResetAt: string | null;
@@ -15,11 +23,17 @@ export interface NormalizedUsage {
     sonnetResetAt: string | null;
     opusPercent: number | null;
     opusResetAt: string | null;
+    fablePercent: number | null;
+    fableResetAt: string | null;
+    // Every per-model bucket claude.ai returned, including ones we don't know by name.
+    models: ModelUsage[];
 }
 
 export interface UsageResult {
     source: string;
     normalized: NormalizedUsage;
+    // Untouched response body — logged for diagnosis when claude.ai changes the schema.
+    raw: any;
 }
 
 export class AuthExpiredError extends Error {
@@ -161,29 +175,115 @@ export function getTransport(): 'electron' | 'https' {
     return getElectronNet() ? 'electron' : 'https';
 }
 
-// claude.ai /api/organizations/{orgId}/usage response (confirmed 2026-04-21):
-//   { five_hour: {utilization, resets_at}, seven_day: {...},
-//     seven_day_sonnet: {...}, seven_day_opus: null|{...} }
-function normalizeUsage(json: any): NormalizedUsage {
-    const read = (bucket: any) => ({
+// claude.ai /api/organizations/{orgId}/usage carries per-model weekly caps in two shapes:
+//
+//   Legacy (confirmed 2026-04-21) — one bucket per model:
+//     { five_hour: {utilization, resets_at}, seven_day: {...},
+//       seven_day_sonnet: {...}, seven_day_opus: null|{...} }
+//
+//   Current (confirmed 2026-07-13) — a `limits` array; the legacy buckets are all null:
+//     limits: [ {kind: "session",       percent, resets_at, scope: null},
+//               {kind: "weekly_all",    percent, resets_at, scope: null},
+//               {kind: "weekly_scoped", percent, resets_at,
+//                scope: {model: {display_name: "Fable"}}} ]
+//
+// The model line-up changes (Sonnet left the weekly caps, Fable joined), so nothing here
+// hardcodes a model name: every `weekly_scoped` entry is rendered under whatever
+// display_name it carries, and the legacy buckets are still read for accounts that get
+// only the old shape.
+const MODEL_BUCKET_PREFIX = 'seven_day_';
+
+interface RawLimit {
+    kind?: string;
+    percent?: number;
+    resets_at?: string | null;
+    scope?: { model?: { display_name?: string | null } | null; surface?: string | null } | null;
+}
+
+function readBucket(bucket: any) {
+    return {
         percent: bucket && typeof bucket.utilization === 'number' ? bucket.utilization : null,
         resetAt: (bucket && bucket.resets_at) || null
-    });
+    };
+}
 
-    const session = read(json?.five_hour);
-    const weekly = read(json?.seven_day);
-    const sonnet = read(json?.seven_day_sonnet);
-    const opus = read(json?.seven_day_opus);
+// "seven_day_fable_5" → "Fable 5"
+function modelLabel(key: string): string {
+    return key
+        .slice(MODEL_BUCKET_PREFIX.length)
+        .split('_')
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+}
+
+function collectModels(json: any, limits: RawLimit[]): ModelUsage[] {
+    const models: ModelUsage[] = [];
+    const seen = new Set<string>();
+    const add = (key: string, label: string | null, percent: number | null, resetAt: string | null) => {
+        if (!label || percent == null || seen.has(label.toLowerCase())) return;
+        seen.add(label.toLowerCase());
+        models.push({ key, label, percent, resetAt });
+    };
+
+    for (const entry of limits) {
+        if (entry?.kind !== 'weekly_scoped') continue;
+        const label = entry.scope?.model?.display_name || entry.scope?.surface || null;
+        add(
+            `weekly_scoped:${label}`,
+            label,
+            typeof entry.percent === 'number' ? entry.percent : null,
+            entry.resets_at ?? null
+        );
+    }
+
+    for (const [key, bucket] of Object.entries(json ?? {})) {
+        if (!key.startsWith(MODEL_BUCKET_PREFIX)) continue;
+        const { percent, resetAt } = readBucket(bucket);
+        add(key, modelLabel(key), percent, resetAt);
+    }
+
+    return models;
+}
+
+function normalizeUsage(json: any): NormalizedUsage {
+    const limits: RawLimit[] = Array.isArray(json?.limits) ? json.limits : [];
+    const byKind = (kind: string) => limits.find((l) => l?.kind === kind);
+
+    // Prefer the top-level buckets, fall back to the `limits` array if they ever go null too.
+    const fromLimit = (kind: string) => {
+        const l = byKind(kind);
+        return {
+            percent: l && typeof l.percent === 'number' ? l.percent : null,
+            resetAt: l?.resets_at ?? null
+        };
+    };
+    const pick = (bucket: any, kind: string) => {
+        const b = readBucket(bucket);
+        return b.percent != null ? b : fromLimit(kind);
+    };
+
+    const session = pick(json?.five_hour, 'session');
+    const weekly = pick(json?.seven_day, 'weekly_all');
+    const models = collectModels(json, limits);
+    const named = (name: string) => models.find((m) => m.label.toLowerCase().startsWith(name));
+
+    const sonnet = named('sonnet');
+    const opus = named('opus');
+    const fable = named('fable');
 
     return {
         sessionPercent: session.percent,
         sessionResetAt: session.resetAt,
         weeklyPercent: weekly.percent,
         weeklyResetAt: weekly.resetAt,
-        sonnetPercent: sonnet.percent,
-        sonnetResetAt: sonnet.resetAt,
-        opusPercent: opus.percent,
-        opusResetAt: opus.resetAt
+        sonnetPercent: sonnet?.percent ?? null,
+        sonnetResetAt: sonnet?.resetAt ?? null,
+        opusPercent: opus?.percent ?? null,
+        opusResetAt: opus?.resetAt ?? null,
+        fablePercent: fable?.percent ?? null,
+        fableResetAt: fable?.resetAt ?? null,
+        models
     };
 }
 
@@ -203,7 +303,7 @@ export async function fetchUsage(sessionCookie: string, orgId: string): Promise<
         try {
             const res = await request(url, sessionCookie);
             if (res.json) {
-                return { source: url, normalized: normalizeUsage(res.json) };
+                return { source: url, normalized: normalizeUsage(res.json), raw: res.json };
             }
         } catch (err: any) {
             if (err instanceof AuthExpiredError || err instanceof CloudflareBlockedError) throw err;

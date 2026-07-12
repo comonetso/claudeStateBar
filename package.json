@@ -2,7 +2,7 @@
     "name": "claude-state-bar",
     "displayName": "Claude State Bar",
     "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your VS Code status bar — with a live Workflow/Agent viewer, sound alerts, Remote-SSH support, and Telegram reset alerts.",
-    "version": "1.7.30",
+    "version": "1.7.33",
     "extensionKind": ["ui"],
     "publisher": "blueming",
     "author": {

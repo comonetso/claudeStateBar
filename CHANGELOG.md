@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.7.33] - 2026-07-13
+
+### Fixed
+- **Per-model weekly usage gone from the tooltip (Fable missing, Sonnet/Opus blank)** — claude.ai moved per-model weekly caps out of the `seven_day_<model>` buckets (now all `null`) and into a new `limits` array, where each cap is a `weekly_scoped` entry naming its model in `scope.model.display_name` (e.g. `Fable`). The extension only read the old buckets, so the model breakdown silently disappeared. It now reads the `limits` array — rendering every `weekly_scoped` entry under whatever model name it carries — while still reading the legacy buckets as a fallback. No model name is hardcoded, so the tooltip follows the plan line-up as models come and go. Session/weekly totals also fall back to the `limits` array if the top-level buckets ever go null.
+- **Session and weekly totals** now fall back to the `limits` array (`session` / `weekly_all`) when the legacy `five_hour` / `seven_day` buckets are absent.
+
+### Added
+- **Usage schema logging** — the `claudeStateBar` output channel now logs the usage response's top-level keys and the per-model buckets it found, plus the raw body when no per-model cap is detected. Makes the next claude.ai schema change diagnosable from the log instead of guesswork.
+
+---
+
 ## [1.7.30] - 2026-07-03
 
 ### Fixed

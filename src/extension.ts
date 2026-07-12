@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import * as cp from 'child_process';
 import * as creds from './credentials';
-import { fetchUsage, AuthExpiredError, CloudflareBlockedError, NormalizedUsage, getTransport } from './planUsage';
+import { fetchUsage, AuthExpiredError, CloudflareBlockedError, NormalizedUsage, UsageResult, getTransport } from './planUsage';
 import * as telegram from './telegram';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
 import { createOrShowWorkflowPanel, pushWorkflows, getTrackedSessionFile, pushLanguage } from './workflowPanel';
@@ -2959,9 +2959,15 @@ function planTooltipBlock(): string {
         const weeklyTime = `${resetAtLabel(n.weeklyResetAt)} (${untilHuman(n.weeklyResetAt)})`;
         s += `📅 **${planT('sb.weekly')} Total**: ${n.weeklyPercent ?? '?'}% — ${weeklyTime}\n\n`;
         // Per-model weekly usage. Only show a model when claude.ai actually returns it
-        // (Opus is often null → omit it rather than printing "—%").
-        if (n.sonnetPercent != null) s += `🧩 **${planT('sb.weekly')} Sonnet**: ${n.sonnetPercent}% — ${weeklyTime}\n\n`;
-        if (n.opusPercent != null) s += `🧩 **${planT('sb.weekly')} Opus**: ${n.opusPercent}% — ${weeklyTime}\n\n`;
+        // (Opus is often null → omit it rather than printing "—%"). The bucket set is not
+        // fixed — Fable 5 joined the weekly limits and Sonnet may drop out — so we render
+        // whatever models the API reported instead of a hardcoded Sonnet/Opus pair.
+        for (const m of n.models ?? []) {
+            const modelTime = m.resetAt
+                ? `${resetAtLabel(m.resetAt)} (${untilHuman(m.resetAt)})`
+                : weeklyTime;
+            s += `🧩 **${planT('sb.weekly')} ${m.label}**: ${m.percent}% — ${modelTime}\n\n`;
+        }
         return s;
     }
     return '';
@@ -3081,6 +3087,22 @@ function restartPlanPolling() {
     planRefreshInterval = setInterval(refreshPlanUsage, sec * 1000);
 }
 
+// The per-model weekly bucket names are not stable — Sonnet left the weekly limits and
+// Fable 5 joined — so when the breakdown comes back empty, log the response shape instead of
+// guessing at key names. The usage endpoints carry only utilization numbers and reset times
+// (no personal data), so their body is safe to log; the org fallback endpoint is not, and is
+// therefore reduced to its key names.
+function logUsageSchema(result: UsageResult) {
+    const keys = Object.keys(result.raw ?? {});
+    log(`[plan] response keys: ${keys.join(', ') || '(none)'}`);
+    const models = result.normalized.models;
+    log(`[plan] per-model buckets: ` +
+        (models.length ? models.map((m) => `${m.key}=${m.percent}%`).join(', ') : '(none)'));
+    if (!models.length && /\/usage(_limits)?$/.test(result.source)) {
+        log(`[plan] no per-model buckets — raw body: ${JSON.stringify(result.raw)}`);
+    }
+}
+
 async function refreshPlanUsage() {
     const orgId = creds.getOrgId();
     const sessionKey = await creds.getSessionKey();
@@ -3098,6 +3120,7 @@ async function refreshPlanUsage() {
         lastUsage = result.normalized;
         planStatus = 'ok';
         log(`[plan] ok: session=${result.normalized.sessionPercent}% weekly=${result.normalized.weeklyPercent}% via ${result.source}`);
+        logUsageSchema(result);
         notifyUsage('ok', result.source);
         await detectSessionReset(result.normalized);
     } catch (e) {

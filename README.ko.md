@@ -25,7 +25,7 @@ Claude Code의 세션 로그(`~/.claude/projects/*.jsonl`)를 읽어 활성 세�
 ### 📊 claudeState — Claude.ai 플랜 사용량
 계정 전역 플랜 사용량을 claude.ai에서 직접 가져옵니다(SDK·별도 서비스 없음):
 - **5시간 세션 한도 %** + 리셋 카운트다운 (첫 세션 아이템에 합쳐 표시)
-- **주간 사용량 %**, 툴팁에 **Sonnet / Opus** 모델별 분해
+- **주간 사용량 %**, 툴팁에 모델별 분해 (**Fable / Opus / Sonnet** — claude.ai가 현재 내려주는 모델을 그대로 표시)
 - **세션 리셋 감지** → 5시간 창이 리셋되면 선택적 **텔레그램** 알림
 - 자격증명(Session Key, Bot Token)은 VS Code SecretStorage로 **암호화** 저장
 
@@ -102,7 +102,7 @@ my-project (a1b2c3d4)
 ──────── claudeState ────────
 📊 세션: 30% — 오후 5:40 (3시간 27분 후)
 📅 주간: 20% — 오후 3:00 (토)
-Sonnet: 4%  Opus: —%
+Fable: 12%  Opus: 4%
 ──────── claudeContext ────────
 🤖 Model: claude-opus-4-7
 🎚️ Effort: xHigh⁺

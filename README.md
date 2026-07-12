@@ -25,7 +25,7 @@ Reads Claude Code's local session logs (`~/.claude/projects/*.jsonl`) and shows,
 ### 📊 claudeState — Claude.ai plan usage
 Fetches your **account‑wide plan usage** directly from claude.ai (no SDK, no extra service):
 - **5‑hour session limit %** with reset countdown (merged into the first session item)
-- **Weekly usage %**, plus per‑model **Sonnet / Opus** breakdown in the tooltip
+- **Weekly usage %**, plus a per‑model breakdown in the tooltip (**Fable / Opus / Sonnet** — whichever models claude.ai currently reports)
 - **Session‑reset detection** → optional **Telegram** notification when your 5‑hour window resets
 - Credentials (Session Key, Bot Token) are stored **encrypted** via VS Code SecretStorage
 
@@ -102,7 +102,7 @@ my-project (a1b2c3d4)
 ──────── claudeState ────────
 📊 Session: 30% — 5:40 PM (in 3h 27m)
 📅 Weekly: 20% — 3:00 PM (Sat)
-Sonnet: 4%  Opus: —%
+Fable: 12%  Opus: 4%
 ──────── claudeContext ────────
 🤖 Model: claude-opus-4-7
 🎚️ Effort: xHigh⁺
