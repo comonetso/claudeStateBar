@@ -7,6 +7,7 @@ import * as cp from 'child_process';
 import * as creds from './credentials';
 import { fetchUsage, AuthExpiredError, CloudflareBlockedError, NormalizedUsage, UsageResult, getTransport } from './planUsage';
 import * as telegram from './telegram';
+import * as blockPrimer from './blockPrimer';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
 import { createOrShowWorkflowPanel, pushWorkflows, getTrackedSessionFile, pushLanguage } from './workflowPanel';
 import { getDict, Lang } from './i18n';
@@ -2121,6 +2122,8 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
             // Skip Claude Memory, plugin directories, and Claude's own .claude config dir
             if (projectDir.includes('claude-plugins') || projectDir.includes('claude-mem')) continue;
             if (projectDir.endsWith('--claude')) continue;  // /path/.claude encoded as --claude suffix
+            // Throwaway sessions the block primer creates to anchor the 5-hour window — not real work
+            if (projectDir.includes(blockPrimer.PRIMER_MARK)) continue;
 
             // If scope='workspace', only include projects that match the current workspace folders
             if (workspaceDirs !== null && workspaceFolders) {
@@ -3145,7 +3148,8 @@ async function refreshPlanUsage() {
 }
 
 // Detect a session reset: the previously-stored reset time has elapsed AND the new
-// reset time differs. Fires a Telegram notification when configured.
+// reset time differs. Fires the Telegram notification when configured — and, when auto-start is
+// on, primes the new block from the same spot so the alert and the prime always agree.
 async function detectSessionReset(n: NormalizedUsage) {
     const prev = creds.getLastSessionResetAt();
     const current = n.sessionResetAt;
@@ -3158,9 +3162,75 @@ async function detectSessionReset(n: NormalizedUsage) {
                 const weekly = n.weeklyPercent != null ? String(n.weeklyPercent) : '?';
                 await telegram.sendMessage(token, chatId, planT('tg.resetMsg', weekly));
             }
+            if (creds.getAutoStartBlockOnReset()) {
+                primeNewBlock(current);
+            }
         }
     }
     if (current) {
         await creds.setLastSessionResetAt(current);
     }
+}
+
+// How long to give claude.ai before asking whether the window actually opened.
+const PRIMER_VERIFY_DELAY_MS = 10000;
+
+// Open the new 5-hour block right where the reset alert goes out. Deliberately not awaited: the
+// CLI takes ~10s and the usage poll should not stall behind it.
+function primeNewBlock(resetAtNow: string | null) {
+    blockPrimer.fireOnReset(
+        resetAtNow,
+        log,
+        (outcome) => { void handlePrimerOutcome(outcome, resetAtNow); }
+    );
+}
+
+async function handlePrimerOutcome(outcome: blockPrimer.FireOutcome, resetAtBefore: string | null) {
+    if (outcome === 'skipped') return;  // nothing ran — nothing to verify or report
+    if (outcome === 'api-key-present') {
+        await disableAutoStart(planT('tg.primerApiKey'));
+        return;
+    }
+    if (outcome === 'exec-failed') {
+        // The CLI itself blew up (not installed, not logged in, ...). Report it, but leave the
+        // setting on — this is a local fault the user can fix, not a billing hazard.
+        await notifyTelegram(planT('tg.primerFailed'));
+        return;
+    }
+
+    // `claude -p` exited 0 — but that alone does NOT prove a subscription block opened. If
+    // Anthropic ever bills headless runs to the API instead, the call still succeeds while the
+    // 5-hour window stays shut, and we would quietly burn API credit on every reset. So confirm
+    // it against the usage API: a freshly opened window moves sessionResetAt into the future.
+    await new Promise((r) => setTimeout(r, PRIMER_VERIFY_DELAY_MS));
+    await refreshPlanUsage();
+
+    const after = lastUsage?.sessionResetAt;
+    const inFuture = !!after && new Date(after).getTime() > Date.now();
+    const moved = !!after && (!resetAtBefore || new Date(after).getTime() > new Date(resetAtBefore).getTime());
+
+    if (moved && inFuture) {
+        log(`[primer] verified — subscription window is open until ${after}`);
+        await notifyTelegram(planT('tg.primerFired', resetAtLabel(after!)));
+        return;
+    }
+
+    // The prompt ran but no subscription window opened. The most likely cause is that headless
+    // runs no longer draw on the subscription. Stop immediately rather than repeat this every
+    // reset — one stray call is cheap, four a day indefinitely is not.
+    log(`[primer] NOT verified — claude -p ran but no subscription window opened ` +
+        `(resetAt before=${resetAtBefore ?? 'null'} after=${after ?? 'null'}). Disabling auto-start.`);
+    await disableAutoStart(planT('tg.primerUnverified'));
+}
+
+async function disableAutoStart(message: string) {
+    await creds.setAutoStartBlockOnReset(false);
+    await notifyTelegram(message);
+    void vscode.window.showWarningMessage(message.replace(/<[^>]+>/g, ''));
+}
+
+async function notifyTelegram(text: string) {
+    const token = await creds.getTelegramToken();
+    const chatId = await creds.getTelegramChatId();
+    if (token && chatId) await telegram.sendMessage(token, chatId, text);
 }

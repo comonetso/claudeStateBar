@@ -58,6 +58,10 @@ const EN: Dict = {
     'tg.testSent': '✓ Test message sent',
     'tg.testFail': 'Send failed',
     'tg.resetMsg': '✅ <b>Claude session reset</b>\n\nYour 5-hour window is fully available.\nWeekly usage: {0}%',
+    'tg.primerFired': '🚀 <b>New 5-hour block started</b>\n\nA throwaway prompt was sent at the reset, so the block is anchored to {0}.',
+    'tg.primerFailed': '⚠️ <b>Auto-start failed</b>\n\nCould not run <code>claude -p</code> at the reset. The block was not started — see the claudeStateBar output channel.',
+    'tg.primerUnverified': '🛑 <b>Auto-start disabled</b>\n\n<code>claude -p</code> ran, but no subscription block opened — headless runs may now bill the API instead of your plan. Auto-start has been turned OFF so it cannot keep charging you. Turn it back on only once you have confirmed the block opens.',
+    'tg.primerApiKey': '🛑 <b>Auto-start disabled</b>\n\nAn API key is set in the environment, so <code>claude -p</code> would bill API credit instead of your subscription window. Auto-start has been turned OFF.',
 
     // Status-bar plan usage labels
     'sb.sessionLabel': 'Session',
@@ -238,6 +242,10 @@ const KO: Dict = {
     'tg.testSent': '✓ 테스트 메시지 전송됨',
     'tg.testFail': '전송 실패',
     'tg.resetMsg': '✅ <b>Claude 세션 리셋</b>\n\n지금 시작하면 5시간 풀로 사용 가능합니다.\n주간 사용률: {0}%',
+    'tg.primerFired': '🚀 <b>새 5시간 블록 시작됨</b>\n\n리셋 시각에 더미 프롬프트를 보내 블록을 {0} 에 앵커했습니다.',
+    'tg.primerFailed': '⚠️ <b>자동 시작 실패</b>\n\n리셋 시각에 <code>claude -p</code> 실행에 실패했습니다. 블록은 시작되지 않았습니다 — claudeStateBar 출력 채널을 확인하세요.',
+    'tg.primerUnverified': '🛑 <b>자동 시작 기능이 꺼졌습니다</b>\n\n<code>claude -p</code> 는 실행됐지만 구독 블록이 열리지 않았습니다 — headless 실행이 구독이 아니라 API로 과금되도록 정책이 바뀌었을 수 있습니다. 반복 과금을 막기 위해 자동 시작을 <b>즉시 껐습니다.</b> 블록이 실제로 열리는 것을 확인한 뒤에만 다시 켜세요.',
+    'tg.primerApiKey': '🛑 <b>자동 시작 기능이 꺼졌습니다</b>\n\n환경에 API 키가 설정되어 있어 <code>claude -p</code> 가 구독이 아니라 API 크레딧으로 과금됩니다. 자동 시작을 껐습니다.',
 
     'sb.sessionLabel': '세션한도',
     'sb.session': '세션',

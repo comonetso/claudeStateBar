@@ -40,6 +40,14 @@ export async function setRefreshIntervalSec(sec: number): Promise<void> {
     await cfg().update('refreshIntervalSec', n, vscode.ConfigurationTarget.Global);
 }
 
+export function getAutoStartBlockOnReset(): boolean {
+    return cfg().get<boolean>('autoStartBlockOnReset', false) === true;
+}
+
+export async function setAutoStartBlockOnReset(on: boolean): Promise<void> {
+    await cfg().update('autoStartBlockOnReset', on, vscode.ConfigurationTarget.Global);
+}
+
 export function getLanguage(): Lang {
     const v = cfg().get<string>('language', 'en');
     return v === 'ko' ? 'ko' : 'en';

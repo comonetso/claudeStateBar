@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.7.36] - 2026-07-13
+
+### Added
+- **Auto-start the next 5-hour block on reset (`claudeState.autoStartBlockOnReset`, default off)** — a 5-hour block is anchored to your *first message*, not to the reset, so a 04:00 reset plus an 08:00 first prompt yields an 08:00–13:00 block. When enabled, a throwaway `claude -p` prompt is fired **from the same spot that sends the Telegram reset alert**, so the alert and the prime always agree. Anchors the new block to the reset instead of to whenever you next type.
+  - The primer runs in its own temp working directory (`<tmp>/claudeStateBar-primer`), and `findActiveSessions()` filters out sessions from that directory — the dummy sessions never reach the status bar.
+  - Multiple VS Code windows each run their own copy of the extension and would all fire for the same reset; an atomic `wx` lock file keyed to the reset timestamp lets exactly one window win.
+  - Skips entirely when `sessionResetAt` is already in the future — a block is open, so there is nothing to prime (and firing would make the verification below misjudge).
+  - Telegram reports the result when configured (`tg.primerFired` / `tg.primerFailed`), and the usage numbers are refreshed right after a successful fire.
+  - Requires the `claude` CLI on PATH and VS Code running. ⚠️ The new window starts counting down immediately — including while you sleep.
+
+### Safety (billing)
+- **The primer never trusts `exit 0` as proof that a subscription block opened.** Anthropic has floated billing headless `claude -p` runs to the API rather than to the subscription. If that ever lands, the call would still succeed while opening no 5-hour window — a silent *charge*, not a silent failure. Three guards make that non-catastrophic:
+  - **Pre-flight refusal** — if `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is present in the environment, the primer does not fire at all, since the call would draw on API credit instead of the plan window.
+  - **Post-fire verification** — after the prompt returns, the extension re-reads claude.ai usage and confirms `sessionResetAt` actually moved into the future. That is what proves a subscription window opened; the CLI's exit code does not.
+  - **Automatic self-disable** — if verification fails, `claudeState.autoStartBlockOnReset` is switched OFF (with a Telegram + VS Code warning) instead of retrying on every reset. Worst case is one stray call, not four a day forever.
+
+---
+
 ## [1.7.33] - 2026-07-13
 
 ### Fixed

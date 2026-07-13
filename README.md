@@ -130,6 +130,26 @@ Add a Telegram Bot Token in settings, send your bot any message, click **"Link m
 
 ---
 
+## 🚀 Auto‑start the next block at the reset (optional, off by default)
+
+A 5‑hour block is anchored to your **first message**, not to the reset — so if the window resets at 04:00 and you start typing at 08:00, your block runs 08:00–13:00.
+
+Turn on **`claudeState.autoStartBlockOnReset`** and the extension fires a throwaway `claude -p` prompt **at the same moment it sends the Telegram reset alert**, anchoring the new block to the reset (04:00 → a clean 04:00–09:00 block). The primer runs in its own temp directory, and those dummy sessions are filtered out of the status bar.
+
+⚠️ **Know the trade‑off:** the new window starts counting down immediately — including while you sleep. This is for keeping block boundaries pinned to the reset, **not** for "having a fresh block waiting when I wake up" (it does the opposite). Leave it off unless you want that.
+
+Requires the `claude` CLI on your PATH and VS Code running. If several VS Code windows are open, an atomic lock file ensures only one of them fires. If a block happens to be open already, the primer skips — there is nothing to prime.
+
+### Billing safety — it verifies, then disables itself
+
+The primer only makes sense while headless `claude -p` runs draw on your **subscription**. Anthropic has floated billing them to the **API** instead. If that ever lands, the call would still exit 0 while opening no 5-hour window — a silent *charge*, not a silent failure. So the primer never trusts the exit code:
+
+- **It refuses to fire** when `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` is set in the environment (that call would bill API credit, not your plan).
+- **It verifies** afterwards against claude.ai that the 5-hour window actually moved — that, not the exit code, is what proves a subscription block opened.
+- **It turns itself OFF** if verification fails, warning you via Telegram and VS Code, instead of quietly repeating on every reset. Worst case is one stray call, not four a day forever.
+
+---
+
 ## 🧹 Zombie status‑bar cleanup
 
 When VS Code updates the extension while a window is open, the old instance's status‑bar items can remain as unresponsive "zombie" pixels. Claude State Bar handles this two ways:

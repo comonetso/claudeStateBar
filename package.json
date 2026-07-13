@@ -2,7 +2,7 @@
     "name": "claude-state-bar",
     "displayName": "Claude State Bar",
     "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your VS Code status bar — with a live Workflow/Agent viewer, sound alerts, Remote-SSH support, and Telegram reset alerts.",
-    "version": "1.7.33",
+    "version": "1.7.36",
     "extensionKind": ["ui"],
     "publisher": "blueming",
     "author": {
@@ -136,6 +136,12 @@
                     "maximum": 3600,
                     "order": 3,
                     "description": "Plan usage refresh interval in seconds (10–3600). Default: 300 (5 min). Session Key and Telegram Bot Token are stored encrypted via the settings panel, not here."
+                },
+                "claudeState.autoStartBlockOnReset": {
+                    "type": "boolean",
+                    "default": false,
+                    "order": 4,
+                    "description": "When a session reset is detected — the same moment the Telegram reset alert is sent — automatically run a throwaway `claude -p` prompt to open the next 5-hour block. This anchors the block to the reset instead of to whenever you next type. Note: the window starts counting down immediately, even while you sleep. Requires the `claude` CLI on PATH and VS Code to be running. Safety: the primer refuses to run when an API key is set in the environment, skips when a block is already open, and verifies against claude.ai that a subscription block actually opened — if it did not (e.g. headless runs start billing the API instead of your plan), this setting turns itself OFF automatically."
                 },
                 "claudeContextBar.autoColor": {
                     "type": "boolean",
