@@ -8,6 +8,8 @@ const SECRET_TG_CHAT = 'claudeState.telegramChatId';
 
 // globalState key for session-reset detection.
 const STATE_LAST_RESET = 'claudeState.lastSessionResetAt';
+// Last observed session usage %, for block-close detection (>0 → 0 transition survives sleep gaps).
+const STATE_LAST_PERCENT = 'claudeState.lastSessionPercent';
 
 let ctx: vscode.ExtensionContext | null = null;
 
@@ -119,4 +121,18 @@ export function getLastSessionResetAt(): string | null {
 export async function setLastSessionResetAt(iso: string | null): Promise<void> {
     if (!ctx) return;
     await ctx.globalState.update(STATE_LAST_RESET, iso || undefined);
+}
+
+// Shared across all VS Code windows (globalState is machine-wide), so whichever window polls first
+// records the new %; the others then read it and see no fresh transition — the first line of defense
+// against duplicate fires. The atomic event lock is the second.
+export function getLastSessionPercent(): number | null {
+    if (!ctx) return null;
+    const v = ctx.globalState.get<number>(STATE_LAST_PERCENT);
+    return typeof v === 'number' ? v : null;
+}
+
+export async function setLastSessionPercent(pct: number | null): Promise<void> {
+    if (!ctx) return;
+    await ctx.globalState.update(STATE_LAST_PERCENT, typeof pct === 'number' ? pct : undefined);
 }

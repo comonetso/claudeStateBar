@@ -34,9 +34,8 @@ type Logger = (msg: string) => void;
 
 // 'fired' means the CLI exited 0 — it does NOT mean a subscription block opened. Anthropic has
 // floated billing `claude -p` to the API rather than to the subscription; if that ever lands,
-// the call still succeeds while opening no window. The caller must confirm against the usage
-// API. 'skipped' means no call was made at all, so there is nothing to verify or charge.
-export type FireOutcome = 'fired' | 'exec-failed' | 'api-key-present' | 'skipped';
+// the call still succeeds while opening no window. The caller must confirm against the usage API.
+export type FireOutcome = 'fired' | 'exec-failed' | 'api-key-present';
 
 // The primer is only ever meant to spend the *subscription* window. If the CLI is authenticated
 // with an API key instead, the same call bills real API credit and still exits 0 — it would look
@@ -50,21 +49,22 @@ function apiKeyInEnv(): string | null {
     return null;
 }
 
-// Cross-window guard. Several VS Code windows each run their own copy of this extension and
-// would all fire for the same reset. An exclusive create ('wx') is atomic, so exactly one
-// window wins the race; the rest see EEXIST and stand down.
-function claimFiring(resetAt: string, log: Logger): boolean {
+// One-shot gate per reset event. Several VS Code windows (and rapid polls) can all react to the same
+// block close; an exclusive create ('wx') is atomic, so exactly one wins and does the Telegram alert
+// + prime, the rest see EEXIST and stand down. `eventKey` is a coarse (10-min) time bucket, so
+// millisecond resetAt jitter and cross-window timing all collapse to the same key → one lock.
+export function claimResetEvent(eventKey: string, log: Logger): boolean {
     try {
         fs.mkdirSync(PRIMER_DIR, { recursive: true });
-        const lock = path.join(PRIMER_DIR, `fired-${new Date(resetAt).getTime()}.lock`);
+        const lock = path.join(PRIMER_DIR, `event-${eventKey}.lock`);
         fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
         return true;
     } catch (e) {
         const code = (e as NodeJS.ErrnoException)?.code;
         if (code === 'EEXIST') {
-            log('[primer] another window already fired for this reset — standing down');
+            log(`[primer] reset event ${eventKey} already handled by another window — standing down`);
         } else {
-            log(`[primer] lock failed (${code ?? e}) — skipping to stay safe`);
+            log(`[primer] event lock failed (${code ?? e}) — skipping to stay safe`);
         }
         return false;
     }
@@ -81,36 +81,19 @@ function sweepStaleLocks(): void {
     } catch { /* best-effort cleanup */ }
 }
 
-// Called from the session-reset handler, alongside the Telegram alert.
-//
-// `resetAtNow` is the reset timestamp claude.ai reports at this moment. If it is already in the
-// future, a block is open *right now* — priming would neither open anything nor be verifiable,
-// so we skip. That check also protects the caller's verification step, which reads "the window
-// did not move" as evidence that headless runs stopped drawing on the subscription.
-export function fireOnReset(
-    resetAtNow: string | null,
+// Fire the primer. The caller must have already confirmed the block is CLOSED (session usage 0%)
+// and claimed the reset event via claimResetEvent(). There is no "should we fire" logic here — no
+// future/skip check (sessionResetAt is unreliable: it stays in the future even when the block is
+// closed) — this owns only the act of firing. The caller verifies afterward via session %.
+export function firePrimer(
     log: Logger,
     onDone: (outcome: FireOutcome, detail: string) => void
 ): void {
-    const openUntil = resetAtNow ? new Date(resetAtNow).getTime() : NaN;
-    if (Number.isFinite(openUntil) && openUntil > Date.now()) {
-        const msg = `already-open: sessionResetAt (${resetAtNow}) is in the future, so a block is treated as open and firing is skipped`;
-        log(`[primer] ${msg}`);
-        onDone('skipped', msg);
-        return;
-    }
-
     const keyVar = apiKeyInEnv();
     if (keyVar) {
         const msg = `${keyVar} is set, so \`claude -p\` would bill API credit instead of the subscription window`;
         log(`[primer] refusing to fire — ${msg}`);
         onDone('api-key-present', msg);
-        return;
-    }
-
-    const lockKey = resetAtNow ?? new Date().toISOString();
-    if (!claimFiring(lockKey, log)) {
-        onDone('skipped', 'lock: another window fired for this reset, or the lock could not be created (see output channel)');
         return;
     }
     sweepStaleLocks();

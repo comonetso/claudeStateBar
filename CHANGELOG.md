@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.7.40] - 2026-07-21
+
+### Fixed
+- **Block primer now actually fires — trigger switched from reset-time to session-usage.** Root cause, confirmed from the reset-moment trace: the primer keyed off `sessionResetAt` *changing*, but that value stays in the **future** even when the block is closed (it points at next-day midnight while idle), so `fireOnReset` always read "a block is already open" and skipped — 7 days, 0 fires. It now fires on the reliable signal: **active session usage falling to 0%** (= block closed).
+  - The `>0% → 0%` transition is read from `lastSessionPercent` in globalState, so a reset that happens **while the machine is asleep** is still caught on the first wake poll (pre-sleep % vs 0%).
+  - **Exactly one Telegram alert and one prime per reset**, even across multiple windows or a wake-from-sleep burst: an atomic per-event lock keyed to a coarse 10-minute bucket lets exactly one poll through (shared globalState is the first line of defense, the lock the second). This also fixes the duplicate reset alerts (e.g. 3 identical messages on wake).
+  - Verification switched to **session usage rising above 0%** after the fire. If it can't be verified, auto-start is **no longer auto-disabled** unless an API key is present (the only real billing hazard) — sleep/lag false-negatives used to wrongly turn it off.
+
+### Diagnostics
+- diag.log now records `block-closed` / `primer-outcome` / `primer-verified` lines; the per-poll `sessionResetAt` logging from 1.7.39 is retained.
+
 ## [1.7.39] - 2026-07-20
 
 ### Diagnostics

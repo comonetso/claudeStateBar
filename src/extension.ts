@@ -3137,7 +3137,7 @@ async function refreshPlanUsage() {
             lastPollDiag = diagKey;
         }
         notifyUsage('ok', result.source);
-        await detectSessionReset(result.normalized);
+        await detectBlockClose(result.normalized);
     } catch (e) {
         lastUsage = null;
         if (e instanceof AuthExpiredError) {
@@ -3159,89 +3159,87 @@ async function refreshPlanUsage() {
     refreshAllSessions();
 }
 
-// Detect a session reset: the previously-stored reset time has elapsed AND the new
-// reset time differs. Fires the Telegram notification when configured — and, when auto-start is
-// on, primes the new block from the same spot so the alert and the prime always agree.
-async function detectSessionReset(n: NormalizedUsage) {
-    const prev = creds.getLastSessionResetAt();
-    const current = n.sessionResetAt;
-    if (prev && current && prev !== current) {
-        const prevTime = new Date(prev).getTime();
-        if (Number.isFinite(prevTime) && prevTime <= Date.now()) {
-            // [diag 1.7.38] Persist to a disk file (PRIMER_DIR/diag.log) so the cause can be read
-            // back directly at the next reset — the output channel is memory-only and lost on reload.
-            const curFuture = new Date(current).getTime() > Date.now() ? 'Y' : 'N';
-            blockPrimer.appendDiag(`reset-detected before=${prev} now=${current} future=${curFuture} autoStart=${creds.getAutoStartBlockOnReset()}`);
+// Detect a block CLOSE — active session usage falling to 0%. That is the only reliable signal that
+// the 5-hour block ended and a fresh one can be opened. sessionResetAt is NOT usable: it stays in
+// the future even when the block is closed (it points at midnight/next-day when idle), which is why
+// the old reset-time detection never actually primed. On a >0% → 0% transition we send exactly one
+// Telegram alert and (when enabled) prime once, gated by an atomic per-event lock so that multiple
+// windows or a wake-from-sleep burst cannot duplicate either.
+async function detectBlockClose(n: NormalizedUsage) {
+    const prevPct = creds.getLastSessionPercent();
+    const curPct = n.sessionPercent;
+
+    // "Just closed": previously had usage (>0), now exactly 0. globalState carries prevPct across a
+    // sleep gap, so a reset that happened while the machine slept is still caught on the first wake
+    // poll (its prevPct is the pre-sleep value, curPct is 0).
+    const justClosed = prevPct != null && prevPct > 0 && curPct === 0;
+
+    if (justClosed) {
+        // Coarse 10-minute bucket → every window/poll reacting to this same close computes the same
+        // key, so the atomic lock lets exactly one through. A genuine next reset (5h later) lands in
+        // a different bucket and is allowed to fire again.
+        const eventKey = String(Math.floor(Date.now() / (10 * 60 * 1000)));
+        if (blockPrimer.claimResetEvent(eventKey, log)) {
+            blockPrimer.appendDiag(`block-closed prevPct=${prevPct} curPct=${curPct} event=${eventKey} autoStart=${creds.getAutoStartBlockOnReset()}`);
             const token = await creds.getTelegramToken();
             const chatId = await creds.getTelegramChatId();
             if (token && chatId) {
                 const weekly = n.weeklyPercent != null ? String(n.weeklyPercent) : '?';
-                const diag = `\n\n[diag] before=${prev}\nnow=${current}\nfuture=${curFuture}`;
-                await telegram.sendMessage(token, chatId, planT('tg.resetMsg', weekly) + diag);
+                await telegram.sendMessage(token, chatId, planT('tg.resetMsg', weekly));
             }
             if (creds.getAutoStartBlockOnReset()) {
-                primeNewBlock(current);
+                primeNewBlock();
             }
         }
     }
-    if (current) {
-        await creds.setLastSessionResetAt(current);
-    }
+
+    await creds.setLastSessionPercent(curPct);
 }
 
 // How long to give claude.ai before asking whether the window actually opened.
 const PRIMER_VERIFY_DELAY_MS = 10000;
 
-// Open the new 5-hour block right where the reset alert goes out. Deliberately not awaited: the
-// CLI takes ~10s and the usage poll should not stall behind it.
-function primeNewBlock(resetAtNow: string | null) {
-    blockPrimer.fireOnReset(
-        resetAtNow,
+// Open the new 5-hour block, once the caller has confirmed the block is closed and claimed the
+// event. Deliberately not awaited: the CLI takes a few seconds and the poll should not stall on it.
+function primeNewBlock() {
+    blockPrimer.firePrimer(
         log,
-        (outcome, detail) => { void handlePrimerOutcome(outcome, resetAtNow, detail); }
+        (outcome, detail) => { void handlePrimerOutcome(outcome, detail); }
     );
 }
 
-async function handlePrimerOutcome(outcome: blockPrimer.FireOutcome, resetAtBefore: string | null, detail: string) {
-    // [diag 1.7.38] Record every outcome (including skips) to the disk diag log instead of Telegram,
-    // so the cause can be read back directly at the next reset without a screenshot.
+async function handlePrimerOutcome(outcome: blockPrimer.FireOutcome, detail: string) {
     blockPrimer.appendDiag(`primer-outcome=${outcome} detail=${detail}`);
 
-    if (outcome === 'skipped') return;  // nothing ran — nothing to verify or report
     if (outcome === 'api-key-present') {
+        // Genuine billing hazard: an API key means `claude -p` bills API credit, not the plan.
+        // This is the one case worth stopping + warning over (Telegram + VS Code).
         await disableAutoStart(planT('tg.primerApiKey'));
         return;
     }
     if (outcome === 'exec-failed') {
-        // The CLI itself blew up (not installed, not logged in, ...). Report it, but leave the
-        // setting on — this is a local fault the user can fix, not a billing hazard.
-        await notifyTelegram(planT('tg.primerFailed'));
+        // Local fault (CLI missing / not logged in). Record it; leave auto-start on so it retries.
+        log('[primer] exec failed — leaving auto-start on');
         return;
     }
 
-    // `claude -p` exited 0 — but that alone does NOT prove a subscription block opened. If
-    // Anthropic ever bills headless runs to the API instead, the call still succeeds while the
-    // 5-hour window stays shut, and we would quietly burn API credit on every reset. So confirm
-    // it against the usage API: a freshly opened window moves sessionResetAt into the future.
+    // outcome === 'fired' — CLI exited 0. Confirm a block actually opened: the throwaway prompt
+    // should push session usage above 0%. (sessionResetAt is not a usable signal — see above.)
     await new Promise((r) => setTimeout(r, PRIMER_VERIFY_DELAY_MS));
     await refreshPlanUsage();
+    const after = lastUsage?.sessionPercent;
 
-    const after = lastUsage?.sessionResetAt;
-    const inFuture = !!after && new Date(after).getTime() > Date.now();
-    const moved = !!after && (!resetAtBefore || new Date(after).getTime() > new Date(resetAtBefore).getTime());
-
-    if (moved && inFuture) {
-        log(`[primer] verified — subscription window is open until ${after}`);
-        await notifyTelegram(planT('tg.primerFired', resetAtLabel(after!)));
+    if (after != null && after > 0) {
+        blockPrimer.appendDiag(`primer-verified session=${after}%`);
+        log(`[primer] verified — block open, session at ${after}%`);
         return;
     }
 
-    // The prompt ran but no subscription window opened. The most likely cause is that headless
-    // runs no longer draw on the subscription. Stop immediately rather than repeat this every
-    // reset — one stray call is cheap, four a day indefinitely is not.
-    log(`[primer] NOT verified — claude -p ran but no subscription window opened ` +
-        `(resetAt before=${resetAtBefore ?? 'null'} after=${after ?? 'null'}). Disabling auto-start.`);
-    await disableAutoStart(planT('tg.primerUnverified'));
+    // Fired but usage did not rise. Could be a real "headless no longer opens a block" case, or just
+    // a slow / again-asleep poll. With no API key set there is NO billing hazard, so do NOT auto-
+    // disable here (that misfired on sleep/lag before) — record it and let the next close retry.
+    blockPrimer.appendDiag(`primer-unverified session=${after ?? 'null'}% — left auto-start on`);
+    log(`[primer] not verified (session=${after ?? 'null'}%) — left auto-start on`);
 }
 
 async function disableAutoStart(message: string) {
