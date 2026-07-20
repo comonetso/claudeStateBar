@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7.39] - 2026-07-20
+
+### Diagnostics
+- **The block primer has been silently skipping every reset — this release instruments why (firing logic unchanged).** Disk evidence shows 7 days with 0 fires while `autoStartBlockOnReset` stayed on: by the time a reset is *detected*, `sessionResetAt` has already moved into the future, which `fireOnReset` reads as "a block is already open" and skips. To confirm that against live API behavior **without waiting for a reset**:
+  - Every usage poll now records the live `sessionResetAt` to a disk diag log (`<tmp>/claudeStateBar-primer/diag.log`) whenever it changes — `resetAt` / `future=Y|N` / `session%`. So the current block state (open = future, closed = past/null) is readable at any moment right after a reload, no reset event required.
+  - Each reset also appends `before` / `now` / `future` / `autoStart` and the primer outcome with its reason (**including every `skipped`**). Unlike the output channel (memory-only, lost on reload), this file survives so the cause can be read back directly.
+  - The Telegram reset alert carries the same one-shot `[diag]` line for at-a-glance confirmation on the phone.
+  - Nothing about when or whether `claude -p` fires was changed. These additions are meant to be removed or tuned once the cause is confirmed.
+
 ## [1.7.36] - 2026-07-13
 
 ### Added

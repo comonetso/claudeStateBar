@@ -13,6 +13,17 @@ import * as path from 'path';
 export const PRIMER_MARK = 'claudeStateBar-primer';
 export const PRIMER_DIR = path.join(os.tmpdir(), PRIMER_MARK);
 
+// Diagnostic log (temporary, 1.7.38): each reset appends before/now/future and the primer outcome
+// here, so *why* the primer skips can be read back directly at the next reset. The VS Code output
+// channel is memory-only and vanishes on reload, so it cannot serve that purpose.
+export const DIAG_LOG = path.join(PRIMER_DIR, 'diag.log');
+export function appendDiag(line: string): void {
+    try {
+        fs.mkdirSync(PRIMER_DIR, { recursive: true });
+        fs.appendFileSync(DIAG_LOG, `${new Date().toISOString()} ${line}\n`);
+    } catch { /* best-effort diagnostics */ }
+}
+
 const EXEC_TIMEOUT_MS = 120000;
 const LOCK_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -79,25 +90,27 @@ function sweepStaleLocks(): void {
 export function fireOnReset(
     resetAtNow: string | null,
     log: Logger,
-    onDone: (outcome: FireOutcome) => void
+    onDone: (outcome: FireOutcome, detail: string) => void
 ): void {
     const openUntil = resetAtNow ? new Date(resetAtNow).getTime() : NaN;
     if (Number.isFinite(openUntil) && openUntil > Date.now()) {
-        log(`[primer] a block is already open until ${resetAtNow} — nothing to prime, skipping`);
-        onDone('skipped');
+        const msg = `already-open: sessionResetAt (${resetAtNow}) is in the future, so a block is treated as open and firing is skipped`;
+        log(`[primer] ${msg}`);
+        onDone('skipped', msg);
         return;
     }
 
     const keyVar = apiKeyInEnv();
     if (keyVar) {
-        log(`[primer] refusing to fire — ${keyVar} is set, so \`claude -p\` would bill API credit instead of the subscription window`);
-        onDone('api-key-present');
+        const msg = `${keyVar} is set, so \`claude -p\` would bill API credit instead of the subscription window`;
+        log(`[primer] refusing to fire — ${msg}`);
+        onDone('api-key-present', msg);
         return;
     }
 
     const lockKey = resetAtNow ?? new Date().toISOString();
     if (!claimFiring(lockKey, log)) {
-        onDone('skipped');
+        onDone('skipped', 'lock: another window fired for this reset, or the lock could not be created (see output channel)');
         return;
     }
     sweepStaleLocks();
@@ -108,13 +121,15 @@ export function fireOnReset(
         { cwd: PRIMER_DIR, windowsHide: true, timeout: EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
         (err, stdout, stderr) => {
             if (err) {
-                log(`[primer] failed: ${err.message}${stderr?.trim() ? ` — ${stderr.trim()}` : ''}`);
-                onDone('exec-failed');
+                const msg = `${err.message}${stderr?.trim() ? ` — ${stderr.trim()}` : ''}`;
+                log(`[primer] failed: ${msg}`);
+                onDone('exec-failed', msg);
                 return;
             }
             // Exit 0 only means the CLI ran — NOT that a subscription block opened.
-            log(`[primer] claude -p exited 0, replied: ${(stdout || '').trim().slice(0, 80)}`);
-            onDone('fired');
+            const reply = (stdout || '').trim().slice(0, 80);
+            log(`[primer] claude -p exited 0, replied: ${reply}`);
+            onDone('fired', `claude -p exited 0, replied: ${reply}`);
         }
     );
     // The CLI waits 3s for piped stdin before giving up. Close it so the primer fires at once.

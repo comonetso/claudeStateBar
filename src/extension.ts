@@ -121,6 +121,8 @@ let stagePhase: 'tool' | 'thinking' | null = null;
 let stageBaseAt: number | null = null;
 const STAGE_STUCK_SEC = 240;
 let lastUsage: NormalizedUsage | null = null;
+// [diag 1.7.39] Last sessionResetAt state written to diag.log, so each poll only records on change.
+let lastPollDiag = '';
 type PlanStatus = 'unconfigured' | 'ok' | 'auth_expired' | 'blocked' | 'error';
 let planStatus: PlanStatus = 'unconfigured';
 // True only when this extension instance itself runs on a remote host (e.g. extensionKind=workspace
@@ -3124,6 +3126,16 @@ async function refreshPlanUsage() {
         planStatus = 'ok';
         log(`[plan] ok: session=${result.normalized.sessionPercent}% weekly=${result.normalized.weeklyPercent}% via ${result.source}`);
         logUsageSchema(result);
+        // [diag 1.7.39] Record the live sessionResetAt on every poll (only when it changes) so the
+        // current block state — open (future) or closed (past/null) — is readable from diag.log at
+        // any moment, without waiting for a reset event.
+        const nowReset = result.normalized.sessionResetAt;
+        const nowFuture = !!nowReset && new Date(nowReset).getTime() > Date.now();
+        const diagKey = `resetAt=${nowReset ?? 'null'} future=${nowFuture ? 'Y' : 'N'}`;
+        if (diagKey !== lastPollDiag) {
+            blockPrimer.appendDiag(`poll ${diagKey} session=${result.normalized.sessionPercent}%`);
+            lastPollDiag = diagKey;
+        }
         notifyUsage('ok', result.source);
         await detectSessionReset(result.normalized);
     } catch (e) {
@@ -3156,11 +3168,16 @@ async function detectSessionReset(n: NormalizedUsage) {
     if (prev && current && prev !== current) {
         const prevTime = new Date(prev).getTime();
         if (Number.isFinite(prevTime) && prevTime <= Date.now()) {
+            // [diag 1.7.38] Persist to a disk file (PRIMER_DIR/diag.log) so the cause can be read
+            // back directly at the next reset — the output channel is memory-only and lost on reload.
+            const curFuture = new Date(current).getTime() > Date.now() ? 'Y' : 'N';
+            blockPrimer.appendDiag(`reset-detected before=${prev} now=${current} future=${curFuture} autoStart=${creds.getAutoStartBlockOnReset()}`);
             const token = await creds.getTelegramToken();
             const chatId = await creds.getTelegramChatId();
             if (token && chatId) {
                 const weekly = n.weeklyPercent != null ? String(n.weeklyPercent) : '?';
-                await telegram.sendMessage(token, chatId, planT('tg.resetMsg', weekly));
+                const diag = `\n\n[diag] before=${prev}\nnow=${current}\nfuture=${curFuture}`;
+                await telegram.sendMessage(token, chatId, planT('tg.resetMsg', weekly) + diag);
             }
             if (creds.getAutoStartBlockOnReset()) {
                 primeNewBlock(current);
@@ -3181,11 +3198,15 @@ function primeNewBlock(resetAtNow: string | null) {
     blockPrimer.fireOnReset(
         resetAtNow,
         log,
-        (outcome) => { void handlePrimerOutcome(outcome, resetAtNow); }
+        (outcome, detail) => { void handlePrimerOutcome(outcome, resetAtNow, detail); }
     );
 }
 
-async function handlePrimerOutcome(outcome: blockPrimer.FireOutcome, resetAtBefore: string | null) {
+async function handlePrimerOutcome(outcome: blockPrimer.FireOutcome, resetAtBefore: string | null, detail: string) {
+    // [diag 1.7.38] Record every outcome (including skips) to the disk diag log instead of Telegram,
+    // so the cause can be read back directly at the next reset without a screenshot.
+    blockPrimer.appendDiag(`primer-outcome=${outcome} detail=${detail}`);
+
     if (outcome === 'skipped') return;  // nothing ran — nothing to verify or report
     if (outcome === 'api-key-present') {
         await disableAutoStart(planT('tg.primerApiKey'));
