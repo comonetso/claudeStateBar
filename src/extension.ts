@@ -3183,7 +3183,7 @@ async function detectBlockClose(n: NormalizedUsage) {
             blockPrimer.appendDiag(`block-closed prevPct=${prevPct} curPct=${curPct} event=${eventKey} autoStart=${creds.getAutoStartBlockOnReset()}`);
             const token = await creds.getTelegramToken();
             const chatId = await creds.getTelegramChatId();
-            if (token && chatId) {
+            if (creds.getTelegramNotifyOnReset() && token && chatId) {
                 const weekly = n.weeklyPercent != null ? String(n.weeklyPercent) : '?';
                 await telegram.sendMessage(token, chatId, planT('tg.resetMsg', weekly));
             }

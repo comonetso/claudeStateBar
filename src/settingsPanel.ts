@@ -82,6 +82,8 @@ async function collectState() {
         hasCookie: await creds.hasSessionKey(),
         telegramToken: await creds.getTelegramToken(),
         telegramChatId: await creds.getTelegramChatId(),
+        telegramNotifyOnReset: creds.getTelegramNotifyOnReset(),
+        autoStartBlockOnReset: creds.getAutoStartBlockOnReset(),
         cb: {
             autoColor: cbCfg.get('autoColor', true),
             baseColor: cbCfg.get('baseColor', 'White'),
@@ -143,6 +145,12 @@ async function handleMessage(msg: any): Promise<void> {
                 if (typeof p.sessionCookie === 'string' && p.sessionCookie) {
                     await creds.setSessionKey(p.sessionCookie);
                     panel.webview.postMessage({ type: 'cookieSaved' });
+                }
+                if (typeof p.telegramNotifyOnReset === 'boolean') {
+                    await creds.setTelegramNotifyOnReset(p.telegramNotifyOnReset);
+                }
+                if (typeof p.autoStartBlockOnReset === 'boolean') {
+                    await creds.setAutoStartBlockOnReset(p.autoStartBlockOnReset);
                 }
                 // Persist claudeContextBar settings
                 if (p.cb) {
@@ -334,6 +342,20 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
         <span id="telegram-status" class="telegram-status" data-i18n="tg.notLinked">Not linked</span>
         <button id="telegram-link-btn" class="secondary small" data-i18n="tg.link">Link my Telegram</button>
         <button id="telegram-test-btn" class="secondary small" data-i18n="tg.test" disabled>Test</button>
+      </div>
+
+      <div class="field" style="margin-top:10px;">
+        <label class="checkbox-label">
+          <input type="checkbox" id="tg-notifyOnReset" />
+          <span data-i18n="tg.notifyOnReset.label">Send a Telegram alert on each 5-hour reset</span>
+        </label>
+      </div>
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="st-autoStartBlock" />
+          <span data-i18n="st.autoStartBlock.label">Auto-start the next 5-hour block on reset (claude -p)</span>
+        </label>
+        <p class="hint" data-i18n="st.autoStartBlock.hint"></p>
       </div>
     </div>
 

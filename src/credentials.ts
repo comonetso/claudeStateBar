@@ -50,6 +50,16 @@ export async function setAutoStartBlockOnReset(on: boolean): Promise<void> {
     await cfg().update('autoStartBlockOnReset', on, vscode.ConfigurationTarget.Global);
 }
 
+// Whether to send the Telegram alert when the 5-hour block resets. Default true, matching the prior
+// behavior (an alert was always sent whenever a bot token + chat were configured).
+export function getTelegramNotifyOnReset(): boolean {
+    return cfg().get<boolean>('telegramNotifyOnReset', true) !== false;
+}
+
+export async function setTelegramNotifyOnReset(on: boolean): Promise<void> {
+    await cfg().update('telegramNotifyOnReset', on, vscode.ConfigurationTarget.Global);
+}
+
 export function getLanguage(): Lang {
     const v = cfg().get<string>('language', 'en');
     return v === 'ko' ? 'ko' : 'en';

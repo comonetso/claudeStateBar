@@ -2,7 +2,7 @@
     "name": "claude-state-bar",
     "displayName": "Claude State Bar",
     "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your VS Code status bar — with a live Workflow/Agent viewer, sound alerts, Remote-SSH support, and Telegram reset alerts.",
-    "version": "1.7.40",
+    "version": "1.7.41",
     "extensionKind": ["ui"],
     "publisher": "blueming",
     "author": {
@@ -141,7 +141,13 @@
                     "type": "boolean",
                     "default": false,
                     "order": 4,
-                    "description": "When a session reset is detected — the same moment the Telegram reset alert is sent — automatically run a throwaway `claude -p` prompt to open the next 5-hour block. This anchors the block to the reset instead of to whenever you next type. Note: the window starts counting down immediately, even while you sleep. Requires the `claude` CLI on PATH and VS Code to be running. Safety: the primer refuses to run when an API key is set in the environment, skips when a block is already open, and verifies against claude.ai that a subscription block actually opened — if it did not (e.g. headless runs start billing the API instead of your plan), this setting turns itself OFF automatically."
+                    "description": "When the 5-hour block closes (session usage drops to 0%), automatically run a throwaway `claude -p` prompt to open the next block — anchoring it to the reset instead of to whenever you next type. The window starts counting down immediately, even while you sleep. Fires at most once per reset (atomic lock across windows), and even catches a reset that happened while the machine was asleep (on the first wake poll). Requires the `claude` CLI on PATH and VS Code running. Safety: refuses to run when an API key is set in the environment (that would bill the API instead of your plan). Toggle from the settings panel."
+                },
+                "claudeState.telegramNotifyOnReset": {
+                    "type": "boolean",
+                    "default": true,
+                    "order": 5,
+                    "description": "Send a Telegram alert when the Claude 5-hour block resets (requires a linked bot token + chat). Fires at most once per reset. Toggle from the settings panel. Default on."
                 },
                 "claudeContextBar.autoColor": {
                     "type": "boolean",

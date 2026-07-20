@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.41] - 2026-07-21
+
+### Added
+- **Two reset-behavior toggles in the settings panel** (Telegram section, right above the Context Monitor):
+  - **Send a Telegram alert on each 5-hour reset** (`claudeState.telegramNotifyOnReset`, default on) — previously the alert always fired whenever a bot was linked; it can now be turned off without unlinking the bot.
+  - **Auto-start the next 5-hour block on reset — `claude -p`** (`claudeState.autoStartBlockOnReset`) — the block primer, now toggleable from the UI instead of only via `settings.json`.
+
 ## [1.7.40] - 2026-07-21
 
 ### Fixed

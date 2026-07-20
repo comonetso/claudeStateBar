@@ -62,6 +62,8 @@
         // telegram
         $('telegramToken').value = state.telegramToken || '';
         setTelegramLinkedState(state.telegramChatId || null, state.telegramChatId || null);
+        $('tg-notifyOnReset').checked = state.telegramNotifyOnReset !== false;
+        $('st-autoStartBlock').checked = !!state.autoStartBlockOnReset;
         // claudeContextBar
         const cb = state.cb || {};
         $('cb-autoColor').checked = cb.autoColor !== false;
@@ -114,6 +116,8 @@
             orgId,
             sessionCookie: cookie || undefined, // undefined = keep existing
             refreshIntervalSec: intervalSec,
+            telegramNotifyOnReset: $('tg-notifyOnReset').checked,
+            autoStartBlockOnReset: $('st-autoStartBlock').checked,
             cb: {
                 autoColor: $('cb-autoColor').checked,
                 baseColor: $('cb-baseColor').value,
