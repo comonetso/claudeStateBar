@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.7.43] - 2026-07-21
+
+### Fixed
+- **Primer verification no longer false-negatives.** The throwaway `claude -p` prompt is tiny, so session usage stays at 0% — the old %-based check wrongly reported "unverified" even when the block had actually opened. Verification now checks the real signal: **`sessionResetAt` jumping to ~now+5h** (away from the weekly-reset value that shows while idle), retried for up to ~75s since the move takes about a minute to land. This was confirmed against a live reset: the primer fired, resetAt moved to exactly +5h, but session% stayed 0.
+
+### Added
+- **Wake-from-sleep primer fire.** If polling was paused a long time (machine slept) and the block is closed (session 0%) on the first poll after waking, the primer now fires even without a live >0%→0% transition. Previously it only fired when the block was still open when you fell asleep; now a block that reset overnight is opened as soon as you wake, so "wake up to an already-started block" works regardless of the pre-sleep state.
+
+### Notes
+- Confirmed the 5-hour block is an **anchor model**: it starts from your first message (or the primer's fire) and resets exactly 5 hours later — it does not auto-cycle on a fixed grid. When awake, the primer fires within seconds of the reset, so the new block is anchored essentially at the reset time.
+
 ## [1.7.41] - 2026-07-21
 
 ### Added

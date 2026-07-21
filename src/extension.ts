@@ -123,6 +123,10 @@ const STAGE_STUCK_SEC = 240;
 let lastUsage: NormalizedUsage | null = null;
 // [diag 1.7.39] Last sessionResetAt state written to diag.log, so each poll only records on change.
 let lastPollDiag = '';
+// [1.7.43] Wall-clock of the last successful block-close poll. A large gap means the machine slept
+// and just woke — used to fire the primer on wake even when there was no live >0%→0% transition.
+let lastBlockPollAt = 0;
+const WAKE_GAP_MS = 5 * 60 * 1000;
 type PlanStatus = 'unconfigured' | 'ok' | 'auth_expired' | 'blocked' | 'error';
 let planStatus: PlanStatus = 'unconfigured';
 // True only when this extension instance itself runs on a remote host (e.g. extensionKind=workspace
@@ -3166,21 +3170,32 @@ async function refreshPlanUsage() {
 // Telegram alert and (when enabled) prime once, gated by an atomic per-event lock so that multiple
 // windows or a wake-from-sleep burst cannot duplicate either.
 async function detectBlockClose(n: NormalizedUsage) {
+    const now = Date.now();
+    // A long gap between successful polls means the machine slept and just woke. Use a floor of
+    // 5 min but scale with the configured poll interval so a slow interval isn't mistaken for sleep.
+    const gap = lastBlockPollAt ? now - lastBlockPollAt : 0;
+    const wokeGapMs = Math.max(WAKE_GAP_MS, creds.getRefreshIntervalSec() * 3 * 1000);
+    const wokeFromSleep = lastBlockPollAt !== 0 && gap > wokeGapMs;
+    lastBlockPollAt = now;
+
     const prevPct = creds.getLastSessionPercent();
     const curPct = n.sessionPercent;
 
-    // "Just closed": previously had usage (>0), now exactly 0. globalState carries prevPct across a
-    // sleep gap, so a reset that happened while the machine slept is still caught on the first wake
-    // poll (its prevPct is the pre-sleep value, curPct is 0).
+    // (1) Block just closed: had usage (>0), now exactly 0. globalState carries prevPct across a
+    //     sleep gap, so a reset that happened while asleep is caught on the first wake poll.
+    // (2) Woke to a closed block: a long poll gap (sleep) AND currently 0% → open it regardless of
+    //     the pre-sleep state. This covers "went to sleep AFTER the block had already reset", where
+    //     there is no live >0%→0% transition to catch — the case that would otherwise miss on wake.
     const justClosed = prevPct != null && prevPct > 0 && curPct === 0;
+    const wokeClosed = wokeFromSleep && curPct === 0;
 
-    if (justClosed) {
+    if (justClosed || wokeClosed) {
         // Coarse 10-minute bucket → every window/poll reacting to this same close computes the same
         // key, so the atomic lock lets exactly one through. A genuine next reset (5h later) lands in
         // a different bucket and is allowed to fire again.
-        const eventKey = String(Math.floor(Date.now() / (10 * 60 * 1000)));
+        const eventKey = String(Math.floor(now / (10 * 60 * 1000)));
         if (blockPrimer.claimResetEvent(eventKey, log)) {
-            blockPrimer.appendDiag(`block-closed prevPct=${prevPct} curPct=${curPct} event=${eventKey} autoStart=${creds.getAutoStartBlockOnReset()}`);
+            blockPrimer.appendDiag(`block-closed prevPct=${prevPct} curPct=${curPct} woke=${wokeFromSleep} event=${eventKey} autoStart=${creds.getAutoStartBlockOnReset()}`);
             const token = await creds.getTelegramToken();
             const chatId = await creds.getTelegramChatId();
             if (creds.getTelegramNotifyOnReset() && token && chatId) {
@@ -3196,8 +3211,12 @@ async function detectBlockClose(n: NormalizedUsage) {
     await creds.setLastSessionPercent(curPct);
 }
 
-// How long to give claude.ai before asking whether the window actually opened.
-const PRIMER_VERIFY_DELAY_MS = 10000;
+// Verification polling: the resetAt move takes ~1 min to land, so retry a few times.
+const PRIMER_VERIFY_INTERVAL_MS = 15000;
+const PRIMER_VERIFY_TRIES = 5;
+// A freshly opened 5-hour block puts sessionResetAt at ~now+5h. Anything within this bound counts
+// as "block open"; the weekly-reset fallback (days away) is well outside it.
+const BLOCK_OPEN_MAX_MS = 6 * 60 * 60 * 1000;
 
 // Open the new 5-hour block, once the caller has confirmed the block is closed and claimed the
 // event. Deliberately not awaited: the CLI takes a few seconds and the poll should not stall on it.
@@ -3223,23 +3242,27 @@ async function handlePrimerOutcome(outcome: blockPrimer.FireOutcome, detail: str
         return;
     }
 
-    // outcome === 'fired' — CLI exited 0. Confirm a block actually opened: the throwaway prompt
-    // should push session usage above 0%. (sessionResetAt is not a usable signal — see above.)
-    await new Promise((r) => setTimeout(r, PRIMER_VERIFY_DELAY_MS));
-    await refreshPlanUsage();
-    const after = lastUsage?.sessionPercent;
-
-    if (after != null && after > 0) {
-        blockPrimer.appendDiag(`primer-verified session=${after}%`);
-        log(`[primer] verified — block open, session at ${after}%`);
-        return;
+    // outcome === 'fired' — CLI exited 0. Confirm a block actually opened. The throwaway prompt is
+    // tiny, so session% stays 0 (that's why the old %-based check false-negatived); the real proof
+    // is sessionResetAt jumping to ~now+5h (away from the weekly-reset fallback). It takes ~1 min
+    // to land, so retry.
+    for (let i = 0; i < PRIMER_VERIFY_TRIES; i++) {
+        await new Promise((r) => setTimeout(r, PRIMER_VERIFY_INTERVAL_MS));
+        await refreshPlanUsage();
+        const after = lastUsage?.sessionResetAt;
+        const afterMs = after ? new Date(after).getTime() : NaN;
+        if (Number.isFinite(afterMs) && afterMs > Date.now() && afterMs <= Date.now() + BLOCK_OPEN_MAX_MS) {
+            blockPrimer.appendDiag(`primer-verified resetAt=${after} (block open ~5h)`);
+            log(`[primer] verified — block open until ${after}`);
+            return;
+        }
     }
 
-    // Fired but usage did not rise. Could be a real "headless no longer opens a block" case, or just
-    // a slow / again-asleep poll. With no API key set there is NO billing hazard, so do NOT auto-
-    // disable here (that misfired on sleep/lag before) — record it and let the next close retry.
-    blockPrimer.appendDiag(`primer-unverified session=${after ?? 'null'}% — left auto-start on`);
-    log(`[primer] not verified (session=${after ?? 'null'}%) — left auto-start on`);
+    // Fired but resetAt never moved into the 5-hour range. Could be a real "headless no longer opens
+    // a block" case, or just a slow poll. With no API key set there is NO billing hazard, so do NOT
+    // auto-disable here (that misfired on sleep/lag before) — record it and let the next close retry.
+    blockPrimer.appendDiag(`primer-unverified resetAt=${lastUsage?.sessionResetAt ?? 'null'} — left auto-start on`);
+    log(`[primer] not verified after ${PRIMER_VERIFY_TRIES} tries — left auto-start on`);
 }
 
 async function disableAutoStart(message: string) {
