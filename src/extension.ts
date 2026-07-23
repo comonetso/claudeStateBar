@@ -11,6 +11,19 @@ import * as blockPrimer from './blockPrimer';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
 import { createOrShowWorkflowPanel, pushWorkflows, getTrackedSessionFile, pushLanguage } from './workflowPanel';
 import { getDict, Lang } from './i18n';
+import { readTextFile } from './core/fs';
+import { log, setLogChannel, getLogChannel } from './core/logger';
+import { getLatestTokenCount } from './providers/claude/tokenParser';
+import { summarizeResultFull } from './core/textFormat';
+import { getShortName } from './core/displayName';
+import { formatIdleDuration, formatTokens } from './core/format';
+import { encodeWorkspacePath, getWorkspaceProjectDirs, projectDirMatchesFolder, decodeProjectPath } from './providers/claude/pathCodec';
+import { getContextLimitForModel } from './providers/claude/modelLimits';
+import { getShortModelName, getEffortLabel } from './providers/claude/display';
+import { setRunsOnRemote } from './core/runtimeContext';
+import { SoundKind, getSoundPath, getSoundGain, playSoundFile, playBeep, playCompletionSound, playWorkflowCompleteSound, playQuestionSound } from './core/sound';
+import { alertedSessions, lastKnownEndTurnAt, pendingCompletion, lastKnownQuestionAt, pendingQuestion, alertedStuckToolUseAt, alertedWorkflowDone, seenRunningWorkflowKeys, getFirstScan, setFirstScan } from './core/beepGate';
+import { updateStageItem, startStageTicker, disposeStage, initStageIndicator } from './core/stageIndicator';
 
 interface SessionInfo {
     projectName: string;
@@ -77,33 +90,7 @@ interface WorkflowInfo {
 const statusBarItems: Map<string, StatusBarEntry> = new Map();
 // Track manually hidden sessions: sessionFile -> timestamp when hidden
 const hiddenSessions: Map<string, number> = new Map();
-const alertedSessions = new Map<string, { warned: boolean; dangered: boolean }>();
-const lastKnownEndTurnAt = new Map<string, number>();
-// Pending completion beep timers — debounced so a hook follow-up or auto-injected
-// user message can cancel the beep before it fires.
-type PendingBeep = { timer: NodeJS.Timeout; markerAt: number };
-const pendingCompletion = new Map<string, PendingBeep>();
-// Baseline / pending state for the question beep (AskUserQuestion / ExitPlanMode).
-const lastKnownQuestionAt = new Map<string, number>();
-const pendingQuestion = new Map<string, PendingBeep>();
-// Stuck-tool-use heuristic: remember the timestamp of the unanswered tool_use we
-// already fired a beep for, so we don't re-fire while it stays unanswered.
-const alertedStuckToolUseAt = new Map<string, number>();
-// Workflow-complete beep gate: once a workflow (or the Task pseudo-workflow,
-// wfId 'tasks') reaches "all agents done", we beep ONCE and record it here so the
-// next polling pass — where the already-finished workflow still reads as done —
-// doesn't re-fire. Key: `${sessionFile}|${wfId}`, value: the done agent count
-// (a changing count means new agents finished, which is still the same gate event
-// but lets us see the latest baseline in logs).
-const alertedWorkflowDone = new Map<string, number>();
-// Keys observed in a RUNNING state this runtime. Only a genuine running→done transition
-// we actually watched should beep; a workflow first seen already-done (stale work from
-// another project, or pre-existing on first scan) is baselined silently so it never
-// beeps as if it just finished.
-const seenRunningWorkflowKeys = new Set<string>();
-let isFirstScan = true;
 let refreshInterval: NodeJS.Timeout | null = null;
-let outputChannel: vscode.OutputChannel | null = null;
 
 // --- Plan usage (claudeState) state ---
 // Plan usage is merged into the first session status-bar item. When no Claude Code
@@ -112,14 +99,6 @@ let planFallbackItem: vscode.StatusBarItem | null = null;
 let planRefreshInterval: NodeJS.Timeout | null = null;
 let planTickInterval: NodeJS.Timeout | null = null;
 
-// "Is it alive?" status-bar item: shows the active session's phase icon + elapsed seconds,
-// ticked every second so the counter keeps climbing during Claude's silent thinking (when the
-// file watcher never fires). This is the whole feature — no panel, just a live counter.
-let stageStatusItem: vscode.StatusBarItem | null = null;
-let stageTickInterval: NodeJS.Timeout | null = null;
-let stagePhase: 'tool' | 'thinking' | null = null;
-let stageBaseAt: number | null = null;
-const STAGE_STUCK_SEC = 240;
 let lastUsage: NormalizedUsage | null = null;
 // [diag 1.7.39] Last sessionResetAt state written to diag.log, so each poll only records on change.
 let lastPollDiag = '';
@@ -129,14 +108,6 @@ let lastBlockPollAt = 0;
 const WAKE_GAP_MS = 5 * 60 * 1000;
 type PlanStatus = 'unconfigured' | 'ok' | 'auth_expired' | 'blocked' | 'error';
 let planStatus: PlanStatus = 'unconfigured';
-// True only when this extension instance itself runs on a remote host (e.g. extensionKind=workspace
-// over Remote-SSH). When extensionKind=["ui"] (our setting), the extension always runs on the local
-// VS Code UI host even if the workspace is remote — so audio works fine and this stays false.
-let extensionRunsOnRemote = false;
-
-function log(msg: string) {
-    outputChannel?.appendLine(`[${new Date().toTimeString().slice(0, 8)}] ${msg}`);
-}
 
 // Scan ~/.vscode/extensions, group by publisher.name, keep highest semver per group,
 // delete the rest. Self-protective: never deletes the currently-running version of
@@ -244,12 +215,14 @@ async function runCleanupOldVersions(opts: { silent: boolean; currentExtDir?: st
 }
 
 export function activate(context: vscode.ExtensionContext) {
-    outputChannel = vscode.window.createOutputChannel('claudeStateBar');
+    const outputChannel = vscode.window.createOutputChannel('claudeStateBar');
+    setLogChannel(outputChannel);
     context.subscriptions.push(outputChannel);
     log('claudeStateBar activating');
     log(`Platform: ${process.platform}, home: ${os.homedir()}, remoteName=${vscode.env.remoteName ?? '(none — local UI host)'}`);
-    extensionRunsOnRemote = context.extensionUri.scheme !== 'file';
-    log(`extensionUri.scheme=${context.extensionUri.scheme}, extensionRunsOnRemote=${extensionRunsOnRemote}`);
+    const runsOnRemote = context.extensionUri.scheme !== 'file';
+    setRunsOnRemote(runsOnRemote);
+    log(`extensionUri.scheme=${context.extensionUri.scheme}, extensionRunsOnRemote=${runsOnRemote}`);
 
     // Initialise credential store (context.secrets) for the claudeState plan-usage feature
     creds.initCredentials(context);
@@ -309,7 +282,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Show diagnostics: logs workspace dirs, Claude dirs found, matching result
     const diagCommand = vscode.commands.registerCommand('claudeContextBar.showDiagnostics', async () => {
-        outputChannel?.show(true);
+        getLogChannel()?.show(true);
         log('=== DIAGNOSTICS ===');
         const folders = vscode.workspace.workspaceFolders;
         if (folders) {
@@ -655,7 +628,8 @@ export function activate(context: vscode.ExtensionContext) {
     // Recompute the "resets in ..." countdown once a minute without re-fetching
     planTickInterval = setInterval(() => { if (lastUsage) refreshAllSessions(); }, 60 * 1000);
     // Tick the "is it alive?" elapsed counter every second (no disk reads — uses cached marker).
-    stageTickInterval = setInterval(() => { tickStageItem(); }, 1000);
+    initStageIndicator(() => planLang() === 'ko');
+    startStageTicker();
 
     // Clean up on deactivation
     context.subscriptions.push({
@@ -669,15 +643,12 @@ export function activate(context: vscode.ExtensionContext) {
             if (planTickInterval) {
                 clearInterval(planTickInterval);
             }
-            if (stageTickInterval) {
-                clearInterval(stageTickInterval);
-            }
             for (const [, p] of pendingCompletion) clearTimeout(p.timer);
             pendingCompletion.clear();
             for (const [, p] of pendingQuestion) clearTimeout(p.timer);
             pendingQuestion.clear();
             planFallbackItem?.dispose();
-            stageStatusItem?.dispose();
+            disposeStage();
             statusBarItems.forEach(entry => entry.item.dispose());
             statusBarItems.clear();
         }
@@ -714,232 +685,6 @@ async function logRemoteFsProbe(): Promise<void> {
     log('--- END REMOTE FS PROBE ---');
 }
 
-// Play N beeps using OS-native commands (non-blocking, errors silently ignored).
-// count=1: warning (single tone), count=2: danger (two ascending tones).
-function playBeep(count: number): void {
-    const kind = count === 1 ? 'warning' : 'danger';
-    const soundPath = getSoundPath(kind);
-    const gain = getSoundGain(kind);
-    playSoundFile(soundPath, count, `beep:${kind}`, gain);
-}
-
-type SoundKind = 'warning' | 'danger' | 'completion' | 'question' | 'workflow';
-
-// Default WAV paths per platform — used when the user setting is empty.
-const DEFAULT_WAVS: Record<SoundKind, string> = {
-    warning: process.platform === 'win32' ? 'C:\\Windows\\Media\\Windows Notify.wav'
-        : process.platform === 'darwin' ? '/System/Library/Sounds/Glass.aiff' : '',
-    danger:  process.platform === 'win32' ? 'C:\\Windows\\Media\\Windows Critical Stop.wav'
-        : process.platform === 'darwin' ? '/System/Library/Sounds/Glass.aiff' : '',
-    completion: process.platform === 'win32' ? 'C:\\Windows\\Media\\tada.wav'
-        : process.platform === 'darwin' ? '/System/Library/Sounds/Hero.aiff' : '',
-    question: process.platform === 'win32' ? 'C:\\Windows\\Media\\Speech On.wav'
-        : process.platform === 'darwin' ? '/System/Library/Sounds/Ping.aiff' : '',
-    // Workflow/subagent "all done" — distinct tone from tada.wav (completion).
-    workflow: process.platform === 'win32' ? 'C:\\Windows\\Media\\Ring06.wav'
-        : process.platform === 'darwin' ? '/System/Library/Sounds/Funk.aiff' : ''
-};
-
-function getSoundPath(kind: SoundKind): string {
-    const cfg = vscode.workspace.getConfiguration('claudeContextBar');
-    const key = kind === 'warning' ? 'soundWarning'
-        : kind === 'danger' ? 'soundDanger'
-        : kind === 'completion' ? 'soundCompletion'
-        : kind === 'workflow' ? 'soundWorkflow'
-        : 'soundQuestion';
-    const user = cfg.get<string>(key, '').trim();
-    return user || DEFAULT_WAVS[kind];
-}
-
-function getSoundGain(kind: SoundKind): number {
-    const cfg = vscode.workspace.getConfiguration('claudeContextBar');
-    const key = kind === 'warning' ? 'soundWarningGain'
-        : kind === 'danger' ? 'soundDangerGain'
-        : kind === 'completion' ? 'soundCompletionGain'
-        : kind === 'workflow' ? 'soundWorkflowGain'
-        : 'soundQuestionGain';
-    const raw = cfg.get<number>(key, 100);
-    // Clamp to documented range
-    if (!Number.isFinite(raw)) return 100;
-    return Math.max(50, Math.min(300, Math.round(raw)));
-}
-
-// Amplify a WAV file by gainPercent (50–300) by parsing the PCM data chunk and
-// scaling each sample. Returns a path to a cached temp file. Falls back to the
-// original path if anything goes wrong (unsupported format, parse error, etc.).
-//
-// Cache key: source file mtime + size + gain. The cache lives in
-// %TEMP%/claudeContextBar/amplified/ and is invalidated when the source file
-// changes (different mtime/size produces a different key).
-//
-// Supported PCM formats: 16-bit signed, 8-bit unsigned, 32-bit IEEE float.
-// Other formats (24-bit, ADPCM, etc.) fall back to the original file.
-function amplifyWavToTemp(srcPath: string, gainPercent: number): string {
-    if (gainPercent === 100) return srcPath;
-    try {
-        const stat = fs.statSync(srcPath);
-        const cacheDir = path.join(os.tmpdir(), 'claudeContextBar', 'amplified');
-        const keyMaterial = `${srcPath}|${stat.mtimeMs}|${stat.size}|${gainPercent}`;
-        const hash = crypto.createHash('sha1').update(keyMaterial).digest('hex').slice(0, 16);
-        const base = path.basename(srcPath).replace(/[^a-zA-Z0-9._-]/g, '_');
-        const outPath = path.join(cacheDir, `${base}_g${gainPercent}_${hash}.wav`);
-        if (fs.existsSync(outPath)) return outPath;
-
-        const buf = fs.readFileSync(srcPath);
-        // Minimum RIFF/WAVE header sanity
-        if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') {
-            log(`[amp] not a RIFF/WAVE file, skipping: ${srcPath}`);
-            return srcPath;
-        }
-
-        // Walk chunks to find "fmt " and "data"
-        let fmtOffset = -1, fmtSize = 0;
-        let dataOffset = -1, dataSize = 0;
-        let p = 12;
-        while (p + 8 <= buf.length) {
-            const id = buf.toString('ascii', p, p + 4);
-            const size = buf.readUInt32LE(p + 4);
-            if (id === 'fmt ') { fmtOffset = p + 8; fmtSize = size; }
-            else if (id === 'data') { dataOffset = p + 8; dataSize = size; break; }
-            p += 8 + size + (size % 2);  // chunks are 2-byte aligned
-        }
-        if (fmtOffset < 0 || dataOffset < 0 || fmtSize < 16) {
-            log(`[amp] missing fmt/data chunks: ${srcPath}`);
-            return srcPath;
-        }
-
-        const audioFormat = buf.readUInt16LE(fmtOffset);          // 1 = PCM, 3 = IEEE float
-        const bitsPerSample = buf.readUInt16LE(fmtOffset + 14);
-        const out = Buffer.from(buf);  // copy
-        const dataEnd = Math.min(dataOffset + dataSize, out.length);
-        const gain = gainPercent / 100;
-
-        if (audioFormat === 1 && bitsPerSample === 16) {
-            for (let i = dataOffset; i + 2 <= dataEnd; i += 2) {
-                const s = out.readInt16LE(i);
-                let v = Math.round(s * gain);
-                if (v > 32767) v = 32767;
-                else if (v < -32768) v = -32768;
-                out.writeInt16LE(v, i);
-            }
-        } else if (audioFormat === 1 && bitsPerSample === 8) {
-            // 8-bit PCM is unsigned, centred at 128
-            for (let i = dataOffset; i < dataEnd; i++) {
-                const s = out.readUInt8(i) - 128;
-                let v = Math.round(s * gain) + 128;
-                if (v > 255) v = 255;
-                else if (v < 0) v = 0;
-                out.writeUInt8(v, i);
-            }
-        } else if (audioFormat === 3 && bitsPerSample === 32) {
-            for (let i = dataOffset; i + 4 <= dataEnd; i += 4) {
-                let v = out.readFloatLE(i) * gain;
-                if (v > 1) v = 1;
-                else if (v < -1) v = -1;
-                out.writeFloatLE(v, i);
-            }
-        } else {
-            log(`[amp] unsupported WAV format (audioFormat=${audioFormat}, bits=${bitsPerSample}), skipping: ${srcPath}`);
-            return srcPath;
-        }
-
-        fs.mkdirSync(cacheDir, { recursive: true });
-        fs.writeFileSync(outPath, out);
-        log(`[amp] cached ${outPath} (gain=${gainPercent}%, ${bitsPerSample}-bit fmt=${audioFormat})`);
-        return outPath;
-    } catch (e: any) {
-        log(`[amp] failed for ${srcPath}: ${e?.message ?? e}`);
-        return srcPath;
-    }
-}
-
-// Play a sound file by absolute path. Supports .wav (SoundPlayer.PlaySync — fast & sync)
-// and .mp3 / other formats (WPF MediaPlayer — async, sleeps for media duration).
-//
-// Guard: if this extension instance itself runs on a remote host (extensionKind=workspace),
-// sounds would play on the REMOTE server's audio device — which the user can't hear.
-// With extensionKind=["ui"] the extension always runs on the local VS Code host, so audio
-// works even when the workspace is a Remote-SSH folder. We check extensionUri.scheme (set
-// in activate) rather than vscode.env.remoteName, which only reflects the workspace
-// connection — not where the extension process actually lives.
-function playSoundFile(soundPath: string, repeat: number = 1, label: string = 'beep', gainPercent: number = 100): void {
-    if (extensionRunsOnRemote) {
-        log(`[${label}] skipped — extension process is on remote host; sound only plays on local UI host`);
-        return;
-    }
-    if (!soundPath) {
-        log(`[${label}] empty soundPath, skipping`);
-        return;
-    }
-    const isWav = soundPath.toLowerCase().endsWith('.wav');
-    // WAV gets in-memory PCM amplification (can go above 100%, real volume boost).
-    // MP3/other formats can only be ATTENUATED via the media player's Volume property
-    // (0–1 range); we can't amplify them without re-encoding.
-    let effectivePath = soundPath;
-    if (isWav && gainPercent !== 100) {
-        effectivePath = amplifyWavToTemp(soundPath, gainPercent);
-    }
-    log(`[${label}] playSoundFile path="${effectivePath}" repeat=${repeat} gain=${gainPercent}% platform=${process.platform}`);
-    if (process.platform === 'win32') {
-        const escaped = effectivePath.replace(/'/g, "''");
-        let single: string;
-        if (isWav) {
-            single = `(New-Object System.Media.SoundPlayer '${escaped}').PlaySync()`;
-        } else {
-            // WPF MediaPlayer for MP3/other formats. Volume is 0–1 (no amplification possible).
-            // For gain > 100, we fall back to original volume; for gain < 100, attenuate.
-            const volume = Math.min(1, Math.max(0, gainPercent / 100));
-            single = `Add-Type -AssemblyName presentationCore; $p = [System.Windows.Media.MediaPlayer]::new(); $p.Volume = ${volume.toFixed(3)}; $p.Open([System.Uri]::new('${escaped}')); $i = 0; while(-not $p.NaturalDuration.HasTimeSpan -and $i -lt 30){Start-Sleep -Milliseconds 50; $i++}; $p.Play(); $dur = if($p.NaturalDuration.HasTimeSpan){[Math]::Min($p.NaturalDuration.TimeSpan.TotalMilliseconds + 200, 10000)}else{5000}; Start-Sleep -Milliseconds $dur`;
-        }
-        const cmd = Array.from({ length: repeat }, () => single).join('; ');
-        const full = `powershell -NoProfile -NonInteractive -c "${cmd}"`;
-        log(`[${label}] exec (${isWav ? 'wav' : 'mp3/other'}): ${full.substring(0, 200)}${full.length > 200 ? '...' : ''}`);
-        cp.exec(full, { windowsHide: true, maxBuffer: 1024 * 1024 }, (err, _stdout, stderr) => {
-            if (err) log(`[${label}] exec error: ${err.message}`);
-            if (stderr?.trim()) log(`[${label}] stderr: ${stderr.trim()}`);
-            else log(`[${label}] exec completed`);
-        });
-    } else if (process.platform === 'darwin') {
-        // afplay supports WAV, MP3, AIFF, AAC etc. natively. --volume 0..2.
-        // For WAV we already amplified the file; pass volume 1.0. For MP3, pass gain/100 capped at 2.
-        const escaped = effectivePath.replace(/"/g, '\\"');
-        const afVol = isWav ? 1 : Math.min(2, Math.max(0, gainPercent / 100));
-        const single = `afplay --volume ${afVol.toFixed(3)} "${escaped}"`;
-        const cmd = Array.from({ length: repeat }, () => single).join(' && sleep 0.3 && ');
-        cp.exec(cmd, (err) => { if (err) log(`[${label}] afplay error: ${err.message}`); });
-    } else {
-        // Linux: try paplay (WAV/OGG) → mpg123/ffplay (MP3) → aplay → fallback bell.
-        // paplay has --volume (0–65536, 65536 = 100%); for gain > 100 we cap at ~200%.
-        const esc = effectivePath.replace(/"/g, '\\"');
-        const paVolStr = isWav ? '' : ` --volume=${Math.round(Math.min(2, Math.max(0, gainPercent / 100)) * 65536)}`;
-        const playOne = soundPath
-            ? `paplay${paVolStr} "${esc}" 2>/dev/null || mpg123 -q "${esc}" 2>/dev/null || ffplay -nodisp -autoexit -loglevel quiet "${esc}" 2>/dev/null || aplay -q "${esc}" 2>/dev/null || true`
-            : 'paplay /usr/share/sounds/freedesktop/stereo/bell.oga 2>/dev/null || beep 2>/dev/null || true';
-        const cmd = Array.from({ length: repeat }, () => playOne).join('; sleep 0.3; ');
-        cp.exec(cmd, { shell: '/bin/bash' }, (err) => { if (err) log(`[${label}] linux error: ${err.message}`); });
-    }
-}
-
-// 3-note ascending arpeggio (600→800→1000 Hz) — "Claude finished" positive signal,
-// distinct from warning (single) and danger (double ascending pair).
-function playCompletionSound(): void {
-    playSoundFile(getSoundPath('completion'), 1, 'beep:completion', getSoundGain('completion'));
-}
-
-// Distinct chime for "the entire workflow / all subagents finished" — a one-shot
-// gate signal (not the per-activity completion beep). Default Ring06.wav on
-// Windows, intentionally a different tone from tada.wav (completion).
-function playWorkflowCompleteSound(): void {
-    playSoundFile(getSoundPath('workflow'), 1, 'beep:workflow', getSoundGain('workflow'));
-}
-
-// Distinct chime for "Claude is paused waiting on the user" (AskUserQuestion /
-// ExitPlanMode / optional stuck-tool-use heuristic). Default Speech On.wav on
-// Windows — a short, clearly different tone from tada.wav.
-function playQuestionSound(): void {
-    playSoundFile(getSoundPath('question'), 1, 'beep:question', getSoundGain('question'));
-}
-
 export function deactivate() {
     if (refreshInterval) {
         clearInterval(refreshInterval);
@@ -950,15 +695,12 @@ export function deactivate() {
     if (planTickInterval) {
         clearInterval(planTickInterval);
     }
-    if (stageTickInterval) {
-        clearInterval(stageTickInterval);
-    }
     for (const [, p] of pendingCompletion) clearTimeout(p.timer);
     pendingCompletion.clear();
     for (const [, p] of pendingQuestion) clearTimeout(p.timer);
     pendingQuestion.clear();
     planFallbackItem?.dispose();
-    stageStatusItem?.dispose();
+    disposeStage();
     statusBarItems.forEach(entry => entry.item.dispose());
     statusBarItems.clear();
 }
@@ -1007,50 +749,8 @@ async function getClaudeProjectsUri(): Promise<vscode.Uri | null> {
     return base ? vscode.Uri.joinPath(base, 'projects') : null;
 }
 
-async function readTextFile(uri: vscode.Uri): Promise<string> {
-    const data = await vscode.workspace.fs.readFile(uri);
-    return Buffer.from(data).toString('utf-8');
-}
-
 // Render a structured result object as readable "key: value" multiline text instead
 // of a raw JSON.stringify blob. Nested objects/arrays are JSON-encoded inline.
-function serializeResultObject(obj: Record<string, any>): string {
-    const parts: string[] = [];
-    for (const [k, v] of Object.entries(obj)) {
-        if (v == null) continue;
-        let val: string;
-        if (typeof v === 'string') val = v;
-        else if (typeof v === 'number' || typeof v === 'boolean') val = String(v);
-        else val = JSON.stringify(v);
-        parts.push(`${k}: ${val}`);
-    }
-    return parts.join('\n');
-}
-
-// Turn an agent's journal `result` (a string for plain agents, an object for
-// schema-validated ones) into both a 160-char preview and the untruncated full text.
-//   full    — complete report (newlines preserved) for the expandable panel <details>
-//   preview — single-line, whitespace-collapsed, 160-char cap (legacy display)
-function summarizeResultFull(result: any): { preview: string; full: string } {
-    if (result == null) return { preview: '', full: '' };
-    let full: string;
-    if (typeof result === 'string') {
-        full = result;
-    } else {
-        // Structured output — prefer a human-ish field if present, else a readable
-        // key: value serialization (NOT a raw JSON.stringify blob).
-        const obj = result as Record<string, any>;
-        const pick = obj.summary ?? obj.title ?? obj.description ?? obj.reason
-            ?? obj.verdict ?? obj.recommendation ?? obj.rootCause ?? obj.evidence;
-        full = typeof pick === 'string' ? pick : serializeResultObject(obj);
-        if (!full) full = JSON.stringify(result);
-    }
-    full = full.trim();
-    const oneLine = full.replace(/\s+/g, ' ').trim();
-    const preview = oneLine.length > 160 ? oneLine.slice(0, 160) + '…' : oneLine;
-    return { preview, full };
-}
-
 // Extract the FIRST user-message text from an agent log (agent-<id>.jsonl). This is the
 // prompt the orchestrator handed the subagent — it carries the agent's role. Journal-based
 // workflow agents record NO label anywhere on disk (journal `started` entries hold only
@@ -1609,6 +1309,77 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
     return wfList.map(x => x.wf);
 }
 
+// Which wf_* workflows have TRULY finished, per the parent session log — not per the
+// journal. A workflow's journal.jsonl only holds `started`/`result` lines; it has NO
+// "the whole script finished" marker. So when a script runs batches sequentially
+// (parallel → then another parallel), the gap between batches momentarily looks
+// "all agents done" even though the next batch hasn't spawned yet. The only reliable
+// end-of-workflow signal lives in the parent session JSONL: the Workflow tool runs in
+// the background and, on completion, a <task-notification> with <status>completed</status>
+// is injected. We map each launch (`Task ID: … Run ID: wf_…`, same line) to its wfId, then
+// collect the task-ids whose notification says completed. The returned set is the wfIds we
+// can safely beep for; anything all-done-in-journal but absent here is a mid-run batch gap.
+async function getCompletedWorkflowIds(sessionFileUri: string): Promise<Set<string>> {
+    const completed = new Set<string>();
+    let content: string;
+    try {
+        content = await readTextFile(vscode.Uri.parse(sessionFileUri));
+    } catch {
+        return completed;  // session unreadable → treat as "nothing confirmed done"
+    }
+    const taskToWf = new Map<string, string>();   // task-id → wfId (from launch tool_result)
+    const completedTasks = new Set<string>();      // task-ids whose notification = completed
+    // Both the launch result and the task-notification are single JSONL lines, so the
+    // Task ID / Run ID pair (and the task-id / status pair) always co-occur on one line.
+    for (const line of content.split('\n')) {
+        if (!line) continue;
+        // Launch: "…Task ID: w68nikq1i…Run ID: wf_4fd355e2-228…"
+        if (line.includes('Task ID:') && line.includes('Run ID:')) {
+            const tid = /Task ID: (\w+)/.exec(line);
+            const wid = /Run ID: (wf_[A-Za-z0-9-]+)/.exec(line);
+            // Capture group 1 holds the wfId (there's only one group) — wid[1], NOT wid[2].
+            if (tid && wid) taskToWf.set(tid[1], wid[1]);
+        }
+        // Completion notice: "…<task-id>w68nikq1i</task-id>…<status>completed</status>…"
+        if (line.includes('<task-notification>')) {
+            const tid = /<task-id>(\w+)<\/task-id>/.exec(line);
+            const st = /<status>(\w+)<\/status>/.exec(line);
+            if (tid && st && st[1] === 'completed') completedTasks.add(tid[1]);
+        }
+    }
+    for (const tid of completedTasks) {
+        const wfId = taskToWf.get(tid);
+        if (wfId) completed.add(wfId);
+    }
+    return completed;
+}
+
+// The PRIMARY end-of-workflow signal: <sessionDir>/workflows/<wfId>.json — a per-run result
+// record the workflow runtime writes when the whole script terminates. Its top-level `status`
+// is "completed" | "failed" | "killed" (the `pass` values some workflows contain live inside
+// `result`, not here). Unlike the session JSONL's task-notification, this file's mtime lands
+// the instant the run ends, so it's a reliable real-time completion marker. Returns the status
+// string, or null when the file is missing / still being written / mid-run (no top-level status
+// yet) — in which case the caller falls back to the task-notification parser above.
+// NOTE freshness: the caller still gates on seenRunningWorkflowKeys (observedRunning), so a
+// stale "completed" marker left by an earlier run (e.g. resumeFromRunId) that we never watched
+// go running this runtime is baselined silently rather than beeping.
+async function readWorkflowTerminalStatus(sessionFileUri: string, wfId: string): Promise<string | null> {
+    try {
+        const uri = vscode.Uri.parse(sessionFileUri);
+        const sessionDirUri = uri.with({ path: uri.path.replace(/\.jsonl$/, '') });
+        const markerUri = vscode.Uri.joinPath(sessionDirUri, 'workflows', `${wfId}.json`);
+        const raw = await readTextFile(markerUri);
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.runId === wfId && typeof parsed.status === 'string') {
+            return parsed.status;
+        }
+        return null;
+    } catch {
+        return null;  // missing, or JSON.parse failed because it's being written → retry next poll
+    }
+}
+
 // Delete a workflow's data directory (.../subagents/workflows/<wfId>/). Used by the
 // panel's delete button. Returns true on success.
 async function deleteWorkflowDir(sessionFileUri: string, wfId: string): Promise<boolean> {
@@ -1659,416 +1430,8 @@ async function deleteDoneTaskAgents(sessionFileUri: string, wfId: string): Promi
 }
 
 // Encode an absolute workspace path into Claude's projects/ directory name format.
-// Example: "F:\\workspace\\Etc Project\\foo" → "f--workspace-Etc-Project-foo"
-//          "/Users/me/my project"            → "-Users-me-my-project"
-function encodeWorkspacePath(p: string): string {
-    let result = p;
-    // Lowercase drive letter on Windows so it matches Claude's lowercase encoding
-    if (/^[a-zA-Z]:/.test(result)) {
-        result = result[0].toLowerCase() + result.slice(1);
-    }
-    // Each colon, slash, backslash, or whitespace becomes a single dash
-    // Claude Code encodes all non-alphanumeric ASCII chars and all non-ASCII (Korean, etc.) as '-'
-    return result.replace(/[:\\/\s_.]|[^\x00-\x7F]|[^a-zA-Z0-9\-]/g, '-');
-}
 
-// Returns lowercase encoded directory names for the currently open workspace folders,
-// or null if there are no workspace folders (single-file window).
-function getWorkspaceProjectDirs(): Set<string> | null {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders || folders.length === 0) return null;
-    const dirs = new Set<string>();
-    for (const f of folders) {
-        dirs.add(encodeWorkspacePath(f.uri.fsPath).toLowerCase());
-    }
-    return dirs;
-}
 
-// Check if a Claude project directory name matches a given workspace folder.
-// Primary: exact encoded-path match.
-// Fallback: decode the Claude dir and compare normalised paths (handles encoding edge-cases on Linux).
-function projectDirMatchesFolder(projectDir: string, f: vscode.WorkspaceFolder): boolean {
-    const encoded = encodeWorkspacePath(f.uri.fsPath).toLowerCase();
-    if (projectDir.toLowerCase() === encoded) return true;
-
-    // Fallback: decode Claude's dir name and compare to the workspace path
-    const { fullPath } = decodeProjectPath(projectDir);
-    const norm = (p: string) => p.replace(/[/\\]+$/, '').replace(/\\/g, '/').toLowerCase();
-    if (norm(fullPath) === norm(f.uri.fsPath)) return true;
-
-    // Second fallback: last path segment(s) match
-    const wsParts = f.uri.fsPath.replace(/\\/g, '/').split('/').filter(Boolean);
-    const claudeParts = projectDir.replace(/^-/, '').split('-').filter(Boolean);
-    if (wsParts.length > 0 && claudeParts.length > 0) {
-        const wsLast = wsParts[wsParts.length - 1].toLowerCase();
-        const claudeLast = claudeParts[claudeParts.length - 1].toLowerCase();
-        if (wsLast === claudeLast && wsParts.length >= 2 && claudeParts.length >= 2) {
-            // Also check the parent segment for more confidence
-            const wsParent = wsParts[wsParts.length - 2].toLowerCase();
-            const claudeParent = claudeParts[claudeParts.length - 2].toLowerCase();
-            if (wsParent === claudeParent) return true;
-        }
-    }
-
-    return false;
-}
-
-function decodeProjectPath(encodedName: string): { name: string; fullPath: string } {
-    // Claude encodes paths like: C--dev-my-cool-project or -Users-name-work-my-project
-    // The double-dash after drive letter represents the colon (C: -> C--)
-    // Single dashes represent path separators, BUT folder names can also contain dashes
-    // 
-    // Strategy: Detect OS from the pattern and reconstruct path
-    let decoded = encodedName;
-
-    // Remove leading dash if present
-    if (decoded.startsWith('-')) {
-        decoded = decoded.substring(1);
-    }
-
-    // Split by dashes and filter out empty strings (from double-dashes)
-    const parts = decoded.split('-').filter(p => p.length > 0);
-    let fullPath: string;
-    let projectName: string;
-
-    // Check if Windows pattern (first part is single drive letter like 'c', 'd', etc.)
-    if (parts.length > 0 && parts[0].length === 1 && /[a-zA-Z]/.test(parts[0])) {
-        // Windows path: C:\dev\my-cool-project
-        // Claude typically encodes as: C--dev-my-cool-project
-        // After filtering empty strings: ['C', 'dev', 'my', 'cool', 'project']
-        fullPath = parts[0].toUpperCase() + ':\\' + parts.slice(1).join('\\');
-
-        // Project name: use last few segments only (not full path chain)
-        // For C:\dev\webapp -> parts = ['C', 'dev', 'webapp'] -> projectName = 'webapp'
-        // For C:\dev\tools\extensions\vscode\my-extension -> use last 3 parts -> 'my-extension'
-        if (parts.length >= 3) {
-            // Skip drive letter and first folder, but limit to last 3 segments for deeply nested paths
-            const startIndex = Math.max(2, parts.length - 3);
-            const projectParts = parts.slice(startIndex);
-            projectName = projectParts.join('-');
-        } else {
-            projectName = parts[parts.length - 1] || 'Unknown';
-        }
-    } else {
-        // Unix path: /Users/Ed/work/my-project
-        fullPath = '/' + parts.join('/');
-
-        // Similar heuristic for Unix
-        if (parts.length >= 3) {
-            // Skip common prefixes like Users, home, etc.
-            const projectParts = parts.slice(Math.max(2, parts.length - 3));
-            projectName = projectParts.join('-');
-        } else {
-            projectName = parts[parts.length - 1] || 'Unknown';
-        }
-    }
-
-    return { name: projectName, fullPath };
-}
-
-interface TokenUsage {
-    inputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-    totalTokens: number;
-    model: string;
-    speed: string;          // "standard" | "fast" (Claude Code /fast toggle)
-    firstMessage: string;
-    sessionCreated: Date | null;
-    lastRealTimestamp: Date | null;  // Last timestamp excluding last-prompt entries
-    lastActivityAt: Date | null;  // Beep-gate clock: last assistant|user entry (excludes stop_hook/queue-op noise)
-    wasCleared: boolean;  // True if session ended with /clear command
-    lastAssistantEndTurnAt: Date | null;  // Timestamp of last end_turn assistant entry
-    pendingQuestionAt: Date | null;  // See SessionInfo
-    pendingToolUseAt: Date | null;
-    pendingToolUseName: string | null;
-}
-
-// Determine context limit based on model id.
-// 1M-context models (use limitOpus):
-//   - Opus 4.x family (claude-opus-4-5 / 4-6 / 4-7 / 4-8) — confirmed 1M context
-//   - Fable / Mythos family (claude-fable-5, claude-mythos-5) — confirmed 1M context
-//   - Sonnet 4.6+ / Sonnet 5+ (claude-sonnet-4-6, claude-sonnet-5, ...) — 1M by default,
-//     unlike Sonnet 4.5 and earlier which need the "1m" opt-in suffix below
-//   - Any model with "1m" in the id (e.g., "claude-sonnet-4-5-1m")
-// All others (Sonnet 4.5 and earlier, Haiku, etc.) use limitDefault.
-function getContextLimitForModel(model: string, limitDefault: number, limitOpus: number): number {
-    const m = model.toLowerCase();
-    if (m.includes('1m')) return limitOpus;
-    if (/opus[-_]?4/.test(m)) return limitOpus;
-    if (m.includes('fable') || m.includes('mythos')) return limitOpus;
-    const sonnetVer = m.match(/sonnet-(\d{1,2})(?:-(\d{1,2})(?!\d))?/);
-    if (sonnetVer) {
-        const major = parseInt(sonnetVer[1], 10);
-        const minor = sonnetVer[2] ? parseInt(sonnetVer[2], 10) : 0;
-        if (major >= 5 || (major === 4 && minor >= 6)) return limitOpus;
-    }
-    return limitDefault;
-}
-
-// Extract the last syllable from a word for compact naming
-// "typescript" → "script", "webpack" → "pack", "frontend" → "tend"
-function extractLastSyllable(word: string): string {
-    // Find a consonant cluster followed by vowel(s) followed by optional consonants at the end
-    // This captures common syllable patterns like "tron", "script", "pack"
-    const match = word.match(/[bcdfghjklmnpqrstvwxz]+[aeiou]+[bcdfghjklmnpqrstvwxz]*$/i);
-    if (match) {
-        return match[0];
-    }
-    // Fallback: just return last 3-4 chars
-    return word.slice(-Math.min(4, word.length));
-}
-
-// Generate a short name for a project
-// Multi-word: "my-cool-project" → "MCP" (acronym)
-// Single-word: "typescript" → "Tscript" (first letter + last syllable)
-// Short names (≤3 chars) are kept as-is
-// Session numbers (-2, -3) are preserved
-function getShortName(projectName: string, customNames: Record<string, string>): string {
-    // Check custom override first (check both full name and base name)
-    if (customNames[projectName]) {
-        return customNames[projectName];
-    }
-
-    // Extract session number suffix if present (e.g., "my-project-2" → "-2")
-    const sessionMatch = projectName.match(/-(\d+)$/);
-    const sessionSuffix = sessionMatch ? sessionMatch[0] : '';
-    const baseName = sessionMatch ? projectName.slice(0, -sessionSuffix.length) : projectName;
-
-    // Check custom override for base name too
-    if (customNames[baseName]) {
-        return customNames[baseName] + sessionSuffix;
-    }
-
-    // If base name is already short (5 chars or less), don't shorten
-    if (baseName.length <= 5) {
-        return projectName;
-    }
-
-    // Split on common delimiters (dash, underscore, space) or camelCase boundaries
-    const words = baseName.split(/[-_\s]|(?=[A-Z])/).filter(w => w.length > 0);
-
-    let shortBase: string;
-    if (words.length > 1) {
-        // Multi-word: create acronym from first letter of each word
-        shortBase = words.map(w => w[0]?.toUpperCase() || '').join('');
-    } else {
-        // Single-word: first letter uppercase + last syllable
-        const lastSyllable = extractLastSyllable(baseName);
-        shortBase = baseName[0].toUpperCase() + lastSyllable;
-    }
-
-    return shortBase + sessionSuffix;
-}
-
-async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
-    const empty: TokenUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, lastActivityAt: null, wasCleared: false, lastAssistantEndTurnAt: null, pendingQuestionAt: null, pendingToolUseAt: null, pendingToolUseName: null };
-    try {
-        const stat = await vscode.workspace.fs.stat(jsonlUri);
-        if (stat.size === 0) {
-            return empty;
-        }
-
-        // Read the file (routed to the remote host by VS Code when running over Remote-SSH)
-        const content = await readTextFile(jsonlUri);
-        const lines = content.trim().split('\n');
-
-            // Scan backwards to find the last /clear command AND check for user activity after it
-            let lastClearIndex = -1;
-            let userMessagesAfterClear = 0;
-
-            for (let i = lines.length - 1; i >= 0; i--) {
-                const line = lines[i];
-                if (!line.trim()) continue;
-                try {
-                    const entry = JSON.parse(line);
-
-                    // Check for User message
-                    if (entry.type === 'user' && entry.message?.content) {
-                        const msgContent = entry.message.content;
-
-                        // Check for /clear command
-                        if (typeof msgContent === 'string' && msgContent.includes('<command-name>/clear</command-name>')) {
-                            lastClearIndex = i;
-                            break; // Found the latest clear, stop scanning
-                        }
-
-                        // If not clear, it's a user message after the clear point (since we're going backwards)
-                        userMessagesAfterClear++;
-                    }
-                } catch (e) {
-                    continue;
-                }
-            }
-
-            // Determine if session is effectively cleared
-            // It is cleared IF:
-            // 1. We found a /clear command
-            // 2. AND there are NO user messages after it (meaning the user hasn't continued the session yet)
-            const wasCleared = (lastClearIndex !== -1 && userMessagesAfterClear === 0);
-
-            // Calculate usage and finding first message starting from AFTER the clear
-            const startIndex = lastClearIndex >= 0 ? lastClearIndex + 1 : 0;
-
-            let firstMessage = '';
-            let sessionCreated: Date | null = null;
-            let lastRealTimestamp: Date | null = null;
-            let lastActivityAt: Date | null = null;  // beep-gate clock (assistant|user only)
-            let lastAssistantEndTurnAt: Date | null = null;
-            let model = '';
-            let speed = '';
-            let finalUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0 };
-
-            // Forward pass from start index to find metadata and latest usage
-            for (let i = startIndex; i < lines.length; i++) {
-                const line = lines[i];
-                if (!line.trim()) continue;
-                try {
-                    const entry = JSON.parse(line);
-
-                    // Get session creation timestamp (first valid timestamp after clear)
-                    if (!sessionCreated && entry.timestamp) {
-                        sessionCreated = new Date(entry.timestamp);
-                    }
-                    // Track last real timestamp (skip last-prompt entries — Claude Code writes
-                    // these to the old file when a new session starts, inflating the mtime)
-                    if (entry.timestamp && entry.type !== 'last-prompt') {
-                        lastRealTimestamp = new Date(entry.timestamp);
-                    }
-                    // Beep-gate activity clock: only real conversation turns count as
-                    // "activity". The codex stop-review-gate-hook writes a
-                    // system/stop_hook_summary entry ~0.6s after every completed turn;
-                    // counting it (or queue-operation / file-history-snapshot / attachment)
-                    // as activity pushes lastActivity past curr+500ms and suppresses the
-                    // completion beep on every turn. Restrict to assistant|user.
-                    if (entry.timestamp && (entry.type === 'assistant' || entry.type === 'user')) {
-                        lastActivityAt = new Date(entry.timestamp);
-                    }
-
-                    // Look for first user message (for display)
-                    if (!firstMessage && entry.type === 'user' && entry.message?.content) {
-                        const msgContent = entry.message.content;
-                        // Skip command-related messages
-                        if (typeof msgContent === 'string' &&
-                            !msgContent.includes('<command-name>') &&
-                            !msgContent.includes('<local-command-') &&
-                            !msgContent.includes('Caveat:')) {
-                            firstMessage = msgContent.substring(0, 60);
-                        } else if (Array.isArray(msgContent) && msgContent[0]?.text) {
-                            firstMessage = msgContent[0].text.substring(0, 60);
-                        }
-                    }
-
-                    // Update latest usage/model as we go (capturing the last valid usage report)
-                    if (entry.message?.model) {
-                        model = entry.message.model;
-                    }
-                    // Capture speed (standard|fast) — set by Claude Code's /fast toggle
-                    if (entry.message?.speed) {
-                        speed = entry.message.speed;
-                    } else if (entry.speed) {
-                        speed = entry.speed;
-                    }
-                    if (entry.message?.usage || entry.usage) {
-                        const u = entry.message?.usage || entry.usage;
-                        finalUsage = {
-                            inputTokens: u.input_tokens || 0,
-                            cacheReadTokens: u.cache_read_input_tokens || 0,
-                            cacheCreationTokens: u.cache_creation_input_tokens || 0,
-                            totalTokens: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0)
-                        };
-                    }
-                    // Track last complete assistant response (end_turn = tool calls excluded).
-                    // IMPORTANT: thinking-enabled responses split ONE turn into a [thinking]-only
-                    // line and a [text] line, BOTH carrying stop_reason='end_turn'. The
-                    // thinking-only end_turn is an intermediate signal (Claude is still generating
-                    // the answer), so treating it as completion fires the beep mid-work. Only count
-                    // an end_turn whose content has at least one type==='text' block; ignore
-                    // end_turn entries that contain solely thinking/redacted_thinking/tool_use.
-                    // (Verified against 60 real sessions: 540 thinking-only end_turns = false
-                    // triggers, 994 text end_turns = real completions, 0 missed.)
-                    if (entry.type === 'assistant' && entry.message?.stop_reason === 'end_turn' && entry.timestamp) {
-                        const c = entry.message?.content;
-                        const hasTextBlock = Array.isArray(c)
-                            ? c.some((b: any) => b?.type === 'text')
-                            : typeof c === 'string' && c.length > 0;
-                        if (hasTextBlock) {
-                            lastAssistantEndTurnAt = new Date(entry.timestamp);
-                        }
-                    }
-                } catch (e) {
-                    continue;
-                }
-            }
-
-            // --- Pause detection: scan from the end of the file for an unanswered tool_use ---
-            //
-            // Claude Code's tool flow always looks like:
-            //   assistant entry (stop_reason="tool_use", content ends with one or more tool_use blocks)
-            //   user entry     (content = tool_result blocks for each tool_use id)
-            // While Claude is waiting on the user — either because it explicitly asked
-            // (AskUserQuestion / ExitPlanMode) or because VS Code popped a permission
-            // prompt for a tool like Bash — the tool_result entry has not been written yet.
-            //
-            // So: walk backwards from the end skipping empty lines. The first entry we hit
-            // wins. If it is an assistant entry whose final content block is `tool_use`, we
-            // are paused waiting on the user. The block's `name` tells us whether it's a
-            // deliberate question (AskUserQuestion / ExitPlanMode) or any other tool (the
-            // optional stuck-tool-use heuristic uses the latter).
-            let pendingQuestionAt: Date | null = null;
-            let pendingToolUseAt: Date | null = null;
-            let pendingToolUseName: string | null = null;
-            for (let i = lines.length - 1; i >= 0; i--) {
-                const raw = lines[i];
-                if (!raw.trim()) continue;
-                try {
-                    const e = JSON.parse(raw);
-                    if (e.type !== 'assistant' && e.type !== 'user') continue;
-                    // The newest meaningful entry — answer the pending question:
-                    if (e.type === 'assistant' && e.message?.stop_reason === 'tool_use') {
-                        const content = e.message?.content;
-                        if (Array.isArray(content)) {
-                            // Find the last tool_use block in the message
-                            let lastTu: any = null;
-                            for (let k = content.length - 1; k >= 0; k--) {
-                                if (content[k]?.type === 'tool_use') { lastTu = content[k]; break; }
-                            }
-                            if (lastTu) {
-                                const tsRaw = e.timestamp;
-                                const ts = tsRaw ? new Date(tsRaw) : null;
-                                pendingToolUseAt = ts;
-                                pendingToolUseName = typeof lastTu.name === 'string' ? lastTu.name : null;
-                                if (lastTu.name === 'AskUserQuestion' || lastTu.name === 'ExitPlanMode') {
-                                    pendingQuestionAt = ts;
-                                }
-                            }
-                        }
-                    }
-                    break; // First non-empty entry decides; stop scanning
-                } catch { /* malformed line — skip */ }
-            }
-
-            return {
-                inputTokens: finalUsage.inputTokens,
-                cacheReadTokens: finalUsage.cacheReadTokens,
-                cacheCreationTokens: finalUsage.cacheCreationTokens,
-                totalTokens: finalUsage.totalTokens,
-                model,
-                speed,
-                firstMessage: firstMessage ? firstMessage + '...' : '',
-                sessionCreated,
-                lastRealTimestamp,
-                lastActivityAt,
-                wasCleared,
-                lastAssistantEndTurnAt,
-                pendingQuestionAt,
-                pendingToolUseAt,
-                pendingToolUseName
-            };
-    } catch (e) {
-        return empty;
-    }
-}
 
 async function findActiveSessions(): Promise<SessionInfo[]> {
     const sessions: SessionInfo[] = [];
@@ -2361,30 +1724,6 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
     return visibleSessions.slice(0, 5);
 }
 
-// Shorten a model id like "claude-sonnet-4-5-20250514" → "Sonnet 4.5" (or "S4.5" in compact mode).
-// 1M-context variants get a "1M" suffix. Unknown families fall back to the last token of the id.
-function getShortModelName(model: string, compact: boolean): string {
-    if (!model) return '';
-    const lower = model.toLowerCase();
-    let family = '';
-    let abbrev = '';
-    if (lower.includes('opus')) { family = 'Opus'; abbrev = 'O'; }
-    else if (lower.includes('sonnet')) { family = 'Sonnet'; abbrev = 'S'; }
-    else if (lower.includes('haiku')) { family = 'Haiku'; abbrev = 'H'; }
-    else if (lower.includes('fable')) { family = 'Fable'; abbrev = 'F'; }
-    else {
-        const parts = model.split('-');
-        return parts[parts.length - 1] || model;
-    }
-    const verMatch = lower.match(/(\d+)-(\d+)/);
-    const singleVerMatch = verMatch ? null : lower.match(/[^\d](\d+)$/);
-    const version = verMatch ? `${verMatch[1]}.${verMatch[2]}` : (singleVerMatch ? singleVerMatch[1] : '');
-    const onem = lower.includes('1m') ? '1M' : '';
-    const versionPart = version ? ` ${version}` : '';
-    const onemPart = onem ? ` ${onem}` : '';
-    return `${family}${versionPart}${onemPart}`;
-}
-
 // Read global effort level from ~/.claude/settings.json. Returns lowercase raw value
 // like "low" | "medium" | "high" | "xhigh" | "max", or '' on failure.
 // Note: Claude Code stores this globally; all interactive sessions share the same effort.
@@ -2401,52 +1740,9 @@ async function getGlobalEffortLevel(): Promise<string> {
     }
 }
 
-// Convert a raw effort value to a display label. Always full names (no abbreviation).
-//   low → Low, medium → Medium, high → High, max → Max, ultracode/ultra → 🚀 Ultra
-// xhigh → "xHigh⁺": settings.json persists "xhigh" for BOTH plain xhigh AND ultracode
-// (= xhigh + runtime dynamic workflows). The ultracode bit itself never persists to disk
-// (CLI schema: "interactive toggles never persist it"), so we cannot distinguish them from
-// settings.json alone — the ⁺ hints "may be ultracode" without asserting it. The tooltip
-// carries the full explanation. (case 'ultracode'/'ultra' stays for a hypothetical future
-// build that DOES persist the flag — harmless until then.)
-function getEffortLabel(raw: string): string {
-    switch (raw.toLowerCase()) {
-        case 'low': return 'Low';
-        case 'medium': return 'Medium';
-        case 'high': return 'High';
-        case 'xhigh': return 'xHigh⁺';
-        case 'max': return 'Max';
-        case 'ultracode': return '🚀 Ultra';
-        case 'ultra': return '🚀 Ultra';  // tolerate abbreviation/typo
-        default:
-            // Unknown values: prettify by capitalizing the first letter instead of raw passthrough
-            return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw;
-    }
-}
-
-function formatIdleDuration(lastUpdated: Date): string {
-    const ms = Date.now() - lastUpdated.getTime();
-    const min = Math.floor(ms / 60000);
-    if (min < 1) return 'idle';
-    if (min < 60) return `idle ${min}m`;
-    const hr = Math.floor(min / 60);
-    const remMin = min % 60;
-    if (remMin === 0) return `idle ${hr}h`;
-    return `idle ${hr}h${remMin}m`;
-}
-
-function formatTokens(tokens: number): string {
-    if (tokens >= 1000000) {
-        return (tokens / 1000000).toFixed(1) + 'M';
-    } else if (tokens >= 1000) {
-        return Math.round(tokens / 1000) + 'K';
-    }
-    return tokens.toString();
-}
-
 async function refreshAllSessions() {
-    const suppressBeep = isFirstScan;
-    isFirstScan = false;
+    const suppressBeep = getFirstScan();
+    setFirstScan(false);
     const sessions = await findActiveSessions();
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const warningThreshold = config.get<number>('warningThreshold', 50);
@@ -2776,6 +2072,9 @@ async function refreshAllSessions() {
             continue;
         }
         if (sessionFile === trackedSessionFile) trackedWorkflowsCache = workflows;
+        // Lazily fetched once per session (only when a wf_* workflow reaches journal
+        // all-done) — the set of workflows the parent session confirms have truly finished.
+        let completedWfIds: Set<string> | null = null;
         for (const wf of workflows) {
             const key = `${sessionFile}|${wf.wfId}`;
             const allDone = wf.agents.length > 0 && wf.agents.every(a => a.status === 'done');
@@ -2793,6 +2092,38 @@ async function refreshAllSessions() {
             }
             const doneCount = wf.agents.length;
             if (alertedWorkflowDone.has(key)) continue; // already handled this completion
+            // ★ Batch-gap guard: a real workflow (wf_*) can read as journal-all-done in the
+            // lull between sequential batches (batch 1 finished, batch 2 not spawned yet). The
+            // journal has no whole-script end marker, so we confirm real termination two ways:
+            //   1. PRIMARY — the run's result file workflows/<wfId>.json. status "completed"
+            //      means the whole script ended successfully → beep. "failed"/"killed" are
+            //      terminal too, but close the gate WITHOUT a success beep.
+            //   2. FALLBACK — if that marker isn't there yet (missing/mid-write), fall back to
+            //      the session-log task-notification parser.
+            // If neither confirms completion, it's a mid-run batch gap: suppress WITHOUT setting
+            // the gate so the next batch (or the real completion) can still beep later. Task
+            // pseudo-workflows (wfId not "wf_") are exempt and keep the original all-done behavior.
+            if (wf.wfId.startsWith('wf_')) {
+                const termStatus = await readWorkflowTerminalStatus(sessionFile, wf.wfId);
+                if (termStatus === 'failed' || termStatus === 'killed') {
+                    alertedWorkflowDone.set(key, doneCount);  // terminal but not a success → no beep
+                    log(`[wf-done] ${wf.wfId} ended '${termStatus}' — gate closed, no success beep`);
+                    continue;
+                }
+                if (termStatus !== 'completed') {
+                    // No terminal marker yet → fall back to the session-log completion notice.
+                    if (completedWfIds === null) completedWfIds = await getCompletedWorkflowIds(sessionFile);
+                    if (!completedWfIds.has(wf.wfId)) {
+                        log(`[wf-done] ${wf.wfId} journal all-done but no terminal marker/notice yet — batch gap, suppress`);
+                        continue;
+                    }
+                }
+            }
+            // Race guard: the awaits above can let a second, overlapping refresh reach here for
+            // the same key before the first set the gate. Re-check right before we claim it — the
+            // has()→set() pair has no await between them, so it's atomic on JS's single thread and
+            // exactly one refresh beeps.
+            if (alertedWorkflowDone.has(key)) continue;
             // Beep ONLY for a running→done transition we actually observed this runtime.
             // A workflow first seen already-done (first scan, or stale work from another
             // project surfacing later) is baselined silently — it never beeps as if it
@@ -2980,50 +2311,6 @@ function planTooltipBlock(): string {
         return s;
     }
     return '';
-}
-
-function ensureStageItem() {
-    if (!stageStatusItem) {
-        // priority 5: right of the session items (10..6) and the plan item (8); never collides.
-        stageStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 5);
-    }
-}
-
-// Decide what the active session is doing right now from fields already on SessionInfo
-// (zero extra disk reads). Only tool/thinking show a live counter; done/waiting/idle hide.
-function updateStageItem(active: SessionInfo | null) {
-    ensureStageItem();
-    if (!active || active.isFallback) {
-        stagePhase = null; stageBaseAt = null;
-    } else if (active.pendingToolUseAt) {
-        stagePhase = 'tool'; stageBaseAt = active.pendingToolUseAt.getTime();
-    } else if (active.pendingQuestionAt) {
-        stagePhase = null; stageBaseAt = null;  // waiting for the user — not "working"
-    } else if (active.lastAssistantEndTurnAt && (!active.lastActivityAt || active.lastAssistantEndTurnAt.getTime() >= active.lastActivityAt.getTime())) {
-        stagePhase = null; stageBaseAt = null;  // finished a turn (text-bearing end_turn)
-    } else if (active.lastActivityAt) {
-        stagePhase = 'thinking'; stageBaseAt = active.lastActivityAt.getTime();
-    } else {
-        stagePhase = null; stageBaseAt = null;
-    }
-    tickStageItem();
-}
-
-// Re-render text/color from the cached marker every second WITHOUT touching disk — this is
-// what keeps the counter alive through Claude's long silent thinking.
-function tickStageItem() {
-    if (!stageStatusItem) return;
-    if (stagePhase == null || stageBaseAt == null) { stageStatusItem.hide(); return; }
-    const elapsedSec = Math.max(0, Math.round((Date.now() - stageBaseAt) / 1000));
-    const icon = stagePhase === 'tool' ? '🔧' : '🤔';
-    stageStatusItem.text = `${icon} ${elapsedSec}s`;
-    const stuck = elapsedSec > STAGE_STUCK_SEC;
-    stageStatusItem.backgroundColor = stuck ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
-    const ko = planLang() === 'ko';
-    stageStatusItem.tooltip = stuck
-        ? (ko ? 'Claude가 비정상적으로 오래 작업 중 — 멈춤 의심' : 'Claude has been working unusually long — possibly stuck')
-        : (ko ? 'Claude 작업 중 — 마지막 활동 이후 경과 초 (멈추면 완료/대기)' : 'Claude is working — seconds since last activity (stops when done/idle)');
-    stageStatusItem.show();
 }
 
 function ensurePlanFallback() {

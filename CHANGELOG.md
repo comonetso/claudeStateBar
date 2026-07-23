@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.48] - 2026-07-24
+
+### Fixed
+- **Workflow‑complete beep no longer fires once per batch.** A workflow that runs its agents in *sequential batches* (e.g. 4 agents, then 2, then a final verification pass) used to beep at the end of **every** batch. Cause: a workflow's `journal.jsonl` only records per‑agent `started` / `result` lines — there is no "the whole script finished" marker — so the lull between batches (batch 1 done, batch 2 not spawned yet) momentarily reads as "all agents done." The beep now gates on the real end‑of‑workflow signal — the run's result file `workflows/<wfId>.json` (top‑level `status: "completed"`), with the session‑log completion notice as a fallback — so it fires **exactly once, when the whole workflow actually finishes**. Failed/killed runs close the gate silently (no success beep). Running all agents at once was never affected — only the sequential‑batch pattern misfired. Task (Agent‑tool) pseudo‑workflows keep their existing behavior.
+
+### Internal
+- Extracted 13 pure‑function modules out of the monolithic `extension.ts` into `src/core/` and `src/providers/claude/` — a **behavior‑preserving refactor** and groundwork for multi‑provider support. No user‑facing change; cross‑verified for behavioral equivalence against the previous release.
+
 ## [1.7.43] - 2026-07-21
 
 ### Fixed

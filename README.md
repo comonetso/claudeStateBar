@@ -89,7 +89,7 @@ Claude State Bar plays configurable WAV sounds for key events:
 
 All sound paths can be overridden with your own WAV file. Gain is adjustable from 50% to 5000% (values above ~300% may distort). Use **`Claude State Bar: Test Beep Sound`** from the Command Palette to preview.
 
-**Workflow‑complete beep gate** — the beep fires only when the extension watches a workflow transition from running → done in the current session. Stale workflows already done when VS Code starts are baselined silently.
+**Workflow‑complete beep gate** — the beep fires only when the extension watched a workflow go running → done in the current session. For real workflows (`wf_*`) it also waits for the whole script to actually finish — the run's completion record (`workflows/<wfId>.json`, `status: "completed"`) — so a workflow that runs its agents in **sequential batches** beeps **once at the very end**, not once per batch. Failed/killed runs don't beep. Stale workflows already done when VS Code starts are baselined silently.
 
 ---
 
