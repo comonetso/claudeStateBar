@@ -19,7 +19,7 @@ Reads Claude Code's local session logs (`~/.claude/projects/*.jsonl`) and shows,
 - **Color‑coded warnings** — normal / warning (≥50%) / danger (≥75%) backgrounds
 - **Two‑tier idle** — sessions dim after `idleTimeout` (default 180s) and fully hide after `hideAfter`
 - **Ghost‑session detection** — hides stale sessions after `/clear` or tab close; auto‑unhides on new activity
-- **Compact mode & custom short names** — `my-cool-project → MCP`, `typescript → Tscript`
+- **Compact mode & custom short names** — project names such as `my-cool-project → MCP`; Codex model names stay fully readable
 - **Live activity indicator** — shows elapsed seconds while Claude is thinking (🤔) or responding
 
 ### 📊 claudeState — Claude.ai plan usage
@@ -42,18 +42,26 @@ The status bar now shows **Claude sessions and OpenAI Codex sessions at the same
 
 Codex **context** data comes from files only: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — on your local machine, or on the remote host in a Remote‑SSH window. No network calls. **Account usage** is a separate path: it is queried live from the Codex app‑server (see below).
 
+With the default `scope: workspace`, Codex shows **the conversation UUID last selected in this VS Code window**. The extension first reads the stable URI of an active Codex editor tab; sidebar chats fall back to structural `conversationId` markers in this window's OpenAI `Codex.log`. Losing window focus or reloading VS Code does not erase that per-window UUID. Only that UUID's rollout is opened, even if the chat was created in another project or reopened in a Remote‑SSH window. It never substitutes another recent rollout. If no UUID can be resolved, only the account-remaining item is shown. Set `scope: all` explicitly to restore the machine/host-wide list of up to five recent sessions.
+
+Within the context-bar group, **Claude sessions are always on the left and Codex sessions are always on the right**. Activity timestamps never reorder one provider across the other.
+
+The provider glyph is a fixed identity cue: **Claude's `✳` is orange** and **Codex's `⬢` is blue**. The original silhouettes are bundled as larger native-size product icons, and their separate colour slots are compactly joined to the usage text. The text can therefore still change colour at warning/danger thresholds without changing the glyph or wasting status-bar space.
+
 ### What a Codex item shows
 
 - **Context usage %** — the latest `last_token_usage.total_tokens` ÷ `model_context_window`
-- **Model name** — e.g. `gpt-5.6-sol` → `GPT-5.6 Sol` (`G5.6s` in compact mode)
+- **Model name** — e.g. `gpt-5.6-sol` → `gpt 5.6 sol`; only separators are made readable, and Codex model names are never shortened by compact mode
 - **Effort** — Low / Medium / High / xHigh, etc.
 - **Idle dimming & `hideAfter` hiding** — exactly the same rules as Claude
 - **Completion beep** — driven by Codex's `task_complete` event. It **shares Claude's completion sound and threshold settings** — there is no separate Codex sound setting.
-- **Tooltip** — Codex account usage (Primary/Secondary limits, reset times, plan type) + context token breakdown + who is running it
+- **Tooltip** — Codex account remaining (Primary/Secondary limits, reset times, plan type) + context token breakdown + who is running it
 
 ### Codex account usage (rate limits)
 
 Read **live from the Codex app‑server**. The extension briefly spawns a `codex app-server` process and asks it for `account/rateLimits/read` over JSON‑RPC — a measured round trip of about **0.6–0.9 s**.
+
+The app-server reports a consumed `usedPercent`; the status bar and tooltip convert it to **remaining percent** (`100 - usedPercent`) to match the ChatGPT usage screen. For example, `usedPercent: 58` is displayed as **42% remaining**.
 
 This runs on its **own slow timer, separate from the 30‑second session refresh**. It shares the `claudeState.refreshIntervalSec` value but is clamped to a **minimum of 60 seconds**, so no process is spawned on every 30‑second poll. This is exactly symmetric with how Claude polls the claude.ai usage API.
 
@@ -61,14 +69,18 @@ This runs on its **own slow timer, separate from the 30‑second session refresh
 
 **Fallback order:**
 
-1. Live app‑server query
-2. If that fails, the `rate_limits` snapshot in that session's rollout log
-3. If that's missing too, the last successful value, marked as a **stale value**
+1. Live app‑server query, coordinated through one cross-window shared cache
+2. If no live/shared value has ever succeeded, the newest `rate_limits` snapshot available from the visible rollout logs
+3. If a previous shared live value exists, keep it and mark it as a **stale value** when it ages out
 4. If there is nothing at all, usage is not shown
 
 The tooltip shows the **source next to the observation time** — `live`, or `from session log`.
 
 > The old "only refreshes while Codex is actually working" caveat now applies **only to the fallback** (step 2): a rollout snapshot is written while Codex works, so an idle session's snapshot goes stale.
+
+All VS Code windows in the same local profile use a small, non-secret file in the extension's `globalStorage`. An atomic `wx` lock elects one window to run `account/rateLimits/read`; the others consume the atomically replaced cache and watch it for changes. This avoids one app-server process per window and prevents a newer-but-stale rollout snapshot from overriding the account-authoritative live value.
+
+If the current window has no recorded Codex conversation UUID or its rollout is unavailable, account remaining is still shown as a standalone **`⬢ Codex`** item. This is intentionally account-only: the extension does not attach another window's model or context figures by guesswork. Once a UUID is resolved, the standalone item is replaced by that conversation's normal session item.
 
 Codex account usage is a **separate concept** from Claude's 5‑hour / weekly plan usage. Each provider's usage is merged only into that provider's own first session item.
 
@@ -78,23 +90,24 @@ Codex account usage is a **separate concept** from Claude's 5‑hour / weekly pl
 |---------|---------|-------------|
 | `claudeContextBar.codex.enabled` | `true` | Show Codex sessions on/off. If Codex isn't installed this is an immediate no‑op, so it costs nothing. |
 | `claudeContextBar.codex.home` | `""` | Codex state directory. Leave empty for auto‑detection (`$CODEX_HOME` → `~/.codex`). **If you set it explicitly and the path doesn't exist, there is no fallback — nothing is shown and the reason is written to the log.** |
-| `claudeContextBar.codex.scanDays` | `3` | How many recent `sessions/YYYY/MM/DD` folders to scan. Full history is never recursively scanned. |
+| `claudeContextBar.codex.scanDays` | `3` | How many recent `sessions/YYYY/MM/DD` folders to scan in `scope: all`. Current-chat mode locates the selected UUID directly, including an older reopened chat. |
 
 Everything else is **shared between Claude and Codex** — warning/danger thresholds, sounds, `compactMode`, `idleTimeout`, `hideAfter`, `scope`, and so on. There are no Codex‑specific threshold or sound settings.
 
 ### Known limitations (Phase 1)
 
-- **A window only sees its own host's Codex sessions** — a Remote‑SSH window shows the **remote host's** Codex sessions only; Codex running on your local PC is not shown there (and a local window shows only local Codex). **Claude behaves exactly the same way, so the two are consistent.** Remote‑SSH itself *is* supported — see the Remote‑SSH support section below.
+- **Current-chat mode follows the Codex UI, not host ownership.** A Remote‑SSH window can run the Codex webview on the local UI host, so the selected conversation may live in local `CODEX_HOME`; it can also refer to a rollout in the configured/remote Codex home. The exact selected UUID is tried against the configured host first and the local UI home only when no explicit `codex.home` override forbids fallback.
 - **No workflow / sub‑agent viewer** — Codex has no equivalent of Claude's workflow journal yet, so clicking a Codex session does not open the workflow menu.
 - **Codex sub‑agent sessions are not shown** — rollouts whose `source` is a subagent are excluded.
 - **No question‑pause beep and no stuck detection** — Codex has no such signals.
 - **No Codex log deletion.**
 - **Account usage is queried from your *local* `codex`, even in a Remote‑SSH window** — the live query runs the **local** `codex` executable, so the figures reflect your local account. With the same ChatGPT account the numbers are identical; with a different account they can differ. (Context monitoring is unaffected — it reads the remote files correctly.)
 - **If `codex` isn't available or the app‑server query fails, the context monitor keeps working normally** — only usage falls back to the log snapshot. The query has a **15‑second timeout**, and the helper process is cleaned up every time (verified in practice: no process leaks).
+- **Sidebar selection uses an internal OpenAI log marker as a compatibility fallback.** Active Codex editor tabs use the stable VS Code tab URI. The newest `active=true` UUID is retained per window because `active=false` also means ordinary window focus loss. On Remote‑SSH, the local window is matched to its remote OpenAI extension-host log by process ID, with activation time as a bounded fallback. A future OpenAI log-format change can temporarily reduce a sidebar-only window to the account-only item. `scope: all` intentionally remains a recent-session list.
 
 ### Privacy
 
-Codex rollout logs contain the full text of your conversations, but this extension reads **only structural fields** — token counts, timestamps, model names. Message bodies are never read, never stored, and never written to any log. `auth.json` is never accessed.
+Codex rollout logs contain the full text of your conversations, but the rollout parser extracts **only structural fields** — token counts, timestamps, model names. To identify a sidebar chat, the matching local or remote OpenAI `Codex.log` is scanned for the exact `thread_stream_view_activity_changed` marker, its boolean, and its UUID; all other log text is discarded immediately. Message bodies are never stored or written to this extension's log. `auth.json` is never accessed.
 
 ---
 
@@ -111,13 +124,13 @@ In a Remote‑SSH window you see **remote session token usage and your plan usag
 
 ### Codex over Remote‑SSH
 
-**Codex is covered too — the same way Claude is.** The extension still runs locally, but it reads the **remote** host's files through `vscode.workspace.fs`, which VS Code routes over the SSH connection. The remote home is found by probing `/root` and `/home/*` for a directory that actually contains `.codex/sessions` — exactly how `.claude/projects` is located. The file watcher works remotely as well, so remote Codex sessions refresh within seconds.
+**Codex is covered too.** With `scope: all`, the extension reads the **remote** host's recent rollout files through `vscode.workspace.fs`; the remote home is found by probing `/root` and `/home/*` for a directory that actually contains `.codex/sessions`. With the default `scope: workspace`, it first resolves the exact conversation shown by this VS Code window and looks for that UUID on the remote host. If no explicit `codex.home` is set, it can then check the local UI host's Codex home because the Codex webview may own a local conversation even inside a Remote‑SSH window.
 
 **One read‑path difference (performance note):** locally the extension reads only the byte range it needs, so even a 14.1 MB rollout takes a few milliseconds. Over Remote‑SSH the VS Code file API has no range read, so the **whole file** is read. This is the same thing Claude already does remotely (the largest Claude session file on this dev machine is 9.2 MB), and Codex adds an optimisation Claude doesn't have: **if a rollout's mtime and size are unchanged, the read is skipped entirely**. As a safeguard, remote rollout files **larger than 32 MB are skipped and logged**.
 
-Local and remote read paths were verified to produce identical results — 5 sessions × 12 fields, all matching, on the same rollout data.
+Local and remote read paths were verified to produce identical parsed results — 5 sessions × 12 fields, all matching, on the same rollout data.
 
-⚠️ Note that a remote window shows **only the remote host's** Codex sessions, and a local window only local ones. Claude behaves identically here.
+⚠️ An explicit `codex.home` remains authoritative and never falls back. In `scope: all`, a remote window lists only the remote host's recent Codex sessions; the local UI fallback applies only to the exact selected conversation in the default current-chat mode.
 
 ⚠️ **Account usage is the one exception:** the live rate‑limit query runs your **local** `codex`, so even in a remote window the usage figures come from your **local** account. Same ChatGPT account → identical numbers; a different account → possibly different. Context monitoring is unaffected.
 
@@ -259,7 +272,7 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 | `claudeContextBar.refreshInterval` | `30` | Refresh interval (seconds) |
 | `claudeContextBar.idleTimeout` | `180` | Seconds before a session is **dimmed** |
 | `claudeContextBar.hideAfter` | `86400` | Seconds before a session is **hidden** (≥ idleTimeout) |
-| `claudeContextBar.scope` | `workspace` | `workspace` (current folders only) or `all` |
+| `claudeContextBar.scope` | `workspace` | `workspace`: current folders for Claude and this window's last selected conversation UUID for Codex; `all`: recent sessions across projects/windows |
 | `claudeContextBar.showModel` | `true` | Show model name next to the percentage |
 | `claudeContextBar.compactMode` | `false` | Shorten project names |
 | `claudeContextBar.shortNames` | `{}` | Custom short names, e.g. `{"my-project":"MP"}` |
@@ -300,7 +313,7 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 |---------|---------|-------------|
 | `claudeContextBar.codex.enabled` | `true` | Show Codex sessions on/off (immediate no‑op if Codex isn't installed) |
 | `claudeContextBar.codex.home` | `""` | Codex state directory; empty = auto‑detect (`$CODEX_HOME` → `~/.codex`). An explicit path that doesn't exist shows nothing and is logged — no fallback. |
-| `claudeContextBar.codex.scanDays` | `3` | How many recent `sessions/YYYY/MM/DD` folders to scan (full history is never recursively scanned) |
+| `claudeContextBar.codex.scanDays` | `3` | How many recent date folders to scan in `scope: all`; current-chat mode locates the selected UUID directly |
 
 All other settings — thresholds, sounds, `compactMode`, `idleTimeout`, `hideAfter`, `scope` — are shared by Claude and Codex.
 

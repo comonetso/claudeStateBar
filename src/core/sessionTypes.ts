@@ -100,10 +100,10 @@ export function capabilitiesFor(provider: ProviderId): ProviderCapabilities {
  * Status-bar prefix identifying the provider.
  *   ✳ — Claude (mirrors the eight-spoked asterisk of the Claude mark)
  *   ⬢ — Codex  (mirrors the OpenAI hexagonal motif)
- * Both are BMP dingbats, not emoji, so they inherit the item's foreground colour instead
- * of rendering as a fixed-colour glyph — important because the text colour encodes the
- * warning/danger/idle state.
  */
 export function providerIcon(provider: ProviderId): string {
-    return provider === 'codex' ? '⬢' : '✳';
+    // Product icons render at VS Code's native 16 px icon size. The bundled font keeps
+    // the established ✳ / ⬢ silhouettes while allowing each provider slot to retain
+    // its own fixed foreground colour.
+    return provider === 'codex' ? '$(ccb-codex)' : '$(ccb-claude)';
 }

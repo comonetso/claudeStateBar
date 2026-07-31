@@ -26,15 +26,18 @@ import { alertedSessions, lastKnownEndTurnAt, pendingCompletion, lastKnownQuesti
 import { updateStageItem, startStageTicker, disposeStage, initStageIndicator } from './core/stageIndicator';
 import { SessionInfo, ProviderId, CodexUsageSnapshot, providerIcon, capabilitiesFor } from './core/sessionTypes';
 import { findCodexSessions, isCodexEnabled, getCodexHomeUri, resetCodexHome } from './providers/codex/sessionProvider';
-import { fetchCodexRateLimits } from './providers/codex/usageProvider';
-import { getShortCodexModelName, getCodexEffortLabel } from './providers/codex/display';
+import { CODEX_USAGE_CACHE_FILENAME, fetchSharedCodexRateLimits, readCachedCodexRateLimits } from './providers/codex/usageProvider';
+import { getCodexModelName, getCodexEffortLabel } from './providers/codex/display';
+import { initialiseCurrentCodexThreadTracking } from './providers/codex/currentThread';
 
 // SessionInfo moved to core/sessionTypes.ts so the Codex provider can produce sessions
 // without importing this entry point. Re-exported shape is unchanged for Claude.
 
 interface StatusBarEntry {
     item: vscode.StatusBarItem;
+    iconItem: vscode.StatusBarItem;
     sessionFile: string;
+    priority: number;
     /** Which provider currently owns this item — gates provider-specific menu entries. */
     provider: ProviderId;
 }
@@ -60,6 +63,48 @@ interface WorkflowInfo {
 }
 
 const statusBarItems: Map<string, StatusBarEntry> = new Map();
+let statusBarExtensionId = 'blueming.claude-state-bar';
+let compactStatusBarFallbackLogged = false;
+
+interface RelativeStatusBarPriority {
+    location: { id: string; priority: number };
+    alignment: 0 | 1;
+    compact: true;
+}
+
+/**
+ * VS Code already uses relative compact priorities for its own grouped status-bar
+ * entries, but the public StatusBarItem type exposes numeric priorities only. Current
+ * desktop builds retain the validated priority in this ordinary private field. Set it
+ * before the first show/update so our two differently-coloured entries are rendered as
+ * one compact pair. If VS Code changes the implementation, the guarded fallback keeps
+ * the normal public-API layout instead of breaking the context bar.
+ */
+function compactIconBesideText(iconItem: vscode.StatusBarItem, textItem: vscode.StatusBarItem, fallbackPriority: number): void {
+    const mutableIcon = iconItem as vscode.StatusBarItem & { _priority?: number | RelativeStatusBarPriority };
+    if (!Object.prototype.hasOwnProperty.call(mutableIcon, '_priority')) {
+        if (!compactStatusBarFallbackLogged) {
+            log('[statusbar] compact pair unavailable in this VS Code build; using standard spacing');
+            compactStatusBarFallbackLogged = true;
+        }
+        return;
+    }
+
+    mutableIcon._priority = {
+        location: {
+            id: `${statusBarExtensionId}.${textItem.id}`,
+            priority: fallbackPriority
+        },
+        // Internal status-bar alignment: 0 = place this icon left of the text item.
+        alignment: 0,
+        compact: true
+    };
+}
+
+function sessionStatusBarItemId(sessionFile: string, part: 'icon' | 'text'): string {
+    const sessionKey = crypto.createHash('sha1').update(sessionFile).digest('hex').slice(0, 16);
+    return `context.${sessionKey}.${part}`;
+}
 // Track manually hidden sessions: sessionFile -> timestamp when hidden
 const hiddenSessions: Map<string, number> = new Map();
 let refreshInterval: NodeJS.Timeout | null = null;
@@ -68,6 +113,9 @@ let refreshInterval: NodeJS.Timeout | null = null;
 // Plan usage is merged into the first session status-bar item. When no Claude Code
 // session is active, planFallbackItem shows the plan usage on its own.
 let planFallbackItem: vscode.StatusBarItem | null = null;
+// Account usage remains meaningful even when workspace scope cannot associate the Codex
+// webview's selected thread with a persisted rollout.
+let codexUsageFallbackItem: vscode.StatusBarItem | null = null;
 let planRefreshInterval: NodeJS.Timeout | null = null;
 let planTickInterval: NodeJS.Timeout | null = null;
 
@@ -191,10 +239,22 @@ export function activate(context: vscode.ExtensionContext) {
     setLogChannel(outputChannel);
     context.subscriptions.push(outputChannel);
     log('claudeStateBar activating');
+    statusBarExtensionId = context.extension.id.toLowerCase();
     log(`Platform: ${process.platform}, home: ${os.homedir()}, remoteName=${vscode.env.remoteName ?? '(none — local UI host)'}`);
     const runsOnRemote = context.extensionUri.scheme !== 'file';
     setRunsOnRemote(runsOnRemote);
     log(`extensionUri.scheme=${context.extensionUri.scheme}, extensionRunsOnRemote=${runsOnRemote}`);
+
+    // Resolve the conversation displayed by this exact VS Code window. Tab and Codex.log
+    // changes trigger a refresh immediately; the normal polling loop remains the fallback.
+    initialiseCurrentCodexThreadTracking(context, () => refreshAllSessions());
+
+    // extensionKind=['ui'] keeps this directory on the local UI host, so every local and
+    // Remote-SSH window for the same VS Code profile shares one account-usage cache.
+    codexUsageCacheDir = context.globalStorageUri.fsPath;
+    try { fs.mkdirSync(codexUsageCacheDir, { recursive: true }); }
+    catch (e) { log(`[codex-usage] cannot prepare shared cache directory: ${e}`); }
+    syncCodexUsageFromSharedCache();
 
     // Initialise credential store (context.secrets) for the claudeState plan-usage feature
     creds.initCredentials(context);
@@ -625,6 +685,23 @@ export function activate(context: vscode.ExtensionContext) {
         }
     })();
 
+    // A different extension host may win the account-usage probe lock. Watch its atomic
+    // cache replacement so this window converges immediately instead of waiting for its
+    // independently phased polling timer.
+    try {
+        const usageWatcher = vscode.workspace.createFileSystemWatcher(
+            new vscode.RelativePattern(context.globalStorageUri, CODEX_USAGE_CACHE_FILENAME)
+        );
+        const onUsageCacheChange = () => {
+            if (syncCodexUsageFromSharedCache()) refreshAllSessions();
+        };
+        usageWatcher.onDidChange(onUsageCacheChange);
+        usageWatcher.onDidCreate(onUsageCacheChange);
+        context.subscriptions.push(usageWatcher);
+    } catch (e) {
+        log(`[codex-usage] shared cache watcher unavailable (polling still applies): ${e}`);
+    }
+
     // Set up periodic refresh
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const intervalSeconds = config.get<number>('refreshInterval', 30);
@@ -635,11 +712,12 @@ export function activate(context: vscode.ExtensionContext) {
     refreshPlanUsage();
 
     // Codex account usage: its own slow timer, deliberately separate from the 30s session
-    // poll. Each probe spawns a short-lived `codex app-server` (~850ms observed), so it must
-    // never ride the fast loop. Shares the plan-usage interval setting for symmetry with
-    // Claude, clamped to at least a minute.
+    // poll. A shared cache + atomic lock lets only one window spawn the short-lived
+    // `codex app-server`; the others reuse that result. The plan-usage interval is clamped
+    // to at least a minute.
     {
         const codexUsageSec = Math.max(60, creds.getRefreshIntervalSec());
+        codexUsageCacheMaxAgeMs = codexUsageSec * 1000;
         refreshCodexUsage();
         codexUsageInterval = setInterval(refreshCodexUsage, codexUsageSec * 1000);
     }
@@ -669,8 +747,12 @@ export function activate(context: vscode.ExtensionContext) {
             for (const [, p] of pendingQuestion) clearTimeout(p.timer);
             pendingQuestion.clear();
             planFallbackItem?.dispose();
+            codexUsageFallbackItem?.dispose();
             disposeStage();
-            statusBarItems.forEach(entry => entry.item.dispose());
+            statusBarItems.forEach(entry => {
+                entry.item.dispose();
+                entry.iconItem.dispose();
+            });
             statusBarItems.clear();
         }
     });
@@ -724,8 +806,12 @@ export function deactivate() {
     for (const [, p] of pendingQuestion) clearTimeout(p.timer);
     pendingQuestion.clear();
     planFallbackItem?.dispose();
+    codexUsageFallbackItem?.dispose();
     disposeStage();
-    statusBarItems.forEach(entry => entry.item.dispose());
+    statusBarItems.forEach(entry => {
+        entry.item.dispose();
+        entry.iconItem.dispose();
+    });
     statusBarItems.clear();
 }
 
@@ -1755,7 +1841,9 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
  *
  * Claude discovery is untouched — Codex is gathered independently and appended, so a
  * failure inside the Codex provider can never regress Claude (docs risk register:
- * "one provider crash affects all"). The two are only sorted together at the end.
+ * "one provider crash affects all"). Provider grouping is deliberate: Claude must always
+ * occupy the left side of the context-bar group and Codex the right side, regardless of
+ * which session was updated most recently.
  */
 async function findAllSessions(): Promise<SessionInfo[]> {
     const claude = await findActiveSessions();
@@ -1791,9 +1879,9 @@ async function findAllSessions(): Promise<SessionInfo[]> {
         }
     }
 
-    const merged = [...claude, ...visibleCodex];
-    merged.sort((a, b) => b.lastUpdated.getTime() - a.lastUpdated.getTime());
-    return merged;
+    // Do not globally sort this array. Status-bar priorities are assigned from this order,
+    // and a global lastUpdated sort makes Claude/Codex swap sides whenever activity changes.
+    return [...claude, ...visibleCodex];
 }
 
 // Read global effort level from ~/.claude/settings.json. Returns lowercase raw value
@@ -1815,6 +1903,9 @@ async function getGlobalEffortLevel(): Promise<string> {
 async function refreshAllSessions() {
     const suppressBeep = getFirstScan();
     setFirstScan(false);
+    // File watchers are best effort (especially after sleep). The regular refresh also
+    // adopts a newer account snapshot written by another extension host.
+    syncCodexUsageFromSharedCache();
     const sessions = await findAllSessions();
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const warningThreshold = config.get<number>('warningThreshold', 50);
@@ -1889,24 +1980,40 @@ async function refreshAllSessions() {
         if (!providerLeadIndex.has(sessions[i].provider)) providerLeadIndex.set(sessions[i].provider, i);
     }
 
-    // Sessions are sorted newest-first, so reverse for oldest-left display
-    // For Left alignment: higher priority = further left
+    // The array is provider-grouped (Claude first, Codex second). For Right alignment,
+    // higher priority is further left, so this makes every Claude item precede every Codex
+    // item. Existing StatusBarItem.priority is readonly, so an item is recreated only when
+    // its slot changes (for example, when a new Claude session shifts the Codex group right).
+    const sessionPriorityBase = 30;
     for (let i = 0; i < sessions.length; i++) {
         const session = sessions[i];
         seenPaths.add(session.sessionFile);
 
         let entry = statusBarItems.get(session.sessionFile);
+        const priority = sessionPriorityBase - (i * 2);
 
-        if (!entry) {
-            // Right-aligned: higher priority = more left. Use a small positive value
-            // so we sit RIGHT of editor option items (line/col, encoding, language ≈ 100)
-            // but LEFT of low-priority extension items (Antigravity, etc.).
-            const priority = 10 - i;
+        if (!entry || entry.priority !== priority) {
+            entry?.item.dispose();
+            entry?.iconItem.dispose();
+            // Keep the whole session group ahead of the lower-priority plan/stage items.
             const item = vscode.window.createStatusBarItem(
+                sessionStatusBarItemId(session.sessionFile, 'text'),
                 vscode.StatusBarAlignment.Right,
                 priority
             );
-            entry = { item, sessionFile: session.sessionFile, provider: session.provider };
+            const iconItem = vscode.window.createStatusBarItem(
+                sessionStatusBarItemId(session.sessionFile, 'icon'),
+                vscode.StatusBarAlignment.Right,
+                priority + 1
+            );
+            compactIconBesideText(iconItem, item, priority);
+            entry = {
+                item,
+                iconItem,
+                sessionFile: session.sessionFile,
+                priority,
+                provider: session.provider
+            };
             statusBarItems.set(session.sessionFile, entry);
         }
         entry.provider = session.provider;
@@ -1918,7 +2025,7 @@ async function refreshAllSessions() {
         // Each provider names its models differently, so the label helpers are per-provider.
         const modelLabel = showModel
             ? (isCodex
-                ? getShortCodexModelName(session.model, compactMode)
+                ? getCodexModelName(session.model)
                 : getShortModelName(session.model, compactMode))
             : '';
         const effortLabel = isCodex
@@ -1942,9 +2049,12 @@ async function refreshAllSessions() {
         const planAdd = isProviderLead
             ? (isCodex ? codexUsageTextSuffix(compactMode) : planTextSuffix(compactMode))
             : '';
-        // ✳ Claude / ⬢ Codex — a BMP dingbat, so it inherits the item's foreground colour
-        // (an emoji would render in its own fixed colour and hide the warning/idle state).
-        entry.item.text = `${providerIcon(session.provider)} ${displayName}${infoPart} (${session.percentage}%)${planAdd}${idleSuffix}`;
+        entry.iconItem.text = providerIcon(session.provider);
+        entry.iconItem.color = session.provider === 'codex' ? '#8ecae6' : '#f4a261';
+        entry.iconItem.backgroundColor = undefined;
+        // The provider glyph is separate so its identity colour is independent of the
+        // usage text's warning/danger/idle colour.
+        entry.item.text = `${displayName}${infoPart} (${session.percentage}%)${planAdd}${idleSuffix}`;
 
         // We never use backgroundColor — too visually loud. Threshold warnings are shown via foreground color instead.
         entry.item.backgroundColor = undefined;
@@ -2180,7 +2290,14 @@ async function refreshAllSessions() {
             arguments: [session.sessionFile]
         };
 
+        entry.iconItem.tooltip = md;
+        entry.iconItem.command = {
+            command: 'claudeContextBar.showSessionMenu',
+            title: 'Session Menu',
+            arguments: [session.sessionFile]
+        };
         entry.item.show();
+        entry.iconItem.show();
     }
 
     // --- Workflow-complete beep (incl. Task pseudo-workflow wfId 'tasks') ---
@@ -2282,6 +2399,7 @@ async function refreshAllSessions() {
     for (const [sessionFile, entry] of statusBarItems) {
         if (!seenPaths.has(sessionFile)) {
             entry.item.dispose();
+            entry.iconItem.dispose();
             statusBarItems.delete(sessionFile);
             alertedSessions.delete(sessionFile);
             lastKnownEndTurnAt.delete(sessionFile);
@@ -2301,10 +2419,12 @@ async function refreshAllSessions() {
         }
     }
 
-    // claudeState fallback: show standalone plan item when no real session exists.
-    // Fallback (dim) context sessions don't count — claudeState must stay bright separately.
-    const hasRealSession = sessions.some(s => !s.isFallback);
-    updatePlanFallback(!hasRealSession);
+    // Account-usage fallbacks are provider-scoped. A Codex session must not suppress the
+    // standalone Claude plan item (or vice versa), and dim fallback sessions do not count.
+    const hasRealClaudeSession = sessions.some(s => s.provider === 'claude' && !s.isFallback);
+    const hasRealCodexSession = sessions.some(s => s.provider === 'codex' && !s.isFallback);
+    updatePlanFallback(!hasRealClaudeSession);
+    updateCodexUsageFallback(!hasRealCodexSession);
 
     // "Is it alive?" — drive the live elapsed counter from the most recent active session.
     // Codex only qualifies while a turn is genuinely in flight: its stage is decided by the
@@ -2433,11 +2553,9 @@ function planTextSuffix(compact: boolean): string {
 // ---------------------------------------------------------------------------
 // Codex account usage — the Codex counterpart to the claudeState plan block.
 //
-// Source: `rate_limits` riding along on each token_count record in the rollout. That is
-// deliberately NOT the app-server: a separately launched app-server cannot observe threads
-// already loaded by the running Codex client (docs §5.2), and spawning one every refresh is
-// forbidden. The trade-off is that these numbers only advance while Codex is working, so an
-// idle session's snapshot goes stale — which the tooltip states outright rather than hiding.
+// Account rate limits come from app-server and are shared across extension hosts. Rollout
+// `rate_limits` remains a fallback only: it is a per-thread snapshot and can be stale even
+// when its record timestamp is newer than the last account probe.
 // ---------------------------------------------------------------------------
 
 /** After this long without a fresh snapshot the numbers are labelled stale. */
@@ -2450,6 +2568,18 @@ const CODEX_USAGE_STALE_MS = 15 * 60 * 1000;
 let codexLiveUsage: CodexUsageSnapshot | null = null;
 let codexUsageInterval: NodeJS.Timeout | null = null;
 let codexUsageInFlight = false;
+let codexUsageCacheDir = '';
+let codexUsageCacheMaxAgeMs = 5 * 60 * 1000;
+
+/** Pull a newer value written by another VS Code window into this extension host. */
+function syncCodexUsageFromSharedCache(): boolean {
+    const cached = readCachedCodexRateLimits(codexUsageCacheDir, CODEX_USAGE_STALE_MS);
+    if (!cached?.observedAt) return false;
+    if (codexLiveUsage?.observedAt
+        && codexLiveUsage.observedAt.getTime() >= cached.observedAt.getTime()) return false;
+    codexLiveUsage = cached;
+    return true;
+}
 
 async function refreshCodexUsage(): Promise<void> {
     if (!isCodexEnabled() || codexUsageInFlight) return;
@@ -2457,10 +2587,10 @@ async function refreshCodexUsage(): Promise<void> {
     if (!(await getCodexHomeUri())) return;
     codexUsageInFlight = true;
     try {
-        const fresh = await fetchCodexRateLimits();
-        if (fresh) {
-            codexLiveUsage = fresh;
-            log(`[codex-usage] live: primary=${fresh.primary?.usedPercent ?? '--'}% plan=${fresh.planType ?? '?'}`);
+        const result = await fetchSharedCodexRateLimits(codexUsageCacheDir, codexUsageCacheMaxAgeMs);
+        if (result) {
+            codexLiveUsage = result.snapshot;
+            log(`[codex-usage] ${result.source}: primary=${result.snapshot.primary?.usedPercent ?? '--'}% plan=${result.snapshot.planType ?? '?'}`);
             refreshAllSessions();
         }
         // On failure we keep the previous live value; the tooltip ages it into "stale"
@@ -2499,11 +2629,10 @@ function recomputeCodexSnapshotFallback(sessions: SessionInfo[]): void {
 function accountCodexUsage(): CodexUsageSnapshot | null {
     const live = codexLiveUsage;
     const snap = codexSnapshotFallback;
-    if (!live) return snap;
-    if (!snap || !snap.observedAt || !live.observedAt) return live;
-    // A rollout can legitimately be newer than the last probe while Codex is actively
-    // working, since it updates every turn.
-    return live.observedAt.getTime() >= snap.observedAt.getTime() ? live : snap;
+    // account/rateLimits/read is the account-authoritative source. A rollout timestamp can
+    // be newer while carrying an older per-thread snapshot, so comparing timestamps across
+    // those two different sources reintroduced cross-window disagreement.
+    return live ?? snap;
 }
 
 function isoFromEpoch(ms: number | null): string | null {
@@ -2524,11 +2653,18 @@ function formatUsageWindow(minutes: number): string {
     return planLang() === 'ko' ? `${minutes}분` : `${minutes} min`;
 }
 
+// app-server and rollout snapshots expose consumed usage as `usedPercent`, while the
+// product UI presents the complementary amount still available. Keep the source value
+// intact and invert only at the presentation boundary.
+function codexRemainingPercent(usedPercent: number): number {
+    return Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
+}
+
 // Suffix appended to the leading Codex session item — mirrors planTextSuffix().
 function codexUsageTextSuffix(compact: boolean): string {
     const u = accountCodexUsage();
     if (!u || !u.primary) return '';
-    const p = Math.round(u.primary.usedPercent);
+    const p = codexRemainingPercent(u.primary.usedPercent);
     const iso = isoFromEpoch(u.primary.resetsAt);
     if (compact) {
         return ` · ${p}% (${untilHumanCompact(iso)})`;
@@ -2546,7 +2682,7 @@ function codexUsageTooltipBlock(): string {
     if (u.primary) {
         const iso = isoFromEpoch(u.primary.resetsAt);
         const win = formatUsageWindow(u.primary.windowMinutes);
-        s += `📊 **${planT('sb.codexPrimary')}**: ${Math.round(u.primary.usedPercent)}%` +
+        s += `📊 **${planT('sb.codexPrimary')}**: ${codexRemainingPercent(u.primary.usedPercent)}%` +
             (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') + `\n\n`;
         if (win) s += `🪟 ${planT('tt.window')}: ${win}\n\n`;
     }
@@ -2554,7 +2690,7 @@ function codexUsageTooltipBlock(): string {
     if (u.secondary) {
         const iso = isoFromEpoch(u.secondary.resetsAt);
         const win = formatUsageWindow(u.secondary.windowMinutes);
-        s += `📅 **${planT('sb.codexSecondary')}**: ${Math.round(u.secondary.usedPercent)}%` +
+        s += `📅 **${planT('sb.codexSecondary')}**: ${codexRemainingPercent(u.secondary.usedPercent)}%` +
             (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') +
             (win ? ` · ${win}` : '') + `\n\n`;
     }
@@ -2574,6 +2710,42 @@ function codexUsageTooltipBlock(): string {
         s += `🕐 ${planT('tt.observed')}: ${u.observedAt.toLocaleTimeString()} (${src})${stale}\n\n`;
     }
     return s;
+}
+
+function ensureCodexUsageFallback(): void {
+    if (!codexUsageFallbackItem) {
+        codexUsageFallbackItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 9);
+        codexUsageFallbackItem.command = 'claudeContextBar.openSettings';
+    }
+}
+
+// Account-only Codex item. The OpenAI webview does not expose its selected thread ID to
+// other extensions, and reopening a thread in another workspace does not rewrite its cwd.
+// We cannot honestly invent session context, but the account limit remains authoritative.
+function updateCodexUsageFallback(noCodexSessions: boolean): void {
+    ensureCodexUsageFallback();
+    const item = codexUsageFallbackItem!;
+    const u = accountCodexUsage();
+    if (!isCodexEnabled() || !noCodexSessions || !u?.primary) {
+        item.hide();
+        return;
+    }
+
+    const remaining = codexRemainingPercent(u.primary.usedPercent);
+    const iso = isoFromEpoch(u.primary.resetsAt);
+    const compact = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('compactMode', false);
+    item.text = compact
+        ? `${providerIcon('codex')} Codex · ${remaining}% (${untilHumanCompact(iso)})`
+        : `${providerIcon('codex')} Codex - ${planT('sb.codexLimit')} ${remaining}% (${untilHuman(iso)})`;
+    item.color = colorForPercent(u.primary.usedPercent) ?? '#FF9F6E';
+    item.backgroundColor = undefined;
+    item.tooltip = new vscode.MarkdownString(
+        sectionHeader('Codex Usage', '#FF9F6E') +
+        codexUsageTooltipBlock() +
+        `${planT('tt.codexNoWorkspaceSession')}\n\n` +
+        `*${planT('tt.clickSettings')}*`
+    );
+    item.show();
 }
 
 // A coloured section divider for the merged tooltip — visually separates the claudeState

@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+  <!-- Keep the same filled-hexagon silhouette with native Codicon-like visual padding. -->
+  <path d="M0 0h1v1H0zM999 999h1v1h-1zM500 145 815 327v346L500 855 185 673V327z"/>
+</svg>

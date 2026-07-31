@@ -5,31 +5,14 @@
 // ambiguous ultracode marker rendered "xHigh⁺", for Codex it is a plain effort tier.
 
 /**
- * Shorten a Codex model id for the status bar.
- *   gpt-5.6-sol   → "GPT-5.6 Sol"  (compact: "G5.6s")
- *   gpt-5.5       → "GPT-5.5"      (compact: "G5.5")
- *   codex-auto-review → "Auto Review" (compact: "AutoRev")
- * Unknown ids fall back to the raw value so a new model never renders as blank.
+ * Make a Codex model id readable without shortening or renaming it.
+ *
+ * `gpt-5.6-sol` becomes `gpt 5.6 sol`: only separators are changed. Codex model names
+ * are intentionally unaffected by compactMode, and unknown ids use the same rule.
  */
-export function getShortCodexModelName(model: string, compact: boolean): string {
+export function getCodexModelName(model: string): string {
     if (!model) return '';
-    const lower = model.toLowerCase();
-
-    // Internal review model Codex runs on its own — not a user-selected tier.
-    if (lower.includes('auto-review')) return compact ? 'AutoRev' : 'Auto Review';
-
-    const m = lower.match(/gpt-(\d+(?:\.\d+)?)(?:-([a-z]+))?/);
-    if (m) {
-        const version = m[1];
-        const variant = m[2] ?? '';
-        if (compact) {
-            return `G${version}${variant ? variant.charAt(0) : ''}`;
-        }
-        const variantPart = variant ? ` ${variant.charAt(0).toUpperCase()}${variant.slice(1)}` : '';
-        return `GPT-${version}${variantPart}`;
-    }
-
-    return model;
+    return model.trim().replace(/[-_]+/g, ' ');
 }
 
 /**

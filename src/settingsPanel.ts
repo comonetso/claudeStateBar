@@ -406,8 +406,8 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
         <div class="field">
           <label for="cb-scope" data-i18n="cb.scope.label">Session scope</label>
           <select id="cb-scope">
-            <option value="workspace" data-i18n="cb.scope.workspace">Current workspace only</option>
-            <option value="all" data-i18n="cb.scope.all">All sessions</option>
+            <option value="workspace" data-i18n="cb.scope.workspace">Current workspace / this window's Codex chat</option>
+            <option value="all" data-i18n="cb.scope.all">All recent sessions</option>
           </select>
         </div>
         <div class="field">

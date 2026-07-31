@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+  <!-- Tiny corner anchors preserve the 1000-unit icon box; the visible glyph occupies
+       roughly 12 px of VS Code's 16 px product-icon cell, matching native Codicons. -->
+  <path d="M0 0h1v1H0zM999 999h1v1h-1zM465 140h70v720h-70zM140 465h720v70H140zM220 269.5l49.5-49.5L780 730.5 730.5 780zM220 730.5 730.5 220l49.5 49.5L269.5 780z"/>
+</svg>

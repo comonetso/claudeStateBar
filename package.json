@@ -48,6 +48,22 @@
     ],
     "main": "./out/extension.js",
     "contributes": {
+        "icons": {
+            "ccb-claude": {
+                "description": "Claude provider glyph",
+                "default": {
+                    "fontPath": "./images/provider-icons/provider-icons.woff",
+                    "fontCharacter": "\\F102"
+                }
+            },
+            "ccb-codex": {
+                "description": "Codex provider glyph",
+                "default": {
+                    "fontPath": "./images/provider-icons/provider-icons.woff",
+                    "fontCharacter": "\\F101"
+                }
+            }
+        },
         "commands": [
             {
                 "command": "claudeContextBar.showSessionMenu",
@@ -214,11 +230,11 @@
                     "type": "string",
                     "enum": ["workspace", "all"],
                     "enumDescriptions": [
-                        "Only show Claude sessions for the current VS Code workspace folder(s).",
-                        "Show all Claude sessions found in ~/.claude/projects/ regardless of which project is open."
+                        "Show Claude sessions for the current workspace and only the Codex conversation displayed by this VS Code window.",
+                        "Show all recent Claude and Codex sessions regardless of which project or window displays them."
                     ],
                     "default": "workspace",
-                    "description": "Which Claude sessions to display. 'workspace' (default) shows only sessions for the currently open folder."
+                    "description": "Session display scope. 'workspace' (default) uses the open folders for Claude and this window's last selected conversation UUID for Codex; 'all' is the machine-wide recent-session view."
                 },
                 "claudeContextBar.showModel": {
                     "type": "boolean",
@@ -327,19 +343,19 @@
                 "claudeContextBar.codex.enabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Show OpenAI Codex sessions (⬢) alongside Claude sessions (✳), read from the ~/.codex rollout logs. Works on local and Remote-SSH windows alike (a remote window reads the remote host's ~/.codex, like Claude does). Harmless when Codex is not installed — discovery no-ops immediately."
+                    "description": "Show OpenAI Codex sessions (⬢) alongside Claude sessions (✳), read from rollout logs. In the default workspace scope, Codex follows the conversation UUID last selected by this VS Code window; scope all lists recent sessions. Works in local and Remote-SSH windows and is harmless when Codex is not installed."
                 },
                 "claudeContextBar.codex.home": {
                     "type": "string",
                     "default": "",
-                    "description": "Codex state directory. Leave empty to auto-detect: locally $CODEX_HOME then ~/.codex; on a Remote-SSH window, whichever of /root or /home/* actually contains .codex/sessions. If you set this and the path does not exist, no Codex sessions are shown (it does not silently fall back) and the reason is logged. On a remote window an absolute path is resolved on the remote host."
+                    "description": "Codex state directory. Leave empty to auto-detect: locally $CODEX_HOME then ~/.codex; on a Remote-SSH window, whichever of /root or /home/* contains .codex/sessions. Current-chat mode may also check the local UI host for the exact selected UUID when no explicit path is set. An explicit path is authoritative: if it does not exist, no Codex session is shown and the reason is logged."
                 },
                 "claudeContextBar.codex.scanDays": {
                     "type": "number",
                     "default": 3,
                     "minimum": 1,
                     "maximum": 60,
-                    "description": "How many recent day folders under ~/.codex/sessions/YYYY/MM/DD to scan. Codex history is never walked in full — raise this only if you need older sessions to reappear. Default: 3."
+                    "description": "How many recent day folders under ~/.codex/sessions/YYYY/MM/DD to scan when scope is all. Current-chat mode locates the selected UUID directly, including older reopened conversations. Codex history is never walked in full. Default: 3."
                 }
             }
         }

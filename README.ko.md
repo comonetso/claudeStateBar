@@ -19,7 +19,7 @@ Claude Code의 세션 로그(`~/.claude/projects/*.jsonl`)를 읽어 활성 세�
 - **색상 경고** — 정상 / 경고(≥50%) / 위험(≥75%) 배경색
 - **2단계 idle** — `idleTimeout`(기본 180초) 후 흐려지고, `hideAfter` 후 완전히 숨김
 - **유령 세션 감지** — `/clear`나 탭 종료 후 오래된 세션 숨김, 새 활동 시 자동 복원
-- **컴팩트 모드 & 커스텀 약칭** — `my-cool-project → MCP`, `typescript → Tscript`
+- **컴팩트 모드 & 커스텀 약칭** — 프로젝트명은 `my-cool-project → MCP`처럼 줄이며, Codex 모델명은 항상 알아볼 수 있는 전체 표기로 유지
 - **실시간 활동 표시** — Claude 사고(🤔) 또는 응답 중 경과초 표시
 
 ### 📊 claudeState — Claude.ai 플랜 사용량
@@ -42,18 +42,26 @@ Claude Code의 세션 로그(`~/.claude/projects/*.jsonl`)를 읽어 활성 세�
 
 Codex **컨텍스트** 데이터의 출처는 파일뿐입니다: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — 로컬 머신, 또는 Remote‑SSH 창에서는 원격 호스트의 파일입니다. 네트워크 호출이 없습니다. **계정 사용량**은 경로가 다릅니다 — Codex app‑server에서 실시간으로 조회합니다(아래 참조).
 
+기본 `scope: workspace`에서 Codex는 **이 VS Code 창이 마지막으로 선택한 대화 UUID 하나만** 보여줍니다. 먼저 활성 Codex 에디터 탭의 안정적인 URI를 읽고, 탭이 없는 사이드바 대화는 이 창의 OpenAI `Codex.log`에 기록된 구조적 `conversationId` 표식을 사용합니다. 다른 창으로 포커스가 이동하거나 VS Code를 재로드해도 이 창의 UUID를 지우지 않습니다. 대화를 다른 프로젝트에서 만들었거나 Remote‑SSH 창에서 다시 열었더라도 그 ID의 rollout 하나만 직접 엽니다. UUID를 얻지 못하면 계정 잔여량 항목만 표시합니다. 머신/호스트의 최근 세션을 최대 5개까지 보려면 `scope: all`을 명시적으로 선택하세요.
+
+컨텍스트 바 그룹 안에서는 **항상 Claude 세션이 왼쪽, Codex 세션이 오른쪽**에 표시됩니다. 최근 활동 시각이 바뀌어도 두 제공자의 좌우 위치는 바뀌지 않습니다.
+
+제공자 아이콘은 현재 모양을 유지한 더 큰 VS Code 기본 크기 아이콘으로 표시됩니다. **Claude의 `✳`는 주황색, Codex의 `⬢`는 파란색**으로 고정되며, 아이콘용 색상 영역은 사용량 텍스트에 촘촘하게 붙습니다. 따라서 텍스트가 경고/위험 임계값에 따라 변해도 아이콘 색상은 변하지 않고 상태바 공간도 불필요하게 차지하지 않습니다.
+
 ### Codex 아이템에 표시되는 것
 
 - **컨텍스트 사용률 %** — 최신 `last_token_usage.total_tokens` ÷ `model_context_window`
-- **모델명** — 예: `gpt-5.6-sol` → `GPT-5.6 Sol` (컴팩트 모드에서는 `G5.6s`)
+- **모델명** — 예: `gpt-5.6-sol` → `gpt 5.6 sol`; 구분자만 읽기 쉽게 바꾸며, 컴팩트 모드에서도 Codex 모델명은 줄이지 않음
 - **Effort** — Low / Medium / High / xHigh 등
 - **idle 흐림 & `hideAfter` 숨김** — Claude와 완전히 동일한 규칙
 - **완료 비프** — Codex의 `task_complete` 이벤트 기반. Claude의 완료 비프와 **동일한 사운드·임계값 설정을 공유**합니다 — Codex 전용 사운드 설정은 없습니다.
-- **툴팁** — Codex 계정 사용량(Primary/Secondary 한도, 갱신 시각, 플랜 종류) + 컨텍스트 토큰 내역 + 실행 주체
+- **툴팁** — Codex 계정 잔여량(Primary/Secondary 한도, 갱신 시각, 플랜 종류) + 컨텍스트 토큰 내역 + 실행 주체
 
 ### Codex 계정 사용량 (rate limit)
 
 **Codex app‑server에서 실시간으로** 읽습니다. 확장이 `codex app-server` 프로세스를 잠깐 띄워 JSON‑RPC로 `account/rateLimits/read`를 요청합니다 — 실측 왕복 시간 약 **0.6~0.9초**.
+
+app-server 원본은 소진 비율인 `usedPercent`를 반환합니다. 상태바와 툴팁은 ChatGPT 공식 사용량 화면과 동일하게 이를 **남은 비율**(`100 - usedPercent`)로 변환해 표시합니다. 예를 들어 `usedPercent: 58`은 **42% 남음**으로 표시됩니다.
 
 이 조회는 **세션 갱신(30초)과 분리된 별도의 느린 타이머**로 돕니다. `claudeState.refreshIntervalSec` 값을 공유하되 **최소 60초**로 제한되므로, 매 30초 폴링마다 프로세스를 띄우지 않습니다. Claude가 claude.ai 사용량 API를 주기적으로 호출하는 것과 정확히 대칭인 구조입니다.
 
@@ -61,14 +69,18 @@ Codex **컨텍스트** 데이터의 출처는 파일뿐입니다: `~/.codex/sess
 
 **폴백 순서:**
 
-1. app‑server 실시간 조회
-2. 실패하면 해당 세션 rollout 로그의 `rate_limits` 스냅샷
-3. 그것도 없으면 마지막 성공값에 **"오래된 값"** 표시
+1. 창 간 공유 캐시로 조정되는 app‑server 실시간 조회
+2. 실시간/공유 값이 한 번도 성공하지 못했으면, 현재 보이는 rollout 로그 중 최신 `rate_limits` 스냅샷
+3. 이전 공유 실시간 값이 있으면 계속 사용하되, 오래되면 **"오래된 값"** 표시
 4. 전부 없으면 사용량을 표시하지 않음
 
 툴팁에는 **관측 시각 옆에 출처가 함께** 표시됩니다 — `실시간`, 또는 `세션 로그`.
 
 > 기존의 "Codex가 실제로 작업 중일 때만 갱신된다"는 단서는 이제 **폴백(2단계)에만** 해당합니다. rollout 스냅샷은 Codex가 작업할 때 기록되므로, idle 세션의 스냅샷은 오래된 값이 됩니다.
+
+같은 로컬 VS Code 프로필의 모든 창은 확장 `globalStorage`에 있는 비밀값 없는 작은 파일 하나를 공유합니다. 원자적 `wx` 잠금으로 한 창만 `account/rateLimits/read`를 실행하고, 나머지 창은 원자적으로 교체된 캐시를 읽고 변경을 감시합니다. 이로써 창마다 app-server를 하나씩 띄우는 일을 막고, 시각만 더 최신인 오래된 rollout 스냅샷이 계정 기준 실시간 값을 덮어쓰지 못하게 합니다.
+
+현재 창에 기록된 Codex 대화 UUID가 없거나 해당 rollout을 찾을 수 없어도 계정 잔여량은 독립된 **`⬢ Codex`** 항목으로 계속 표시됩니다. 이 항목은 의도적으로 계정 정보만 보여줍니다. 다른 창의 모델·컨텍스트 수치를 추측해서 붙이지 않습니다. UUID 하나가 확인되면 독립 항목은 그 대화의 정상 세션 항목으로 자동 대체됩니다.
 
 Codex 계정 사용량은 Claude의 5시간 / 주간 플랜 사용량과는 **별개 개념**입니다. 각 provider의 사용량은 자기 provider의 첫 세션 아이템에만 병합되어 표시됩니다.
 
@@ -78,23 +90,24 @@ Codex 계정 사용량은 Claude의 5시간 / 주간 플랜 사용량과는 **�
 |------|--------|------|
 | `claudeContextBar.codex.enabled` | `true` | Codex 세션 표시 on/off. Codex 미설치 시 즉시 no‑op이라 비용이 없습니다. |
 | `claudeContextBar.codex.home` | `""` | Codex 상태 디렉터리. 비우면 자동 탐지(`$CODEX_HOME` → `~/.codex`). **명시했는데 경로가 없으면 자동 폴백하지 않고 아무것도 표시하지 않으며, 이유를 로그에 남깁니다.** |
-| `claudeContextBar.codex.scanDays` | `3` | `sessions/YYYY/MM/DD` 중 최근 며칠치 폴더만 스캔할지. 전체 히스토리는 절대 재귀 스캔하지 않습니다. |
+| `claudeContextBar.codex.scanDays` | `3` | `scope: all`에서 `sessions/YYYY/MM/DD` 중 최근 며칠치 폴더만 스캔할지. 현재 대화 모드는 오래전에 만든 대화도 선택 UUID로 직접 찾습니다. |
 
 그 밖의 설정은 **Claude와 Codex가 공유**합니다 — 경고/위험 임계값, 사운드, `compactMode`, `idleTimeout`, `hideAfter`, `scope` 등. Codex 전용 임계값·사운드 설정은 없습니다.
 
 ### 알려진 한계 (Phase 1)
 
-- **각 창은 자기 호스트의 Codex 세션만 봅니다** — Remote‑SSH 창에는 **원격 호스트의** Codex 세션만 표시되고, 로컬 PC에서 돌린 Codex는 보이지 않습니다(반대로 로컬 창에는 로컬 Codex만). **Claude도 정확히 동일하게 동작하므로 일관적입니다.** Remote‑SSH 자체는 지원합니다 — 아래 Remote‑SSH 지원 섹션 참조.
+- **현재 대화 모드는 호스트 소유권이 아니라 Codex UI를 따릅니다.** Remote‑SSH 창에서도 Codex webview가 로컬 UI 호스트에서 실행되면 선택 대화가 로컬 `CODEX_HOME`에 있을 수 있고, 설정된 원격 Codex 홈의 rollout을 가리킬 수도 있습니다. 정확한 선택 UUID를 설정된 호스트에서 먼저 찾고, 명시적인 `codex.home` 설정이 없을 때만 로컬 UI 홈을 폴백으로 확인합니다.
 - **워크플로우 / 서브에이전트 뷰어 없음** — Codex에는 Claude의 워크플로우 저널에 해당하는 구조가 아직 없어서, Codex 세션을 클릭해도 워크플로우 메뉴가 나오지 않습니다.
 - **Codex 서브에이전트 세션은 표시되지 않음** — `source`가 subagent인 rollout은 제외됩니다.
 - **질문 대기 비프 / 멈춤 감지 없음** — Codex에는 해당 신호가 없습니다.
 - **Codex 로그 삭제 기능 없음.**
 - **계정 사용량은 Remote‑SSH 창에서도 *로컬*의 `codex`로 조회합니다** — 실시간 조회는 **로컬** `codex` 실행 파일을 실행하므로, 원격 창에서도 로컬 계정 기준 값이 나옵니다. 같은 ChatGPT 계정이면 값이 동일하지만, 다른 계정이면 다를 수 있습니다. (컨텍스트 모니터링은 원격 파일을 정확히 읽으므로 이와 무관합니다.)
 - **`codex` 실행 파일이 없거나 app‑server 조회가 실패해도 컨텍스트 모니터는 정상 동작합니다** — 사용량만 로그 스냅샷으로 폴백합니다. 조회에는 **15초 타임아웃**이 있고, 조회용 프로세스는 매번 정리됩니다(프로세스 누수 없음을 실측 확인).
+- **사이드바 선택은 OpenAI 내부 로그 표식을 호환성 폴백으로 사용합니다.** Codex 에디터 탭은 안정적인 VS Code 탭 URI를 사용합니다. `active=false`는 단순 창 포커스 이탈 때도 발생하므로 가장 최근의 `active=true` UUID를 창별로 유지합니다. Remote‑SSH에서는 프로세스 ID로 로컬 창과 원격 OpenAI 확장 호스트 로그를 연결하고, 불가능할 때만 활성화 시각을 제한적 폴백으로 사용합니다. 향후 OpenAI 로그 형식이 바뀌면 계정 잔여량 항목으로 안전하게 내려갑니다.
 
 ### 개인정보
 
-Codex rollout 로그에는 대화 원문 전체가 들어 있지만, 이 확장은 **구조적 필드(토큰 수, 타임스탬프, 모델명)만** 읽습니다. 메시지 본문은 읽지도, 저장하지도, 로그에 남기지도 않습니다. `auth.json`은 절대 접근하지 않습니다.
+Codex rollout 로그에는 대화 원문 전체가 들어 있지만 rollout 파서는 **구조적 필드(토큰 수, 타임스탬프, 모델명)만** 추출합니다. 사이드바 대화를 식별할 때는 일치하는 로컬 또는 원격 OpenAI `Codex.log`에서 정확한 `thread_stream_view_activity_changed` 표식, 불리언 값, UUID만 찾고 나머지 로그 텍스트는 즉시 버립니다. 메시지 본문을 저장하거나 이 확장의 로그에 남기지 않습니다. `auth.json`은 절대 접근하지 않습니다.
 
 ---
 
@@ -111,13 +124,13 @@ Remote‑SSH 창에서 **원격 세션 토큰 사용량과 플랜 사용량을 �
 
 ### Remote‑SSH에서의 Codex
 
-**Codex도 지원합니다 — Claude와 동일한 방식입니다.** 확장은 여전히 로컬에서 실행되지만, `vscode.workspace.fs`로 **원격** 호스트의 파일을 읽고 VS Code가 SSH 연결 너머로 라우팅합니다. 원격 홈은 `/root`와 `/home/*` 아래에서 `.codex/sessions`가 실제로 존재하는 곳을 탐색해 찾습니다 — `.claude/projects`를 찾는 방식과 동일합니다. 파일 감시자도 원격에서 동작하므로 원격 Codex 세션 역시 수초 내에 갱신됩니다.
+**Codex도 지원합니다.** `scope: all`에서는 `vscode.workspace.fs`로 **원격** 호스트의 최근 rollout을 읽고, `/root`와 `/home/*` 아래에서 `.codex/sessions`가 실제로 존재하는 홈을 찾습니다. 기본 `scope: workspace`에서는 먼저 이 VS Code 창에 표시된 정확한 대화 UUID를 구한 뒤 원격 호스트에서 찾습니다. 명시적인 `codex.home` 설정이 없으면 Remote‑SSH 창 안에서도 Codex webview가 로컬 대화를 소유할 수 있으므로 로컬 UI 호스트의 Codex 홈도 이어서 확인합니다.
 
 **읽기 방식의 차이 한 가지(성능 참고):** 로컬에서는 파일의 필요한 구간만(byte‑range) 읽어서 14.1MB짜리 rollout도 수 밀리초면 끝납니다. Remote‑SSH에서는 VS Code 파일 API에 구간 읽기가 없어 **파일 전체**를 읽습니다. 이는 Claude가 원격에서 이미 하고 있는 것과 동일한 방식이며(이 개발 머신의 Claude 세션 파일 최대 크기는 9.2MB), 여기에 더해 Codex에는 Claude에 없는 최적화가 있습니다 — **rollout의 mtime과 크기가 그대로면 읽기를 아예 건너뜁니다**. 안전장치로, 원격에서 **32MB를 넘는** rollout 파일은 건너뛰고 로그에 남깁니다.
 
-로컬 경로와 원격 경로가 동일한 결과를 내는지 검증했습니다 — 같은 rollout 데이터에 대해 5개 세션 × 12개 필드 전부 일치했습니다.
+로컬 경로와 원격 경로가 동일한 파싱 결과를 내는지 검증했습니다 — 같은 rollout 데이터에 대해 5개 세션 × 12개 필드 전부 일치했습니다.
 
-⚠️ 단, 원격 창에는 **원격 호스트의** Codex 세션만, 로컬 창에는 로컬 세션만 표시됩니다. 이 점도 Claude와 동일합니다.
+⚠️ 명시한 `codex.home`은 항상 우선하며 다른 위치로 폴백하지 않습니다. `scope: all`에서는 원격 창에 원격 호스트의 최근 Codex 세션만 표시되고, 로컬 UI 폴백은 기본 현재-대화 모드에서 정확히 선택된 대화 하나에만 적용됩니다.
 
 ⚠️ **계정 사용량만 예외입니다:** 실시간 rate limit 조회는 **로컬**의 `codex`를 실행하므로, 원격 창에서도 사용량 수치는 **로컬** 계정 기준입니다. 같은 ChatGPT 계정이면 값이 동일하고, 다른 계정이면 다를 수 있습니다. 컨텍스트 모니터링은 이와 무관합니다.
 
@@ -259,7 +272,7 @@ VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인�
 | `claudeContextBar.refreshInterval` | `30` | 새로고침 간격(초) |
 | `claudeContextBar.idleTimeout` | `180` | 세션이 **흐려지는** 시간(초) |
 | `claudeContextBar.hideAfter` | `86400` | 세션이 **숨겨지는** 시간(초, ≥ idleTimeout) |
-| `claudeContextBar.scope` | `workspace` | `workspace`(현재 폴더만) 또는 `all` |
+| `claudeContextBar.scope` | `workspace` | `workspace`: Claude는 현재 폴더, Codex는 이 창의 마지막 선택 UUID; `all`: 프로젝트·창 전체의 최근 세션 |
 | `claudeContextBar.showModel` | `true` | 퍼센트 옆에 모델명 표시 |
 | `claudeContextBar.compactMode` | `false` | 프로젝트 이름 축약 |
 | `claudeContextBar.shortNames` | `{}` | 커스텀 약칭, 예: `{"my-project":"MP"}` |
@@ -300,7 +313,7 @@ VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인�
 |------|--------|------|
 | `claudeContextBar.codex.enabled` | `true` | Codex 세션 표시 on/off (Codex 미설치 시 즉시 no‑op) |
 | `claudeContextBar.codex.home` | `""` | Codex 상태 디렉터리. 비우면 자동 탐지(`$CODEX_HOME` → `~/.codex`). 명시한 경로가 없으면 폴백 없이 아무것도 표시하지 않고 이유를 로그에 남김 |
-| `claudeContextBar.codex.scanDays` | `3` | `sessions/YYYY/MM/DD` 중 최근 며칠치만 스캔(전체 히스토리는 절대 재귀 스캔 안 함) |
+| `claudeContextBar.codex.scanDays` | `3` | `scope: all`에서 최근 날짜 폴더를 스캔할 범위. 현재 대화 모드는 선택 UUID를 직접 찾음 |
 
 그 밖의 설정 — 임계값, 사운드, `compactMode`, `idleTimeout`, `hideAfter`, `scope` — 은 Claude와 Codex가 공유합니다.
 

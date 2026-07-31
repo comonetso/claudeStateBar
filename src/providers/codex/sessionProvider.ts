@@ -12,10 +12,18 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { SessionInfo } from '../../core/sessionTypes';
 import { log } from '../../core/logger';
-import { resolveCodexHomeUri, listRecentRollouts, cwdMatchesFolder } from './discovery';
+import {
+    resolveCodexHomeUri,
+    resolveLocalCodexHomeUri,
+    listRecentRollouts,
+    findRolloutBySessionId,
+    cwdMatchesFolder,
+    CodexRolloutFile
+} from './discovery';
 import { readSession, pruneCache } from './tailReader';
 import { contextPercentage, lifecycle, completionMarker, CodexAccumulator } from './rolloutParser';
 import { getOriginatorLabel } from './display';
+import { resolveCurrentCodexThread } from './currentThread';
 
 /** Matches the Claude side: at most five sessions compete for status-bar space. */
 const MAX_CODEX_SESSIONS = 5;
@@ -56,25 +64,55 @@ export async function getCodexHomeUri(): Promise<vscode.Uri | null> {
 export async function findCodexSessions(): Promise<SessionInfo[]> {
     if (!isCodexEnabled()) return [];
 
-    const home = await getCodexHomeUri();
-    if (!home) return [];
-
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const idleTimeout = config.get<number>('idleTimeout', 180);
     const hideAfterRaw = config.get<number>('hideAfter', 86400);
     const hideAfter = Math.max(hideAfterRaw, idleTimeout);
     const scope = config.get<string>('scope', 'workspace');
+    const selected = scope === 'workspace' ? await resolveCurrentCodexThread() : null;
+
+    // `workspace` is the default user-facing mode. For Codex it means the conversation
+    // displayed by this VS Code window, not every historical rollout whose creation cwd
+    // happens to match the folder. No unambiguous selection means no guessed context item.
+    if (scope === 'workspace' && !selected) return [];
 
     const now = Date.now();
     const idleThreshold = now - idleTimeout * 1000;
     const hideThreshold = now - hideAfter * 1000;
 
     const folders = vscode.workspace.workspaceFolders;
-    if (scope === 'workspace' && (!folders || folders.length === 0)) return [];
+    const home = await getCodexHomeUri();
+    let files: CodexRolloutFile[] = [];
 
-    // Only descend into the last few date directories — never re-walk all of sessions/.
-    const scanDays = config.get<number>('codex.scanDays', 3);
-    const files = await listRecentRollouts(home, hideThreshold, scanDays);
+    if (scope === 'workspace' && selected) {
+        const found = home
+            ? await findRolloutBySessionId(home, selected.conversationId)
+            : null;
+        if (found) {
+            files = [found];
+        } else {
+            // This extension is a UI extension. In a Remote-SSH window the OpenAI Codex
+            // webview can still run on the local UI host and persist its selected thread in
+            // the local CODEX_HOME. Only try this compatibility path when codex.home was not
+            // explicitly pinned; an explicit override remains authoritative.
+            const configuredHome = config.get<string>('codex.home', '').trim();
+            const localHome = !configuredHome ? await resolveLocalCodexHomeUri() : null;
+            const sameHome = !!(home && localHome && home.toString() === localHome.toString());
+            const localFound = localHome && !sameHome
+                ? await findRolloutBySessionId(localHome, selected.conversationId)
+                : null;
+            if (localFound) files = [localFound];
+        }
+        if (files.length === 0) {
+            log(`[codex-current] selected conversation rollout not found: ${selected.conversationId}`);
+            return [];
+        }
+    } else {
+        if (!home) return [];
+        // Explicit `scope: all` preserves the historical machine-wide recent-session view.
+        const scanDays = config.get<number>('codex.scanDays', 3);
+        files = await listRecentRollouts(home, hideThreshold, scanDays);
+    }
     if (files.length === 0) return [];
 
     const sessions: SessionInfo[] = [];
@@ -90,11 +128,6 @@ export async function findCodexSessions(): Promise<SessionInfo[]> {
         // an unattributable entry next to the real session.
         if (acc.isSubagent) continue;
 
-        if (scope === 'workspace' && folders) {
-            const matched = folders.some(folder => cwdMatchesFolder(acc.cwd, folder.uri.fsPath));
-            if (!matched) continue;
-        }
-
         const pct = contextPercentage(acc);
         // No usable token report yet (brand-new session, or Codex omitted the window).
         // Skipping mirrors the Claude side's `totalTokens > 0` gate instead of rendering 0%.
@@ -109,6 +142,7 @@ export async function findCodexSessions(): Promise<SessionInfo[]> {
     pruneCache(keepInCache);
 
     sessions.sort((a, b) => b.lastUpdated.getTime() - a.lastUpdated.getTime());
+    if (scope === 'workspace') return sessions.slice(0, 1);
     applyStableNumbering(sessions);
     return sessions.slice(0, MAX_CODEX_SESSIONS);
 }

@@ -16,19 +16,32 @@
 // secrets on the command line, always time out, always reap the child.
 
 import * as cp from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as crypto from 'crypto';
 import { CodexUsageSnapshot, CodexUsageWindow } from '../../core/sessionTypes';
 import { log } from '../../core/logger';
 
 /** Hard ceiling for one probe. The observed round trip is ~850ms on this machine. */
 const PROBE_TIMEOUT_MS = 15000;
+const LOCK_STALE_MS = PROBE_TIMEOUT_MS + 5000;
+const LOCK_WAIT_MS = PROBE_TIMEOUT_MS + 1000;
+const CACHE_VERSION = 1;
+export const CODEX_USAGE_CACHE_FILENAME = 'codex-account-usage-v1.json';
+const CACHE_LOCK_FILENAME = 'codex-account-usage-v1.lock';
 
-interface RawWindow {
+export interface SharedCodexUsageResult {
+    snapshot: CodexUsageSnapshot;
+    source: 'probe' | 'shared-cache';
+}
+
+interface RawAppServerWindow {
     usedPercent?: unknown;
     windowDurationMins?: unknown;
     resetsAt?: unknown;
 }
 
-function readWindow(raw: RawWindow | null | undefined): CodexUsageWindow | null {
+function readAppServerWindow(raw: RawAppServerWindow | null | undefined): CodexUsageWindow | null {
     if (!raw || typeof raw !== 'object') return null;
     if (typeof raw.usedPercent !== 'number') return null;
     return {
@@ -39,6 +52,134 @@ function readWindow(raw: RawWindow | null | undefined): CodexUsageWindow | null 
             ? raw.resetsAt * 1000
             : null
     };
+}
+
+// Cache snapshots contain the already-normalized CodexUsageWindow shape: windowMinutes and
+// epoch MILLISECONDS. Feeding them back through readAppServerWindow() would multiply the
+// timestamp by 1000 a second time (turning ~5 days into millions of days) and drop the
+// window length because the app-server field has a different name.
+function readCachedWindow(raw: any): CodexUsageWindow | null {
+    if (!raw || typeof raw !== 'object' || typeof raw.usedPercent !== 'number') return null;
+    return {
+        usedPercent: raw.usedPercent,
+        windowMinutes: typeof raw.windowMinutes === 'number' ? raw.windowMinutes : 0,
+        resetsAt: typeof raw.resetsAt === 'number' && Number.isFinite(raw.resetsAt)
+            ? raw.resetsAt
+            : null
+    };
+}
+
+function cachePath(cacheDir: string): string {
+    return path.join(cacheDir, CODEX_USAGE_CACHE_FILENAME);
+}
+
+function lockPath(cacheDir: string): string {
+    return path.join(cacheDir, CACHE_LOCK_FILENAME);
+}
+
+/** Read the cross-window cache. Invalid, future-dated and over-age data is ignored. */
+export function readCachedCodexRateLimits(cacheDir: string, maxAgeMs: number): CodexUsageSnapshot | null {
+    if (!cacheDir) return null;
+    try {
+        const parsed = JSON.parse(fs.readFileSync(cachePath(cacheDir), 'utf8')) as any;
+        if (parsed?.version !== CACHE_VERSION || !parsed.snapshot) return null;
+        const observedMs = Date.parse(parsed.snapshot.observedAt);
+        const age = Date.now() - observedMs;
+        if (!Number.isFinite(observedMs) || age < -60000 || age > maxAgeMs) return null;
+        return {
+            primary: readCachedWindow(parsed.snapshot.primary),
+            secondary: readCachedWindow(parsed.snapshot.secondary),
+            planType: typeof parsed.snapshot.planType === 'string' ? parsed.snapshot.planType : null,
+            hasCredits: parsed.snapshot.hasCredits === true,
+            observedAt: new Date(observedMs)
+        };
+    } catch {
+        return null;
+    }
+}
+
+function writeCachedCodexRateLimits(cacheDir: string, snapshot: CodexUsageSnapshot): void {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const target = cachePath(cacheDir);
+    const temp = `${target}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    try {
+        fs.writeFileSync(temp, JSON.stringify({ version: CACHE_VERSION, snapshot }), {
+            encoding: 'utf8', flag: 'wx', mode: 0o600
+        });
+        fs.renameSync(temp, target);
+    } finally {
+        try { fs.unlinkSync(temp); } catch { /* renamed or never created */ }
+    }
+}
+
+function removeStaleLock(p: string): void {
+    try {
+        if (fs.statSync(p).mtimeMs < Date.now() - LOCK_STALE_MS) fs.unlinkSync(p);
+    } catch { /* another process removed it, or it disappeared */ }
+}
+
+function releaseOwnedLock(p: string, token: string): void {
+    try {
+        if (fs.readFileSync(p, 'utf8') === token) fs.unlinkSync(p);
+    } catch { /* best effort; TTL recovery handles a crashed owner */ }
+}
+
+const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+/**
+ * Fetch one account snapshot across all VS Code windows sharing this extension's
+ * globalStorage directory. An exclusive-create lock elects one app-server probe; followers
+ * wait for its atomically replaced cache file instead of spawning their own process.
+ */
+export async function fetchSharedCodexRateLimits(
+    cacheDir: string,
+    maxAgeMs: number,
+    execPath = 'codex'
+): Promise<SharedCodexUsageResult | null> {
+    const cached = readCachedCodexRateLimits(cacheDir, maxAgeMs);
+    if (cached) return { snapshot: cached, source: 'shared-cache' };
+
+    try { fs.mkdirSync(cacheDir, { recursive: true }); } catch (e) {
+        log(`[codex-usage] shared cache unavailable: ${e}`);
+        return null;
+    }
+
+    const lock = lockPath(cacheDir);
+    const token = `${process.pid}:${crypto.randomBytes(12).toString('hex')}`;
+    const deadline = Date.now() + LOCK_WAIT_MS;
+    let ownsLock = false;
+
+    while (Date.now() < deadline) {
+        try {
+            fs.writeFileSync(lock, token, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+            ownsLock = true;
+            break;
+        } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== 'EEXIST') {
+                log(`[codex-usage] shared lock unavailable: ${e}`);
+                return null;
+            }
+            const fresh = readCachedCodexRateLimits(cacheDir, maxAgeMs);
+            if (fresh) return { snapshot: fresh, source: 'shared-cache' };
+            removeStaleLock(lock);
+            await delay(100);
+        }
+    }
+
+    if (!ownsLock) return null;
+    try {
+        // A previous owner may have filled the cache immediately before this process won.
+        const fresh = readCachedCodexRateLimits(cacheDir, maxAgeMs);
+        if (fresh) return { snapshot: fresh, source: 'shared-cache' };
+
+        const snapshot = await fetchCodexRateLimits(execPath);
+        if (!snapshot) return null;
+        try { writeCachedCodexRateLimits(cacheDir, snapshot); }
+        catch (e) { log(`[codex-usage] shared cache write failed: ${e}`); }
+        return { snapshot, source: 'probe' };
+    } finally {
+        releaseOwnedLock(lock, token);
+    }
 }
 
 /**
@@ -103,8 +244,8 @@ export function fetchCodexRateLimits(execPath = 'codex'): Promise<CodexUsageSnap
                     const rl = msg.result?.rateLimits;
                     if (!rl || typeof rl !== 'object') { finish(null, 'no rateLimits in response'); return; }
                     finish({
-                        primary: readWindow(rl.primary),
-                        secondary: readWindow(rl.secondary),
+                        primary: readAppServerWindow(rl.primary),
+                        secondary: readAppServerWindow(rl.secondary),
                         planType: typeof rl.planType === 'string' ? rl.planType : null,
                         hasCredits: !!(rl.credits && rl.credits.hasCredits),
                         observedAt: new Date()
