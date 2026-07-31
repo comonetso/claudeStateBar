@@ -20,3 +20,5 @@ tsconfig.json
 .eslintrc*
 whats-next.md
 CLAUDE.md
+# Dev-only probe scripts compiled into out/ (underscore prefix = never shipped)
+out/_*.js

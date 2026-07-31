@@ -110,7 +110,10 @@ async function collectState() {
             workflowCompleteBeep: cbCfg.get('workflowCompleteBeep', true),
             completionBeepSettleMs: cbCfg.get('completionBeepSettleMs', 3000),
             detectStuckToolUse: cbCfg.get('detectStuckToolUse', false),
-            stuckToolUseThresholdSec: cbCfg.get('stuckToolUseThresholdSec', 90)
+            stuckToolUseThresholdSec: cbCfg.get('stuckToolUseThresholdSec', 90),
+            codexEnabled: cbCfg.get('codex.enabled', true),
+            codexHome: cbCfg.get('codex.home', ''),
+            codexScanDays: cbCfg.get('codex.scanDays', 3)
         }
     };
 }
@@ -197,6 +200,14 @@ async function handleMessage(msg: any): Promise<void> {
                         return Math.max(30, Math.min(600, Math.round(n)));
                     };
                     await cbCfg.update('stuckToolUseThresholdSec', clampStuck(p.cb.stuckToolUseThresholdSec), T);
+                    await cbCfg.update('codex.enabled', !!p.cb.codexEnabled, T);
+                    await cbCfg.update('codex.home', (p.cb.codexHome ?? '').trim(), T);
+                    const clampScanDays = (v: any) => {
+                        const n = Number(v);
+                        if (!Number.isFinite(n)) return 3;
+                        return Math.max(1, Math.min(60, Math.round(n)));
+                    };
+                    await cbCfg.update('codex.scanDays', clampScanDays(p.cb.codexScanDays), T);
                 }
                 callbacks?.onPlanSettingsChanged();
             } catch (e: any) {
@@ -434,6 +445,32 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       </div>
 
       <p class="note" data-i18n="cb.note"></p>
+    </div>
+
+    <!-- Codex provider -->
+    <div class="section">
+      <h2 class="section-header" data-i18n="section.codex">Codex — Context Monitor</h2>
+
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="cb-codexEnabled" />
+          <span data-i18n="codex.enabled.label">Enable Codex sessions</span>
+        </label>
+        <p class="hint" data-i18n="codex.enabled.hint">Read ~/.codex rollout logs and show Codex sessions in the status bar (⬢). No effect if Codex is not installed.</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="cb-codexHome" data-i18n="codex.home.label">Codex home directory</label>
+          <input type="text" id="cb-codexHome" placeholder="$CODEX_HOME / ~/.codex" />
+          <p class="hint" data-i18n="codex.home.hint">Leave empty to auto-detect ($CODEX_HOME, then ~/.codex).</p>
+        </div>
+        <div class="field">
+          <label for="cb-codexScanDays" data-i18n="codex.scanDays.label">Days of history to scan</label>
+          <input type="number" id="cb-codexScanDays" min="1" max="60" step="1" />
+          <p class="hint" data-i18n="codex.scanDays.hint">Codex stores sessions under sessions/YYYY/MM/DD. Only this many recent day folders are scanned.</p>
+        </div>
+      </div>
     </div>
 
     <!-- Sound settings -->

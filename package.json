@@ -2,7 +2,7 @@
     "name": "claude-state-bar",
     "displayName": "Claude State Bar",
     "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your VS Code status bar — with a live Workflow/Agent viewer, sound alerts, Remote-SSH support, and Telegram reset alerts.",
-    "version": "1.7.48",
+    "version": "1.8.0",
     "extensionKind": ["ui"],
     "publisher": "blueming",
     "author": {
@@ -323,6 +323,23 @@
                     "minimum": 30,
                     "maximum": 600,
                     "description": "Seconds of tool_use silence before the stuck-tool-use heuristic fires the question beep (only when detectStuckToolUse is on). Default: 90."
+                },
+                "claudeContextBar.codex.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show OpenAI Codex sessions (⬢) alongside Claude sessions (✳), read from the ~/.codex rollout logs. Works on local and Remote-SSH windows alike (a remote window reads the remote host's ~/.codex, like Claude does). Harmless when Codex is not installed — discovery no-ops immediately."
+                },
+                "claudeContextBar.codex.home": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Codex state directory. Leave empty to auto-detect: locally $CODEX_HOME then ~/.codex; on a Remote-SSH window, whichever of /root or /home/* actually contains .codex/sessions. If you set this and the path does not exist, no Codex sessions are shown (it does not silently fall back) and the reason is logged. On a remote window an absolute path is resolved on the remote host."
+                },
+                "claudeContextBar.codex.scanDays": {
+                    "type": "number",
+                    "default": 3,
+                    "minimum": 1,
+                    "maximum": 60,
+                    "description": "How many recent day folders under ~/.codex/sessions/YYYY/MM/DD to scan. Codex history is never walked in full — raise this only if you need older sessions to reappear. Default: 3."
                 }
             }
         }

@@ -78,6 +78,9 @@
         $('cb-scope').value = cb.scope || 'workspace';
         $('cb-showModel').checked = cb.showModel !== false;
         $('cb-compactMode').checked = !!cb.compactMode;
+        $('cb-codexEnabled').checked = cb.codexEnabled !== false;
+        $('cb-codexHome').value = cb.codexHome || '';
+        $('cb-codexScanDays').value = cb.codexScanDays ?? 3;
         $('sound-warning').value = cb.soundWarning || '';
         $('sound-danger').value = cb.soundDanger || '';
         $('sound-completion').value = cb.soundCompletion || '';
@@ -131,6 +134,9 @@
                 scope: $('cb-scope').value,
                 showModel: $('cb-showModel').checked,
                 compactMode: $('cb-compactMode').checked,
+                codexEnabled: $('cb-codexEnabled').checked,
+                codexHome: $('cb-codexHome').value.trim(),
+                codexScanDays: parseInt($('cb-codexScanDays').value, 10) || 3,
                 soundWarning: $('sound-warning').value.trim(),
                 soundDanger: $('sound-danger').value.trim(),
                 soundCompletion: $('sound-completion').value.trim(),

@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.8.0] - 2026-08-01
+
+### Added
+- **OpenAI Codex sessions in the status bar.** Claude and Codex now appear side by side, told apart by an icon prefix — **✳ Claude** / **⬢ Codex**. Codex sessions get the same treatment as Claude ones: context percentage, model and effort, idle dimming, `hideAfter` hiding, manual hide/restore with activity-based auto-unhide, threshold colours, and the completion beep. Thresholds and sounds are **shared** — there are no Codex-specific copies to configure.
+  - Data comes only from the local rollout logs (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`). No network calls, and the Codex app-server is deliberately not used: a separately launched app-server cannot observe threads already loaded by the running Codex client, so it would add a process without adding signal.
+  - Context occupancy is `last_token_usage.total_tokens ÷ model_context_window`. The cumulative lifetime total is shown as its own tooltip line and is never divided by the context window — those two numbers differ by orders of magnitude (a session reading 39% had 27.5M cumulative tokens).
+  - The completion beep keys off Codex's explicit `task_complete` event rather than a heuristic, and reuses the existing settle-debounce, so a follow-up landing inside the settle window still cancels it.
+- **Codex account usage, read live.** Rate limits (`primary`/`secondary` window, plan type, reset time) come from the Codex app-server (`account/rateLimits/read`, ~0.6s round trip), polled on its own slow timer that is separate from the 30-second session poll. This mirrors how Claude's plan usage calls claude.ai. If the app-server is unavailable — no `codex` binary, protocol change, timeout — it falls back to the snapshot embedded in the newest rollout log, then to the last successful reading marked stale. The tooltip states which source it used. The context monitor is unaffected by any of these failures.
+- **Remote-SSH support for Codex**, the same way Claude already has it: the extension runs locally but reads the remote host's files through `vscode.workspace.fs`, and the remote Codex home is found by probing `/root` and `/home/*` for a real `.codex/sessions` (mirroring how `~/.claude/projects` is located). The file watcher works remotely too, so remote Codex sessions still update within seconds.
+  - Read strategy differs by host: locally we read only the byte ranges we need (14.1MB rollout in ~4ms), while remotely the VS Code filesystem API has no range read, so the file is read whole — the same thing Claude already does over Remote-SSH, with the addition that Codex **skips the read entirely when mtime and size are unchanged**. Remote rollouts above 32MB are skipped and logged.
+- **Three new settings**: `claudeContextBar.codex.enabled` (default on; a no-op when Codex isn't installed), `claudeContextBar.codex.home` (empty = auto-detect), and `claudeContextBar.codex.scanDays` (default 3). All three are editable from the settings panel.
+
+### Fixed
+- **Codex weekly usage differed from one session to the next.** Every rollout embeds whatever the rate limit was when *that* session last ran, so reading each session's own snapshot made five sessions report five different weekly figures (observed: 52/30/28/22/19%) for a single account — which makes the number meaningless. Account usage is now account-scoped: one live reading, shared by every Codex item.
+- **Reset times on multi-day windows now show the date.** A reset that wasn't today rendered as `PM 4:16 (Wed)` — but on a 7-day cycle "Wed" could be this week's or next week's. It now reads `8/5 (Wed) PM 4:16`. This affects Codex's rate-limit window and **Claude's weekly limit**, which had the same ambiguity; Claude's 5-hour session reset is same-day and still shows just the time.
+- **Account usage attached to the wrong provider.** Plan usage was merged into whichever session sorted first overall, so once Codex sessions could reach the top the Claude plan numbers would have been pinned onto a Codex item. Usage is now merged per provider — each provider's leading session carries its own.
+
+### Known limitations
+- **A remote window shows the remote host's Codex sessions only** — Codex running on your local machine is not listed there, and vice versa. Claude behaves identically, so the two providers stay consistent.
+- **No Codex workflow/sub-agent viewer**, and no question-wait or stuck-tool beeps for Codex — those signals have no Codex equivalent on disk yet. Clicking a Codex item skips the workflow menu entirely rather than offering an always-empty one.
+- **Codex sub-agent threads are not shown.** Rollouts whose `source` is a sub-agent are excluded; older ones carry no parent link at all, so listing them would produce unattributable entries.
+- **No deletion of Codex logs.**
+
+### Privacy
+- Codex rollout logs contain full conversation text. The parser reads **only** structural fields — token counts, timestamps, model, effort, `cwd` — and never stores or logs message bodies. The `compacted` record, which embeds an entire prior conversation, is reduced to a single timestamp. `auth.json` is never touched.
+
+### Internal
+- New `src/providers/codex/` (pure `rolloutParser`, `discovery`, dual-mode `tailReader`, `sessionProvider`, `display`) and a shared `src/core/sessionTypes.ts`. The parser has no VS Code dependency and was validated against all 20 real rollout files on the development machine: 0 parse errors, 0 unknown record types, and a 14.1MB file parsed in ~4ms via head/tail windowing rather than a full read.
+- The local (byte-range) and remote (whole-file) read paths were cross-checked against the same rollout data and produce identical results across every session and field, so remote support is not a separate code path with its own behaviour.
+
 ## [1.7.48] - 2026-07-24
 
 ### Fixed

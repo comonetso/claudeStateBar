@@ -24,47 +24,19 @@ import { setRunsOnRemote } from './core/runtimeContext';
 import { SoundKind, getSoundPath, getSoundGain, playSoundFile, playBeep, playCompletionSound, playWorkflowCompleteSound, playQuestionSound } from './core/sound';
 import { alertedSessions, lastKnownEndTurnAt, pendingCompletion, lastKnownQuestionAt, pendingQuestion, alertedStuckToolUseAt, alertedWorkflowDone, seenRunningWorkflowKeys, getFirstScan, setFirstScan } from './core/beepGate';
 import { updateStageItem, startStageTicker, disposeStage, initStageIndicator } from './core/stageIndicator';
+import { SessionInfo, ProviderId, CodexUsageSnapshot, providerIcon, capabilitiesFor } from './core/sessionTypes';
+import { findCodexSessions, isCodexEnabled, getCodexHomeUri, resetCodexHome } from './providers/codex/sessionProvider';
+import { fetchCodexRateLimits } from './providers/codex/usageProvider';
+import { getShortCodexModelName, getCodexEffortLabel } from './providers/codex/display';
 
-interface SessionInfo {
-    projectName: string;
-    projectPath: string;
-    sessionId: string;
-    sessionFile: string;
-    inputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-    totalTokens: number;
-    percentage: number;
-    lastUpdated: Date;
-    model: string;
-    speed: string;
-    effortLevel: string;
-    contextLimit: number;
-    firstMessage: string;
-    sessionCreated: Date | null;
-    wasCleared: boolean;
-    isIdle: boolean;
-    isFallback?: boolean;
-    // Beep-gate activity clock: timestamp of the last REAL conversation entry
-    // (assistant|user only). Unlike lastUpdated/lastRealTimestamp it excludes
-    // noise entries (system/stop_hook_summary, queue-operation, …) that get
-    // written ~0.6s after a turn completes and would otherwise suppress the beep.
-    lastActivityAt: Date | null;
-    lastAssistantEndTurnAt: Date | null;
-    // Pause-detection signals (for the "question beep"):
-    //   pendingQuestionAt — set when the latest assistant entry is an unanswered
-    //     AskUserQuestion / ExitPlanMode tool_use (100% reliable signal).
-    //   pendingToolUseAt  — set when the latest assistant entry is ANY unanswered
-    //     tool_use (used by the optional stuck-tool-use heuristic).
-    //   pendingToolUseName — the tool name of that unanswered tool_use (for logs).
-    pendingQuestionAt: Date | null;
-    pendingToolUseAt: Date | null;
-    pendingToolUseName: string | null;
-}
+// SessionInfo moved to core/sessionTypes.ts so the Codex provider can produce sessions
+// without importing this entry point. Re-exported shape is unchanged for Claude.
 
 interface StatusBarEntry {
     item: vscode.StatusBarItem;
     sessionFile: string;
+    /** Which provider currently owns this item — gates provider-specific menu entries. */
+    provider: ProviderId;
 }
 
 interface WorkflowAgentInfo {
@@ -319,6 +291,7 @@ export function activate(context: vscode.ExtensionContext) {
     const hideCommand = vscode.commands.registerCommand('claudeContextBar.hideSession', (sessionFile: string) => {
         if (!sessionFile) return;
         hiddenSessions.set(sessionFile, Date.now());
+        log(`[hide] hid ${sessionFile}`);
         refreshAllSessions();
     });
     context.subscriptions.push(hideCommand);
@@ -398,7 +371,10 @@ export function activate(context: vscode.ExtensionContext) {
 
         // Workflows section — a single entry that opens the live panel (which lists all
         // workflows + their agents). The panel auto-refreshes with the status bar.
-        if (sessionFile) {
+        // Skipped for providers without workflow journals (Codex): scanning its rollout
+        // path for Claude's subagents/ layout can only ever come back empty, and offering
+        // a workflow entry there would promise a feature that provider does not have.
+        if (sessionFile && capabilitiesFor(clickedEntry?.provider ?? 'claude').workflows) {
             const workflows = await findWorkflowsForSession(sessionFile);
             items.push({ label: planT('menu.sepWorkflows'), kind: vscode.QuickPickItemKind.Separator });
             if (workflows.length > 0) {
@@ -447,6 +423,7 @@ export function activate(context: vscode.ExtensionContext) {
             case 'hide':
                 if (sessionFile) {
                     hiddenSessions.set(sessionFile, Date.now());
+                    log(`[hide] hid via menu (${clickedEntry?.provider ?? '?'}) ${sessionFile}`);
                     refreshAllSessions();
                 }
                 break;
@@ -575,6 +552,9 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Listen for configuration changes and refresh immediately
     const configWatcher = vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('claudeContextBar.codex.home')) {
+            resetCodexHome();  // re-probe on the next refresh
+        }
         if (e.affectsConfiguration('claudeContextBar')) {
             refreshAllSessions();
         }
@@ -592,7 +572,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(configWatcher);
 
     // Re-filter when workspace folders change (e.g., user opens/closes a folder)
-    const wsWatcher = vscode.workspace.onDidChangeWorkspaceFolders(() => { resetClaudeBaseUri(); refreshAllSessions(); });
+    const wsWatcher = vscode.workspace.onDidChangeWorkspaceFolders(() => { resetClaudeBaseUri(); resetCodexHome(); refreshAllSessions(); });
     context.subscriptions.push(wsWatcher);
 
     // Initial scan
@@ -617,6 +597,34 @@ export function activate(context: vscode.ExtensionContext) {
         }
     })();
 
+    // Codex rollout watcher. Without this, a Codex session would only refresh on the 30s
+    // poll; the acceptance criterion is "updates within seconds" (docs §15 Phase 1).
+    // Watching the sessions root covers new YYYY/MM/DD folders as days roll over.
+    // createFileSystemWatcher handles file:// and vscode-remote:// alike, exactly as the
+    // Claude watcher above does.
+    (async () => {
+        if (!isCodexEnabled()) return;
+        const home = await getCodexHomeUri();
+        if (!home) {
+            log('[codex] no Codex home found on this host — Codex sessions will not be shown');
+            return;
+        }
+        try {
+            const sessionsUri = vscode.Uri.joinPath(home, 'sessions');
+            const watcher = vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(sessionsUri, '**/rollout-*.jsonl')
+            );
+            const onChange = () => { refreshAllSessions(); };
+            watcher.onDidChange(onChange);
+            watcher.onDidCreate(onChange);
+            watcher.onDidDelete(onChange);
+            context.subscriptions.push(watcher);
+            log(`[codex] watching ${sessionsUri.toString()}`);
+        } catch (e) {
+            log(`[codex] watcher setup failed (polling still applies): ${e}`);
+        }
+    })();
+
     // Set up periodic refresh
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const intervalSeconds = config.get<number>('refreshInterval', 30);
@@ -625,6 +633,16 @@ export function activate(context: vscode.ExtensionContext) {
     // Start the claudeState plan-usage polling (no-op until enabled + credentials set)
     restartPlanPolling();
     refreshPlanUsage();
+
+    // Codex account usage: its own slow timer, deliberately separate from the 30s session
+    // poll. Each probe spawns a short-lived `codex app-server` (~850ms observed), so it must
+    // never ride the fast loop. Shares the plan-usage interval setting for symmetry with
+    // Claude, clamped to at least a minute.
+    {
+        const codexUsageSec = Math.max(60, creds.getRefreshIntervalSec());
+        refreshCodexUsage();
+        codexUsageInterval = setInterval(refreshCodexUsage, codexUsageSec * 1000);
+    }
     // Recompute the "resets in ..." countdown once a minute without re-fetching
     planTickInterval = setInterval(() => { if (lastUsage) refreshAllSessions(); }, 60 * 1000);
     // Tick the "is it alive?" elapsed counter every second (no disk reads — uses cached marker).
@@ -642,6 +660,9 @@ export function activate(context: vscode.ExtensionContext) {
             }
             if (planTickInterval) {
                 clearInterval(planTickInterval);
+            }
+            if (codexUsageInterval) {
+                clearInterval(codexUsageInterval);
             }
             for (const [, p] of pendingCompletion) clearTimeout(p.timer);
             pendingCompletion.clear();
@@ -694,6 +715,9 @@ export function deactivate() {
     }
     if (planTickInterval) {
         clearInterval(planTickInterval);
+    }
+    if (codexUsageInterval) {
+        clearInterval(codexUsageInterval);
     }
     for (const [, p] of pendingCompletion) clearTimeout(p.timer);
     pendingCompletion.clear();
@@ -1556,6 +1580,7 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                     // Auto-detect context limit based on model
                     const sessionContextLimit = getContextLimitForModel(usage.model, contextLimitDefault, contextLimitOpus);
                     sessions.push({
+                        provider: 'claude',
                         projectName: displayName,
                         projectPath: fullPath,
                         sessionId,
@@ -1693,6 +1718,7 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
             const sessionId = fallbackCandidate.uri.path.split('/').pop()?.replace('.jsonl', '').substring(0, 8) || '';
             const sessionContextLimit = getContextLimitForModel(usage.model, contextLimitDefault, contextLimitOpus);
             visibleSessions.push({
+                provider: 'claude',
                 projectName: displayName,
                 projectPath: fullPath,
                 sessionId,
@@ -1724,6 +1750,52 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
     return visibleSessions.slice(0, 5);
 }
 
+/**
+ * Merge every provider's sessions into the list the status bar renders.
+ *
+ * Claude discovery is untouched — Codex is gathered independently and appended, so a
+ * failure inside the Codex provider can never regress Claude (docs risk register:
+ * "one provider crash affects all"). The two are only sorted together at the end.
+ */
+async function findAllSessions(): Promise<SessionInfo[]> {
+    const claude = await findActiveSessions();
+
+    let codex: SessionInfo[] = [];
+    try {
+        codex = await findCodexSessions();
+    } catch (e) {
+        log(`[codex] discovery failed (Claude unaffected): ${e}`);
+        codex = [];
+    }
+    if (codex.length === 0) return claude;
+
+    // Codex sessions honour the same manual hide + auto-unhide-on-activity rule as Claude.
+    const visibleCodex = codex.filter(session => {
+        const hiddenAt = hiddenSessions.get(session.sessionFile);
+        if (!hiddenAt) return true;
+        if (session.lastUpdated.getTime() > hiddenAt) {
+            log(`[hide] auto-unhide (codex) ${session.projectName}: activity ` +
+                `${session.lastUpdated.toISOString()} is newer than hide ${new Date(hiddenAt).toISOString()}`);
+            hiddenSessions.delete(session.sessionFile);
+            return true;
+        }
+        return false;
+    });
+    if (hiddenSessions.size > 0) {
+        // Any hidden key that matches nothing we just discovered means the key the user hid
+        // is not the key we now generate — the session would reappear forever. Logged so a
+        // mismatch is diagnosable instead of looking like "hide is broken".
+        const known = new Set([...claude, ...codex].map(s => s.sessionFile));
+        for (const [k] of hiddenSessions) {
+            if (!known.has(k)) log(`[hide] hidden key no longer matches any discovered session: ${k}`);
+        }
+    }
+
+    const merged = [...claude, ...visibleCodex];
+    merged.sort((a, b) => b.lastUpdated.getTime() - a.lastUpdated.getTime());
+    return merged;
+}
+
 // Read global effort level from ~/.claude/settings.json. Returns lowercase raw value
 // like "low" | "medium" | "high" | "xhigh" | "max", or '' on failure.
 // Note: Claude Code stores this globally; all interactive sessions share the same effort.
@@ -1743,7 +1815,7 @@ async function getGlobalEffortLevel(): Promise<string> {
 async function refreshAllSessions() {
     const suppressBeep = getFirstScan();
     setFirstScan(false);
-    const sessions = await findActiveSessions();
+    const sessions = await findAllSessions();
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const warningThreshold = config.get<number>('warningThreshold', 50);
     const dangerThreshold = config.get<number>('dangerThreshold', 75);
@@ -1804,6 +1876,19 @@ async function refreshAllSessions() {
     // Track which sessions we've seen
     const seenPaths = new Set<string>();
 
+    // Pick one account-wide Codex snapshot before rendering, so every Codex item agrees.
+    recomputeCodexSnapshotFallback(sessions);
+
+    // Account usage is merged into the FIRST session of each provider, so a Claude and a
+    // Codex session shown side by side each carry their own plan numbers. (Before Codex
+    // existed this was simply `i === 0`; with two providers that would have pinned the
+    // Claude plan onto a Codex item whenever Codex sorted to the top.)
+    const providerLeadIndex = new Map<ProviderId, number>();
+    for (let i = 0; i < sessions.length; i++) {
+        if (sessions[i].isFallback) continue;
+        if (!providerLeadIndex.has(sessions[i].provider)) providerLeadIndex.set(sessions[i].provider, i);
+    }
+
     // Sessions are sorted newest-first, so reverse for oldest-left display
     // For Left alignment: higher priority = further left
     for (let i = 0; i < sessions.length; i++) {
@@ -1821,15 +1906,24 @@ async function refreshAllSessions() {
                 vscode.StatusBarAlignment.Right,
                 priority
             );
-            entry = { item, sessionFile: session.sessionFile };
+            entry = { item, sessionFile: session.sessionFile, provider: session.provider };
             statusBarItems.set(session.sessionFile, entry);
         }
+        entry.provider = session.provider;
 
         // Build status bar text in the form:  "{name}: {Model} - {Effort} ({pct}%) · idle Xm"
         // Emoji prefix dropped per user feedback. Effort/model are full names (no abbreviation).
+        const isCodex = session.provider === 'codex';
         const displayName = compactMode ? getShortName(session.projectName, shortNames) : session.projectName;
-        const modelLabel = showModel ? getShortModelName(session.model, compactMode) : '';
-        const effortLabel = getEffortLabel(session.effortLevel);
+        // Each provider names its models differently, so the label helpers are per-provider.
+        const modelLabel = showModel
+            ? (isCodex
+                ? getShortCodexModelName(session.model, compactMode)
+                : getShortModelName(session.model, compactMode))
+            : '';
+        const effortLabel = isCodex
+            ? getCodexEffortLabel(session.effortLevel)
+            : getEffortLabel(session.effortLevel);
 
         let infoPart = '';
         if (modelLabel && effortLabel) {
@@ -1841,11 +1935,16 @@ async function refreshAllSessions() {
         }
 
         const idleSuffix = session.isIdle ? ` · ${formatIdleDuration(session.lastUpdated)}` : '';
-        // Merge plan usage (claudeState) into the first (most recent) session item only,
-        // so it isn't duplicated across multiple sessions.
-        // Fallback sessions are dim (no active Claude) — claudeState shown separately via planFallbackItem
-        const planAdd = i === 0 && !session.isFallback ? planTextSuffix(compactMode) : '';
-        entry.item.text = `${displayName}${infoPart} (${session.percentage}%)${planAdd}${idleSuffix}`;
+        // Merge account usage into the first item of THIS provider so it isn't duplicated
+        // across that provider's sessions. Fallback sessions are dim (no active session) —
+        // their usage is shown separately via the standalone plan/usage items.
+        const isProviderLead = providerLeadIndex.get(session.provider) === i;
+        const planAdd = isProviderLead
+            ? (isCodex ? codexUsageTextSuffix(compactMode) : planTextSuffix(compactMode))
+            : '';
+        // ✳ Claude / ⬢ Codex — a BMP dingbat, so it inherits the item's foreground colour
+        // (an emoji would render in its own fixed colour and hide the warning/idle state).
+        entry.item.text = `${providerIcon(session.provider)} ${displayName}${infoPart} (${session.percentage}%)${planAdd}${idleSuffix}`;
 
         // We never use backgroundColor — too visually loud. Threshold warnings are shown via foreground color instead.
         entry.item.backgroundColor = undefined;
@@ -2009,36 +2108,68 @@ async function refreshAllSessions() {
 
         // Detailed tooltip. The first-message line and project path were removed per
         // user request; the claudeState plan-usage block takes their place.
-        const effortLineText = session.effortLevel ? getEffortLabel(session.effortLevel) : '';
+        const effortLineText = effortLabel;
         // xHigh⁺ = persisted "xhigh", which is also what ultracode stores. The "+workflows"
         // half of ultracode is runtime-only and never written to disk, so we can't tell plain
-        // xhigh and ultracode apart — the note spells that out.
-        const effortNote = (session.effortLevel || '').toLowerCase() === 'xhigh'
+        // xhigh and ultracode apart — the note spells that out. Codex has no such ambiguity.
+        const effortNote = (!isCodex && (session.effortLevel || '').toLowerCase() === 'xhigh')
             ? planT('tt.effortXhighNote')
             : '';
         const effortLine = effortLineText ? `🎚️ Effort: \`${effortLineText}\`${effortNote}\n\n` : '';
         // Keep speed only when it's non-standard (i.e., /fast mode active) — otherwise hide noise
         const speedLine = (session.speed && session.speed !== 'standard') ? `⚡ Speed: \`${session.speed}\`\n\n` : '';
         const idleLine = session.isIdle ? `😴 **Idle** — ${formatIdleDuration(session.lastUpdated)}\n\n` : '';
-        const planBlock = planTooltipBlock();
-        const stateBody = planBlock || (planT('tt.planUnavailable') + '\n\n');
-        const md = new vscode.MarkdownString(
-            `**${session.projectName}** (${session.sessionId})\n\n` +
-            idleLine +
-            sectionHeader('claudeState', '#4FC3F7') +
-            stateBody +
-            sectionHeader('claudeContext', '#AED581') +
-            `🤖 Model: \`${session.model || 'Unknown'}\`\n\n` +
-            effortLine +
-            speedLine +
-            `📊 **Context Usage: ${session.percentage}%**\n\n` +
-            `| Type | Tokens |\n|------|--------|\n` +
-            `| Cache Read | ${formatTokens(session.cacheReadTokens)} |\n` +
-            `| Cache Creation | ${formatTokens(session.cacheCreationTokens)} |\n` +
-            `| **Total** | **${formatTokens(session.totalTokens)}** / ${formatTokens(session.contextLimit)} |\n\n` +
-            `🕐 Last updated: ${session.lastUpdated.toLocaleTimeString()}\n\n` +
-            `*Click for menu (hide / restore / settings)*`
-        );
+
+        let md: vscode.MarkdownString;
+        if (isCodex) {
+            // Codex mirrors the Claude tooltip layout (account usage on top, context below)
+            // but with Codex's own token semantics: cached input is a SUBSET of input, and
+            // the lifetime total is labelled separately so it is never read as occupancy.
+            const originLine = session.codexOriginator
+                ? `🚀 ${planT('tt.startedBy')}: \`${session.codexOriginator}\`\n\n`
+                : '';
+            const cumulative = session.codexCumulativeTokens
+                ? `♾️ ${planT('tt.lifetime')}: ${formatTokens(session.codexCumulativeTokens)}\n\n`
+                : '';
+            md = new vscode.MarkdownString(
+                `**${session.projectName}** (${session.sessionId})\n\n` +
+                idleLine +
+                sectionHeader('Codex Usage', '#FF9F6E') +
+                (codexUsageTooltipBlock() || (planT('tt.codexUsageUnavailable') + '\n\n')) +
+                sectionHeader('Codex Context', '#AED581') +
+                `🤖 Model: \`${session.model || 'Unknown'}\`\n\n` +
+                effortLine +
+                originLine +
+                `📊 **Context Usage: ${session.percentage}%**\n\n` +
+                `| Type | Tokens |\n|------|--------|\n` +
+                `| Input | ${formatTokens(session.inputTokens)} |\n` +
+                `| ↳ ${planT('tt.cachedPortion')} | ${formatTokens(session.cacheReadTokens)} |\n` +
+                `| **${planT('tt.contextTotal')}** | **${formatTokens(session.totalTokens)}** / ${formatTokens(session.contextLimit)} |\n\n` +
+                cumulative +
+                `🕐 Last updated: ${session.lastUpdated.toLocaleTimeString()}\n\n` +
+                `*Click for menu (hide / restore / settings)*`
+            );
+        } else {
+            const planBlock = planTooltipBlock();
+            const stateBody = planBlock || (planT('tt.planUnavailable') + '\n\n');
+            md = new vscode.MarkdownString(
+                `**${session.projectName}** (${session.sessionId})\n\n` +
+                idleLine +
+                sectionHeader('claudeState', '#4FC3F7') +
+                stateBody +
+                sectionHeader('claudeContext', '#AED581') +
+                `🤖 Model: \`${session.model || 'Unknown'}\`\n\n` +
+                effortLine +
+                speedLine +
+                `📊 **Context Usage: ${session.percentage}%**\n\n` +
+                `| Type | Tokens |\n|------|--------|\n` +
+                `| Cache Read | ${formatTokens(session.cacheReadTokens)} |\n` +
+                `| Cache Creation | ${formatTokens(session.cacheCreationTokens)} |\n` +
+                `| **Total** | **${formatTokens(session.totalTokens)}** / ${formatTokens(session.contextLimit)} |\n\n` +
+                `🕐 Last updated: ${session.lastUpdated.toLocaleTimeString()}\n\n` +
+                `*Click for menu (hide / restore / settings)*`
+            );
+        }
         md.supportHtml = true;
         entry.item.tooltip = md;
 
@@ -2063,7 +2194,13 @@ async function refreshAllSessions() {
     // reuse it instead of hitting disk a second time.
     const trackedSessionFile = getTrackedSessionFile();
     let trackedWorkflowsCache: WorkflowInfo[] | undefined;
+    // Only providers that actually have workflow journals on disk are scanned. Codex has
+    // no equivalent structure yet (Phase 4), so walking its files here would be pure waste.
+    const workflowCapableFiles = new Set(
+        sessions.filter(s => capabilitiesFor(s.provider).workflows).map(s => s.sessionFile)
+    );
     for (const sessionFile of seenPaths) {
+        if (!workflowCapableFiles.has(sessionFile)) continue;
         let workflows: WorkflowInfo[];
         try {
             workflows = await findWorkflowsForSession(sessionFile);
@@ -2170,7 +2307,13 @@ async function refreshAllSessions() {
     updatePlanFallback(!hasRealSession);
 
     // "Is it alive?" — drive the live elapsed counter from the most recent active session.
-    updateStageItem(sessions.find(s => !s.isFallback) ?? null);
+    // Codex only qualifies while a turn is genuinely in flight: its stage is decided by the
+    // task_started/task_complete ordering, not by "activity newer than the last turn end".
+    // Codex writes a trailing thread_settings_applied AFTER task_complete (observed in real
+    // sessions), which the shared heuristic would otherwise read as "still thinking".
+    updateStageItem(sessions.find(s =>
+        !s.isFallback && (s.provider !== 'codex' || s.codexActive === true)
+    ) ?? null);
 
     // Keep the workflow panel (if open) in sync. The workflow-done loop above
     // already scanned the tracked session, so reuse that result instead of hitting
@@ -2228,8 +2371,12 @@ function resetAtLabel(iso: string | null): string {
     const mm = String(d.getMinutes()).padStart(2, '0');
     const timePart = `${ap} ${h12}:${mm}`;
     if (sameDay) return timePart;
+    // Not today → lead with the calendar date. A weekday alone ("Wed") is ambiguous on any
+    // multi-day window: Codex's rate limit runs on a 7-day cycle and Claude's weekly limit
+    // likewise, so "Wed" could be this week's or next week's. M/D is unambiguous in both
+    // en (Aug 5) and ko (8월 5일) reading order, and the weekday is kept for at-a-glance use.
     const days = weekdayNames();
-    return `${timePart} (${days[d.getDay()]})`;
+    return `${d.getMonth() + 1}/${d.getDate()} (${days[d.getDay()]}) ${timePart}`;
 }
 
 // Human "in 2h 14m" style countdown to the reset time.
@@ -2281,6 +2428,152 @@ function planTextSuffix(compact: boolean): string {
         return ` - ${planT('sb.sessionLabel')} ${p}% (${untilHuman(lastUsage.sessionResetAt)})`;
     }
     return '';
+}
+
+// ---------------------------------------------------------------------------
+// Codex account usage — the Codex counterpart to the claudeState plan block.
+//
+// Source: `rate_limits` riding along on each token_count record in the rollout. That is
+// deliberately NOT the app-server: a separately launched app-server cannot observe threads
+// already loaded by the running Codex client (docs §5.2), and spawning one every refresh is
+// forbidden. The trade-off is that these numbers only advance while Codex is working, so an
+// idle session's snapshot goes stale — which the tooltip states outright rather than hiding.
+// ---------------------------------------------------------------------------
+
+/** After this long without a fresh snapshot the numbers are labelled stale. */
+const CODEX_USAGE_STALE_MS = 15 * 60 * 1000;
+
+// Live account rate limits from the app-server. This is the PREFERRED source: unlike the
+// rollout snapshot it does not freeze when Codex sits idle, which matters because the limit
+// is a 7-day rolling window whose real value drifts down on its own. Refreshed on its own
+// slow timer, deliberately decoupled from the 30s session poll (docs §11.3).
+let codexLiveUsage: CodexUsageSnapshot | null = null;
+let codexUsageInterval: NodeJS.Timeout | null = null;
+let codexUsageInFlight = false;
+
+async function refreshCodexUsage(): Promise<void> {
+    if (!isCodexEnabled() || codexUsageInFlight) return;
+    // No point probing when Codex isn't installed on this machine.
+    if (!(await getCodexHomeUri())) return;
+    codexUsageInFlight = true;
+    try {
+        const fresh = await fetchCodexRateLimits();
+        if (fresh) {
+            codexLiveUsage = fresh;
+            log(`[codex-usage] live: primary=${fresh.primary?.usedPercent ?? '--'}% plan=${fresh.planType ?? '?'}`);
+            refreshAllSessions();
+        }
+        // On failure we keep the previous live value; the tooltip ages it into "stale"
+        // on its own, and the rollout snapshot still backs it up.
+    } catch (e) {
+        log(`[codex-usage] refresh failed: ${e}`);
+    } finally {
+        codexUsageInFlight = false;
+    }
+}
+
+// Newest rate-limit snapshot across ALL visible Codex sessions, recomputed each refresh.
+// This is the fallback used when the live probe is unavailable.
+let codexSnapshotFallback: CodexUsageSnapshot | null = null;
+
+function recomputeCodexSnapshotFallback(sessions: SessionInfo[]): void {
+    let best: CodexUsageSnapshot | null = null;
+    for (const s of sessions) {
+        const u = s.codexUsage;
+        if (!u || !u.observedAt) continue;
+        if (!best || !best.observedAt || u.observedAt.getTime() > best.observedAt.getTime()) best = u;
+    }
+    codexSnapshotFallback = best;
+}
+
+/**
+ * Account usage for Codex, in the documented order: live app-server reading first, then the
+ * newest rollout snapshot.
+ *
+ * ACCOUNT-scoped, not session-scoped — and that distinction is the whole point. Every
+ * rollout embeds whatever the limit was when THAT session last ran, so reading each
+ * session's own snapshot made five sessions report five different weekly numbers
+ * (observed: 30/28/22/19/2/48%) for a single account. One account has one limit, so every
+ * Codex item now shows the same figure.
+ */
+function accountCodexUsage(): CodexUsageSnapshot | null {
+    const live = codexLiveUsage;
+    const snap = codexSnapshotFallback;
+    if (!live) return snap;
+    if (!snap || !snap.observedAt || !live.observedAt) return live;
+    // A rollout can legitimately be newer than the last probe while Codex is actively
+    // working, since it updates every turn.
+    return live.observedAt.getTime() >= snap.observedAt.getTime() ? live : snap;
+}
+
+function isoFromEpoch(ms: number | null): string | null {
+    return ms == null ? null : new Date(ms).toISOString();
+}
+
+/** "10080 minutes" reads as nothing; render it as "7 days". */
+function formatUsageWindow(minutes: number): string {
+    if (!minutes || minutes <= 0) return '';
+    if (minutes % 1440 === 0) {
+        const d = minutes / 1440;
+        return planLang() === 'ko' ? `${d}일` : `${d} day${d === 1 ? '' : 's'}`;
+    }
+    if (minutes % 60 === 0) {
+        const h = minutes / 60;
+        return planLang() === 'ko' ? `${h}시간` : `${h} hour${h === 1 ? '' : 's'}`;
+    }
+    return planLang() === 'ko' ? `${minutes}분` : `${minutes} min`;
+}
+
+// Suffix appended to the leading Codex session item — mirrors planTextSuffix().
+function codexUsageTextSuffix(compact: boolean): string {
+    const u = accountCodexUsage();
+    if (!u || !u.primary) return '';
+    const p = Math.round(u.primary.usedPercent);
+    const iso = isoFromEpoch(u.primary.resetsAt);
+    if (compact) {
+        return ` · ${p}% (${untilHumanCompact(iso)})`;
+    }
+    return ` - ${planT('sb.codexLimit')} ${p}% (${untilHuman(iso)})`;
+}
+
+// Markdown block describing Codex account usage; inserted into Codex session tooltips.
+function codexUsageTooltipBlock(): string {
+    const u = accountCodexUsage();
+    if (!u || (!u.primary && !u.secondary)) return '';
+    const isLive = u === codexLiveUsage;
+    let s = '';
+
+    if (u.primary) {
+        const iso = isoFromEpoch(u.primary.resetsAt);
+        const win = formatUsageWindow(u.primary.windowMinutes);
+        s += `📊 **${planT('sb.codexPrimary')}**: ${Math.round(u.primary.usedPercent)}%` +
+            (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') + `\n\n`;
+        if (win) s += `🪟 ${planT('tt.window')}: ${win}\n\n`;
+    }
+    // Only rendered when Codex actually reports a second window — it is often null.
+    if (u.secondary) {
+        const iso = isoFromEpoch(u.secondary.resetsAt);
+        const win = formatUsageWindow(u.secondary.windowMinutes);
+        s += `📅 **${planT('sb.codexSecondary')}**: ${Math.round(u.secondary.usedPercent)}%` +
+            (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') +
+            (win ? ` · ${win}` : '') + `\n\n`;
+    }
+    if (u.planType) {
+        const plan = u.planType.charAt(0).toUpperCase() + u.planType.slice(1);
+        s += `💳 Plan: \`${plan}\`${u.hasCredits ? ` · ${planT('tt.credits')}` : ''}\n\n`;
+    }
+    if (u.observedAt) {
+        const age = Date.now() - u.observedAt.getTime();
+        // A live reading is authoritative the moment it is taken, so it is only called
+        // stale once it ages out. A rollout snapshot is stale whenever Codex has been idle,
+        // which is exactly the failure the live probe exists to avoid.
+        const stale = age > CODEX_USAGE_STALE_MS
+            ? ` — ⚠️ ${planT(isLive ? 'tt.staleLive' : 'tt.stale')}`
+            : '';
+        const src = isLive ? planT('tt.srcLive') : planT('tt.srcRollout');
+        s += `🕐 ${planT('tt.observed')}: ${u.observedAt.toLocaleTimeString()} (${src})${stale}\n\n`;
+    }
+    return s;
 }
 
 // A coloured section divider for the merged tooltip — visually separates the claudeState

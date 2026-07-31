@@ -195,7 +195,31 @@ const EN: Dict = {
 
     // Status-bar tooltip
     'tt.effortXhighNote': ' — xhigh (if ultracode, combined with dynamic workflows; runtime-only, indistinguishable)',
-    'tt.planUnavailable': '_Plan usage unavailable on this host_'
+    'tt.planUnavailable': '_Plan usage unavailable on this host_',
+
+    // Codex provider
+    'sb.codexLimit': 'Limit',
+    'sb.codexPrimary': 'Primary',
+    'sb.codexSecondary': 'Secondary',
+    'tt.window': 'Window',
+    'tt.credits': 'credits available',
+    'tt.observed': 'Observed',
+    'tt.stale': 'stale (rollout snapshot updates only while Codex works)',
+    'tt.staleLive': 'last live reading — app-server unreachable since',
+    'tt.srcLive': 'live',
+    'tt.srcRollout': 'from session log',
+    'tt.startedBy': 'Started by',
+    'tt.lifetime': 'Lifetime total',
+    'tt.cachedPortion': 'cached portion',
+    'tt.contextTotal': 'Context total',
+    'tt.codexUsageUnavailable': '_No Codex rate-limit snapshot yet_',
+    'section.codex': 'Codex — Context Monitor',
+    'codex.enabled.label': 'Enable Codex sessions',
+    'codex.enabled.hint': 'Read ~/.codex rollout logs and show Codex sessions in the status bar (⬢). Works on Remote-SSH too — a remote window lists the remote host\'s Codex sessions. No effect if Codex is not installed.',
+    'codex.home.label': 'Codex home directory',
+    'codex.home.hint': 'Leave empty to auto-detect: locally $CODEX_HOME then ~/.codex; on a remote window, whichever of /root or /home/* holds .codex/sessions.',
+    'codex.scanDays.label': 'Days of history to scan',
+    'codex.scanDays.hint': 'Codex stores sessions under sessions/YYYY/MM/DD. Only this many recent day folders are scanned.'
 };
 
 const KO: Dict = {
@@ -380,7 +404,31 @@ const KO: Dict = {
 
     // 상태바 tooltip
     'tt.effortXhighNote': ' — xhigh (ultracode면 dynamic workflows 결합, 런타임 전용이라 구분 불가)',
-    'tt.planUnavailable': '_이 호스트에선 플랜 사용량을 가져올 수 없습니다_'
+    'tt.planUnavailable': '_이 호스트에선 플랜 사용량을 가져올 수 없습니다_',
+
+    // Codex provider
+    'sb.codexLimit': '한도',
+    'sb.codexPrimary': '기본 한도',
+    'sb.codexSecondary': '보조 한도',
+    'tt.window': '주기',
+    'tt.credits': '크레딧 있음',
+    'tt.observed': '관측 시각',
+    'tt.stale': '오래된 값 (세션 로그는 Codex 작업 중에만 갱신)',
+    'tt.staleLive': '마지막 실시간 조회 — 이후 app-server 응답 없음',
+    'tt.srcLive': '실시간',
+    'tt.srcRollout': '세션 로그',
+    'tt.startedBy': '실행 주체',
+    'tt.lifetime': '누적 사용량',
+    'tt.cachedPortion': '그중 캐시',
+    'tt.contextTotal': '컨텍스트 합계',
+    'tt.codexUsageUnavailable': '_아직 Codex 사용량 정보가 없습니다_',
+    'section.codex': 'Codex — 컨텍스트 모니터',
+    'codex.enabled.label': 'Codex 세션 표시',
+    'codex.enabled.hint': '~/.codex 롤아웃 로그를 읽어 Codex 세션을 상태바에 표시합니다 (⬢). Remote-SSH에서도 동작하며, 원격 창에서는 원격 서버의 Codex 세션이 표시됩니다. Codex가 없으면 아무 동작도 하지 않습니다.',
+    'codex.home.label': 'Codex 홈 디렉터리',
+    'codex.home.hint': '비워두면 자동 탐지합니다. 로컬은 $CODEX_HOME → ~/.codex 순, 원격 창에서는 /root·/home/* 중 .codex/sessions가 실제로 있는 곳을 찾습니다.',
+    'codex.scanDays.label': '스캔할 기간(일)',
+    'codex.scanDays.hint': 'Codex는 sessions/YYYY/MM/DD 구조로 저장합니다. 최근 이 일수만큼의 날짜 폴더만 스캔합니다.'
 };
 
 const DICTS: Record<Lang, Dict> = { en: EN, ko: KO };

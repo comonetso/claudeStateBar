@@ -1,6 +1,6 @@
 # Claude State Bar
 
-**Claude Code 컨텍스트 사용량 + Claude.ai 플랜 사용량(5시간 세션 & 주간)을 VS Code 상태바에서 한눈에 — 실시간 워크플로우/에이전트 뷰어 패널, 사운드 알림, Remote‑SSH 지원, 텔레그램 리셋 알림, 한/영 설정 패널 포함.**
+**Claude Code 컨텍스트 사용량 + Claude.ai 플랜 사용량(5시간 세션 & 주간) — 이제 OpenAI Codex 세션까지 — 를 VS Code 상태바에서 한눈에. 실시간 워크플로우/에이전트 뷰어 패널, 사운드 알림, Remote‑SSH 지원, 텔레그램 리셋 알림, 한/영 설정 패널 포함.**
 
 🇬🇧 English: [README.md](README.md)
 
@@ -29,6 +29,73 @@ Claude Code의 세션 로그(`~/.claude/projects/*.jsonl`)를 읽어 활성 세�
 - **세션 리셋 감지** → 5시간 창이 리셋되면 선택적 **텔레그램** 알림
 - 자격증명(Session Key, Bot Token)은 VS Code SecretStorage로 **암호화** 저장
 
+이 두 계층은 모두 **Claude** 세션 이야기이며, 상태바에서 **✳** 접두사로 표시됩니다. Codex 세션은 **⬢** 접두사입니다 — [OpenAI Codex 세션 모니터링](#-openai-codex-세션-모니터링-phase-1) 참조.
+
+---
+
+## ⬢ OpenAI Codex 세션 모니터링 (Phase 1)
+
+이제 상태바에 **Claude 세션과 OpenAI Codex 세션이 동시에** 표시됩니다. 구분은 아이콘 접두사로 합니다:
+
+- **✳** — Claude 세션
+- **⬢** — Codex 세션
+
+Codex **컨텍스트** 데이터의 출처는 파일뿐입니다: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — 로컬 머신, 또는 Remote‑SSH 창에서는 원격 호스트의 파일입니다. 네트워크 호출이 없습니다. **계정 사용량**은 경로가 다릅니다 — Codex app‑server에서 실시간으로 조회합니다(아래 참조).
+
+### Codex 아이템에 표시되는 것
+
+- **컨텍스트 사용률 %** — 최신 `last_token_usage.total_tokens` ÷ `model_context_window`
+- **모델명** — 예: `gpt-5.6-sol` → `GPT-5.6 Sol` (컴팩트 모드에서는 `G5.6s`)
+- **Effort** — Low / Medium / High / xHigh 등
+- **idle 흐림 & `hideAfter` 숨김** — Claude와 완전히 동일한 규칙
+- **완료 비프** — Codex의 `task_complete` 이벤트 기반. Claude의 완료 비프와 **동일한 사운드·임계값 설정을 공유**합니다 — Codex 전용 사운드 설정은 없습니다.
+- **툴팁** — Codex 계정 사용량(Primary/Secondary 한도, 갱신 시각, 플랜 종류) + 컨텍스트 토큰 내역 + 실행 주체
+
+### Codex 계정 사용량 (rate limit)
+
+**Codex app‑server에서 실시간으로** 읽습니다. 확장이 `codex app-server` 프로세스를 잠깐 띄워 JSON‑RPC로 `account/rateLimits/read`를 요청합니다 — 실측 왕복 시간 약 **0.6~0.9초**.
+
+이 조회는 **세션 갱신(30초)과 분리된 별도의 느린 타이머**로 돕니다. `claudeState.refreshIntervalSec` 값을 공유하되 **최소 60초**로 제한되므로, 매 30초 폴링마다 프로세스를 띄우지 않습니다. Claude가 claude.ai 사용량 API를 주기적으로 호출하는 것과 정확히 대칭인 구조입니다.
+
+**왜 로그가 아니라 실시간인가?** Codex 한도는 **7일 롤링 윈도우**라서, Codex를 쓰지 않아도 실제 값이 스스로 내려갑니다. 로그 스냅샷만 읽으면 Codex를 며칠 안 쓸 때 값이 그대로 굳어버립니다.
+
+**폴백 순서:**
+
+1. app‑server 실시간 조회
+2. 실패하면 해당 세션 rollout 로그의 `rate_limits` 스냅샷
+3. 그것도 없으면 마지막 성공값에 **"오래된 값"** 표시
+4. 전부 없으면 사용량을 표시하지 않음
+
+툴팁에는 **관측 시각 옆에 출처가 함께** 표시됩니다 — `실시간`, 또는 `세션 로그`.
+
+> 기존의 "Codex가 실제로 작업 중일 때만 갱신된다"는 단서는 이제 **폴백(2단계)에만** 해당합니다. rollout 스냅샷은 Codex가 작업할 때 기록되므로, idle 세션의 스냅샷은 오래된 값이 됩니다.
+
+Codex 계정 사용량은 Claude의 5시간 / 주간 플랜 사용량과는 **별개 개념**입니다. 각 provider의 사용량은 자기 provider의 첫 세션 아이템에만 병합되어 표시됩니다.
+
+### Codex 설정
+
+| 설정 | 기본값 | 설명 |
+|------|--------|------|
+| `claudeContextBar.codex.enabled` | `true` | Codex 세션 표시 on/off. Codex 미설치 시 즉시 no‑op이라 비용이 없습니다. |
+| `claudeContextBar.codex.home` | `""` | Codex 상태 디렉터리. 비우면 자동 탐지(`$CODEX_HOME` → `~/.codex`). **명시했는데 경로가 없으면 자동 폴백하지 않고 아무것도 표시하지 않으며, 이유를 로그에 남깁니다.** |
+| `claudeContextBar.codex.scanDays` | `3` | `sessions/YYYY/MM/DD` 중 최근 며칠치 폴더만 스캔할지. 전체 히스토리는 절대 재귀 스캔하지 않습니다. |
+
+그 밖의 설정은 **Claude와 Codex가 공유**합니다 — 경고/위험 임계값, 사운드, `compactMode`, `idleTimeout`, `hideAfter`, `scope` 등. Codex 전용 임계값·사운드 설정은 없습니다.
+
+### 알려진 한계 (Phase 1)
+
+- **각 창은 자기 호스트의 Codex 세션만 봅니다** — Remote‑SSH 창에는 **원격 호스트의** Codex 세션만 표시되고, 로컬 PC에서 돌린 Codex는 보이지 않습니다(반대로 로컬 창에는 로컬 Codex만). **Claude도 정확히 동일하게 동작하므로 일관적입니다.** Remote‑SSH 자체는 지원합니다 — 아래 Remote‑SSH 지원 섹션 참조.
+- **워크플로우 / 서브에이전트 뷰어 없음** — Codex에는 Claude의 워크플로우 저널에 해당하는 구조가 아직 없어서, Codex 세션을 클릭해도 워크플로우 메뉴가 나오지 않습니다.
+- **Codex 서브에이전트 세션은 표시되지 않음** — `source`가 subagent인 rollout은 제외됩니다.
+- **질문 대기 비프 / 멈춤 감지 없음** — Codex에는 해당 신호가 없습니다.
+- **Codex 로그 삭제 기능 없음.**
+- **계정 사용량은 Remote‑SSH 창에서도 *로컬*의 `codex`로 조회합니다** — 실시간 조회는 **로컬** `codex` 실행 파일을 실행하므로, 원격 창에서도 로컬 계정 기준 값이 나옵니다. 같은 ChatGPT 계정이면 값이 동일하지만, 다른 계정이면 다를 수 있습니다. (컨텍스트 모니터링은 원격 파일을 정확히 읽으므로 이와 무관합니다.)
+- **`codex` 실행 파일이 없거나 app‑server 조회가 실패해도 컨텍스트 모니터는 정상 동작합니다** — 사용량만 로그 스냅샷으로 폴백합니다. 조회에는 **15초 타임아웃**이 있고, 조회용 프로세스는 매번 정리됩니다(프로세스 누수 없음을 실측 확인).
+
+### 개인정보
+
+Codex rollout 로그에는 대화 원문 전체가 들어 있지만, 이 확장은 **구조적 필드(토큰 수, 타임스탬프, 모델명)만** 읽습니다. 메시지 본문은 읽지도, 저장하지도, 로그에 남기지도 않습니다. `auth.json`은 절대 접근하지 않습니다.
+
 ---
 
 ## 🌐 Remote‑SSH 지원
@@ -41,6 +108,18 @@ Claude Code의 세션 로그(`~/.claude/projects/*.jsonl`)를 읽어 활성 세�
 **로컬에 한 번 설치하면 모든 Remote‑SSH 창에 자동 적용됩니다.** `ui`-kind 확장이므로 서버마다 재설치할 필요가 없습니다.
 
 Remote‑SSH 창에서 **원격 세션 토큰 사용량과 플랜 사용량을 한곳에서** 봅니다. 호스트가 claude.ai에 도달할 수 없으면 오해를 주는 "만료" 오류 대신 "이 환경에선 플랜 사용량 불가"라는 정직한 안내가 표시됩니다(Session Key는 정상).
+
+### Remote‑SSH에서의 Codex
+
+**Codex도 지원합니다 — Claude와 동일한 방식입니다.** 확장은 여전히 로컬에서 실행되지만, `vscode.workspace.fs`로 **원격** 호스트의 파일을 읽고 VS Code가 SSH 연결 너머로 라우팅합니다. 원격 홈은 `/root`와 `/home/*` 아래에서 `.codex/sessions`가 실제로 존재하는 곳을 탐색해 찾습니다 — `.claude/projects`를 찾는 방식과 동일합니다. 파일 감시자도 원격에서 동작하므로 원격 Codex 세션 역시 수초 내에 갱신됩니다.
+
+**읽기 방식의 차이 한 가지(성능 참고):** 로컬에서는 파일의 필요한 구간만(byte‑range) 읽어서 14.1MB짜리 rollout도 수 밀리초면 끝납니다. Remote‑SSH에서는 VS Code 파일 API에 구간 읽기가 없어 **파일 전체**를 읽습니다. 이는 Claude가 원격에서 이미 하고 있는 것과 동일한 방식이며(이 개발 머신의 Claude 세션 파일 최대 크기는 9.2MB), 여기에 더해 Codex에는 Claude에 없는 최적화가 있습니다 — **rollout의 mtime과 크기가 그대로면 읽기를 아예 건너뜁니다**. 안전장치로, 원격에서 **32MB를 넘는** rollout 파일은 건너뛰고 로그에 남깁니다.
+
+로컬 경로와 원격 경로가 동일한 결과를 내는지 검증했습니다 — 같은 rollout 데이터에 대해 5개 세션 × 12개 필드 전부 일치했습니다.
+
+⚠️ 단, 원격 창에는 **원격 호스트의** Codex 세션만, 로컬 창에는 로컬 세션만 표시됩니다. 이 점도 Claude와 동일합니다.
+
+⚠️ **계정 사용량만 예외입니다:** 실시간 rate limit 조회는 **로컬**의 `codex`를 실행하므로, 원격 창에서도 사용량 수치는 **로컬** 계정 기준입니다. 같은 ChatGPT 계정이면 값이 동일하고, 다른 계정이면 다를 수 있습니다. 컨텍스트 모니터링은 이와 무관합니다.
 
 ---
 
@@ -88,6 +167,8 @@ Claude State Bar는 주요 이벤트에 설정 가능한 WAV 사운드를 재생
 | 워크플로우/Task 에이전트 전체 완료 | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
 
 모든 사운드 경로를 자신의 WAV 파일로 교체할 수 있습니다. 게인은 50%~5000% 조절 가능(~300% 초과 시 왜곡 가능). 명령 팔레트의 **`Claude State Bar: Test Beep Sound`**로 미리 듣기 가능.
+
+**Codex도 이 사운드를 공유합니다.** Codex 세션의 완료 비프(`task_complete` 이벤트 기반)는 Claude와 동일한 `soundCompletion` 설정과 동일한 임계값을 씁니다 — Codex 전용 사운드 설정은 없습니다. Codex에는 질문 대기 비프와 멈춤 감지 비프가 없습니다.
 
 **워크플로우 완료 비프 게이트** — 이번 세션에서 실제로 워크플로우가 실행 중 → 완료로 전환되는 것을 확인했을 때만 비프가 울립니다. 실제 워크플로우(`wf_*`)는 여기에 더해 스크립트 전체가 진짜 끝났는지(실행 완료 기록 `workflows/<wfId>.json`의 `status: "completed"`)까지 기다리므로, 에이전트를 **순차 배치로 나눠 실행**하는 워크플로우도 배치마다가 아니라 **맨 끝에 딱 한 번** 울립니다. 실패·중단된 실행은 울리지 않습니다. VS Code 시작 전부터 이미 완료된 워크플로우는 자동으로 베이스라인 처리되어 무음입니다.
 
@@ -209,9 +290,19 @@ VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인�
 |------|--------|------|
 | `claudeState.orgId` | `""` | claude.ai Organization ID |
 | `claudeState.language` | `en` | 설정 패널 언어(`en` / `ko`) |
-| `claudeState.refreshIntervalSec` | `300` | 플랜 사용량 폴링 간격(초) |
+| `claudeState.refreshIntervalSec` | `300` | 플랜 사용량 폴링 간격(초). Codex 계정 사용량 조회에도 함께 쓰이며, 최소 60초로 제한됩니다. |
 
 (Session Key, Bot Token, Chat ID는 settings.json이 아니라 SecretStorage에 저장됩니다.)
+
+### Codex
+
+| 설정 | 기본값 | 설명 |
+|------|--------|------|
+| `claudeContextBar.codex.enabled` | `true` | Codex 세션 표시 on/off (Codex 미설치 시 즉시 no‑op) |
+| `claudeContextBar.codex.home` | `""` | Codex 상태 디렉터리. 비우면 자동 탐지(`$CODEX_HOME` → `~/.codex`). 명시한 경로가 없으면 폴백 없이 아무것도 표시하지 않고 이유를 로그에 남김 |
+| `claudeContextBar.codex.scanDays` | `3` | `sessions/YYYY/MM/DD` 중 최근 며칠치만 스캔(전체 히스토리는 절대 재귀 스캔 안 함) |
+
+그 밖의 설정 — 임계값, 사운드, `compactMode`, `idleTimeout`, `hideAfter`, `scope` — 은 Claude와 Codex가 공유합니다.
 
 ---
 
@@ -220,10 +311,11 @@ VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인�
 - VS Code 1.74.0 이상
 - [Claude Code](https://www.anthropic.com/claude-code)가 실행 중이고 `~/.claude/projects/`에 세션 로그를 기록 중
 - 플랜 사용량용: claude.ai 계정 (Org ID + Session Key)
+- Codex 세션용(선택): OpenAI Codex가 `~/.codex/sessions/`에 rollout 로그를 기록 중 — **로컬** 머신, 또는 Remote‑SSH 창에서는 **원격 호스트**
 
 ## 동작 원리
 
-선택적 claude.ai 플랜 사용량 조회와 텔레그램을 제외하면 네트워크 호출이 없습니다. 컨텍스트 모니터링은 `vscode.workspace.fs`로 Claude Code의 JSONL 로그를 읽는 순수 디스크 작업입니다(로컬/원격). 플랜 사용량은 Electron의 Chromium 네트워크 스택으로 claude.ai usage 엔드포인트를 호출하며(Cloudflare 통과), 순수 `https` 폴백을 둡니다. 워크플로우 뷰어는 `~/.claude/projects/<slug>/<uuid>/subagents/`를 디스크에서 직접 읽습니다.
+선택적 claude.ai 플랜 사용량 조회와 텔레그램을 제외하면 네트워크 호출이 없습니다. 컨텍스트 모니터링은 `vscode.workspace.fs`로 Claude Code의 JSONL 로그를 읽는 순수 디스크 작업입니다(로컬/원격). 플랜 사용량은 Electron의 Chromium 네트워크 스택으로 claude.ai usage 엔드포인트를 호출하며(Cloudflare 통과), 순수 `https` 폴백을 둡니다. 워크플로우 뷰어는 `~/.claude/projects/<slug>/<uuid>/subagents/`를 디스크에서 직접 읽습니다. Codex **컨텍스트** 모니터링도 마찬가지로 `vscode.workspace.fs`로 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`을 읽는 순수 디스크 작업이며(로컬/원격), 네트워크 호출 없이 구조적 필드(토큰 수, 타임스탬프, 모델명)만 파싱합니다. Codex **계정 사용량**은 짧게 실행되는 로컬 `codex app-server` 프로세스에 JSON‑RPC로 실시간 조회하며(자체 타이머, 최소 60초), 실패 시 rollout 로그의 `rate_limits` 스냅샷으로 폴백합니다.
 
 ---
 
