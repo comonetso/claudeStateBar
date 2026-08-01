@@ -13,6 +13,11 @@
   - Read strategy differs by host: locally we read only the byte ranges we need (14.1MB rollout in ~4ms), while remotely the VS Code filesystem API has no range read, so the file is read whole — the same thing Claude already does over Remote-SSH, with the addition that Codex **skips the read entirely when mtime and size are unchanged**. Remote rollouts above 32MB are skipped and logged.
 - **Three new settings**: `claudeContextBar.codex.enabled` (default on; a no-op when Codex isn't installed), `claudeContextBar.codex.home` (empty = auto-detect), and `claudeContextBar.codex.scanDays` (default 3). All three are editable from the settings panel.
 
+### Changed
+- **Renamed to "Claude & Codex State Bar."** The extension now covers two providers, so the display name says so. Only the marketplace display name, README titles, and description changed — the extension identifier (`blueming.claude-state-bar`), every command ID, and all `claudeContextBar.*` setting keys are unchanged, so existing installs update in place and no configuration is lost.
+- **Marketplace description rewritten** around both providers, and `codex` / `openai` / `chatgpt` added to the search keywords.
+- **Command palette entries are now consistently prefixed `claudeStateBar:`.** One command still read `Claude State Bar:`, which split the palette results. The READMEs documented that stale prefix too and now match what the palette actually shows.
+
 ### Fixed
 - **Provider glyph colours no longer follow context usage.** Claude's existing `✳` glyph stays orange and Codex's existing `⬢` glyph stays blue while the adjacent usage text retains its warning/danger/idle colours.
 - **Provider glyphs are larger and sit closer to their labels.** The same `✳` / `⬢` silhouettes now use a bundled native-size product-icon font, and their separately coloured status-bar slots are compactly joined to the adjacent usage text.

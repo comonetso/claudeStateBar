@@ -1,7 +1,7 @@
 {
     "name": "claude-state-bar",
-    "displayName": "Claude State Bar",
-    "description": "Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) in your VS Code status bar — with a live Workflow/Agent viewer, sound alerts, Remote-SSH support, and Telegram reset alerts.",
+    "displayName": "Claude & Codex State Bar",
+    "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly remaining read live from the Codex app-server and kept identical across every window. Includes a live Workflow/Agent viewer, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
     "version": "1.8.0",
     "extensionKind": ["ui"],
     "publisher": "blueming",
@@ -32,6 +32,9 @@
         "claude",
         "claude code",
         "anthropic",
+        "codex",
+        "openai",
+        "chatgpt",
         "context window",
         "token counter",
         "ai assistant"
@@ -103,7 +106,7 @@
             },
             {
                 "command": "claudeContextBar.cleanupGhostItems",
-                "title": "Claude State Bar: Clean Up Ghost/Stale Status Bar Items"
+                "title": "claudeStateBar: Clean Up Ghost/Stale Status Bar Items"
             }
         ],
         "menus": {

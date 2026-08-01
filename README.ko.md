@@ -1,6 +1,13 @@
-# Claude State Bar
+# Claude & Codex State Bar
 
-**Claude Code 컨텍스트 사용량 + Claude.ai 플랜 사용량(5시간 세션 & 주간) — 이제 OpenAI Codex 세션까지 — 를 VS Code 상태바에서 한눈에. 실시간 워크플로우/에이전트 뷰어 패널, 사운드 알림, Remote‑SSH 지원, 텔레그램 리셋 알림, 한/영 설정 패널 포함.**
+**Claude Code와 OpenAI Codex를 VS Code 상태바에 나란히** — 세션별 컨텍스트 사용량, 모델·Effort, 작업 완료 비프, 그리고 계정 한도(Claude.ai 5시간 세션 & 주간, Codex 주간 잔여)까지. 실시간 워크플로우/에이전트 뷰어 패널, Remote‑SSH 지원, 텔레그램 리셋 알림, 한/영 설정 패널 포함.
+
+[![GitHub stars](https://img.shields.io/github/stars/comonetso/claudeStateBar?style=social)](https://github.com/comonetso/claudeStateBar)
+
+> ### ⭐ 저장소에 별 하나만 눌러주세요
+> 설치해서 쓰는 분은 많은데, 별을 눌러주는 분은 거의 없습니다.
+> 별은 "이걸 실제로 쓰는 사람이 있다"는 걸 알 수 있는 **유일한 신호**이고, 계속 만들지 말지를 정하는 기준이기도 합니다.
+> 2초면 됩니다: **[github.com/comonetso/claudeStateBar](https://github.com/comonetso/claudeStateBar)**
 
 🇬🇧 English: [README.md](README.md)
 
@@ -8,7 +15,7 @@
 
 ## 상태바 안의 두 계층
 
-Claude State Bar는 서로 보완되는 두 가지를 보여주며, 하나의 호버 툴팁 안에서 섹션으로 명확히 구분됩니다.
+Claude & Codex State Bar는 서로 보완되는 두 가지를 보여주며, 하나의 호버 툴팁 안에서 섹션으로 명확히 구분됩니다.
 
 ### 🧠 claudeContext — Claude Code 컨텍스트 모니터
 Claude Code의 세션 로그(`~/.claude/projects/*.jsonl`)를 읽어 활성 세션별로 표시:
@@ -115,7 +122,7 @@ Codex rollout 로그에는 대화 원문 전체가 들어 있지만 rollout 파�
 
 ## 🌐 Remote‑SSH 지원
 
-**Remote‑SSH** 환경에서도 두 가지를 동시에 합니다. Claude State Bar는 **UI(로컬) 확장**으로 실행됩니다:
+**Remote‑SSH** 환경에서도 두 가지를 동시에 합니다. Claude & Codex State Bar는 **UI(로컬) 확장**으로 실행됩니다:
 
 - **플랜 사용량**은 **로컬 PC**의 Electron 네트워크 스택으로 가져옵니다 — Cloudflare 봇 챌린지를 통과합니다. (원격/헤드리스 호스트의 순수 Node `https`는 Cloudflare `403`을 받고, AWS EC2 같은 클라우드·데이터센터 IP는 TLS 핑거프린트와 무관하게 차단됩니다.)
 - **토큰 카운트**는 **원격** 호스트의 `~/.claude/projects`를 `vscode.workspace.fs`로 읽습니다. VS Code가 SSH 너머로 자동 라우팅합니다. 원격 홈은 자동 탐색(`/root`, 없으면 `/home/*`)합니다.
@@ -171,7 +178,7 @@ Remote‑SSH 창에서 **원격 세션 토큰 사용량과 플랜 사용량을 �
 
 ## 🔔 사운드 알림
 
-Claude State Bar는 주요 이벤트에 설정 가능한 WAV 사운드를 재생합니다:
+Claude & Codex State Bar는 주요 이벤트에 설정 가능한 WAV 사운드를 재생합니다:
 
 | 이벤트 | 기본 사운드 | 관련 설정 |
 |---|---|---|
@@ -181,7 +188,7 @@ Claude State Bar는 주요 이벤트에 설정 가능한 WAV 사운드를 재생
 | Claude가 질문하려고 멈춤 | `Speech On.wav` | `soundQuestion` / `soundQuestionGain` |
 | Claude 워크플로우/Task 에이전트 또는 Codex spawned-agent 전체 완료 | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
 
-모든 사운드 경로를 자신의 WAV 파일로 교체할 수 있습니다. 게인은 50%~5000% 조절 가능(~300% 초과 시 왜곡 가능). 명령 팔레트의 **`Claude State Bar: Test Beep Sound`**로 미리 듣기 가능.
+모든 사운드 경로를 자신의 WAV 파일로 교체할 수 있습니다. 게인은 50%~5000% 조절 가능(~300% 초과 시 왜곡 가능). 명령 팔레트의 **`claudeStateBar: Test Beep Sound`**로 미리 듣기 가능.
 
 **Codex도 이 사운드를 공유합니다.** 일반 Codex 턴의 완료 비프(`task_complete` 기반)는 `soundCompletion`을 씁니다. 해당 부모 턴이 에이전트를 생성했다면 최종 전체 완료는 대신 `soundWorkflow`로 보내므로 일반 완료음과 워크플로 완료음이 중복해서 울리지 않습니다. Codex 전용 사운드 설정은 없습니다. Codex 질문 대기 비프와 멈춤 감지 비프는 아직 구현하지 않았습니다.
 
@@ -212,7 +219,7 @@ Click for menu (hide / restore / settings)
 
 ## ⚙️ 설정 패널 (웹뷰, 한/영)
 
-명령 팔레트에서 **`Claude State Bar: Open Settings Panel`**를 열면, 런타임 **English / 한국어** 토글이 있는 단일 패널이 뜹니다. Org ID, Session Key, 새로고침 간격, 텔레그램 Bot Token(Chat ID 자동 감지), 사운드 설정(미리듣기 포함), 컨텍스트 모니터 옵션을 한 곳에서 입력합니다. 민감 값은 암호화 SecretStorage로, 나머지는 표준 VS Code 설정과 동기화됩니다.
+명령 팔레트에서 **`claudeStateBar: Open Settings Panel`**를 열면, 런타임 **English / 한국어** 토글이 있는 단일 패널이 뜹니다. Org ID, Session Key, 새로고침 간격, 텔레그램 Bot Token(Chat ID 자동 감지), 사운드 설정(미리듣기 포함), 컨텍스트 모니터 옵션을 한 곳에서 입력합니다. 민감 값은 암호화 SecretStorage로, 나머지는 표준 VS Code 설정과 동기화됩니다.
 
 ### 자격증명 얻는 법
 - **Org ID** — claude.ai → 개발자도구 → Network → `/api/organizations/{UUID}/…` 요청
@@ -250,7 +257,7 @@ Click for menu (hide / restore / settings)
 
 ## 🧹 좀비 상태바 항목 정리
 
-VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인스턴스의 상태바 아이템이 클릭에 반응하지 않는 "좀비" 픽셀로 남을 수 있습니다. Claude State Bar는 두 가지 방법으로 처리합니다:
+VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인스턴스의 상태바 아이템이 클릭에 반응하지 않는 "좀비" 픽셀로 남을 수 있습니다. Claude & Codex State Bar는 두 가지 방법으로 처리합니다:
 
 1. **버전 변경 감지** — 활성화 시 마지막 실행 버전이 바뀌었으면 "창 다시 로드해서 오래된 항목 정리?" 알림을 1회 표시합니다.
 2. **QuickPick 정리** — 세션 메뉴에 항상 **🗑 오래된/좀비 항목 정리 (창 다시 로드)** 항목이 있습니다.
@@ -330,7 +337,19 @@ VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인�
 
 ## 동작 원리
 
-선택적 claude.ai 플랜 사용량 조회와 텔레그램을 제외하면 네트워크 호출이 없습니다. 컨텍스트 모니터링은 `vscode.workspace.fs`로 Claude Code의 JSONL 로그를 읽는 순수 디스크 작업입니다(로컬/원격). 플랜 사용량은 Electron의 Chromium 네트워크 스택으로 claude.ai usage 엔드포인트를 호출하며(Cloudflare 통과), 순수 `https` 폴백을 둡니다. 워크플로우 뷰어는 `~/.claude/projects/<slug>/<uuid>/subagents/`를 디스크에서 직접 읽습니다. Codex **컨텍스트와 spawned-agent 완료** 모니터링도 마찬가지로 `vscode.workspace.fs`로 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`을 읽는 순수 디스크 작업이며(로컬/원격), 네트워크 호출 없이 구조적 필드만 파싱합니다. Codex **계정 사용량**은 짧게 실행되는 로컬 `codex app-server` 프로세스에 JSON‑RPC로 실시간 조회하며(자체 타이머, 최소 60초), 실패 시 rollout 로그의 `rate_limits` 스냅샷으로 폴백합니다.
+선택적 claude.ai 플랜 사용량 조회와 텔레그램을 제외하면 네트워크 호출이 없습니다. 컨텍스트 모니터링은 `vscode.workspace.fs`로 Claude Code의 JSONL 로그를 읽는 순수 디스크 작업입니다(로컬/원격). 플랜 사용량은 Electron의 Chromium 네트워크 스택으로 claude.ai usage 엔드포인트를 호출하며(Cloudflare 통과), 순수 `https` 폴백을 둡니다. 워크플로우 뷰어는 `~/.claude/projects/<slug>/<uuid>/subagents/`를 디스크에서 직접 읽습니다. Codex **컨텍스트와 spawned-agent 완료** 모니터링도 마찬가지로 `vscode.workspace.fs`로 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`을 읽는 순수 디스크 작업이며(로컬/원격), 네트워크 호출 없이 구조적 필드만 파싱합니다. Codex **계정 사용량**은 짧게 실행되는 로컬 `codex app-server` 프로세스에 JSON‑RPC로 실시간 조회하며(자체 타이머, 최소 60초), 실패 시 rollout 로그의 `rate_limits` 스냅샷으로 폴백합니다. VS Code 창이 여러 개 열려 있어도 그중 **한 창만** 조회를 실행합니다. 결과는 확장의 `globalStorage`에 있는 비밀값 없는 캐시에 원자적 교체로 저장되고(프로세스 간 잠금으로 보호), 나머지 창은 그 값을 읽고 감시합니다. 그래서 모든 창이 항상 같은 숫자를 보여줍니다.
+
+---
+
+## ⭐ 도움이 되셨나요?
+
+**저장소에 별 하나만 눌러주세요.** 부탁은 이것뿐입니다.
+
+다운로드 수는 그냥 숫자입니다. 별은 사람입니다. 이 확장 덕분에 컨텍스트 한도나 주간 한도를 한 번이라도 덜 날리셨다면, 2초만 써주세요.
+
+**→ [github.com/comonetso/claudeStateBar](https://github.com/comonetso/claudeStateBar)**
+
+버그 제보와 기능 제안은 [Issues](https://github.com/comonetso/claudeStateBar/issues)에서 환영합니다.
 
 ---
 

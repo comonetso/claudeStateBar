@@ -1,6 +1,13 @@
-# Claude State Bar
+# Claude & Codex State Bar
 
-**Claude Code context usage + Claude.ai plan usage (5-hour session & weekly) — and now OpenAI Codex sessions too — in your VS Code status bar, with a live Workflow/Agent viewer panel, sound alerts, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.**
+**Claude Code and OpenAI Codex, side by side in your VS Code status bar** — per‑session context usage, model and effort, task‑complete beeps, and account limits (Claude.ai 5‑hour session & weekly, Codex weekly remaining), with a live Workflow/Agent viewer panel, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.
+
+[![GitHub stars](https://img.shields.io/github/stars/comonetso/claudeStateBar?style=social)](https://github.com/comonetso/claudeStateBar)
+
+> ### ⭐ Star the repo, please
+> Plenty of people install this. Almost nobody stars it.
+> A star is the only signal that tells me anyone actually uses this thing — and it's what decides whether I keep building it.
+> It takes two seconds: **[github.com/comonetso/claudeStateBar](https://github.com/comonetso/claudeStateBar)**
 
 🇰🇷 한국어 문서: [README.ko.md](README.ko.md)
 
@@ -8,7 +15,7 @@
 
 ## Two layers in one status bar
 
-Claude State Bar shows two complementary things, merged into a single hover tooltip with clearly separated sections:
+Claude & Codex State Bar shows two complementary things, merged into a single hover tooltip with clearly separated sections:
 
 ### 🧠 claudeContext — Claude Code context monitor
 Reads Claude Code's local session logs (`~/.claude/projects/*.jsonl`) and shows, per active session:
@@ -115,7 +122,7 @@ Codex rollout logs contain the full text of your conversations, but the rollout 
 
 ## 🌐 Remote‑SSH support
 
-Working over **Remote‑SSH**? Claude State Bar runs as a **UI (local) extension** so it can do both jobs at once:
+Working over **Remote‑SSH**? Claude & Codex State Bar runs as a **UI (local) extension** so it can do both jobs at once:
 
 - **Plan usage** is fetched from your **local machine** via Electron's network stack — this passes Cloudflare's bot challenge. (Plain Node `https` from a remote/headless host gets a Cloudflare `403`, and cloud/datacenter IPs such as AWS EC2 are blocked regardless of TLS fingerprint.)
 - **Token counts** are read from the **remote** host's `~/.claude/projects` through `vscode.workspace.fs`, which VS Code transparently routes over the SSH connection. The remote home is auto‑detected (`/root`, else `/home/*`).
@@ -171,7 +178,7 @@ Additional speed indicators:
 
 ## 🔔 Sound alerts
 
-Claude State Bar plays configurable WAV sounds for key events:
+Claude & Codex State Bar plays configurable WAV sounds for key events:
 
 | Event | Default sound | Setting |
 |---|---|---|
@@ -181,7 +188,7 @@ Claude State Bar plays configurable WAV sounds for key events:
 | Claude pauses to ask a question | `Speech On.wav` | `soundQuestion` / `soundQuestionGain` |
 | All Claude workflow/task agents or Codex spawned agents complete | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
 
-All sound paths can be overridden with your own WAV file. Gain is adjustable from 50% to 5000% (values above ~300% may distort). Use **`Claude State Bar: Test Beep Sound`** from the Command Palette to preview.
+All sound paths can be overridden with your own WAV file. Gain is adjustable from 50% to 5000% (values above ~300% may distort). Use **`claudeStateBar: Test Beep Sound`** from the Command Palette to preview.
 
 **Codex shares these sounds.** An ordinary Codex turn's completion beep (fired from `task_complete`) uses `soundCompletion`. When that parent turn spawned agents, its final all-agents completion is routed to `soundWorkflow` instead, so the ordinary and workflow sounds do not both fire. There are no Codex-specific sound settings. Codex question-pause and stuck-detection beeps are not implemented yet.
 
@@ -212,7 +219,7 @@ Click for menu (hide / restore / settings)
 
 ## ⚙️ Settings panel (webview, EN/KO)
 
-Open **`Claude State Bar: Open Settings Panel`** from the Command Palette for a single panel with a runtime **English / 한국어** toggle. It collects Org ID, Session Key, refresh interval, Telegram Bot Token (auto‑detects your Chat ID), sound settings (with preview), and context‑monitor options. Sensitive values go to encrypted SecretStorage; everything else syncs with VS Code settings.
+Open **`claudeStateBar: Open Settings Panel`** from the Command Palette for a single panel with a runtime **English / 한국어** toggle. It collects Org ID, Session Key, refresh interval, Telegram Bot Token (auto‑detects your Chat ID), sound settings (with preview), and context‑monitor options. Sensitive values go to encrypted SecretStorage; everything else syncs with VS Code settings.
 
 ### How to get your credentials
 - **Org ID** — claude.ai → DevTools → Network → any `/api/organizations/{UUID}/…` request
@@ -250,7 +257,7 @@ The primer only makes sense while headless `claude -p` runs draw on your **subsc
 
 ## 🧹 Zombie status‑bar cleanup
 
-When VS Code updates the extension while a window is open, the old instance's status‑bar items can remain as unresponsive "zombie" pixels. Claude State Bar handles this two ways:
+When VS Code updates the extension while a window is open, the old instance's status‑bar items can remain as unresponsive "zombie" pixels. Claude & Codex State Bar handles this two ways:
 
 1. **Version‑change detection** — on activation, if the version changed since last run, a one‑time "Reload window to clear stale items?" notice appears.
 2. **QuickPick cleanup** — the session menu always contains a **🗑 Clean up stale/zombie items (Reload Window)** option.
@@ -330,7 +337,19 @@ All other settings — thresholds, sounds, `compactMode`, `idleTimeout`, `hideAf
 
 ## How it works
 
-No network calls except the optional claude.ai plan‑usage fetch and Telegram. Context monitoring is pure disk reads of Claude Code's JSONL logs via `vscode.workspace.fs` (local or remote). Plan usage calls the claude.ai usage endpoint using Electron's Chromium network stack (to pass Cloudflare) with a plain‑`https` fallback. The workflow viewer reads `~/.claude/projects/<slug>/<uuid>/subagents/` directly from disk. Codex **context and spawned-agent completion** monitoring is likewise pure disk reads of `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` via `vscode.workspace.fs` (local or remote) — no network calls, and only structural fields are parsed. Codex **account usage** is read live from a short‑lived local `codex app-server` process over JSON‑RPC, on its own timer (≥ 60 s), falling back to the rollout log's `rate_limits` snapshot.
+No network calls except the optional claude.ai plan‑usage fetch and Telegram. Context monitoring is pure disk reads of Claude Code's JSONL logs via `vscode.workspace.fs` (local or remote). Plan usage calls the claude.ai usage endpoint using Electron's Chromium network stack (to pass Cloudflare) with a plain‑`https` fallback. The workflow viewer reads `~/.claude/projects/<slug>/<uuid>/subagents/` directly from disk. Codex **context and spawned-agent completion** monitoring is likewise pure disk reads of `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` via `vscode.workspace.fs` (local or remote) — no network calls, and only structural fields are parsed. Codex **account usage** is read live from a short‑lived local `codex app-server` process over JSON‑RPC, on its own timer (≥ 60 s), falling back to the rollout log's `rate_limits` snapshot. When several VS Code windows are open, only **one** of them runs that probe — the result goes into a non‑secret cache in the extension's `globalStorage`, guarded by an atomic cross‑process lock, and every other window reads and watches that same value, so all windows always show the identical number.
+
+---
+
+## ⭐ Found this useful?
+
+**Star the repo.** That's it — that's the whole ask.
+
+Downloads tell me a number. A star tells me a person. If this has saved you from blowing through a context window or a weekly limit even once, please spend the two seconds:
+
+**→ [github.com/comonetso/claudeStateBar](https://github.com/comonetso/claudeStateBar)**
+
+Bug reports and feature requests are welcome in [Issues](https://github.com/comonetso/claudeStateBar/issues).
 
 ---
 
