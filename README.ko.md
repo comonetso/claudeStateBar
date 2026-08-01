@@ -55,13 +55,15 @@ Codex **컨텍스트** 데이터의 출처는 파일뿐입니다: `~/.codex/sess
 - **Effort** — Low / Medium / High / xHigh 등
 - **idle 흐림 & `hideAfter` 숨김** — Claude와 완전히 동일한 규칙
 - **완료 비프** — Codex의 `task_complete` 이벤트 기반. Claude의 완료 비프와 **동일한 사운드·임계값 설정을 공유**합니다 — Codex 전용 사운드 설정은 없습니다.
-- **툴팁** — Codex 계정 잔여량(Primary/Secondary 한도, 갱신 시각, 플랜 종류) + 컨텍스트 토큰 내역 + 실행 주체
+- **툴팁** — Codex 주간/보조 한도(남은 비율, 갱신 시각, 플랜 종류) + 컨텍스트 토큰 내역 + 세션 누적 처리량
 
 ### Codex 계정 사용량 (rate limit)
 
 **Codex app‑server에서 실시간으로** 읽습니다. 확장이 `codex app-server` 프로세스를 잠깐 띄워 JSON‑RPC로 `account/rateLimits/read`를 요청합니다 — 실측 왕복 시간 약 **0.6~0.9초**.
 
 app-server 원본은 소진 비율인 `usedPercent`를 반환합니다. 상태바와 툴팁은 ChatGPT 공식 사용량 화면과 동일하게 이를 **남은 비율**(`100 - usedPercent`)로 변환해 표시합니다. 예를 들어 `usedPercent: 58`은 **42% 남음**으로 표시됩니다.
+
+툴팁의 **세션 누적 처리량**은 rollout의 `total_token_usage.total_tokens`입니다. 이 대화에서 여러 모델 호출이 처리한 토큰의 누적합(캐시 입력 포함)이며, 현재 컨텍스트 크기도 계정의 주간 한도 사용량도 아닙니다.
 
 이 조회는 **세션 갱신(30초)과 분리된 별도의 느린 타이머**로 돕니다. `claudeState.refreshIntervalSec` 값을 공유하되 **최소 60초**로 제한되므로, 매 30초 폴링마다 프로세스를 띄우지 않습니다. Claude가 claude.ai 사용량 API를 주기적으로 호출하는 것과 정확히 대칭인 구조입니다.
 
@@ -97,9 +99,9 @@ Codex 계정 사용량은 Claude의 5시간 / 주간 플랜 사용량과는 **�
 ### 알려진 한계 (Phase 1)
 
 - **현재 대화 모드는 호스트 소유권이 아니라 Codex UI를 따릅니다.** Remote‑SSH 창에서도 Codex webview가 로컬 UI 호스트에서 실행되면 선택 대화가 로컬 `CODEX_HOME`에 있을 수 있고, 설정된 원격 Codex 홈의 rollout을 가리킬 수도 있습니다. 정확한 선택 UUID를 설정된 호스트에서 먼저 찾고, 명시적인 `codex.home` 설정이 없을 때만 로컬 UI 홈을 폴백으로 확인합니다.
-- **워크플로우 / 서브에이전트 뷰어 없음** — Codex에는 Claude의 워크플로우 저널에 해당하는 구조가 아직 없어서, Codex 세션을 클릭해도 워크플로우 메뉴가 나오지 않습니다.
-- **Codex 서브에이전트 세션은 표시되지 않음** — `source`가 subagent인 rollout은 제외됩니다.
-- **질문 대기 비프 / 멈춤 감지 없음** — Codex에는 해당 신호가 없습니다.
+- **이 확장에는 Codex 워크플로우 / 서브에이전트 뷰어가 없음** — Codex 세션을 클릭해도 Claude 워크플로우 메뉴가 나오지 않습니다. 명시적인 spawned-agent 연결 정보는 전체 완료음 판정에만 읽으며, 개별 thread 확인·열기는 Codex 자체 background-agent 패널을 사용합니다.
+- **Codex 서브에이전트 세션은 상태 표시줄에 개별 표시되지 않음** — spawned-agent rollout은 전체 완료음을 위해 부모 턴 아래로 집계하고, 내부 guardian rollout은 계속 제외합니다.
+- **Codex 질문 대기 비프 / 멈춤 감지는 아직 없음.**
 - **Codex 로그 삭제 기능 없음.**
 - **계정 사용량은 Remote‑SSH 창에서도 *로컬*의 `codex`로 조회합니다** — 실시간 조회는 **로컬** `codex` 실행 파일을 실행하므로, 원격 창에서도 로컬 계정 기준 값이 나옵니다. 같은 ChatGPT 계정이면 값이 동일하지만, 다른 계정이면 다를 수 있습니다. (컨텍스트 모니터링은 원격 파일을 정확히 읽으므로 이와 무관합니다.)
 - **`codex` 실행 파일이 없거나 app‑server 조회가 실패해도 컨텍스트 모니터는 정상 동작합니다** — 사용량만 로그 스냅샷으로 폴백합니다. 조회에는 **15초 타임아웃**이 있고, 조회용 프로세스는 매번 정리됩니다(프로세스 누수 없음을 실측 확인).
@@ -107,7 +109,7 @@ Codex 계정 사용량은 Claude의 5시간 / 주간 플랜 사용량과는 **�
 
 ### 개인정보
 
-Codex rollout 로그에는 대화 원문 전체가 들어 있지만 rollout 파서는 **구조적 필드(토큰 수, 타임스탬프, 모델명)만** 추출합니다. 사이드바 대화를 식별할 때는 일치하는 로컬 또는 원격 OpenAI `Codex.log`에서 정확한 `thread_stream_view_activity_changed` 표식, 불리언 값, UUID만 찾고 나머지 로그 텍스트는 즉시 버립니다. 메시지 본문을 저장하거나 이 확장의 로그에 남기지 않습니다. `auth.json`은 절대 접근하지 않습니다.
+Codex rollout 로그에는 대화 원문 전체가 들어 있지만 rollout 파서는 **구조적 필드(토큰/사용량 수치, 타임스탬프, 모델/effort, `cwd`, 작업 생명주기, 명시적인 spawned-agent 부모/thread ID)만** 추출합니다. 사이드바 대화를 식별할 때는 일치하는 로컬 또는 원격 OpenAI `Codex.log`에서 정확한 `thread_stream_view_activity_changed` 표식, 불리언 값, UUID만 찾고 나머지 로그 텍스트는 즉시 버립니다. 메시지 본문을 저장하거나 이 확장의 로그에 남기지 않습니다. `auth.json`은 절대 접근하지 않습니다.
 
 ---
 
@@ -177,13 +179,13 @@ Claude State Bar는 주요 이벤트에 설정 가능한 WAV 사운드를 재생
 | 컨텍스트가 위험 임계값 도달 | `Ring02.wav` | `soundDanger` / `soundDangerGain` |
 | Claude가 응답 완료 (`end_turn`) | `tada.wav` | `soundCompletion` / `soundCompletionGain` |
 | Claude가 질문하려고 멈춤 | `Speech On.wav` | `soundQuestion` / `soundQuestionGain` |
-| 워크플로우/Task 에이전트 전체 완료 | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
+| Claude 워크플로우/Task 에이전트 또는 Codex spawned-agent 전체 완료 | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
 
 모든 사운드 경로를 자신의 WAV 파일로 교체할 수 있습니다. 게인은 50%~5000% 조절 가능(~300% 초과 시 왜곡 가능). 명령 팔레트의 **`Claude State Bar: Test Beep Sound`**로 미리 듣기 가능.
 
-**Codex도 이 사운드를 공유합니다.** Codex 세션의 완료 비프(`task_complete` 이벤트 기반)는 Claude와 동일한 `soundCompletion` 설정과 동일한 임계값을 씁니다 — Codex 전용 사운드 설정은 없습니다. Codex에는 질문 대기 비프와 멈춤 감지 비프가 없습니다.
+**Codex도 이 사운드를 공유합니다.** 일반 Codex 턴의 완료 비프(`task_complete` 기반)는 `soundCompletion`을 씁니다. 해당 부모 턴이 에이전트를 생성했다면 최종 전체 완료는 대신 `soundWorkflow`로 보내므로 일반 완료음과 워크플로 완료음이 중복해서 울리지 않습니다. Codex 전용 사운드 설정은 없습니다. Codex 질문 대기 비프와 멈춤 감지 비프는 아직 구현하지 않았습니다.
 
-**워크플로우 완료 비프 게이트** — 이번 세션에서 실제로 워크플로우가 실행 중 → 완료로 전환되는 것을 확인했을 때만 비프가 울립니다. 실제 워크플로우(`wf_*`)는 여기에 더해 스크립트 전체가 진짜 끝났는지(실행 완료 기록 `workflows/<wfId>.json`의 `status: "completed"`)까지 기다리므로, 에이전트를 **순차 배치로 나눠 실행**하는 워크플로우도 배치마다가 아니라 **맨 끝에 딱 한 번** 울립니다. 실패·중단된 실행은 울리지 않습니다. VS Code 시작 전부터 이미 완료된 워크플로우는 자동으로 베이스라인 처리되어 무음입니다.
+**워크플로우 완료 비프 게이트** — 이번 세션에서 실제로 워크플로우가 실행 중 → 완료로 전환되는 것을 확인했을 때만 비프가 울립니다. Claude 워크플로우(`wf_*`)는 실행 완료 기록(`workflows/<wfId>.json`의 `status: "completed"`)까지 기다립니다. Codex는 최신 부모 `task_started` 이후의 명시적인 `source.subagent.thread_spawn.parent_thread_id` 연결을 중첩 자손까지 따라가고, 연결된 spawned-agent rollout이 전부 끝난 뒤 부모 `task_complete`까지 확인합니다. 즉 `agent-turn-complete`와 같은 최종 경계입니다. 그래서 **순차 배치**도 중간 공백에는 울리지 않고 **맨 끝에 딱 한 번** 울립니다. 실패·중단된 실행은 워크플로 성공음을 울리지 않으며, VS Code 시작 전부터 이미 완료된 작업은 베이스라인 처리되어 무음입니다.
 
 ---
 
@@ -291,9 +293,9 @@ VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인�
 | `claudeContextBar.completionBeepSettleMs` | `3000` | 완료 비프 발동 전 안정 대기 시간(ms) |
 | `claudeContextBar.soundQuestion` | `""` | 질문 일시정지 비프 WAV 경로 |
 | `claudeContextBar.soundQuestionGain` | `100` | 질문음 게인 % |
-| `claudeContextBar.soundWorkflow` | `""` | 워크플로우/에이전트 전체 완료 비프 WAV 경로 |
+| `claudeContextBar.soundWorkflow` | `""` | Claude 워크플로우/Task 또는 Codex spawned-agent 전체 완료 비프 WAV 경로 |
 | `claudeContextBar.soundWorkflowGain` | `100` | 워크플로우 완료음 게인 % |
-| `claudeContextBar.workflowCompleteBeep` | `true` | 워크플로우/Task 에이전트 전체 완료 시 비프 |
+| `claudeContextBar.workflowCompleteBeep` | `true` | Claude 워크플로우/Task 또는 Codex spawned-agent 전체 완료 시 워크플로 음 재생 |
 | `claudeContextBar.detectStuckToolUse` | `false` | 휴리스틱: tool_use 이후 일정 시간 무활동 시 질문 비프 |
 | `claudeContextBar.stuckToolUseThresholdSec` | `90` | stuck-tool 휴리스틱 발동 임계 시간(초) |
 
@@ -328,7 +330,7 @@ VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인�
 
 ## 동작 원리
 
-선택적 claude.ai 플랜 사용량 조회와 텔레그램을 제외하면 네트워크 호출이 없습니다. 컨텍스트 모니터링은 `vscode.workspace.fs`로 Claude Code의 JSONL 로그를 읽는 순수 디스크 작업입니다(로컬/원격). 플랜 사용량은 Electron의 Chromium 네트워크 스택으로 claude.ai usage 엔드포인트를 호출하며(Cloudflare 통과), 순수 `https` 폴백을 둡니다. 워크플로우 뷰어는 `~/.claude/projects/<slug>/<uuid>/subagents/`를 디스크에서 직접 읽습니다. Codex **컨텍스트** 모니터링도 마찬가지로 `vscode.workspace.fs`로 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`을 읽는 순수 디스크 작업이며(로컬/원격), 네트워크 호출 없이 구조적 필드(토큰 수, 타임스탬프, 모델명)만 파싱합니다. Codex **계정 사용량**은 짧게 실행되는 로컬 `codex app-server` 프로세스에 JSON‑RPC로 실시간 조회하며(자체 타이머, 최소 60초), 실패 시 rollout 로그의 `rate_limits` 스냅샷으로 폴백합니다.
+선택적 claude.ai 플랜 사용량 조회와 텔레그램을 제외하면 네트워크 호출이 없습니다. 컨텍스트 모니터링은 `vscode.workspace.fs`로 Claude Code의 JSONL 로그를 읽는 순수 디스크 작업입니다(로컬/원격). 플랜 사용량은 Electron의 Chromium 네트워크 스택으로 claude.ai usage 엔드포인트를 호출하며(Cloudflare 통과), 순수 `https` 폴백을 둡니다. 워크플로우 뷰어는 `~/.claude/projects/<slug>/<uuid>/subagents/`를 디스크에서 직접 읽습니다. Codex **컨텍스트와 spawned-agent 완료** 모니터링도 마찬가지로 `vscode.workspace.fs`로 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`을 읽는 순수 디스크 작업이며(로컬/원격), 네트워크 호출 없이 구조적 필드만 파싱합니다. Codex **계정 사용량**은 짧게 실행되는 로컬 `codex app-server` 프로세스에 JSON‑RPC로 실시간 조회하며(자체 타이머, 최소 60초), 실패 시 rollout 로그의 `rate_limits` 스냅샷으로 폴백합니다.
 
 ---
 

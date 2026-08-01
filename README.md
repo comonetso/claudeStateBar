@@ -55,13 +55,15 @@ The provider glyph is a fixed identity cue: **Claude's `✳` is orange** and **C
 - **Effort** — Low / Medium / High / xHigh, etc.
 - **Idle dimming & `hideAfter` hiding** — exactly the same rules as Claude
 - **Completion beep** — driven by Codex's `task_complete` event. It **shares Claude's completion sound and threshold settings** — there is no separate Codex sound setting.
-- **Tooltip** — Codex account remaining (Primary/Secondary limits, reset times, plan type) + context token breakdown + who is running it
+- **Tooltip** — Codex weekly/secondary limits (remaining percentage, reset times, plan type) + context token breakdown + the session's cumulative processed tokens
 
 ### Codex account usage (rate limits)
 
 Read **live from the Codex app‑server**. The extension briefly spawns a `codex app-server` process and asks it for `account/rateLimits/read` over JSON‑RPC — a measured round trip of about **0.6–0.9 s**.
 
 The app-server reports a consumed `usedPercent`; the status bar and tooltip convert it to **remaining percent** (`100 - usedPercent`) to match the ChatGPT usage screen. For example, `usedPercent: 58` is displayed as **42% remaining**.
+
+The tooltip’s **Session processed total** comes from rollout `total_token_usage.total_tokens`. It is the cumulative token volume processed across model calls in this conversation (including cached input), not the current context size and not the account’s weekly-limit usage.
 
 This runs on its **own slow timer, separate from the 30‑second session refresh**. It shares the `claudeState.refreshIntervalSec` value but is clamped to a **minimum of 60 seconds**, so no process is spawned on every 30‑second poll. This is exactly symmetric with how Claude polls the claude.ai usage API.
 
@@ -97,9 +99,9 @@ Everything else is **shared between Claude and Codex** — warning/danger thresh
 ### Known limitations (Phase 1)
 
 - **Current-chat mode follows the Codex UI, not host ownership.** A Remote‑SSH window can run the Codex webview on the local UI host, so the selected conversation may live in local `CODEX_HOME`; it can also refer to a rollout in the configured/remote Codex home. The exact selected UUID is tried against the configured host first and the local UI home only when no explicit `codex.home` override forbids fallback.
-- **No workflow / sub‑agent viewer** — Codex has no equivalent of Claude's workflow journal yet, so clicking a Codex session does not open the workflow menu.
-- **Codex sub‑agent sessions are not shown** — rollouts whose `source` is a subagent are excluded.
-- **No question‑pause beep and no stuck detection** — Codex has no such signals.
+- **No Codex workflow / sub‑agent viewer in this extension** — clicking a Codex session does not open the Claude workflow menu. Explicit spawned-agent links are read only for the all-agents-complete sound; Codex's own background-agent panel remains the place to inspect or open individual threads.
+- **Codex sub‑agent sessions are not shown as status-bar items** — spawned-agent rollouts are aggregated under their parent turn for the completion sound, while internal guardian rollouts remain excluded.
+- **No Codex question‑pause beep or stuck detection yet.**
 - **No Codex log deletion.**
 - **Account usage is queried from your *local* `codex`, even in a Remote‑SSH window** — the live query runs the **local** `codex` executable, so the figures reflect your local account. With the same ChatGPT account the numbers are identical; with a different account they can differ. (Context monitoring is unaffected — it reads the remote files correctly.)
 - **If `codex` isn't available or the app‑server query fails, the context monitor keeps working normally** — only usage falls back to the log snapshot. The query has a **15‑second timeout**, and the helper process is cleaned up every time (verified in practice: no process leaks).
@@ -107,7 +109,7 @@ Everything else is **shared between Claude and Codex** — warning/danger thresh
 
 ### Privacy
 
-Codex rollout logs contain the full text of your conversations, but the rollout parser extracts **only structural fields** — token counts, timestamps, model names. To identify a sidebar chat, the matching local or remote OpenAI `Codex.log` is scanned for the exact `thread_stream_view_activity_changed` marker, its boolean, and its UUID; all other log text is discarded immediately. Message bodies are never stored or written to this extension's log. `auth.json` is never accessed.
+Codex rollout logs contain the full text of your conversations, but the rollout parser extracts **only structural fields** — token/rate-limit counts, timestamps, model/effort, `cwd`, task lifecycle, and explicit spawned-agent parent/thread IDs. To identify a sidebar chat, the matching local or remote OpenAI `Codex.log` is scanned for the exact `thread_stream_view_activity_changed` marker, its boolean, and its UUID; all other log text is discarded immediately. Message bodies are never stored or written to this extension's log. `auth.json` is never accessed.
 
 ---
 
@@ -177,13 +179,13 @@ Claude State Bar plays configurable WAV sounds for key events:
 | Context reaches danger threshold | `Ring02.wav` | `soundDanger` / `soundDangerGain` |
 | Claude finishes a response (`end_turn`) | `tada.wav` | `soundCompletion` / `soundCompletionGain` |
 | Claude pauses to ask a question | `Speech On.wav` | `soundQuestion` / `soundQuestionGain` |
-| All workflow / task‑agent sub‑agents complete | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
+| All Claude workflow/task agents or Codex spawned agents complete | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
 
 All sound paths can be overridden with your own WAV file. Gain is adjustable from 50% to 5000% (values above ~300% may distort). Use **`Claude State Bar: Test Beep Sound`** from the Command Palette to preview.
 
-**Codex shares these sounds.** A Codex session's completion beep (fired from its `task_complete` event) uses the same `soundCompletion` settings and the same thresholds as Claude — there are no Codex‑specific sound settings. Codex has no question‑pause or stuck‑detection beep.
+**Codex shares these sounds.** An ordinary Codex turn's completion beep (fired from `task_complete`) uses `soundCompletion`. When that parent turn spawned agents, its final all-agents completion is routed to `soundWorkflow` instead, so the ordinary and workflow sounds do not both fire. There are no Codex-specific sound settings. Codex question-pause and stuck-detection beeps are not implemented yet.
 
-**Workflow‑complete beep gate** — the beep fires only when the extension watched a workflow go running → done in the current session. For real workflows (`wf_*`) it also waits for the whole script to actually finish — the run's completion record (`workflows/<wfId>.json`, `status: "completed"`) — so a workflow that runs its agents in **sequential batches** beeps **once at the very end**, not once per batch. Failed/killed runs don't beep. Stale workflows already done when VS Code starts are baselined silently.
+**Workflow‑complete beep gate** — the beep fires only when the extension watched a workflow go running → done in the current session. For Claude workflows (`wf_*`) it waits for the run's completion record (`workflows/<wfId>.json`, `status: "completed"`). For Codex it follows explicit `source.subagent.thread_spawn.parent_thread_id` links (including nested descendants) from the latest parent `task_started`, then requires both every linked spawned-agent rollout to finish and the parent `task_complete` — the same terminal boundary as `agent-turn-complete`. Sequential batches therefore beep **once at the very end**, not during a gap between batches. Failed/aborted runs do not fire the workflow-success sound, and stale work already complete when VS Code starts is baselined silently.
 
 ---
 
@@ -291,9 +293,9 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 | `claudeContextBar.completionBeepSettleMs` | `3000` | Settle window (ms) before firing completion beep |
 | `claudeContextBar.soundQuestion` | `""` | WAV path for question‑pause beep |
 | `claudeContextBar.soundQuestionGain` | `100` | Question sound gain % |
-| `claudeContextBar.soundWorkflow` | `""` | WAV path for workflow/all‑agents‑complete beep |
+| `claudeContextBar.soundWorkflow` | `""` | WAV path for Claude workflow/task-agent or Codex spawned-agent all-complete beep |
 | `claudeContextBar.soundWorkflowGain` | `100` | Workflow complete sound gain % |
-| `claudeContextBar.workflowCompleteBeep` | `true` | Fire beep when all workflow/task‑agents complete |
+| `claudeContextBar.workflowCompleteBeep` | `true` | Fire the workflow sound when Claude workflow/task agents or Codex spawned agents all complete |
 | `claudeContextBar.detectStuckToolUse` | `false` | Heuristic: beep if a tool_use has no follow‑up for `stuckToolUseThresholdSec` |
 | `claudeContextBar.stuckToolUseThresholdSec` | `90` | Seconds of tool_use silence before stuck‑tool heuristic fires |
 
@@ -328,7 +330,7 @@ All other settings — thresholds, sounds, `compactMode`, `idleTimeout`, `hideAf
 
 ## How it works
 
-No network calls except the optional claude.ai plan‑usage fetch and Telegram. Context monitoring is pure disk reads of Claude Code's JSONL logs via `vscode.workspace.fs` (local or remote). Plan usage calls the claude.ai usage endpoint using Electron's Chromium network stack (to pass Cloudflare) with a plain‑`https` fallback. The workflow viewer reads `~/.claude/projects/<slug>/<uuid>/subagents/` directly from disk. Codex **context** monitoring is likewise pure disk reads of `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` via `vscode.workspace.fs` (local or remote) — no network calls, and only structural fields (token counts, timestamps, model names) are parsed. Codex **account usage** is read live from a short‑lived local `codex app-server` process over JSON‑RPC, on its own timer (≥ 60 s), falling back to the rollout log's `rate_limits` snapshot.
+No network calls except the optional claude.ai plan‑usage fetch and Telegram. Context monitoring is pure disk reads of Claude Code's JSONL logs via `vscode.workspace.fs` (local or remote). Plan usage calls the claude.ai usage endpoint using Electron's Chromium network stack (to pass Cloudflare) with a plain‑`https` fallback. The workflow viewer reads `~/.claude/projects/<slug>/<uuid>/subagents/` directly from disk. Codex **context and spawned-agent completion** monitoring is likewise pure disk reads of `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` via `vscode.workspace.fs` (local or remote) — no network calls, and only structural fields are parsed. Codex **account usage** is read live from a short‑lived local `codex app-server` process over JSON‑RPC, on its own timer (≥ 60 s), falling back to the rollout log's `rate_limits` snapshot.
 
 ---
 

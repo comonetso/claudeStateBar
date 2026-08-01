@@ -1915,6 +1915,7 @@ async function refreshAllSessions() {
     const compactMode = config.get<boolean>('compactMode', false);
     const shortNames = config.get<Record<string, string>>('shortNames', {});
     const showModel = config.get<boolean>('showModel', true);
+    const wfBeepEnabled = config.get<boolean>('workflowCompleteBeep', true);
 
     // Pastel color palette for auto-coloring
     const pastelPalette = [
@@ -2096,7 +2097,18 @@ async function refreshAllSessions() {
         // (an unanswered tool_use or a deliberate question). In those states only the question
         // beep should sound — the work isn't actually "done".
         const awaitingUser = !!(session.pendingToolUseAt || session.pendingQuestionAt);
-        if (!suppressBeep && !awaitingUser && session.lastAssistantEndTurnAt) {
+        const codexWorkflow = session.provider === 'codex'
+            ? session.codexSubagentWorkflow
+            : null;
+        const codexWorkflowKey = codexWorkflow
+            ? `${session.sessionFile}|codex-agent-turn:${codexWorkflow.startedAt.getTime()}`
+            : null;
+        if (codexWorkflowKey
+            && (codexWorkflow?.status === 'running' || codexWorkflow?.status === 'settling')) {
+            seenRunningWorkflowKeys.add(codexWorkflowKey);
+        }
+
+        if (!awaitingUser && session.lastAssistantEndTurnAt) {
             const curr = session.lastAssistantEndTurnAt.getTime();
             // Use the beep-gate activity clock (assistant|user only), NOT lastUpdated.
             // lastUpdated includes the stop_hook system entry written ~0.6s after the
@@ -2105,39 +2117,109 @@ async function refreshAllSessions() {
             const prev = lastKnownEndTurnAt.get(session.sessionFile);
             const existing = pendingCompletion.get(session.sessionFile);
 
-            if (prev === undefined) {
-                // First time seeing this session — baseline silently
+            const isCodexWorkflowCompletion = !!(
+                wfBeepEnabled
+                && codexWorkflowKey
+                && codexWorkflow?.status === 'completed'
+                && codexWorkflow.completionAt?.getTime() === curr
+            );
+            // The parent task_complete can be visible one filesystem event before the
+            // child's final append. Wait briefly for that append instead of scheduling the
+            // ordinary sound and then a second workflow sound. If it never settles, the
+            // next regular poll falls back to the ordinary completion path.
+            const isFreshCodexWorkflowSettle = !!(
+                wfBeepEnabled
+                && codexWorkflow?.status === 'settling'
+                && Date.now() - curr < Math.max(15_000, completionSettleMs * 3)
+            );
+
+            if (suppressBeep && isCodexWorkflowCompletion && codexWorkflowKey) {
+                // Extension loaded after the whole turn had already finished.
+                alertedWorkflowDone.set(codexWorkflowKey, codexWorkflow!.childCount);
+                seenRunningWorkflowKeys.delete(codexWorkflowKey);
                 lastKnownEndTurnAt.set(session.sessionFile, curr);
-                log(`[done] first seen ${session.projectName} endTurn=${new Date(curr).toISOString()}`);
-            } else if (curr > prev) {
+                log(`[codex-wf] baseline (silent, first-scan) ${codexWorkflow!.childCount} subagents`);
+            } else if (!suppressBeep && isFreshCodexWorkflowSettle) {
                 if (existing) clearTimeout(existing.timer);
                 pendingCompletion.delete(session.sessionFile);
-                // If activity already exists after this end_turn, suppress immediately
-                // (a follow-up landed before we even got here)
-                const newerActivityExists = lastActivity > curr + 500;
-                if (newerActivityExists) {
-                    log(`[done] suppressed for ${session.projectName} — newer activity at ${new Date(lastActivity).toISOString()}`);
+                log(`[codex-wf] parent complete but child rollout still settling — defer ordinary beep`);
+            } else if (!suppressBeep && isCodexWorkflowCompletion && codexWorkflowKey) {
+                const observedRunning = seenRunningWorkflowKeys.has(codexWorkflowKey);
+                const alreadyClaimed = alertedWorkflowDone.has(codexWorkflowKey);
+
+                if (alreadyClaimed) {
+                    if (existing && lastActivity > existing.markerAt + 500) {
+                        log(`[codex-wf] cancelled pending for ${session.projectName} — newer parent activity`);
+                        clearTimeout(existing.timer);
+                        pendingCompletion.delete(session.sessionFile);
+                    }
+                } else if (prev === undefined && !observedRunning) {
+                    // First observed already complete: stale/before-activation work.
+                    alertedWorkflowDone.set(codexWorkflowKey, codexWorkflow.childCount);
                     lastKnownEndTurnAt.set(session.sessionFile, curr);
-                } else if (completionSettleMs <= 0) {
-                    log(`[done] new end_turn for ${session.projectName} (settle=0): firing immediately`);
-                    playCompletionSound();
+                    log(`[codex-wf] baseline (silent, never-saw-running) ${codexWorkflow.childCount} subagents`);
+                } else if (prev === undefined || curr > prev) {
+                    if (existing) clearTimeout(existing.timer);
+                    pendingCompletion.delete(session.sessionFile);
+
+                    // Claim synchronously before scheduling so overlapping refreshes cannot
+                    // schedule both the ordinary and workflow sounds for the same parent turn.
+                    alertedWorkflowDone.set(codexWorkflowKey, codexWorkflow.childCount);
+                    seenRunningWorkflowKeys.delete(codexWorkflowKey);
                     lastKnownEndTurnAt.set(session.sessionFile, curr);
-                } else {
-                    log(`[done] scheduled beep for ${session.projectName} in ${completionSettleMs}ms`);
-                    const timer = setTimeout(() => {
-                        log(`[done] settled → beep for ${session.projectName}`);
+
+                    const newerActivityExists = lastActivity > curr + 500;
+                    if (newerActivityExists) {
+                        log(`[codex-wf] suppressed for ${session.projectName} — newer activity at ${new Date(lastActivity).toISOString()}`);
+                    } else if (completionSettleMs <= 0) {
+                        log(`[codex-wf] agent-turn-complete for all ${codexWorkflow.childCount} subagents (settle=0) → beep`);
+                        playWorkflowCompleteSound();
+                    } else {
+                        log(`[codex-wf] scheduled all-${codexWorkflow.childCount}-subagents beep in ${completionSettleMs}ms`);
+                        const timer = setTimeout(() => {
+                            log(`[codex-wf] agent-turn-complete settled → workflow beep`);
+                            playWorkflowCompleteSound();
+                            pendingCompletion.delete(session.sessionFile);
+                        }, completionSettleMs);
+                        pendingCompletion.set(session.sessionFile, { timer, markerAt: curr });
+                    }
+                }
+            } else if (!suppressBeep) {
+                // Ordinary Claude/Codex turn completion path.
+                if (prev === undefined) {
+                    // First time seeing this session — baseline silently
+                    lastKnownEndTurnAt.set(session.sessionFile, curr);
+                    log(`[done] first seen ${session.projectName} endTurn=${new Date(curr).toISOString()}`);
+                } else if (curr > prev) {
+                    if (existing) clearTimeout(existing.timer);
+                    pendingCompletion.delete(session.sessionFile);
+                    // If activity already exists after this end_turn, suppress immediately
+                    // (a follow-up landed before we even got here)
+                    const newerActivityExists = lastActivity > curr + 500;
+                    if (newerActivityExists) {
+                        log(`[done] suppressed for ${session.projectName} — newer activity at ${new Date(lastActivity).toISOString()}`);
+                        lastKnownEndTurnAt.set(session.sessionFile, curr);
+                    } else if (completionSettleMs <= 0) {
+                        log(`[done] new end_turn for ${session.projectName} (settle=0): firing immediately`);
                         playCompletionSound();
                         lastKnownEndTurnAt.set(session.sessionFile, curr);
-                        pendingCompletion.delete(session.sessionFile);
-                    }, completionSettleMs);
-                    pendingCompletion.set(session.sessionFile, { timer, markerAt: curr });
+                    } else {
+                        log(`[done] scheduled beep for ${session.projectName} in ${completionSettleMs}ms`);
+                        const timer = setTimeout(() => {
+                            log(`[done] settled → beep for ${session.projectName}`);
+                            playCompletionSound();
+                            lastKnownEndTurnAt.set(session.sessionFile, curr);
+                            pendingCompletion.delete(session.sessionFile);
+                        }, completionSettleMs);
+                        pendingCompletion.set(session.sessionFile, { timer, markerAt: curr });
+                    }
+                } else if (existing && lastActivity > existing.markerAt + 500) {
+                    // Pending beep but new activity arrived → cancel
+                    log(`[done] cancelled pending for ${session.projectName} — new activity at ${new Date(lastActivity).toISOString()}`);
+                    clearTimeout(existing.timer);
+                    pendingCompletion.delete(session.sessionFile);
+                    lastKnownEndTurnAt.set(session.sessionFile, existing.markerAt);
                 }
-            } else if (existing && lastActivity > existing.markerAt + 500) {
-                // Pending beep but new activity arrived → cancel
-                log(`[done] cancelled pending for ${session.projectName} — new activity at ${new Date(lastActivity).toISOString()}`);
-                clearTimeout(existing.timer);
-                pendingCompletion.delete(session.sessionFile);
-                lastKnownEndTurnAt.set(session.sessionFile, existing.markerAt);
             }
         }
 
@@ -2234,10 +2316,8 @@ async function refreshAllSessions() {
         if (isCodex) {
             // Codex mirrors the Claude tooltip layout (account usage on top, context below)
             // but with Codex's own token semantics: cached input is a SUBSET of input, and
-            // the lifetime total is labelled separately so it is never read as occupancy.
-            const originLine = session.codexOriginator
-                ? `🚀 ${planT('tt.startedBy')}: \`${session.codexOriginator}\`\n\n`
-                : '';
+            // the session-processed total is labelled separately so it is never read as
+            // either context occupancy or account-limit usage.
             const cumulative = session.codexCumulativeTokens
                 ? `♾️ ${planT('tt.lifetime')}: ${formatTokens(session.codexCumulativeTokens)}\n\n`
                 : '';
@@ -2249,7 +2329,6 @@ async function refreshAllSessions() {
                 sectionHeader('Codex Context', '#AED581') +
                 `🤖 Model: \`${session.model || 'Unknown'}\`\n\n` +
                 effortLine +
-                originLine +
                 `📊 **Context Usage: ${session.percentage}%**\n\n` +
                 `| Type | Tokens |\n|------|--------|\n` +
                 `| Input | ${formatTokens(session.inputTokens)} |\n` +
@@ -2306,7 +2385,6 @@ async function refreshAllSessions() {
     // user's core ask: "beep me when all the subagents I spun up have finished."
     // First scan / suppressBeep only baselines (silent) so an already-finished
     // workflow that was done before the extension loaded doesn't beep on startup.
-    const wfBeepEnabled = config.get<boolean>('workflowCompleteBeep', true);
     // Cache the tracked session's workflow scan so the panel-sync push below can
     // reuse it instead of hitting disk a second time.
     const trackedSessionFile = getTrackedSessionFile();
@@ -2639,20 +2717,6 @@ function isoFromEpoch(ms: number | null): string | null {
     return ms == null ? null : new Date(ms).toISOString();
 }
 
-/** "10080 minutes" reads as nothing; render it as "7 days". */
-function formatUsageWindow(minutes: number): string {
-    if (!minutes || minutes <= 0) return '';
-    if (minutes % 1440 === 0) {
-        const d = minutes / 1440;
-        return planLang() === 'ko' ? `${d}일` : `${d} day${d === 1 ? '' : 's'}`;
-    }
-    if (minutes % 60 === 0) {
-        const h = minutes / 60;
-        return planLang() === 'ko' ? `${h}시간` : `${h} hour${h === 1 ? '' : 's'}`;
-    }
-    return planLang() === 'ko' ? `${minutes}분` : `${minutes} min`;
-}
-
 // app-server and rollout snapshots expose consumed usage as `usedPercent`, while the
 // product UI presents the complementary amount still available. Keep the source value
 // intact and invert only at the presentation boundary.
@@ -2681,18 +2745,14 @@ function codexUsageTooltipBlock(): string {
 
     if (u.primary) {
         const iso = isoFromEpoch(u.primary.resetsAt);
-        const win = formatUsageWindow(u.primary.windowMinutes);
         s += `📊 **${planT('sb.codexPrimary')}**: ${codexRemainingPercent(u.primary.usedPercent)}%` +
             (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') + `\n\n`;
-        if (win) s += `🪟 ${planT('tt.window')}: ${win}\n\n`;
     }
     // Only rendered when Codex actually reports a second window — it is often null.
     if (u.secondary) {
         const iso = isoFromEpoch(u.secondary.resetsAt);
-        const win = formatUsageWindow(u.secondary.windowMinutes);
         s += `📅 **${planT('sb.codexSecondary')}**: ${codexRemainingPercent(u.secondary.usedPercent)}%` +
-            (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') +
-            (win ? ` · ${win}` : '') + `\n\n`;
+            (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') + `\n\n`;
     }
     if (u.planType) {
         const plan = u.planType.charAt(0).toUpperCase() + u.planType.slice(1);

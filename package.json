@@ -314,7 +314,7 @@
                 "claudeContextBar.soundWorkflow": {
                     "type": "string",
                     "default": "",
-                    "description": "Path to the WAV file played when all workflow/task-agent sub-agents complete. Leave empty for the bundled default."
+                    "description": "Path to the WAV file played when all Claude workflow/task-agent or Codex spawned agents complete. Leave empty for the bundled default."
                 },
                 "claudeContextBar.soundWorkflowGain": {
                     "type": "number",
@@ -326,7 +326,7 @@
                 "claudeContextBar.workflowCompleteBeep": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Play a beep sound when all workflow/task-agent sub-agents complete."
+                    "description": "Play the workflow sound when all Claude workflow/task-agent or Codex spawned agents complete."
                 },
                 "claudeContextBar.detectStuckToolUse": {
                     "type": "boolean",

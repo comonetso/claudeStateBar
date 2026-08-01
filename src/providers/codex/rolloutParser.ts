@@ -39,7 +39,15 @@ export interface CodexRateLimits {
     observedAt: Date | null;
 }
 
+/** Explicit parent linkage recorded for a spawned Codex sub-agent thread. */
+export interface CodexSubagentSource {
+    parentThreadId: string;
+    depth: number | null;
+    nickname: string;
+}
+
 export interface CodexAccumulator {
+    /** Stable thread id (`session_meta.id`; root rollouts also expose it as `session_id`). */
     sessionId: string;
     /** Absolute workspace path Codex reported (`session_meta.cwd`), verbatim. */
     cwd: string;
@@ -47,10 +55,16 @@ export interface CodexAccumulator {
     originator: string;
     /**
      * True when `session_meta.source` is the object form `{subagent:{…}}` rather than a
-     * plain string. Sub-agent threads are excluded from the status bar in Phase 1 — they
-     * belong to the (unimplemented) agent viewer, and older ones carry no parent link.
+     * plain string. Sub-agent threads are excluded from the status bar; spawned workers
+     * are still aggregated structurally for the all-agents-complete sound.
      */
     isSubagent: boolean;
+    /**
+     * Present only for the explicit `thread_spawn` source shape. Internal guardian
+     * threads are not user-visible spawned workers and deliberately remain unlinked;
+     * callers must not infer a relationship from cwd or timestamps.
+     */
+    subagent: CodexSubagentSource | null;
     model: string;
     effort: string;
     /** 0 when Codex never reported a window — callers must NOT compute a percentage then. */
@@ -85,6 +99,7 @@ export function createAccumulator(): CodexAccumulator {
         cwd: '',
         originator: '',
         isSubagent: false,
+        subagent: null,
         model: '',
         effort: '',
         contextLimit: 0,
@@ -178,13 +193,39 @@ export function feedLine(acc: CodexAccumulator, line: string): void {
             // per file). Keep the FIRST id/creation time as the stable identity and let
             // later records only fill in gaps.
             if (!acc.sessionId) {
-                acc.sessionId = String(payload.session_id || payload.id || '');
+                // Spawned-agent rollouts use `session_id` for the ROOT conversation and
+                // `id` for this actual child thread. Root rollouts have the same value in
+                // both fields, so preferring `id` preserves the correct identity for both.
+                acc.sessionId = String(payload.id || payload.session_id || '');
             }
             if (typeof payload.cwd === 'string' && payload.cwd) acc.cwd = payload.cwd;
             if (typeof payload.originator === 'string') acc.originator = payload.originator;
             // `source` is EITHER a plain string ("vscode") OR an object describing a
-            // sub-agent: {"subagent":{"other":"guardian"}}. Observed both on this machine.
-            if (payload.source && typeof payload.source === 'object') acc.isSubagent = true;
+            // sub-agent. Modern spawned agents carry an explicit parent link; legacy
+            // guardian agents only expose {subagent:{other:"guardian"}} and deliberately
+            // remain unlinked.
+            if (payload.source && typeof payload.source === 'object') {
+                acc.isSubagent = true;
+                const rawSubagent = payload.source.subagent;
+                const spawn = rawSubagent && typeof rawSubagent === 'object'
+                    ? rawSubagent.thread_spawn
+                    : null;
+                const parentThreadId = spawn && typeof spawn === 'object'
+                    && typeof spawn.parent_thread_id === 'string'
+                    ? spawn.parent_thread_id
+                    : '';
+                if (!acc.subagent && parentThreadId) {
+                    acc.subagent = {
+                        parentThreadId,
+                        depth: typeof spawn.depth === 'number' && Number.isFinite(spawn.depth)
+                            ? spawn.depth
+                            : null,
+                        nickname: typeof spawn.agent_nickname === 'string'
+                            ? spawn.agent_nickname
+                            : ''
+                    };
+                }
+            }
             if (payload.thread_source === 'subagent') acc.isSubagent = true;
             acc.sessionCreated = acc.sessionCreated ?? (toDate(payload.timestamp) ?? ts);
             break;

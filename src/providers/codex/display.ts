@@ -35,18 +35,3 @@ export function getCodexEffortLabel(raw: string): string {
             return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
     }
 }
-
-/**
- * Human label for who started the session. Codex records `originator`; when Claude Code
- * spawns a Codex session (the codex_rescue flow) it shows up as "Claude Code", which is
- * worth surfacing in the tooltip so two same-project entries are tellable apart.
- */
-export function getOriginatorLabel(originator: string): string {
-    switch ((originator || '').toLowerCase()) {
-        case 'codex_vscode': return 'VS Code';
-        case 'codex_work_desktop': return 'Desktop';
-        case 'codex_cli': return 'CLI';
-        case 'claude code': return 'Claude Code';
-        default: return originator || 'Unknown';
-    }
-}

@@ -22,8 +22,8 @@ import {
 } from './discovery';
 import { readSession, pruneCache } from './tailReader';
 import { contextPercentage, lifecycle, completionMarker, CodexAccumulator } from './rolloutParser';
-import { getOriginatorLabel } from './display';
 import { resolveCurrentCodexThread } from './currentThread';
+import { summariseCodexSubagentWorkflow } from './subagentWorkflow';
 
 /** Matches the Claude side: at most five sessions compete for status-bar space. */
 const MAX_CODEX_SESSIONS = 5;
@@ -82,6 +82,7 @@ export async function findCodexSessions(): Promise<SessionInfo[]> {
 
     const folders = vscode.workspace.workspaceFolders;
     const home = await getCodexHomeUri();
+    let rolloutHome = home;
     let files: CodexRolloutFile[] = [];
 
     if (scope === 'workspace' && selected) {
@@ -101,7 +102,10 @@ export async function findCodexSessions(): Promise<SessionInfo[]> {
             const localFound = localHome && !sameHome
                 ? await findRolloutBySessionId(localHome, selected.conversationId)
                 : null;
-            if (localFound) files = [localFound];
+            if (localFound) {
+                files = [localFound];
+                rolloutHome = localHome;
+            }
         }
         if (files.length === 0) {
             log(`[codex-current] selected conversation rollout not found: ${selected.conversationId}`);
@@ -117,15 +121,16 @@ export async function findCodexSessions(): Promise<SessionInfo[]> {
 
     const sessions: SessionInfo[] = [];
     const keepInCache = new Set<string>();
+    const parents = new Map<string, { acc: CodexAccumulator; session: SessionInfo }>();
 
     for (const f of files) {
         const acc = await readSession(f);
         if (!acc) continue;
         keepInCache.add(f.uri.toString());
 
-        // Sub-agent threads (source = {subagent:{…}}) belong to the agent viewer, not the
-        // session bar. Older ones carry no parent link at all, so showing them would put
-        // an unattributable entry next to the real session.
+        // Sub-agent threads (source = {subagent:{…}}) belong to Codex's agent viewer, not
+        // the session bar. Explicit thread_spawn workers are aggregated below for sound;
+        // internal guardian threads deliberately remain excluded.
         if (acc.isSubagent) continue;
 
         const pct = contextPercentage(acc);
@@ -136,7 +141,51 @@ export async function findCodexSessions(): Promise<SessionInfo[]> {
         const lastUpdated = acc.lastActivityAt ?? new Date(f.mtimeMs);
         const state = lifecycle(acc);
 
-        sessions.push(toSessionInfo(acc, f.uri, pct, lastUpdated, state === 'active', idleThreshold, folders));
+        const session = toSessionInfo(acc, f.uri, pct, lastUpdated, state === 'active', idleThreshold, folders);
+        sessions.push(session);
+        if (acc.sessionId) parents.set(acc.sessionId, { acc, session });
+    }
+
+    // Codex writes spawned agents as ordinary rollout files with an explicit
+    // source.subagent.thread_spawn.parent_thread_id. They stay out of the status bar, but
+    // when the workflow alert is enabled we parse only files modified during the parent's
+    // latest turn and attach a small structural summary to that parent.
+    if (config.get<boolean>('workflowCompleteBeep', true) && rolloutHome && parents.size > 0) {
+        const parentStarts = [...parents.values()]
+            .map(({ acc }) => acc.lastTaskStartedAt?.getTime() ?? -1)
+            .filter(ts => ts >= 0);
+        if (parentStarts.length > 0) {
+            const earliestStart = Math.min(...parentStarts);
+            // A selected workspace conversation can legitimately be a long-running old
+            // thread. scope=all is already bounded by hideAfter, so keep that cheaper path
+            // bounded while allowing the selected thread's own turn to define its window.
+            const workflowCutoff = scope === 'workspace'
+                ? earliestStart - 60_000
+                : Math.max(hideThreshold, earliestStart - 60_000);
+            const scanDays = config.get<number>('codex.scanDays', 3);
+            try {
+                const workflowFiles = await listRecentRollouts(rolloutHome, workflowCutoff, scanDays);
+                const spawnedChildren: CodexAccumulator[] = [];
+
+                for (const f of workflowFiles) {
+                    keepInCache.add(f.uri.toString());
+                    const child = await readSession(f);
+                    if (!child?.subagent?.parentThreadId) continue;
+                    spawnedChildren.push(child);
+                }
+
+                for (const [, parent] of parents) {
+                    parent.session.codexSubagentWorkflow = summariseCodexSubagentWorkflow(
+                        parent.acc,
+                        spawnedChildren
+                    );
+                }
+            } catch (e) {
+                // Workflow classification is optional. A scan failure must leave the
+                // ordinary Codex session/completion beep working exactly as before.
+                log(`[codex-wf] child rollout scan failed — using ordinary completion: ${e}`);
+            }
+        }
     }
 
     pruneCache(keepInCache);
@@ -206,7 +255,6 @@ function toSessionInfo(
         pendingQuestionAt: null,
         pendingToolUseAt: null,
         pendingToolUseName: null,
-        codexOriginator: getOriginatorLabel(acc.originator),
         codexUsage: usage,
         codexActive: active,
         codexCumulativeTokens: acc.total?.totalTokens ?? 0

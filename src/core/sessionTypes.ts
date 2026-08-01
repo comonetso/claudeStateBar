@@ -27,6 +27,16 @@ export interface CodexUsageSnapshot {
     observedAt: Date | null;
 }
 
+export interface CodexSubagentWorkflowSummary {
+    startedAt: Date;
+    childCount: number;
+    completedCount: number;
+    activeCount: number;
+    failedCount: number;
+    status: 'running' | 'settling' | 'completed' | 'failed';
+    completionAt: Date | null;
+}
+
 export interface SessionInfo {
     /** Which assistant produced this session. Drives the status-bar icon and capabilities. */
     provider: ProviderId;
@@ -67,13 +77,14 @@ export interface SessionInfo {
 
     // --- Codex-only extras (undefined on Claude sessions) ---
     /** Who launched the Codex session — "VS Code", "Desktop", or "Claude Code". */
-    codexOriginator?: string;
     /** Account rate limits observed in the rollout; the Codex counterpart to plan usage. */
     codexUsage?: CodexUsageSnapshot | null;
     /** True while a Codex turn is in flight (task_started newer than any terminal event). */
     codexActive?: boolean;
-    /** Cumulative lifetime tokens. Shown separately — never used as a context percentage. */
+    /** Tokens processed across model calls in this session; not context occupancy or account usage. */
     codexCumulativeTokens?: number;
+    /** Spawned children belonging to the latest Codex parent turn, when any exist. */
+    codexSubagentWorkflow?: CodexSubagentWorkflowSummary | null;
 }
 
 /**
@@ -81,7 +92,7 @@ export interface SessionInfo {
  * the UI: a capability that is false simply hides its menu entry or skips its scan.
  */
 export interface ProviderCapabilities {
-    /** Claude workflow/Task-agent journals. Codex has no equivalent on disk yet. */
+    /** Built-in workflow viewer/menu. Codex keeps that UI in its own background-agent panel. */
     workflows: boolean;
     /** Unanswered-tool-use and AskUserQuestion detection. */
     questionSignal: boolean;
