@@ -1,51 +1,100 @@
 # Changelog
 
+## [1.8.1] - 2026-08-01
+
+Documentation only — no code changes. Identical behaviour to 1.8.0.
+
+- **The 1.8.0 changelog is rewritten to be readable.** It had grown into dense paragraphs of implementation detail; it is now grouped under headings, one line per change, with internals removed.
+- README feature list and "How it works" reworded to match, in both English and Korean.
+
 ## [1.8.0] - 2026-08-01
 
+> **OpenAI Codex support.** Claude and Codex now sit side by side in the status bar with the same
+> context monitoring, completion beeps, and idle behaviour. The extension is renamed to
+> **Claude & Codex State Bar** — your existing install updates in place and keeps all settings.
+
 ### Added
-- **OpenAI Codex sessions in the status bar.** Claude and Codex now appear side by side, told apart by an icon prefix — **✳ Claude** / **⬢ Codex**. Codex sessions get the same treatment as Claude ones: context percentage, model and effort, idle dimming, `hideAfter` hiding, manual hide/restore with activity-based auto-unhide, threshold colours, and the completion beep. Thresholds and sounds are **shared** — there are no Codex-specific copies to configure.
-  - Data comes only from the local rollout logs (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`). No network calls, and the Codex app-server is deliberately not used: a separately launched app-server cannot observe threads already loaded by the running Codex client, so it would add a process without adding signal.
-  - Context occupancy is `last_token_usage.total_tokens ÷ model_context_window`. Rollout `total_token_usage.total_tokens` is labelled **Session processed total** because it accumulates model-call token volume (including cached input) for the conversation; it is neither context occupancy nor weekly account usage. The tooltip also labels the primary account window **Weekly limit** and omits the redundant window-length and originator rows.
-  - The completion beep keys off Codex's explicit `task_complete` event rather than a heuristic, and reuses the existing settle-debounce, so a follow-up landing inside the settle window still cancels it.
-- **Codex spawned-agent all-complete sound (`agent-turn-complete` semantics).** Spawned-agent rollouts are grouped by their explicit `source.subagent.thread_spawn.parent_thread_id` chain (including nested descendants) for the latest parent turn. The distinct workflow sound (`Ring06.wav` / `soundWorkflow`) fires only after every linked spawned agent finishes **and** the parent writes `task_complete`, so sequential batches cannot beep during a temporary all-children-done gap. A stale already-complete turn is baselined silently, and one parent completion cannot schedule both the ordinary and workflow sounds.
-- **Codex account usage, read live and shared across windows.** Rate limits (`primary`/`secondary` window, plan type, reset time) come from the Codex app-server (`account/rateLimits/read`, ~0.6s round trip), polled on its own slow timer that is separate from the 30-second session poll. A non-secret cache in extension `globalStorage`, protected by an atomic cross-process lock and atomic replacement, lets one window probe while every other local/Remote-SSH window reuses and watches the same value. If no live/shared value has succeeded, the extension falls back to the newest visible rollout snapshot. The context monitor is unaffected by any of these failures.
-- **Remote-SSH support for Codex**, the same way Claude already has it: the extension runs locally but reads the remote host's files through `vscode.workspace.fs`, and the remote Codex home is found by probing `/root` and `/home/*` for a real `.codex/sessions` (mirroring how `~/.claude/projects` is located). The file watcher works remotely too, so remote Codex sessions still update within seconds.
-  - Read strategy differs by host: locally we read only the byte ranges we need (14.1MB rollout in ~4ms), while remotely the VS Code filesystem API has no range read, so the file is read whole — the same thing Claude already does over Remote-SSH, with the addition that Codex **skips the read entirely when mtime and size are unchanged**. Remote rollouts above 32MB are skipped and logged.
-- **Three new settings**: `claudeContextBar.codex.enabled` (default on; a no-op when Codex isn't installed), `claudeContextBar.codex.home` (empty = auto-detect), and `claudeContextBar.codex.scanDays` (default 3). All three are editable from the settings panel.
+
+#### ⬢ Codex sessions in the status bar
+
+Claude and Codex are told apart by an icon prefix — **✳ Claude** / **⬢ Codex**.
+
+- Codex sessions get everything Claude sessions get: context %, model and effort, idle dimming, `hideAfter` hiding, hide/restore, threshold colours, and the completion beep.
+- Thresholds and sounds are **shared** — there is nothing Codex-specific to configure.
+- Read from your local rollout logs only (`~/.codex/sessions/`). No network calls.
+- The completion beep uses Codex's own `task_complete` event rather than guessing.
+
+#### Codex account usage — the same number in every window
+
+- Weekly limit, plan type and reset time are read live from the Codex app-server.
+- **One window runs the probe; every other window reads a shared cache**, so all windows agree.
+- Falls back to the newest rollout snapshot when the live reading is unavailable. Context monitoring never depends on it.
+
+#### Codex spawned-agent completion sound
+
+- The workflow sound fires **once**, only after every spawned agent *and* the parent turn have finished. Sequential batches can no longer beep early.
+
+#### Remote-SSH support for Codex
+
+- Works like Claude's: the extension runs locally and reads the remote host's files. The remote Codex home is auto-detected.
+- Remote reads are skipped entirely when the file's mtime and size are unchanged. Rollouts over 32MB are skipped.
+
+#### Three new settings
+
+| Setting | Default |
+|---|---|
+| `codex.enabled` | on — a no-op when Codex isn't installed |
+| `codex.home` | empty = auto-detect |
+| `codex.scanDays` | 3 |
+
+All three are editable from the settings panel.
 
 ### Changed
-- **Renamed to "Claude & Codex State Bar."** The extension now covers two providers, so the display name says so. Only the marketplace display name, README titles, and description changed — the extension identifier (`blueming.claude-state-bar`), every command ID, and all `claudeContextBar.*` setting keys are unchanged, so existing installs update in place and no configuration is lost.
-- **Marketplace description rewritten** around both providers, and `codex` / `openai` / `chatgpt` added to the search keywords.
-- **Command palette entries are now consistently prefixed `claudeStateBar:`.** One command still read `Claude State Bar:`, which split the palette results. The READMEs documented that stale prefix too and now match what the palette actually shows.
+
+- **Renamed to "Claude & Codex State Bar."**
+  Only the display name, README titles and description changed. The extension ID (`blueming.claude-state-bar`), every command ID, and all `claudeContextBar.*` setting keys are untouched — existing installs update in place and keep their configuration.
+- **Marketplace description rewritten** around both providers; `codex` / `openai` / `chatgpt` added to search keywords.
+- **Command palette entries unified under the `claudeStateBar:` prefix.** One command used a different prefix and split the palette results.
 
 ### Fixed
-- **Provider glyph colours no longer follow context usage.** Claude's existing `✳` glyph stays orange and Codex's existing `⬢` glyph stays blue while the adjacent usage text retains its warning/danger/idle colours.
-- **Provider glyphs are larger and sit closer to their labels.** The same `✳` / `⬢` silhouettes now use a bundled native-size product-icon font, and their separately coloured status-bar slots are compactly joined to the adjacent usage text.
-- **Provider order in the context bar is now stable.** Claude sessions always occupy the left side of the session group and Codex sessions the right, regardless of which provider was updated most recently.
-- **Codex model names are no longer abbreviated by compact mode.** The status bar now renders `gpt-5.6-sol` as the readable `gpt 5.6 sol` (separator-only formatting) instead of the ambiguous `G5.6s`; compact project-name behavior is unchanged.
-- **Codex now shows the conversation selected by this VS Code window instead of accumulating unrelated windows and stale rollouts.** The default `scope: workspace` previously meant “every recent rollout whose creation `cwd` matches this folder,” so reopening one Codex thread in another project/Remote window could produce `project`, `project-2`, `project-3` across every status bar. Active Codex editor tabs are resolved from their VS Code tab URI; sidebar chats use the window's structural `conversationId` marker. The newest selected UUID is retained when the window loses focus or reloads, because OpenAI also emits `active=false` for ordinary focus loss. Remote‑SSH windows now read the matching remote OpenAI extension-host log, paired by PID or bounded activation time. Only that UUID's rollout is rendered. Explicit `scope: all` keeps the old recent-session list.
-- **Shared Codex reset time could explode from days into millions of days.** The app-server's epoch-seconds timestamp was normalized to milliseconds before caching, then multiplied by 1000 again when another window read the cache. App-server and cache window parsers are now separate, preserving both the millisecond reset time and `windowMinutes`.
-- **Codex disappeared entirely in a window when no persisted session matched that workspace.** The live account snapshot was available but had no session item to attach to. Such windows now show a standalone `⬢ Codex` account-remaining item and replace it with the normal session item when one becomes discoverable; model/context values are never guessed from another workspace. Standalone Claude plan visibility is now provider-scoped too, so a Codex-only window no longer suppresses it.
-- **Codex account percentage was displayed backwards.** The app-server returns consumed usage as `usedPercent`, but the ChatGPT usage screen presents the amount remaining. Status-bar and tooltip account percentages now show `100 - usedPercent` and label the value as remaining (for example, 58% used becomes 42% remaining).
-- **Codex weekly usage differed from one session to the next.** Every rollout embeds whatever the rate limit was when *that* session last ran, so reading each session's own snapshot made five sessions report five different weekly figures (observed: 52/30/28/22/19%) for a single account — which makes the number meaningless. Account usage is now account-scoped: one live reading, shared by every Codex item.
-- **Different VS Code windows could still disagree on Codex weekly usage.** Each extension host kept its own polling phase and in-memory value, and a newer rollout record could override a fresher account reading merely because its timestamp was later. Windows now coordinate one probe through the shared cache; an available account reading always wins over per-thread rollout snapshots.
-- **SQLite canonical Windows paths did not match workspace paths.** `\\?\C:\...` and `\\?\UNC\server\share\...` are now normalized to their ordinary drive/UNC forms without damaging drive or POSIX roots.
-- **Reset times on multi-day windows now show the date.** A reset that wasn't today rendered as `PM 4:16 (Wed)` — but on a 7-day cycle "Wed" could be this week's or next week's. It now reads `8/5 (Wed) PM 4:16`. This affects Codex's rate-limit window and **Claude's weekly limit**, which had the same ambiguity; Claude's 5-hour session reset is same-day and still shows just the time.
-- **Account usage attached to the wrong provider.** Plan usage was merged into whichever session sorted first overall, so once Codex sessions could reach the top the Claude plan numbers would have been pinned onto a Codex item. Usage is now merged per provider — each provider's leading session carries its own.
+
+#### Codex account usage
+
+- **The percentage was backwards.** The app-server reports usage *consumed*; the ChatGPT usage screen shows what's *left*. The status bar now shows **remaining**, matching the web (58% used → **42% remaining**).
+- **Sessions disagreed with each other.** Every rollout stores whatever the limit was when *that* session last ran, so five sessions reported five different weekly figures for one account. Usage is now account-scoped — one reading, shared by every Codex item.
+- **Windows disagreed with each other.** Each window polled on its own schedule and kept its own copy. Windows now coordinate a single probe through a shared cache.
+- **Reset time could read `2064963d 23h`.** An epoch-seconds value was converted to milliseconds twice.
+
+#### Which conversation gets shown
+
+- **Codex showed other windows' conversations.** Reopening one thread elsewhere could scatter `project`, `project-2`, `project-3` across every status bar. Each window now shows the thread it actually has open. `scope: all` keeps the old behaviour.
+- **Codex vanished in a window with no matching session.** That window now shows a standalone `⬢ Codex` item with the account figure and swaps in the real session item once one appears. Model and context values are never borrowed from another workspace.
+
+#### Display
+
+- **Model names were unreadable in compact mode** — `G5.6s` now renders as `gpt 5.6 sol`.
+- **Provider glyphs** no longer take their colour from context usage (`✳` stays orange, `⬢` stays blue), are larger, sit closer to their labels, and Claude always sorts left of Codex.
+- **Multi-day reset times now show the date.** `PM 4:16 (Wed)` was ambiguous on a 7-day cycle; it now reads `8/5 (Wed) PM 4:16`. Also applies to Claude's weekly limit.
+- **Plan usage could attach to the wrong provider.** Each provider's leading session now carries its own.
+- **Windows extended-length paths** (`\\?\C:\...`, `\\?\UNC\...`) failed to match workspace folders. Now normalized.
 
 ### Known limitations
-- **A remote window shows the remote host's Codex sessions only** — Codex running on your local machine is not listed there, and vice versa. Claude behaves identically, so the two providers stay consistent.
-- **No Codex workflow/sub-agent viewer in this extension**, and no question-wait or stuck-tool beeps for Codex yet. Clicking a Codex item skips the Claude workflow menu; Codex's own background-agent panel remains the viewer.
-- **Codex sub-agent threads are not shown as status-bar items.** Explicit spawned-agent rollouts are aggregated only for the all-complete sound; internal guardian rollouts remain excluded.
-- **No deletion of Codex logs.**
-- **Sidebar current-thread detection depends on an OpenAI log compatibility marker.** Active Codex editor tabs use the stable VS Code tab URI. If the sidebar marker changes in a future OpenAI release, that window safely falls back to account-only usage instead of showing an unrelated rollout.
+
+- A remote window lists the **remote host's** Codex sessions only, and a local window the local ones. Claude behaves the same way.
+- **No Codex workflow/sub-agent viewer**, and no question-wait or stuck-tool beeps for Codex yet. Codex's own background-agent panel remains the viewer.
+- Codex sub-agent threads aren't shown as separate status-bar items — they're only aggregated for the all-complete sound.
+- No deletion of Codex logs.
+- Sidebar thread detection relies on an OpenAI log marker. If a future Codex release changes it, that window falls back to account-only usage rather than showing an unrelated session.
 
 ### Privacy
-- Codex rollout logs contain full conversation text. The rollout parser extracts **only** structural fields — token/rate-limit counts, timestamps, model, effort, `cwd`, task lifecycle, and explicit spawned-agent parent/thread IDs — and never stores or logs message bodies. For sidebar selection, the current window's OpenAI `Codex.log` is scanned only for the exact view-activity marker, boolean, and conversation UUID; all other text is discarded. `auth.json` is never touched.
+
+Codex rollout logs contain full conversation text. **The parser reads only structural fields** — token and rate-limit counts, timestamps, model, effort, `cwd`, task lifecycle, and spawned-agent IDs. Message bodies are never stored or logged, and `auth.json` is never touched.
 
 ### Internal
-- New `src/providers/codex/` (pure `rolloutParser`, `discovery`, dual-mode `tailReader`, `sessionProvider`, `display`) and a shared `src/core/sessionTypes.ts`. The parser has no VS Code dependency and was validated against all 20 real rollout files on the development machine: 0 parse errors, 0 unknown record types, and a 14.1MB file parsed in ~4ms via head/tail windowing rather than a full read.
-- The local (byte-range) and remote (whole-file) read paths were cross-checked against the same rollout data and produce identical results across every session and field, so remote support is not a separate code path with its own behaviour.
+
+- New `src/providers/codex/` (parser, discovery, dual-mode tail reader, session provider, display) plus a shared `src/core/sessionTypes.ts`. The parser has no VS Code dependency.
+- Validated against all 20 real rollout files on the dev machine: 0 parse errors, 0 unknown record types, 14.1MB file parsed in ~4ms via head/tail windowing.
+- Local (byte-range) and remote (whole-file) read paths were cross-checked on the same data and produce identical results, so remote isn't a separate behaviour.
 
 ## [1.7.48] - 2026-07-24
 
