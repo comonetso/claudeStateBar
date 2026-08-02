@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.2] - 2026-08-02
+
+Marketplace metadata only — **no functional change**. Identical behaviour to 1.8.1.
+
+- Search tags reworked so the extension is findable by what it actually does — queries like `claude token usage` or `codex context usage` now match directly.
+- Added to the **AI** category.
+
 ## [1.8.1] - 2026-08-01
 
 Documentation only — no code changes. Identical behaviour to 1.8.0.
