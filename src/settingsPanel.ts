@@ -85,7 +85,6 @@ async function collectState() {
         telegramNotifyOnReset: creds.getTelegramNotifyOnReset(),
         autoStartBlockOnReset: creds.getAutoStartBlockOnReset(),
         cb: {
-            autoColor: cbCfg.get('autoColor', true),
             baseColor: cbCfg.get('baseColor', 'White'),
             contextLimitDefault: cbCfg.get('contextLimitDefault', 200000),
             contextLimitOpus: cbCfg.get('contextLimitOpus', 1000000),
@@ -159,7 +158,6 @@ async function handleMessage(msg: any): Promise<void> {
                 if (p.cb) {
                     const cbCfg = vscode.workspace.getConfiguration('claudeContextBar');
                     const T = vscode.ConfigurationTarget.Global;
-                    await cbCfg.update('autoColor', p.cb.autoColor, T);
                     await cbCfg.update('baseColor', p.cb.baseColor, T);
                     await cbCfg.update('contextLimitDefault', p.cb.contextLimitDefault, T);
                     await cbCfg.update('contextLimitOpus', p.cb.contextLimitOpus, T);
@@ -425,12 +423,6 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
         </div>
       </div>
 
-      <div class="field">
-        <label class="checkbox-label">
-          <input type="checkbox" id="cb-autoColor" />
-          <span data-i18n="cb.autoColor.label">Auto color</span>
-        </label>
-      </div>
       <div class="field">
         <label class="checkbox-label">
           <input type="checkbox" id="cb-showModel" />

@@ -208,9 +208,13 @@ function toSessionInfo(
     // Prefer the open folder's basename so Claude and Codex entries for the same project
     // render with an identical name (and therefore an identical colour).
     let displayName = acc.cwd ? basenameOf(acc.cwd) : 'codex';
-    if (folders) {
+    // Only meaningful when this window actually has a folder to compare against: a
+    // folderless window has nothing the conversation could be "foreign" to.
+    let foreignProject = false;
+    if (folders && folders.length > 0) {
         const match = folders.find(folder => cwdMatchesFolder(acc.cwd, folder.uri.fsPath));
         if (match) displayName = path.basename(match.uri.fsPath);
+        else foreignProject = true;
     }
 
     const usage = acc.rateLimits
@@ -257,7 +261,8 @@ function toSessionInfo(
         pendingToolUseName: null,
         codexUsage: usage,
         codexActive: active,
-        codexCumulativeTokens: acc.total?.totalTokens ?? 0
+        codexCumulativeTokens: acc.total?.totalTokens ?? 0,
+        codexForeignProject: foreignProject
     };
 }
 

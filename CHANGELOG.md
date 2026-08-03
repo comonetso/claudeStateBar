@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.8.3] - 2026-08-03
+
+> **Numbers and colours now mean one thing each.** Three separate ways the status bar could be
+> misread are fixed: usage running in opposite directions, colour that looked like a warning
+> but wasn't, and another project's conversation quietly posing as this one's.
+
+### Codex account usage reads the same direction as Claude's
+
+It used to show how much was *left*, right next to a Claude figure showing how much was *used* — two adjacent numbers running opposite ways.
+
+- Codex weekly and secondary limits now show the **consumed** percentage. A bigger number means closer to the limit, on both providers.
+- Applies everywhere the figure appears: the status bar item, its tooltip, and the standalone `⬢ Codex` item shown when no session is resolved.
+- Labels follow: `Remaining` → `Weekly` (`남음` → `주간한도`).
+- **Heads up:** the ChatGPT usage screen still states the amount remaining. What it calls *42% remaining* now appears here as *58%*.
+
+### Colour now means one thing: the usage threshold
+
+**Removed: `claudeContextBar.autoColor` (per-project rainbow).** Every session item rests at your `baseColor`, and colour changes only for **idle**, **warning (50%)** and **danger (75%)**.
+
+The palette overlapped the warning colours, so colour was unreadable in both directions: a healthy 28% session rendered in dusty rose and looked like a warning, and a genuine 78% one could be waved off as "that project's colour". Sessions are told apart by name, providers by their icon colour.
+
+- The **Auto color** checkbox is gone from the settings panel; the colour picker is now labelled *Session text colour*.
+- If you had `"claudeContextBar.autoColor"` in your settings.json, the line no longer does anything and can be deleted. VS Code will flag it as an unknown setting until you do.
+
+### A conversation from another project is now marked
+
+Codex lists conversations **per device, not per project**, so reopening VS Code restores whatever chat you last viewed — often one from a different repository. Its context was reported as if it belonged to the folder you have open, with only an abbreviated project name as the clue.
+
+- When the conversation's `cwd` is not a folder open in this window, the **`⬢` glyph turns warning-coloured** and an **`↗`** follows the project name.
+- The tooltip spells out the conversation's full path.
+- Starting a new conversation clears the mark.
+
 ## [1.8.2] - 2026-08-02
 
 Marketplace metadata only — **no functional change**. Identical behaviour to 1.8.1.

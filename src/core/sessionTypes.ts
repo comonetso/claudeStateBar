@@ -83,6 +83,16 @@ export interface SessionInfo {
     codexActive?: boolean;
     /** Tokens processed across model calls in this session; not context occupancy or account usage. */
     codexCumulativeTokens?: number;
+    /**
+     * The conversation's cwd is not any folder open in this window.
+     *
+     * Codex lists conversations per DEVICE, not per project, so reopening VS Code restores
+     * whatever chat was last viewed — frequently one created in a different repository. The
+     * status bar is right to show it (it really is this window's conversation), but silently
+     * reporting another project's context is the single most confusing thing this extension
+     * can do. Flagged here so the renderer can mark it instead.
+     */
+    codexForeignProject?: boolean;
     /** Spawned children belonging to the latest Codex parent turn, when any exist. */
     codexSubagentWorkflow?: CodexSubagentWorkflowSummary | null;
 }

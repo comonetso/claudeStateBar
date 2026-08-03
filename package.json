@@ -1,8 +1,8 @@
 {
     "name": "claude-state-bar",
     "displayName": "Claude & Codex State Bar",
-    "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly remaining read live from the Codex app-server and kept identical across every window. Includes a live Workflow/Agent viewer, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
-    "version": "1.8.2",
+    "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly usage read live from the Codex app-server and kept identical across every window. Includes a live Workflow/Agent viewer, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
+    "version": "1.8.3",
     "extensionKind": ["ui"],
     "publisher": "blueming",
     "author": {
@@ -190,11 +190,6 @@
                     "order": 5,
                     "description": "Send a Telegram alert when the Claude 5-hour block resets (requires a linked bot token + chat). Fires at most once per reset. Toggle from the settings panel. Default on."
                 },
-                "claudeContextBar.autoColor": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Automatically assign different colors to each project (rainbow). When off, uses your base color with subtle variations."
-                },
                 "claudeContextBar.baseColor": {
                     "type": "string",
                     "enum": [
@@ -208,7 +203,7 @@
                         "Pink"
                     ],
                     "default": "White",
-                    "description": "Base color when Auto Color is off. Each project gets a subtle variation of this color."
+                    "description": "Resting text colour for every session item. Colour otherwise carries one meaning only — the usage threshold (idle grey, warning yellow, danger red) — so all sessions share this one colour and are told apart by name, and providers by their icon colour."
                 },
                 "claudeContextBar.contextLimitDefault": {
                     "type": "number",

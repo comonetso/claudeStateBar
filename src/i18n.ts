@@ -87,8 +87,7 @@ const EN: Dict = {
     'sb.tooltip.blocked': '⚠ This host can\'t reach claude.ai\'s usage API (the Session Key is fine): Cloudflare challenges cloud/datacenter IPs (e.g. AWS) and some hosts can\'t connect at all. Plan usage works on desktop VS Code — view it there.',
 
     // claudeContextBar fields (label + short hint)
-    'cb.autoColor.label': 'Auto color (rainbow per project)',
-    'cb.baseColor.label': 'Base color (when auto color is off)',
+    'cb.baseColor.label': 'Session text colour (colour otherwise means the usage threshold)',
     'cb.contextLimitDefault.label': 'Context limit — standard models (tokens)',
     'cb.contextLimitOpus.label': 'Context limit — 1M models (tokens)',
     'cb.warningThreshold.label': 'Warning threshold (%)',
@@ -198,9 +197,10 @@ const EN: Dict = {
     'tt.planUnavailable': '_Plan usage unavailable on this host_',
 
     // Codex provider
-    'sb.codexLimit': 'Remaining',
+    // Consumed percentages, matching the Claude plan block's direction (1.8.3).
+    'sb.codexLimit': 'Weekly',
     'sb.codexPrimary': 'Weekly limit',
-    'sb.codexSecondary': 'Secondary remaining',
+    'sb.codexSecondary': 'Secondary limit',
     'tt.credits': 'credits available',
     'tt.observed': 'Observed',
     'tt.stale': 'stale (rollout snapshot updates only while Codex works)',
@@ -211,7 +211,8 @@ const EN: Dict = {
     'tt.cachedPortion': 'cached portion',
     'tt.contextTotal': 'Context total',
     'tt.codexUsageUnavailable': '_No Codex rate-limit snapshot yet_',
-    'tt.codexNoWorkspaceSession': '_No Codex conversation UUID was resolved for this window. Account remaining is shown without guessed session context._',
+    'tt.codexNoWorkspaceSession': '_No Codex conversation UUID was resolved for this window. Account usage is shown without guessed session context._',
+    'tt.codexForeignProject': 'This conversation belongs to another project — Codex lists chats per device, so the one restored in this window was created here:',
     'tt.clickSettings': 'Click to open settings',
     'section.codex': 'Codex — Context Monitor',
     'codex.enabled.label': 'Enable Codex sessions',
@@ -296,8 +297,7 @@ const KO: Dict = {
     'sb.tooltip.authExpired': '⚠ Session Key 만료/인증 실패. 설정을 열어 다시 입력하세요.',
     'sb.tooltip.blocked': '⚠ 이 호스트에선 claude.ai 사용량 API에 접근할 수 없습니다 (Session Key는 정상). Cloudflare가 클라우드·데이터센터 IP(예: AWS)를 차단하거나, 일부 호스트는 아예 연결이 안 됩니다. 플랜 사용량은 데스크톱 VS Code에서 확인하세요.',
 
-    'cb.autoColor.label': '자동 색상 (프로젝트별 무지개)',
-    'cb.baseColor.label': '기본 색상 (자동 색상 끌 때)',
+    'cb.baseColor.label': '세션 글자색 (그 외 색 변화는 사용량 경고를 뜻합니다)',
     'cb.contextLimitDefault.label': '컨텍스트 한도 — 표준 모델 (토큰)',
     'cb.contextLimitOpus.label': '컨텍스트 한도 — 1M 모델 (토큰)',
     'cb.warningThreshold.label': '경고 임계값 (%)',
@@ -407,9 +407,10 @@ const KO: Dict = {
     'tt.planUnavailable': '_이 호스트에선 플랜 사용량을 가져올 수 없습니다_',
 
     // Codex provider
-    'sb.codexLimit': '남음',
+    // 1.8.3부터 사용률(소진 비율)을 그대로 표시 — Claude 플랜 표기와 방향을 맞춤.
+    'sb.codexLimit': '주간한도',
     'sb.codexPrimary': '주간 한도',
-    'sb.codexSecondary': '보조 한도 남음',
+    'sb.codexSecondary': '보조 한도',
     'tt.credits': '크레딧 있음',
     'tt.observed': '관측 시각',
     'tt.stale': '오래된 값 (세션 로그는 Codex 작업 중에만 갱신)',
@@ -420,7 +421,8 @@ const KO: Dict = {
     'tt.cachedPortion': '그중 캐시',
     'tt.contextTotal': '컨텍스트 합계',
     'tt.codexUsageUnavailable': '_아직 Codex 사용량 정보가 없습니다_',
-    'tt.codexNoWorkspaceSession': '_이 창의 Codex 대화 UUID를 확인하지 못했습니다. 다른 세션을 추측하지 않고 계정 잔여량만 표시합니다._',
+    'tt.codexNoWorkspaceSession': '_이 창의 Codex 대화 UUID를 확인하지 못했습니다. 다른 세션을 추측하지 않고 계정 사용량만 표시합니다._',
+    'tt.codexForeignProject': '다른 프로젝트의 대화입니다 — Codex는 대화 목록을 디바이스 단위로 관리하므로, 이 창에 복원된 대화는 아래 폴더에서 시작된 것입니다:',
     'tt.clickSettings': '클릭하여 설정 열기',
     'section.codex': 'Codex — 컨텍스트 모니터',
     'codex.enabled.label': 'Codex 세션 표시',

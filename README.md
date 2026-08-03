@@ -1,6 +1,6 @@
 # Claude & Codex State Bar
 
-**Claude Code and OpenAI Codex, side by side in your VS Code status bar** — per‑session context usage, model and effort, task‑complete beeps, and account limits (Claude.ai 5‑hour session & weekly, Codex weekly remaining), with a live Workflow/Agent viewer panel, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.
+**Claude Code and OpenAI Codex, side by side in your VS Code status bar** — per‑session context usage, model and effort, task‑complete beeps, and account limits (Claude.ai 5‑hour session & weekly, Codex weekly usage), with a live Workflow/Agent viewer panel, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.
 
 [![GitHub stars](https://img.shields.io/github/stars/comonetso/claudeStateBar?style=social)](https://github.com/comonetso/claudeStateBar)
 
@@ -49,11 +49,13 @@ The status bar now shows **Claude sessions and OpenAI Codex sessions at the same
 
 Codex **context** data comes from files only: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — on your local machine, or on the remote host in a Remote‑SSH window. No network calls. **Account usage** is a separate path: it is queried live from the Codex app‑server (see below).
 
-With the default `scope: workspace`, Codex shows **the conversation UUID last selected in this VS Code window**. The extension first reads the stable URI of an active Codex editor tab; sidebar chats fall back to structural `conversationId` markers in this window's OpenAI `Codex.log`. Losing window focus or reloading VS Code does not erase that per-window UUID. Only that UUID's rollout is opened, even if the chat was created in another project or reopened in a Remote‑SSH window. It never substitutes another recent rollout. If no UUID can be resolved, only the account-remaining item is shown. Set `scope: all` explicitly to restore the machine/host-wide list of up to five recent sessions.
+With the default `scope: workspace`, Codex shows **the conversation UUID last selected in this VS Code window**. The extension first reads the stable URI of an active Codex editor tab; sidebar chats fall back to structural `conversationId` markers in this window's OpenAI `Codex.log`. Losing window focus or reloading VS Code does not erase that per-window UUID. Only that UUID's rollout is opened, even if the chat was created in another project or reopened in a Remote‑SSH window. It never substitutes another recent rollout. If no UUID can be resolved, only the account-usage item is shown. Set `scope: all` explicitly to restore the machine/host-wide list of up to five recent sessions.
+
+**Codex lists conversations per device, not per project.** Reopening VS Code restores whatever chat you last viewed — often one created in a different repository — and the status bar honestly reports that chat, because it really is the one this window is showing. To keep that from reading as your current folder's context, a conversation whose `cwd` is not a folder open in this window is marked: the **`⬢` glyph turns warning-coloured**, an **`↗`** follows the project name, and the tooltip states the conversation's full path. Starting a new conversation clears the mark.
 
 Within the context-bar group, **Claude sessions are always on the left and Codex sessions are always on the right**. Activity timestamps never reorder one provider across the other.
 
-The provider glyph is a fixed identity cue: **Claude's `✳` is orange** and **Codex's `⬢` is blue**. The original silhouettes are bundled as larger native-size product icons, and their separate colour slots are compactly joined to the usage text. The text can therefore still change colour at warning/danger thresholds without changing the glyph or wasting status-bar space.
+The provider glyph is the identity cue: **Claude's `✳` is orange** and **Codex's `⬢` is blue**. The original silhouettes are bundled as larger native-size product icons, and their separate colour slots are compactly joined to the usage text. Because the glyph owns its own colour slot, the text is free to signal the usage threshold without wasting status-bar space. The glyph changes colour for exactly one reason: a Codex conversation belonging to another project (above).
 
 ### What a Codex item shows
 
@@ -62,13 +64,13 @@ The provider glyph is a fixed identity cue: **Claude's `✳` is orange** and **C
 - **Effort** — Low / Medium / High / xHigh, etc.
 - **Idle dimming & `hideAfter` hiding** — exactly the same rules as Claude
 - **Completion beep** — driven by Codex's `task_complete` event. It **shares Claude's completion sound and threshold settings** — there is no separate Codex sound setting.
-- **Tooltip** — Codex weekly/secondary limits (remaining percentage, reset times, plan type) + context token breakdown + the session's cumulative processed tokens
+- **Tooltip** — Codex weekly/secondary limits (used percentage, reset times, plan type) + context token breakdown + the session's cumulative processed tokens
 
 ### Codex account usage (rate limits)
 
 Read **live from the Codex app‑server**. The extension briefly spawns a `codex app-server` process and asks it for `account/rateLimits/read` over JSON‑RPC — a measured round trip of about **0.6–0.9 s**.
 
-The app-server reports a consumed `usedPercent`; the status bar and tooltip convert it to **remaining percent** (`100 - usedPercent`) to match the ChatGPT usage screen. For example, `usedPercent: 58` is displayed as **42% remaining**.
+The app-server reports a consumed `usedPercent`, and that consumed figure is what the status bar and tooltip show — the same direction as the Claude plan block right next to it, so a bigger number always means "closer to the limit". Note that the ChatGPT usage screen states the complementary amount still available: what it calls **42% remaining** appears here as **58%** used.
 
 The tooltip’s **Session processed total** comes from rollout `total_token_usage.total_tokens`. It is the cumulative token volume processed across model calls in this conversation (including cached input), not the current context size and not the account’s weekly-limit usage.
 
@@ -89,7 +91,7 @@ The tooltip shows the **source next to the observation time** — `live`, or `fr
 
 All VS Code windows in the same local profile use a small, non-secret file in the extension's `globalStorage`. An atomic `wx` lock elects one window to run `account/rateLimits/read`; the others consume the atomically replaced cache and watch it for changes. This avoids one app-server process per window and prevents a newer-but-stale rollout snapshot from overriding the account-authoritative live value.
 
-If the current window has no recorded Codex conversation UUID or its rollout is unavailable, account remaining is still shown as a standalone **`⬢ Codex`** item. This is intentionally account-only: the extension does not attach another window's model or context figures by guesswork. Once a UUID is resolved, the standalone item is replaced by that conversation's normal session item.
+If the current window has no recorded Codex conversation UUID or its rollout is unavailable, account usage is still shown as a standalone **`⬢ Codex`** item. This is intentionally account-only: the extension does not attach another window's model or context figures by guesswork. Once a UUID is resolved, the standalone item is replaced by that conversation's normal session item.
 
 Codex account usage is a **separate concept** from Claude's 5‑hour / weekly plan usage. Each provider's usage is merged only into that provider's own first session item.
 
@@ -272,8 +274,7 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `claudeContextBar.autoColor` | `true` | Assign a unique pastel colour per project |
-| `claudeContextBar.baseColor` | `White` | Base colour when auto‑colour is off |
+| `claudeContextBar.baseColor` | `White` | Resting text colour, shared by every session. Colour otherwise means only the usage threshold |
 | `claudeContextBar.contextLimitDefault` | `200000` | Context limit for standard models |
 | `claudeContextBar.contextLimitOpus` | `1000000` | Context limit for 1M‑context models (Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+) |
 | `claudeContextBar.warningThreshold` | `50` | % for yellow warning background |

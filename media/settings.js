@@ -66,7 +66,6 @@
         $('st-autoStartBlock').checked = !!state.autoStartBlockOnReset;
         // claudeContextBar
         const cb = state.cb || {};
-        $('cb-autoColor').checked = cb.autoColor !== false;
         $('cb-baseColor').value = cb.baseColor || 'White';
         $('cb-contextLimitDefault').value = cb.contextLimitDefault ?? 200000;
         $('cb-contextLimitOpus').value = cb.contextLimitOpus ?? 1000000;
@@ -122,7 +121,6 @@
             telegramNotifyOnReset: $('tg-notifyOnReset').checked,
             autoStartBlockOnReset: $('st-autoStartBlock').checked,
             cb: {
-                autoColor: $('cb-autoColor').checked,
                 baseColor: $('cb-baseColor').value,
                 contextLimitDefault: parseInt($('cb-contextLimitDefault').value, 10) || 200000,
                 contextLimitOpus: parseInt($('cb-contextLimitOpus').value, 10) || 1000000,

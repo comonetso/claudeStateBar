@@ -1910,60 +1910,31 @@ async function refreshAllSessions() {
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const warningThreshold = config.get<number>('warningThreshold', 50);
     const dangerThreshold = config.get<number>('dangerThreshold', 75);
-    const autoColor = config.get<boolean>('autoColor', true);
     const baseColor = config.get<string>('baseColor', 'White');
     const compactMode = config.get<boolean>('compactMode', false);
     const shortNames = config.get<Record<string, string>>('shortNames', {});
     const showModel = config.get<boolean>('showModel', true);
     const wfBeepEnabled = config.get<boolean>('workflowCompleteBeep', true);
 
-    // Pastel color palette for auto-coloring
-    const pastelPalette = [
-        '#a8d8ea', // Soft blue
-        '#d4a5a5', // Dusty rose
-        '#b5d8c7', // Sage green
-        '#e8d5b7', // Warm beige
-        '#c9b1ff', // Lavender
-        '#ffd6a5', // Peach
-        '#caffbf', // Mint
-        '#bdb2ff', // Periwinkle
-        '#ffc6ff', // Pink
-    ];
-
-    // Base color variations (subtle shifts from user's chosen color)
-    const baseColorVariations: Record<string, string[]> = {
-        'White': ['#ffffff', '#f5f5f5', '#ebebeb', '#e0e0e0', '#d5d5d5'],
-        'Blue': ['#a8d8ea', '#9ecfe0', '#94c6d6', '#8abccc', '#80b2c2'],
-        'Purple': ['#c9b1ff', '#bfa7f5', '#b59deb', '#ab93e1', '#a189d7'],
-        'Cyan': ['#a0e7e5', '#96ddd9', '#8cd3cd', '#82c9c1', '#78bfb5'],
-        'Green': ['#b5d8c7', '#abcebd', '#a1c4b3', '#97baa9', '#8db09f'],
-        'Yellow': ['#ffeaa7', '#f5e09d', '#ebd693', '#e1cc89', '#d7c27f'],
-        'Orange': ['#ffd6a5', '#f5cc9b', '#ebc291', '#e1b887', '#d7ae7d'],
-        'Pink': ['#ffc6ff', '#f5bcf5', '#ebb2eb', '#e1a8e1', '#d79ed7'],
+    // ONE resting colour for every session item.
+    //
+    // Removed in 1.8.3: the per-project pastel palette (`autoColor`). Colour in this status
+    // bar now means exactly one thing — how close a session is to its limit (idle grey,
+    // warning yellow, danger red). While each project also carried its own hue, that signal
+    // was unreadable in both directions: a healthy 28% session rendered in dusty rose and
+    // looked like a warning, and a genuine 78% one could be dismissed as "that project's
+    // colour". Sessions are told apart by name, and providers by their icon colour.
+    const baseColorHex: Record<string, string> = {
+        'White': '#ffffff',
+        'Blue': '#a8d8ea',
+        'Purple': '#c9b1ff',
+        'Cyan': '#a0e7e5',
+        'Green': '#b5d8c7',
+        'Yellow': '#ffeaa7',
+        'Orange': '#ffd6a5',
+        'Pink': '#ffc6ff',
     };
-
-    // Track project names to assign consistent colors
-    const projectColorMap = new Map<string, string>();
-    let colorIndex = 0;
-
-    if (autoColor) {
-        // Auto mode: use pastel palette
-        for (const session of sessions) {
-            if (!projectColorMap.has(session.projectName)) {
-                projectColorMap.set(session.projectName, pastelPalette[colorIndex % pastelPalette.length]);
-                colorIndex++;
-            }
-        }
-    } else {
-        // Manual mode: use variations of the base color
-        const variations = baseColorVariations[baseColor] || baseColorVariations['White'];
-        for (const session of sessions) {
-            if (!projectColorMap.has(session.projectName)) {
-                projectColorMap.set(session.projectName, variations[colorIndex % variations.length]);
-                colorIndex++;
-            }
-        }
-    }
+    const restingColor = baseColorHex[baseColor] || baseColorHex['White'];
 
     // Track which sessions we've seen
     const seenPaths = new Set<string>();
@@ -2050,12 +2021,21 @@ async function refreshAllSessions() {
         const planAdd = isProviderLead
             ? (isCodex ? codexUsageTextSuffix(compactMode) : planTextSuffix(compactMode))
             : '';
+        // Codex lists conversations per device, not per project, so this window can legitimately
+        // be showing a chat created in another repository. That is worth flagging: without it
+        // the abbreviated project name ("Cxi" for calltaxi) is the only clue, and the numbers
+        // read as if they belonged to the folder currently open.
+        const foreignProject = isCodex && !!session.codexForeignProject;
+        const foreignMark = foreignProject ? '↗' : '';
         entry.iconItem.text = providerIcon(session.provider);
-        entry.iconItem.color = session.provider === 'codex' ? '#8ecae6' : '#f4a261';
+        // The provider glyph carries its own identity colour, independent of the usage text's
+        // warning/danger/idle colour — which is exactly why the foreign-project warning is
+        // placed here rather than on the text.
+        entry.iconItem.color = foreignProject
+            ? new vscode.ThemeColor('editorWarning.foreground')
+            : (session.provider === 'codex' ? '#8ecae6' : '#f4a261');
         entry.iconItem.backgroundColor = undefined;
-        // The provider glyph is separate so its identity colour is independent of the
-        // usage text's warning/danger/idle colour.
-        entry.item.text = `${displayName}${infoPart} (${session.percentage}%)${planAdd}${idleSuffix}`;
+        entry.item.text = `${displayName}${foreignMark}${infoPart} (${session.percentage}%)${planAdd}${idleSuffix}`;
 
         // We never use backgroundColor — too visually loud. Threshold warnings are shown via foreground color instead.
         entry.item.backgroundColor = undefined;
@@ -2068,7 +2048,7 @@ async function refreshAllSessions() {
         } else if (session.percentage >= warningThreshold) {
             entry.item.color = new vscode.ThemeColor('editorWarning.foreground');
         } else {
-            entry.item.color = projectColorMap.get(session.projectName) || '#ffffff';
+            entry.item.color = restingColor;
         }
 
         // Threshold crossing beep alerts (suppressed on first scan and for idle sessions)
@@ -2321,8 +2301,14 @@ async function refreshAllSessions() {
             const cumulative = session.codexCumulativeTokens
                 ? `♾️ ${planT('tt.lifetime')}: ${formatTokens(session.codexCumulativeTokens)}\n\n`
                 : '';
+            // Spelling out the full cwd is the point: the status bar only has room for an
+            // abbreviated name, and that abbreviation is what made the mismatch invisible.
+            const foreignLine = foreignProject
+                ? `⚠️ **${planT('tt.codexForeignProject')}**\n\n\`${session.projectPath}\`\n\n`
+                : '';
             md = new vscode.MarkdownString(
                 `**${session.projectName}** (${session.sessionId})\n\n` +
+                foreignLine +
                 idleLine +
                 sectionHeader('Codex Usage', '#FF9F6E') +
                 (codexUsageTooltipBlock() || (planT('tt.codexUsageUnavailable') + '\n\n')) +
@@ -2717,18 +2703,21 @@ function isoFromEpoch(ms: number | null): string | null {
     return ms == null ? null : new Date(ms).toISOString();
 }
 
-// app-server and rollout snapshots expose consumed usage as `usedPercent`, while the
-// product UI presents the complementary amount still available. Keep the source value
-// intact and invert only at the presentation boundary.
-function codexRemainingPercent(usedPercent: number): number {
-    return Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
+// app-server and rollout snapshots expose consumed usage as `usedPercent`, and that is what
+// we show. Both providers therefore read in the same direction — a bigger number always
+// means "closer to the limit" — which is why this is no longer inverted (1.8.3): the Claude
+// plan block next to it is a consumed figure too, and the two disagreeing was the confusion.
+// The ChatGPT usage screen states the complementary "remaining" amount; that difference is
+// deliberate, so `47% remaining` there is `53%` here.
+function codexUsedPercent(usedPercent: number): number {
+    return Math.max(0, Math.min(100, Math.round(usedPercent)));
 }
 
 // Suffix appended to the leading Codex session item — mirrors planTextSuffix().
 function codexUsageTextSuffix(compact: boolean): string {
     const u = accountCodexUsage();
     if (!u || !u.primary) return '';
-    const p = codexRemainingPercent(u.primary.usedPercent);
+    const p = codexUsedPercent(u.primary.usedPercent);
     const iso = isoFromEpoch(u.primary.resetsAt);
     if (compact) {
         return ` · ${p}% (${untilHumanCompact(iso)})`;
@@ -2745,13 +2734,13 @@ function codexUsageTooltipBlock(): string {
 
     if (u.primary) {
         const iso = isoFromEpoch(u.primary.resetsAt);
-        s += `📊 **${planT('sb.codexPrimary')}**: ${codexRemainingPercent(u.primary.usedPercent)}%` +
+        s += `📊 **${planT('sb.codexPrimary')}**: ${codexUsedPercent(u.primary.usedPercent)}%` +
             (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') + `\n\n`;
     }
     // Only rendered when Codex actually reports a second window — it is often null.
     if (u.secondary) {
         const iso = isoFromEpoch(u.secondary.resetsAt);
-        s += `📅 **${planT('sb.codexSecondary')}**: ${codexRemainingPercent(u.secondary.usedPercent)}%` +
+        s += `📅 **${planT('sb.codexSecondary')}**: ${codexUsedPercent(u.secondary.usedPercent)}%` +
             (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') + `\n\n`;
     }
     if (u.planType) {
@@ -2791,12 +2780,12 @@ function updateCodexUsageFallback(noCodexSessions: boolean): void {
         return;
     }
 
-    const remaining = codexRemainingPercent(u.primary.usedPercent);
+    const used = codexUsedPercent(u.primary.usedPercent);
     const iso = isoFromEpoch(u.primary.resetsAt);
     const compact = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('compactMode', false);
     item.text = compact
-        ? `${providerIcon('codex')} Codex · ${remaining}% (${untilHumanCompact(iso)})`
-        : `${providerIcon('codex')} Codex - ${planT('sb.codexLimit')} ${remaining}% (${untilHuman(iso)})`;
+        ? `${providerIcon('codex')} Codex · ${used}% (${untilHumanCompact(iso)})`
+        : `${providerIcon('codex')} Codex - ${planT('sb.codexLimit')} ${used}% (${untilHuman(iso)})`;
     item.color = colorForPercent(u.primary.usedPercent) ?? '#FF9F6E';
     item.backgroundColor = undefined;
     item.tooltip = new vscode.MarkdownString(
