@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<!--
+  Codex 진행 패널 — 시안 (mockup)
+  ────────────────────────────────────────────────────────────
+  실제 데이터로 만들었습니다. 아래 아이템들은 2026-08-19 14:08:40 에 돌린
+  codex_rescue CONSULT 실행(스탬프 260819_140840)의 events.jsonl 실물에서 뽑았습니다.
+  스타일은 src/workflowPanel.ts 의 Claude 워크플로우 패널을 그대로 따랐고,
+  브라우저에서도 보이도록 VS Code 테마 변수에 fallback 색을 넣었습니다.
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Codex 진행 패널 — 시안</title>
+<style>
+  body { font-family: var(--vscode-font-family, "Segoe UI", sans-serif);
+         color: var(--vscode-foreground, #ccc);
+         background: var(--vscode-editor-background, #1e1e1e);
+         padding: 16px; font-size: 15px; }
+  .toolbar { display:flex; align-items:center; gap:6px; justify-content:flex-end; margin-bottom:10px; }
+  .flabel { color: var(--vscode-descriptionForeground, #8b949e); font-size:.8em; }
+  .fbtn { background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ccc);
+          border:none; border-radius:4px; padding:2px 11px; cursor:pointer; font-size:1em; }
+  h1 { font-size:1.2em; margin:0 0 4px 0; }
+  .sub { color: var(--vscode-descriptionForeground, #8b949e); font-size:.85em; margin-bottom:16px; }
+
+  .wf { border:1px solid var(--vscode-panel-border, #3c3c3c); border-radius:6px; padding:10px 14px; margin-bottom:12px; }
+  .wf-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+  .arrow { flex-shrink:0; width:12px; color: var(--vscode-descriptionForeground, #8b949e); }
+  .wf.collapsed .arrow { transform: rotate(-90deg); display:inline-block; }
+  .wf-name { font-weight:600; font-size:1.05em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mode-chip { font-size:.72em; padding:1px 7px; border-radius:4px; background:#2d4a63; color:#9cd2ff; flex-shrink:0; letter-spacing:.3px; }
+  .wf-time { flex-shrink:0; color: var(--vscode-descriptionForeground, #8b949e); font-size:.8em; white-space:nowrap; font-variant-numeric: tabular-nums; }
+  .wf-spacer { flex:1 1 auto; }
+  .badge { font-size:.8em; padding:2px 9px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
+  .badge.running { background: var(--vscode-statusBarItem-warningBackground, #d29922); color:#1e1e1e; }
+  .badge.done    { background:#3fb950; color:#fff; }
+  .badge.stopped { background:#8b949e; color:#1e1e1e; }
+  .badge.failed  { background:#f85149; color:#fff; }
+  .wf-body { margin-top:8px; }
+  .wf.collapsed .wf-body { display:none; }
+  .meta { color: var(--vscode-descriptionForeground, #8b949e); font-size:.78em;
+          font-family: var(--vscode-editor-font-family, Consolas, monospace); margin-bottom:8px; }
+  .meta b { color:#bbb; font-weight:600; }
+
+  .items { display:flex; flex-direction:column; gap:7px; margin-top:8px; }
+  .it { padding:1px 0; font-size:.9em; }
+  .it-head { display:flex; align-items:baseline; gap:8px; }
+  .dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; position:relative; top:1px; }
+  .dot.running { background:#e3b341; animation: pulse 1.2s ease-in-out infinite; }
+  .dot.done    { background:#3fb950; }
+  .dot.err     { background:#f85149; }
+  .kind { font-size:.8em; padding:0 6px; border-radius:3px; background: var(--vscode-badge-background, #4d4d4d);
+          color: var(--vscode-badge-foreground, #ccc); flex-shrink:0; }
+  .kind.msg  { background:#3a3f5c; color:#c3caff; }
+  .kind.cmd  { background:#4a4030; color:#f0d9a8; }
+  .kind.web  { background:#2f4a3a; color:#a8e6bf; }
+  .kind.file { background:#4a3050; color:#e6b3f0; }
+  .kind.err  { background:#5a2a2a; color:#ffb3b3; }
+  .lbl { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+         font-family: var(--vscode-editor-font-family, Consolas, monospace); font-size:.92em; }
+  .dur { color: var(--vscode-descriptionForeground, #8b949e); font-size:.82em; flex-shrink:0; }
+  .say { margin:4px 0 0 17px; padding:7px 10px; border-left:2px solid #6b74a8;
+         background: rgba(127,127,160,.10); border-radius:0 4px 4px 0;
+         line-height:1.5; font-size:.93em; white-space:pre-wrap; }
+  .empty { color: var(--vscode-descriptionForeground, #8b949e); font-style:italic; }
+  .note { margin-top:22px; padding:12px 14px; border:1px dashed #555; border-radius:6px;
+          font-size:.85em; color:#9aa; line-height:1.65; }
+  .note b { color:#ccc; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+</style>
+</head>
+<body>
+
+  <div class="toolbar">
+    <span class="flabel">글자 크기</span>
+    <button class="fbtn">A−</button>
+    <button class="fbtn">A+</button>
+  </div>
+
+  <h1>🔶 Codex 진행 상황</h1>
+  <div class="sub">실행 2건 · 1건 진행 중 — 상태바와 함께 자동 새로고침 중…</div>
+
+  <!-- ══════════ 진행 중인 실행 ══════════ -->
+  <div class="wf">
+    <div class="wf-head">
+      <span class="arrow">▾</span>
+      <span class="wf-name">codex-progress-visibility</span>
+      <span class="mode-chip">CONSULT</span>
+      <span class="wf-time">🕘 14:08:40 · 경과 03:47</span>
+      <span class="wf-spacer"></span>
+      <span class="badge running">진행 중 · 18/19</span>
+    </div>
+    <div class="wf-body">
+      <div class="meta">
+        <b>요청서</b> docs/codex_rescue/260819_140840_request_codex-progress-visibility.md<br>
+        <b>thread</b> 01a0186d-b19c-73f2-9110-c760ba233150 &nbsp;·&nbsp; <b>샌드박스</b> workspace-write
+      </div>
+
+      <div class="items">
+
+        <div class="it">
+          <div class="it-head">
+            <span class="dot done"></span><span class="kind msg">말</span>
+            <span class="lbl">Codex</span><span class="dur">· 2.1s</span>
+          </div>
+          <div class="say">요청서와 관련 메모를 먼저 확인한 뒤, 저장소를 읽기 전용으로 조사하겠습니다. 코드에는 손대지 않고 요청서가 지정한 응답 문서 한 파일만 작성하겠습니다.</div>
+        </div>
+
+        <div class="it">
+          <div class="it-head">
+            <span class="dot done"></span><span class="kind cmd">명령</span>
+            <span class="lbl">pwsh -Command "rg -n -C 2 'claudeContextBar|codex_rescue|진행' MEMORY.md"</span>
+            <span class="dur">· 1.4s · exit 0</span>
+          </div>
+        </div>
+
+        <div class="it">
+          <div class="it-head">
+            <span class="dot done"></span><span class="kind web">검색</span>
+            <span class="lbl">site:developers.openai.com/codex non-interactive mode --json</span>
+            <span class="dur">· 3.2s</span>
+          </div>
+        </div>
+
+        <div class="it">
+          <div class="it-head">
+            <span class="dot done"></span><span class="kind msg">말</span>
+            <span class="lbl">Codex</span><span class="dur">· 0.9s</span>
+          </div>
+          <div class="say">판정은 정리됐습니다. 추천은 "이벤트만 <code>tee</code>로 실시간 복제"를 유지하되, lock 하나에 생사 판정을 맡기지 않고 status + heartbeat + 종료 이벤트를 함께 보는 쪽입니다.</div>
+        </div>
+
+        <div class="it">
+          <div class="it-head">
+            <span class="dot err"></span><span class="kind file">파일</span>
+            <span class="lbl">260819_140840_response_codex-progress-visibility.md</span>
+            <span class="dur">· 실패</span>
+          </div>
+          <div class="say">첫 저장 시도는 Windows 절대경로를 패치 도구가 받지 못해 실패했고 파일은 만들어지지 않았습니다. 같은 지정 파일을 프로젝트 상대경로로 다시 저장하겠습니다.</div>
+        </div>
+
+        <div class="it">
+          <div class="it-head">
+            <span class="dot running"></span><span class="kind file">파일</span>
+            <span class="lbl">260819_140840_response_codex-progress-visibility.md · 저장 중</span>
+            <span class="dur">· 경과 11s</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 완료된 실행 (접힘) ══════════ -->
+  <div class="wf collapsed">
+    <div class="wf-head">
+      <span class="arrow">▾</span>
+      <span class="wf-name">codex-usage-source-of-truth</span>
+      <span class="mode-chip">CONSULT</span>
+      <span class="wf-time">🕘 04:52:34 · 소요 46:12</span>
+      <span class="wf-spacer"></span>
+      <span class="badge done">완료 · 응답 도착</span>
+    </div>
+    <div class="wf-body"></div>
+  </div>
+
+  <!-- ══════════ 설계 메모 ══════════ -->
+  <div class="note">
+    <b>이 시안이 담고 있는 판단</b><br><br>
+
+    <b>① 카드 = 실행 1건.</b> Claude 워크플로우가 "워크플로우 1건 = 카드"인 것과 같은 층위입니다.
+    codex_rescue 실행 하나가 스탬프 하나이고, 그게 곧 카드 하나입니다.<br><br>
+
+    <b>② 아이템 = 이벤트 1건.</b> 워크플로우의 "에이전트" 자리에 Codex의 item이 들어갑니다.
+    <code>item.started</code> → 노란 펄스 점, <code>item.completed</code> → 초록 점.
+    데이터 모델이 거의 그대로 재사용됩니다.<br><br>
+
+    <b>③ <code>agent_message</code>를 주인공으로 세웁니다.</b> 명령·검색은 한 줄로 접고,
+    Codex가 한국어로 말하는 부분만 인용 블록으로 띄웁니다. 사용자가 실제로 알고 싶은 건
+    "무슨 명령을 쳤나"가 아니라 <b>"지금 뭘 하려는 중인가"</b>이고, 그 답이 여기 들어 있습니다.
+    위 두 개의 인용문은 지어낸 게 아니라 실제로 흘러나온 문장입니다.<br><br>
+
+    <b>④ 종류별 색.</b> 말 / 명령 / 검색 / 파일 / 에러를 색으로 구분해 스캔이 빠르게 되게 했습니다.
+    상태바 쪽 규칙(색은 경고 전용)과 달리 여기서는 <b>분류용</b>이라 파스텔을 써도 신호가 흐려지지 않습니다.<br><br>
+
+    <b>⑤ 확정된 표시 규칙</b> — 아이템은 <code>done</code>(초록) · <code>failed</code>(빨강) · <code>warn</code>(노랑)으로 구분합니다. <code>error</code> 타입은 단순 안내도 같은 채널로 오므로 노랑이며, 진짜 실패는 <code>turn.failed</code>, 명령의 non-zero <code>exit_code</code>, <code>file_change.status = failed</code>로만 판정합니다.
+    카드 전체 상태는 아이템이 아니라 <code>send.sh</code>가 쓰는 <code>status.json</code>이 정하며, <code>starting → running → finalizing → done / failed / stopped / stale</code>로 전이합니다. 아이템 하나가 실패해도 카드 전체가 실패가 되지는 않습니다.
+    <code>finalizing</code>은 Codex의 <code>turn.completed</code> 뒤에도 <code>send.sh</code>가 변경 감지·응답 회수·로그 보존을 계속하는 구간입니다. 이 구간을 따로 둬 아직 끝나지 않은 작업을 완료로 표시하지 않습니다.<br><br>
+  </div>
+
+</body>
+</html>

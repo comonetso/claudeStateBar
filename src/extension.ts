@@ -10,6 +10,8 @@ import * as telegram from './telegram';
 import * as blockPrimer from './blockPrimer';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
 import { createOrShowWorkflowPanel, pushWorkflows, getTrackedSessionFile, pushLanguage } from './workflowPanel';
+import { createOrShowCodexPanel, pushRuns, pushCodexLanguage, isCodexPanelOpen, CodexRunView } from './codexRescuePanel';
+import { discoverRuns, codexRescueLogDir, isTerminalPhase, pruneTailCache, deleteRun, cleanupOldRuns, CleanupResult, RunPhase } from './providers/codexRescue/runDiscovery';
 import { getDict, Lang } from './i18n';
 import { readTextFile } from './core/fs';
 import { log, setLogChannel, getLogChannel } from './core/logger';
@@ -377,7 +379,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Status bar click → QuickPick menu (hide this / restore hidden / open settings)
     const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
-        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'cleanupGhosts'; sessionFile?: string };
+        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'cleanupGhosts'; sessionFile?: string };
         const items: Item[] = [];
 
         const clickedEntry = sessionFile ? statusBarItems.get(sessionFile) : undefined;
@@ -458,6 +460,21 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }
 
+        // codex_rescue 진행 상황. 스킬이 깔린 머신에서만 나타난다 — 안 쓰는 사용자에게는
+        // 항목 자체가 없다. 실행 기록이 아직 없어도(0건) 항목은 보여준다: 패널을 열어
+        // "여기서 볼 수 있다"는 걸 알 수 있어야 하기 때문이다.
+        if (codexRescueSkillInstalled()) {
+            const cxRuns = collectCodexRuns();
+            const cxLive = cxRuns.filter(r => !isTerminalPhase(r.phase)).length;
+            items.push({ label: planT('menu.sepCodex'), kind: vscode.QuickPickItemKind.Separator });
+            items.push({
+                label: (cxLive > 0 ? '$(sync~spin) ' : '$(flame) ') + planT('menu.viewCodexRuns', cxRuns.length),
+                description: cxLive > 0 ? planT('menu.running', cxLive) : planT('menu.allDone'),
+                detail: planT('menu.codexDetail'),
+                action: 'codexRuns'
+            });
+        }
+
         items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
         // 좀비(죽은 인스턴스가 남긴) 상태바 항목 정리. 좀비 아이템 자체는 죽은 command라
         // 클릭이 안 먹으므로(command not found), 살아있는 항목의 이 메뉴를 통로로 제공한다.
@@ -499,6 +516,9 @@ export function activate(context: vscode.ExtensionContext) {
                 break;
             case 'settings':
                 vscode.commands.executeCommand('claudeContextBar.openSettings');
+                break;
+            case 'codexRuns':
+                vscode.commands.executeCommand('claudeContextBar.showCodexRuns');
                 break;
             case 'cleanupGhosts':
                 // 죽은 인스턴스가 남긴 좀비 StatusBarItem은 VS Code API로 직접 제거 불가 →
@@ -586,6 +606,62 @@ export function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(cleanupGhostCmd);
 
+    // codex_rescue live progress panel. The command is registered unconditionally (cheap)
+    // but package.json hides it from the palette unless `claudeStateBar.hasCodexRescue` is
+    // set, which only happens in a workspace that has docs/codex_rescue/.
+    const codexRunsCmd = vscode.commands.registerCommand('claudeContextBar.showCodexRuns', () => {
+        createOrShowCodexPanel(context, collectCodexRuns(), {
+            onOpenDoc: (fsPath: string) => {
+                vscode.workspace.openTextDocument(vscode.Uri.file(fsPath)).then(
+                    doc => vscode.window.showTextDocument(doc, { preview: false }),
+                    e => log(`[codex-rescue] open failed: ${e}`)
+                );
+            },
+            onDelete: async (stamp: string) => {
+                const target = collectCodexRuns().find(r => r.stamp === stamp);
+                if (!target) return;
+                // Manual deletion asks every time rather than obeying the retention setting:
+                // it's an explicit act on one specific run, and whether that run's documents
+                // are worth keeping is a per-run judgement. The setting governs auto-cleanup.
+                const logsOnly = planT('cx.del.logsOnly');
+                const withDocs = planT('cx.del.withDocs');
+                const choice = await vscode.window.showWarningMessage(
+                    planT('cx.del.ask', target.slug), { modal: true }, logsOnly, withDocs
+                );
+                if (choice !== logsOnly && choice !== withDocs) return;
+                const deleteDocs = choice === withDocs;
+                const res: CleanupResult = { removedRuns: 0, removedFiles: 0, freedBytes: 0, skippedLive: 0 };
+                for (const f of vscode.workspace.workspaceFolders || []) {
+                    if (f.uri.scheme !== 'file') continue;
+                    if (deleteRun(f.uri.fsPath, stamp, target.slug, deleteDocs, res)) break;
+                }
+                if (res.skippedLive) {
+                    vscode.window.showWarningMessage(planT('cx.del.skippedLive'));
+                } else {
+                    log(`[codex-rescue] deleted ${stamp}: ${res.removedFiles} files, ${Math.round(res.freedBytes / 1024)}KB`);
+                }
+                syncCodexRuns();
+            }
+        });
+    });
+    context.subscriptions.push(codexRunsCmd);
+
+    // Shown only to people who DON'T have the skill: a pointer to the guide, nothing more.
+    // The extension never installs the skill itself — it spawns `codex exec` with workspace
+    // write access, so that has to be a deliberate act by the user, not a side effect of
+    // installing a status-bar extension.
+    const codexSetupCmd = vscode.commands.registerCommand('claudeContextBar.setupCodexRescue', async () => {
+        const openBtn = planT('cx.setup.open');
+        const answer = await vscode.window.showInformationMessage(planT('cx.setup.msg'), openBtn);
+        if (answer === openBtn) {
+            const doc = planLang() === 'ko' ? 'codex-rescue-guide.ko.md' : 'codex-rescue-guide.md';
+            vscode.env.openExternal(vscode.Uri.parse(
+                `https://github.com/comonetso/claudeStateBar/blob/main/docs/${doc}`));
+        }
+    });
+    context.subscriptions.push(codexSetupCmd);
+    updateCodexContext(codexRescueSkillInstalled());
+
     // Auto-cleanup on activate (silent, async — doesn't block startup)
     const autoCleanup = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('autoCleanupOldVersions', true);
     if (autoCleanup) {
@@ -610,6 +686,30 @@ export function activate(context: vscode.ExtensionContext) {
         }, 2000);
     }
 
+    // codex_rescue log retention. Runs once per activation — VS Code gets restarted often
+    // enough that a timer would add nothing but a way to delete files unexpectedly mid-session.
+    // Off by default; only finished, unlocked runs past the retention window are removed.
+    setTimeout(() => {
+        const cfg = vscode.workspace.getConfiguration('claudeContextBar');
+        if (!cfg.get<boolean>('codexRunAutoCleanup', false)) return;
+        const opts = {
+            retentionDays: cfg.get<number>('codexRunRetentionDays', 7),
+            deleteDocs: cfg.get<boolean>('codexRunDeleteDocs', false),
+        };
+        for (const f of vscode.workspace.workspaceFolders || []) {
+            if (f.uri.scheme !== 'file') continue;
+            try {
+                const r = cleanupOldRuns(f.uri.fsPath, opts, Date.now());
+                if (r.removedRuns) {
+                    log(`[codex-rescue] auto-cleanup: ${r.removedRuns} run(s), ${r.removedFiles} file(s), `
+                        + `${Math.round(r.freedBytes / 1024)}KB freed (older than ${opts.retentionDays}d, docs=${opts.deleteDocs})`);
+                }
+            } catch (e) {
+                log(`[codex-rescue] auto-cleanup error: ${e}`);
+            }
+        }
+    }, 4000);
+
     // Listen for configuration changes and refresh immediately
     const configWatcher = vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('claudeContextBar.codex.home')) {
@@ -626,6 +726,7 @@ export function activate(context: vscode.ExtensionContext) {
         // (The QuickPick menu rebuilds on each click, so it already picks up the new language.)
         if (e.affectsConfiguration('claudeState.language')) {
             pushLanguage();
+            pushCodexLanguage();
             refreshAllSessions();
         }
     });
@@ -800,6 +901,10 @@ export function deactivate() {
     }
     if (codexUsageInterval) {
         clearInterval(codexUsageInterval);
+    }
+    if (codexFastTimer) {
+        clearInterval(codexFastTimer);
+        codexFastTimer = null;
     }
     for (const [, p] of pendingCompletion) clearTimeout(p.timer);
     pendingCompletion.clear();
@@ -2509,6 +2614,184 @@ async function refreshAllSessions() {
         } else {
             findWorkflowsForSession(trackedSessionFile).then(pushWorkflows).catch(e => log(`[workflows] push error: ${e}`));
         }
+    }
+
+    // codex_rescue runs ride the same refresh tick. No-ops instantly unless this workspace
+    // actually uses the skill, so ordinary users pay nothing for it.
+    syncCodexRuns();
+}
+
+// ============================================================================
+// codex_rescue — live run progress
+//
+// Reads the live event mirror that send.sh writes to <workspace>/docs/codex_rescue/.log/.
+// The whole feature is inert unless that directory exists, which is how it stays invisible
+// to ordinary users of this extension: no setting to discover, no command in the palette.
+// ============================================================================
+
+/** Phase observed on the previous poll, per stamp — the edge the chime fires on. */
+const codexRunPhases = new Map<string, RunPhase>();
+/**
+ * Stamps we actually saw in a live phase during this runtime. Mirrors the workflow-done
+ * gate: a run first seen already-finished (extension restart, or an old log directory
+ * surfacing) is baselined silently rather than chiming as if it had just completed.
+ */
+const codexSeenLive = new Set<string>();
+
+/**
+ * True when the codex_rescue skill is installed for Claude Code on this machine.
+ *
+ * This — not "has this project run it before" — is what gates the panel. Keying off the
+ * workspace meant the feature stayed invisible until the very first run, so someone who had
+ * just installed the skill had no way to discover that a viewer existed at all.
+ *
+ * The skill itself is NOT shipped with this extension (see docs/codex-rescue-guide.md);
+ * it spawns `codex exec` with workspace write access, which users must opt into knowingly.
+ */
+function codexRescueSkillInstalled(): boolean {
+    try {
+        return fs.existsSync(path.join(os.homedir(), '.claude', 'skills', 'codex_rescue', 'SKILL.md'));
+    } catch {
+        return false;
+    }
+}
+
+/** True when any workspace folder has codex_rescue run records to display. */
+function workspaceUsesCodexRescue(): boolean {
+    for (const f of vscode.workspace.workspaceFolders || []) {
+        // Local disk only: this extension is extensionKind "ui" (always runs on the local
+        // host), so a vscode-remote workspace's files are not reachable via node fs.
+        if (f.uri.scheme !== 'file') continue;
+        if (codexRescueLogDir(f.uri.fsPath)) return true;
+    }
+    return false;
+}
+
+/** Scan every local workspace folder and shape the runs for the panel. */
+function collectCodexRuns(): CodexRunView[] {
+    const now = Date.now();
+    const out: CodexRunView[] = [];
+    const keepPaths = new Set<string>();
+
+    for (const f of vscode.workspace.workspaceFolders || []) {
+        if (f.uri.scheme !== 'file') continue;
+        const logDir = codexRescueLogDir(f.uri.fsPath);
+        if (!logDir) continue;
+        for (const run of discoverRuns(f.uri.fsPath, now)) {
+            keepPaths.add(path.join(logDir, `${run.stamp}_events.jsonl`));
+            const usage = run.events.usage;
+            out.push({
+                stamp: run.stamp,
+                slug: run.slug,
+                mode: run.mode,
+                phase: run.phase,
+                startedAt: run.startedAtMs,
+                endedAt: run.endedAtMs,
+                threadId: run.events.threadId,
+                todo: run.events.todo,
+                staleForMs: run.staleForMs,
+                requestPath: run.requestPath,
+                resultPath: run.resultPath,
+                totalTokens: usage ? usage.inputTokens + usage.outputTokens : undefined,
+                items: run.events.items.map(i => ({
+                    id: i.id,
+                    kind: i.kind,
+                    status: i.status,
+                    label: i.label,
+                    body: i.body,
+                    // Observation-based: exec JSONL carries no timestamps. A run scanned only
+                    // after it finished yields 0 here, which the webview renders as blank
+                    // rather than a fake "0.0s".
+                    durationMs: i.lastSeenMs && i.lastSeenMs > i.firstSeenMs
+                        ? i.lastSeenMs - i.firstSeenMs : undefined,
+                })),
+            });
+        }
+    }
+    out.sort((a, b) => b.stamp.localeCompare(a.stamp));
+    pruneTailCache(keepPaths);
+    return out;
+}
+
+/**
+ * Refresh Codex run state: fire the completion chime on a live→terminal edge, then push
+ * to the panel if it's open. Called from refreshAllSessions.
+ */
+let lastCodexContext: boolean | null = null;
+
+/**
+ * Publish `claudeStateBar.hasCodexRescue` so package.json can hide the command from the
+ * palette everywhere else. Re-checked each tick because the directory appears the first
+ * time the user runs the skill — no reload should be needed. Only calls setContext when
+ * the value actually flips.
+ */
+function updateCodexContext(has: boolean): void {
+    if (has === lastCodexContext) return;
+    lastCodexContext = has;
+    vscode.commands.executeCommand('setContext', 'claudeStateBar.hasCodexRescue', has);
+    log(`[codex-rescue] context hasCodexRescue=${has}`);
+}
+
+function syncCodexRuns(): void {
+    // Command/menu visibility follows the SKILL install, not this workspace's history.
+    updateCodexContext(codexRescueSkillInstalled());
+    // Scanning, though, only makes sense where run records actually exist.
+    if (!workspaceUsesCodexRescue()) return;
+
+    let runs: CodexRunView[];
+    try {
+        runs = collectCodexRuns();
+    } catch (e) {
+        log(`[codex-rescue] scan error: ${e}`);
+        return;
+    }
+
+    const beepEnabled = vscode.workspace.getConfiguration('claudeContextBar')
+        .get<boolean>('workflowCompleteBeep', true);
+
+    for (const r of runs) {
+        const prev = codexRunPhases.get(r.stamp);
+        const live = !isTerminalPhase(r.phase);
+        if (live) codexSeenLive.add(r.stamp);
+
+        // Chime only on a transition we actually witnessed: the run must have been seen
+        // live at some point AND have just crossed into a terminal phase. `stale` is
+        // deliberately NOT terminal — a run whose heartbeat died may still be alive.
+        if (prev !== undefined && !isTerminalPhase(prev) && isTerminalPhase(r.phase)) {
+            if (beepEnabled && codexSeenLive.has(r.stamp)) {
+                log(`[codex-rescue] ${r.stamp} ${prev} → ${r.phase} → beep`);
+                playWorkflowCompleteSound();
+            } else {
+                log(`[codex-rescue] ${r.stamp} → ${r.phase} (silent: ${beepEnabled ? 'never-saw-live' : 'beep-disabled'})`);
+            }
+        }
+        codexRunPhases.set(r.stamp, r.phase);
+    }
+
+    if (isCodexPanelOpen()) {
+        try { pushRuns(runs); }
+        catch (e) { log(`[codex-rescue] push error: ${e}`); }
+    }
+
+    // A live run needs a much tighter loop than the 30s status-bar tick: at that rate the
+    // panel lags visibly and the completion chime could land half a minute late. Note this
+    // is NOT gated on the panel being open — the chime has to fire either way.
+    ensureCodexFastPolling(runs.some(r => !isTerminalPhase(r.phase)));
+}
+
+let codexFastTimer: NodeJS.Timeout | null = null;
+
+/** Run the Codex scan every 2s while anything is live; stop entirely once nothing is. */
+function ensureCodexFastPolling(hasLive: boolean): void {
+    if (hasLive && !codexFastTimer) {
+        log('[codex-rescue] live run detected → 2s polling');
+        codexFastTimer = setInterval(() => {
+            try { syncCodexRuns(); } catch (e) { log(`[codex-rescue] fast poll error: ${e}`); }
+        }, 2000);
+    } else if (!hasLive && codexFastTimer) {
+        log('[codex-rescue] no live runs → back to the shared tick');
+        clearInterval(codexFastTimer);
+        codexFastTimer = null;
     }
 }
 

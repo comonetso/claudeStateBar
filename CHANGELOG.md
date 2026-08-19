@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.9.0] - 2026-08-19
+
+> **Codex is no longer a black box while it works.** When Claude Code sends a problem to Codex
+> for a second opinion, that run could take twenty minutes, and the only sign it was still
+> alive was that Claude hadn't come back yet. A new panel shows what Codex is doing as it
+> happens, and a chime tells you when it's finished.
+
+### ⬢ Codex progress panel
+
+Open it from the status-bar menu or `claudeStateBar: Show Codex Runs`. Each run is one card.
+
+- **What Codex just said** is the headline of a running card — its own narration of what it's about to do next. That turned out to be far more informative than any spinner.
+- Commands, searches, file changes and MCP calls are listed as they happen, colour-coded by kind, commands with their exit code.
+- A plan appears as `2/5` when Codex produced one. It doesn't always, so it's shown only when present.
+- **No percentage.** Codex never declares how many tool calls are left, so a progress bar would be an invented number. Elapsed time and activity count are shown instead.
+- A run ends with the **workflow completion chime**, using the existing `claudeContextBar.workflowCompleteBeep` setting.
+
+A run passes through `starting → running → finalizing → done / failed / stopped / unresponsive`. `finalizing` exists because Codex finishing its turn is not the run finishing — bookkeeping continues afterwards, and reporting "done" during that window would be wrong. A killed run settles on `unresponsive` rather than being promoted to done.
+
+### The skill it reads is not bundled
+
+The panel reads records left by **`codex_rescue`**, a skill for Claude Code. That skill is **not shipped inside the extension**: it runs `codex exec` with write access to your workspace, which shouldn't arrive as a side effect of installing a status-bar extension. It lives in this repository under `skills/codex_rescue/`, with a full guide in [English](docs/codex-rescue-guide.md) and [Korean](docs/codex-rescue-guide.ko.md).
+
+Nothing changes for anyone who doesn't use it. Without the skill installed there is no panel and no menu entry — only a single command that points at the guide.
+
+### Run records, and clearing them
+
+The first run creates `docs/codex_rescue/` in your project. The request and response documents there are meant to be committed; the raw logs under `.log/` are not, and the skill now writes its own `.gitignore` there so they can't be committed by accident. They hold full command output and run roughly 300 KB per run.
+
+Nothing is deleted unless you ask for it.
+
+- The 🗑 button on a finished card removes one run, **asking each time** whether to delete its documents as well as its logs. Running cards don't have the button.
+- `claudeContextBar.codexRunAutoCleanup` (off by default) clears old runs once per startup, keeping `claudeContextBar.codexRunRetentionDays` (7) days. Live or still-locked runs are never touched.
+- `claudeContextBar.codexRunDeleteDocs` (off) controls whether *automatic* cleanup also removes the documents. Manual deletion ignores it and asks.
+
+### Note
+
+Not available over Remote-SSH: the extension runs on the local host, so it can't read a remote workspace's files.
+
 ## [1.8.3] - 2026-08-03
 
 > **Numbers and colours now mean one thing each.** Three separate ways the status bar could be

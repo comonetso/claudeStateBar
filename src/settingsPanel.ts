@@ -96,6 +96,9 @@ async function collectState() {
             scope: cbCfg.get('scope', 'workspace'),
             showModel: cbCfg.get('showModel', true),
             compactMode: cbCfg.get('compactMode', false),
+            codexRunAutoCleanup: cbCfg.get('codexRunAutoCleanup', false),
+            codexRunRetentionDays: cbCfg.get('codexRunRetentionDays', 7),
+            codexRunDeleteDocs: cbCfg.get('codexRunDeleteDocs', false),
             soundWarning: cbCfg.get('soundWarning', ''),
             soundDanger: cbCfg.get('soundDanger', ''),
             soundCompletion: cbCfg.get('soundCompletion', ''),
@@ -169,6 +172,11 @@ async function handleMessage(msg: any): Promise<void> {
                     await cbCfg.update('scope', p.cb.scope, T);
                     await cbCfg.update('showModel', p.cb.showModel, T);
                     await cbCfg.update('compactMode', p.cb.compactMode, T);
+                    await cbCfg.update('codexRunAutoCleanup', !!p.cb.codexRunAutoCleanup, T);
+                    // Clamp: a stray 0 here would silently mean "delete everything".
+                    await cbCfg.update('codexRunRetentionDays',
+                        Math.max(1, Math.min(3650, Math.round(Number(p.cb.codexRunRetentionDays) || 7))), T);
+                    await cbCfg.update('codexRunDeleteDocs', !!p.cb.codexRunDeleteDocs, T);
                     await cbCfg.update('soundWarning', p.cb.soundWarning ?? '', T);
                     await cbCfg.update('soundDanger', p.cb.soundDanger ?? '', T);
                     await cbCfg.update('soundCompletion', p.cb.soundCompletion ?? '', T);
@@ -461,6 +469,30 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
           <label for="cb-codexScanDays" data-i18n="codex.scanDays.label">Days of history to scan</label>
           <input type="number" id="cb-codexScanDays" min="1" max="60" step="1" />
           <p class="hint" data-i18n="codex.scanDays.hint">Codex stores sessions under sessions/YYYY/MM/DD. Only this many recent day folders are scanned.</p>
+        </div>
+      </div>
+
+      <!-- codex_rescue run-log retention. The retention row is revealed only when
+           auto-cleanup is on, so the number can't look active while nothing deletes. -->
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="cb-codexRunAutoCleanup" />
+          <span data-i18n="cb.codexRunAutoCleanup.label">Auto-delete old Codex run logs on startup</span>
+        </label>
+      </div>
+      <div id="codexRetentionRow" style="display:none;">
+        <div class="grid-2">
+          <div class="field">
+            <label for="cb-codexRunRetentionDays" data-i18n="cb.codexRunRetentionDays.label">Keep run logs for (days)</label>
+            <input type="number" id="cb-codexRunRetentionDays" min="1" max="3650" step="1" />
+          </div>
+          <div class="field">
+            <label class="checkbox-label">
+              <input type="checkbox" id="cb-codexRunDeleteDocs" />
+              <span data-i18n="cb.codexRunDeleteDocs.label">Auto-delete also removes request/response documents</span>
+            </label>
+            <p class="hint" data-i18n="cb.codexRunDeleteDocs.hint">Applies to automatic cleanup only — manual deletion always asks.</p>
+          </div>
         </div>
       </div>
     </div>

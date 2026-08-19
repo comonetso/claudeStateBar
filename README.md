@@ -162,6 +162,33 @@ Open the **Workflow Viewer** from the session QuickPick menu to see a live WebVi
 
 ---
 
+## 🔶 Codex progress panel (optional)
+
+When Claude Code hands a problem to Codex for a second opinion, Codex runs for minutes with nothing on screen. You only see the result at the end, and until then you can't tell whether it's working or stuck. This panel looks inside that gap.
+
+It needs the [`codex_rescue`](skills/codex_rescue/) skill for Claude Code, which is not bundled with this extension — the skill runs `codex exec` with write access to your workspace, and that shouldn't arrive as a side effect of installing a status-bar extension. Installation and usage are in [the guide](docs/codex-rescue-guide.md) ([한국어](docs/codex-rescue-guide.ko.md)).
+
+With the skill installed, open it from the status-bar menu or `claudeStateBar: Show Codex Runs`. Each run is one card:
+
+- **What Codex just said** — its own narration of what it's about to do, far more useful than a spinner
+- **Commands, searches, file changes, MCP calls** — colour-coded by kind, commands with their exit code
+- **Plan** — shown as `2/5`, but only when Codex actually produced one
+- **Elapsed time and activity count** — no percentage. Codex never declares how many tool calls remain, so a progress bar would be fiction
+- **Completion chime** — the same `claudeContextBar.workflowCompleteBeep` setting as workflow completion
+
+States run `starting → running → finalizing → done / failed / stopped / unresponsive`. `finalizing` is separate because Codex's turn ending isn't the run ending — the skill still has change detection and response recovery to do, and calling that window "done" would report a finish that hasn't happened. A killed run stays `unresponsive` instead of being promoted to done.
+
+### What it creates in your project
+
+The first run creates `docs/codex_rescue/` inside your project. The panel reads only this directory — no network calls.
+
+- `<stamp>_request_*.md` · `<stamp>_response_*.md` — what was asked and what Codex answered. **These are meant to be committed**; the next session picks up the thread from them
+- `.log/` — raw run records. Full command output lands here, so it runs about 300 KB per run; the skill drops its own `.gitignore` in this directory to **keep it out of git**
+
+Logs are never deleted by default. Manage them with the 🗑 button on a card (it asks each time whether to remove the documents too) or by enabling automatic cleanup — see [settings](#codex-run-logs-codex_rescue).
+
+> Not available over Remote-SSH. The extension runs on the local host (`extensionKind: ui`), so it can't read files in a remote workspace.
+
 ## 🎚️ Effort level display
 
 The status bar and tooltip show Claude Code's current effort level:
@@ -324,6 +351,20 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 | `claudeContextBar.codex.enabled` | `true` | Show Codex sessions on/off (immediate no‑op if Codex isn't installed) |
 | `claudeContextBar.codex.home` | `""` | Codex state directory; empty = auto‑detect (`$CODEX_HOME` → `~/.codex`). An explicit path that doesn't exist shows nothing and is logged — no fallback. |
 | `claudeContextBar.codex.scanDays` | `3` | How many recent date folders to scan in `scope: all`; current-chat mode locates the selected UUID directly |
+
+### Codex run logs (codex_rescue)
+
+Run logs accumulate at roughly **300 KB per run** — about 86% of that is captured command
+output. They are never deleted unless you opt in.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `claudeContextBar.codexRunAutoCleanup` | `false` | Delete old run logs once per activation. Off by default because it deletes files. Runs that are still live, or still holding a lock, are never touched. |
+| `claudeContextBar.codexRunRetentionDays` | `7` | How many days to keep, when auto-cleanup is on |
+| `claudeContextBar.codexRunDeleteDocs` | `false` | Whether **automatic** cleanup also deletes the request/response/review `.md` documents. Off by default: those are the record of what was asked and answered, and are normally committed. Manual deletion ignores this and asks each time. |
+
+Deleting a run from the panel (🗑) always asks whether to remove the documents too, and the
+button only appears on finished runs.
 
 All other settings — thresholds, sounds, `compactMode`, `idleTimeout`, `hideAfter`, `scope` — are shared by Claude and Codex.
 

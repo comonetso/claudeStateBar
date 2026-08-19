@@ -10,6 +10,12 @@ docs/session_logs/
 CLAUDE.md
 whats-next.md
 
+# codex_rescue raw run logs — the request/response .md files ARE tracked (they're the
+# record), but the raw event stream is not: it holds full command output, MCP tool
+# arguments/results and agent messages (one run measured 409 KB across 105 lines), so it
+# is both a leak risk and repo bloat.
+docs/codex_rescue/.log/
+
 # IDE
 .vscode/
 !.vscode/launch.json

@@ -2,7 +2,7 @@
     "name": "claude-state-bar",
     "displayName": "Claude & Codex State Bar",
     "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly usage read live from the Codex app-server and kept identical across every window. Includes a live Workflow/Agent viewer, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
-    "version": "1.8.3",
+    "version": "1.9.0",
     "extensionKind": ["ui"],
     "publisher": "blueming",
     "author": {
@@ -129,10 +129,26 @@
             {
                 "command": "claudeContextBar.cleanupGhostItems",
                 "title": "claudeStateBar: Clean Up Ghost/Stale Status Bar Items"
+            },
+            {
+                "command": "claudeContextBar.showCodexRuns",
+                "title": "claudeStateBar: Show Codex Runs"
+            },
+            {
+                "command": "claudeContextBar.setupCodexRescue",
+                "title": "claudeStateBar: Set Up Codex Progress Panel (codex_rescue)"
             }
         ],
         "menus": {
             "commandPalette": [
+                {
+                    "command": "claudeContextBar.showCodexRuns",
+                    "when": "claudeStateBar.hasCodexRescue"
+                },
+                {
+                    "command": "claudeContextBar.setupCodexRescue",
+                    "when": "!claudeStateBar.hasCodexRescue"
+                },
                 {
                     "command": "claudeContextBar.showSessionMenu",
                     "when": "false"
@@ -376,6 +392,23 @@
                     "minimum": 1,
                     "maximum": 60,
                     "description": "How many recent day folders under ~/.codex/sessions/YYYY/MM/DD to scan when scope is all. Current-chat mode locates the selected UUID directly, including older reopened conversations. Codex history is never walked in full. Default: 3."
+                },
+                "claudeContextBar.codexRunAutoCleanup": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Automatically delete old codex_rescue run logs on startup. Off by default because it deletes files. Only finished runs are ever removed."
+                },
+                "claudeContextBar.codexRunRetentionDays": {
+                    "type": "number",
+                    "default": 7,
+                    "minimum": 1,
+                    "maximum": 3650,
+                    "description": "How many days of codex_rescue run logs to keep when auto-cleanup is enabled. Default: 7."
+                },
+                "claudeContextBar.codexRunDeleteDocs": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Also delete the request/response/review .md documents when cleaning up a run. Off by default: the raw logs under .log/ are disposable, but those documents are the record of what was asked and answered."
                 }
             }
         }
