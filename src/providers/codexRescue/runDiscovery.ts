@@ -1,18 +1,25 @@
 // Discovers codex_rescue runs by watching `<workspace>/docs/codex_rescue/.log/` and
-// incrementally tailing each run's live event mirror.
+// incrementally parsing each run's live event mirror.
 //
 // Why this directory exists at all: send.sh used to write `--json` events only into a
 // randomly-named temp dir outside the workspace and copy them in *after* the run finished,
 // so nothing was observable while Codex worked. It now mirrors the stream here live
 // (2026-08-19). See `~/.claude/skills/codex_rescue/send.sh`.
 //
+// 🔴 Everything here goes through `vscode.workspace.fs`, never node `fs`. This extension is
+// extensionKind "ui", so it always runs on the local host — over Remote-SSH the workspace
+// files live on the remote machine and node `fs` cannot see them at all. VS Code routes
+// `workspace.fs` across the SSH connection, which is what makes the panel work in a remote
+// window (2026-08-19; the whole feature was silently empty there before). Paths are built
+// with `Uri.joinPath`, never `path.join` on `fsPath`: a remote folder's `fsPath` comes back
+// with Windows backslashes on a Windows host and would not survive the round trip.
+//
 // 🔴 These files are non-authoritative UI telemetry. `.log/` sits inside Codex's own
 // workspace-write sandbox, so Codex could delete or alter them. Never use them as an audit
 // or concurrency source of truth — send.sh keeps its real audit baseline outside the
 // workspace on purpose.
 
-import * as fs from 'fs';
-import * as path from 'path';
+import * as vscode from 'vscode';
 import { CodexRunState, createRunState, feedExecLine } from './execEvents';
 
 /** Mirrors `.log/<stamp>_status.json` written by send.sh. */
@@ -20,6 +27,8 @@ export interface RunStatus {
     schema?: number;
     stamp?: string;
     slug?: string;
+    /** Human-readable one-liner from the request's frontmatter. Absent on older runs. */
+    subject?: string;
     mode?: string;
     kind?: string;
     scope?: string;
@@ -36,26 +45,39 @@ export type RunPhase = 'starting' | 'running' | 'finalizing' | 'done' | 'failed'
 export interface CodexRun {
     stamp: string;
     slug: string;
+    /**
+     * What the run is about, in the user's own words, carried in the status sidecar. The slug
+     * is an English kebab filename fragment and reads as a symbol, not a sentence. Absent on
+     * runs written before send.sh recorded it — the panel falls back to the slug.
+     */
+    subject?: string;
     mode: string;
     scope?: string;
     phase: RunPhase;
     startedAtMs?: number;
     endedAtMs?: number;
     events: CodexRunState;
-    /** Absolute path to the request doc, when the naming convention implies one. */
-    requestPath?: string;
-    /** Absolute path to the response/review doc, when it exists on disk. */
-    resultPath?: string;
+    /** URI *string* of the request doc, when the naming convention implies one. */
+    requestUri?: string;
+    /** URI *string* of the response/review doc, when it exists on disk. */
+    resultUri?: string;
     /** Diagnostic surface for a run whose heartbeat went cold. */
     staleForMs?: number;
 }
 
 // ---------------------------------------------------------------------------
-// Incremental tail state — one per events file.
+// Incremental parse state — one per events file.
+//
+// `workspace.fs` has no range read, so unlike the old node-`fs` version this cannot fetch
+// just the delta: every refresh transfers the whole file. Parsing stays incremental (only
+// the bytes past `parsed` are fed to the parser), which is what actually costs CPU, but the
+// transfer does not — hence the remote throttle below.
 // ---------------------------------------------------------------------------
 
 interface TailState {
-    offset: number;
+    /** Bytes already handed to the parser. */
+    parsed: number;
+    /** File size at the last successful read, to detect growth and truncation. */
     lastSize: number;
     /**
      * Bytes after the last newline. Kept as a Buffer, NOT a string: a multi-byte UTF-8
@@ -64,31 +86,63 @@ interface TailState {
      */
     carry: Buffer;
     state: CodexRunState;
+    /** When the body was last actually transferred, for the remote throttle. */
+    lastBodyReadMs: number;
 }
 
 const tails = new Map<string, TailState>();
+
+/**
+ * Runs that reached a terminal phase, keyed the same way as `tails`. Re-reading a few hundred
+ * KB of `events.jsonl` every 2s — 20 times over, across SSH — would be pure waste, so a
+ * finished run is frozen here. Entries are dropped by `pruneTailCache` when the files
+ * disappear.
+ *
+ * "Finished" is not forever, though: `codex_rescue` reuses a stamp when it re-runs a request
+ * that died, which rewrites `events.jsonl` under a key already in this map. So the snapshot
+ * of the file is kept alongside the run and re-checked on every hit — without it, a stamp
+ * that once went terminal would keep reporting the dead attempt until the window reloaded,
+ * even after the retry finished successfully.
+ */
+interface SettledEntry {
+    run: CodexRun;
+    /** `events.jsonl` as it stood when the run was frozen. */
+    size: number;
+    mtime: number;
+}
+const settled = new Map<string, SettledEntry>();
 
 /** Heartbeat older than this ⇒ the run is reported stale rather than promoted to done.
  *  send.sh refreshes it every 5s, so this is the 6× margin — generous because long model
  *  reasoning legitimately emits nothing for a while. */
 const STALE_AFTER_MS = 30_000;
 
-/** Guard against replaying an unbounded delta after a long VS Code sleep. */
-const MAX_INCREMENTAL = 8 * 1024 * 1024;
+/**
+ * Minimum gap between two body transfers of the same live run on a REMOTE workspace.
+ *
+ * The panel polls every 2s while a run is live. Locally that is free; over SSH each poll
+ * would ship the entire events file, and real runs measured 394KB–750KB — roughly 12–22MB
+ * per minute for one run. Status and heartbeat are still checked every 2s (a few hundred
+ * bytes), so completion detection, the chime and the elapsed clock stay exactly as
+ * responsive as before; only the activity list lags by up to this interval.
+ *
+ * 5s is the user's call (2026-08-19), not a derived number.
+ */
+const REMOTE_BODY_MIN_INTERVAL_MS = 5_000;
 
-function readRange(filePath: string, start: number, end: number): Buffer | null {
-    const length = end - start;
-    if (length <= 0) return Buffer.alloc(0);
-    let fd: number | null = null;
+function keyOf(uri: vscode.Uri): string {
+    return uri.toString();
+}
+
+function isRemote(uri: vscode.Uri): boolean {
+    return uri.scheme !== 'file';
+}
+
+async function statOf(uri: vscode.Uri): Promise<vscode.FileStat | null> {
     try {
-        fd = fs.openSync(filePath, 'r');
-        const buf = Buffer.allocUnsafe(length);
-        const read = fs.readSync(fd, buf, 0, length, start);
-        return buf.subarray(0, read);
+        return await vscode.workspace.fs.stat(uri);
     } catch {
-        return null;   // mid-rename / AV lock / permission blip — retry next poll
-    } finally {
-        if (fd !== null) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+        return null;   // absent, mid-rename, or a permission blip — never fatal
     }
 }
 
@@ -108,61 +162,65 @@ function splitBuffer(buf: Buffer): { lines: string[]; carry: Buffer } {
     return { lines, carry: buf.subarray(start) };
 }
 
-/** Tail one events file, reusing prior parse state when it only grew. */
-function tailEvents(filePath: string, nowMs: number): CodexRunState {
-    let size = 0;
-    try {
-        size = fs.statSync(filePath).size;
-    } catch {
-        tails.delete(filePath);
-        return createRunState();
-    }
-
-    const prev = tails.get(filePath);
+/**
+ * Bring one events file's parse state up to date, reusing prior state when it only grew.
+ * `size` comes from a stat the caller already had to make, so this costs one transfer at most.
+ */
+async function tailEvents(uri: vscode.Uri, size: number, nowMs: number): Promise<CodexRunState> {
+    const key = keyOf(uri);
+    const prev = tails.get(key);
 
     // Shrank or was replaced (send.sh does an atomic rename when the authoritative copy
     // differs) → our offsets are meaningless. Rebuild from scratch.
-    if (prev && size < prev.lastSize) tails.delete(filePath);
+    if (prev && size < prev.lastSize) tails.delete(key);
 
-    const cur = tails.get(filePath);
+    const cur = tails.get(key);
     if (cur) {
-        if (size === cur.lastSize) return cur.state;      // nothing appended
-        if (size - cur.offset <= MAX_INCREMENTAL) {
-            const chunk = readRange(filePath, cur.offset, size);
-            if (chunk === null) return cur.state;          // transient failure: keep last view
-            const combined = cur.carry.length ? Buffer.concat([cur.carry, chunk]) : chunk;
-            const { lines, carry } = splitBuffer(combined);
-            for (const line of lines) feedExecLine(cur.state, line, nowMs);
-            cur.carry = carry;
-            cur.offset = size;
-            cur.lastSize = size;
-            return cur.state;
+        if (size === cur.lastSize) return cur.state;      // nothing appended — no transfer
+        if (isRemote(uri) && nowMs - cur.lastBodyReadMs < REMOTE_BODY_MIN_INTERVAL_MS) {
+            return cur.state;                            // throttled; status/heartbeat still fresh
         }
-        tails.delete(filePath);
+    }
+
+    let data: Uint8Array;
+    try {
+        data = await vscode.workspace.fs.readFile(uri);
+    } catch {
+        return cur ? cur.state : createRunState();       // transient failure: keep the last view
+    }
+    const buf = Buffer.from(data);
+
+    // Read the file whole, but only parse what the parser has not seen. The size that
+    // matters is what actually arrived, not what stat reported — a live run grows between
+    // the two calls.
+    if (cur && buf.length >= cur.parsed) {
+        const chunk = buf.subarray(cur.parsed);
+        const combined = cur.carry.length ? Buffer.concat([cur.carry, chunk]) : chunk;
+        const { lines, carry } = splitBuffer(combined);
+        for (const line of lines) feedExecLine(cur.state, line, nowMs);
+        cur.carry = carry;
+        cur.parsed = buf.length;
+        cur.lastSize = buf.length;
+        cur.lastBodyReadMs = nowMs;
+        return cur.state;
     }
 
     // Cold start / rebuild.
-    const whole = readRange(filePath, 0, size);
-    if (whole === null) return createRunState();
     const state = createRunState();
-    const { lines, carry } = splitBuffer(whole);
+    const { lines, carry } = splitBuffer(buf);
     for (const line of lines) feedExecLine(state, line, nowMs);
-    tails.set(filePath, { offset: size, lastSize: size, carry, state });
+    tails.set(key, { parsed: buf.length, lastSize: buf.length, carry, state, lastBodyReadMs: nowMs });
     return state;
 }
 
-function readStatus(filePath: string): RunStatus | null {
+async function readStatus(uri: vscode.Uri): Promise<RunStatus | null> {
     try {
-        const raw = fs.readFileSync(filePath, 'utf8');
+        const raw = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
         const o = JSON.parse(raw);
         return o && typeof o === 'object' ? o as RunStatus : null;
     } catch {
         return null;   // absent, or caught mid-rename — treated as "unknown", never fatal
     }
-}
-
-function mtimeMs(filePath: string): number | undefined {
-    try { return fs.statSync(filePath).mtimeMs; } catch { return undefined; }
 }
 
 /**
@@ -230,14 +288,35 @@ function parseStamp(stamp: string): number | undefined {
     return Number.isFinite(t) ? t : undefined;
 }
 
+/** `<folder>/docs/codex_rescue`, or null when this project doesn't use the skill. */
+export async function codexRescueDocsDir(folderUri: vscode.Uri): Promise<vscode.Uri | null> {
+    const dir = vscode.Uri.joinPath(folderUri, 'docs', 'codex_rescue');
+    const st = await statOf(dir);
+    return st && (st.type & vscode.FileType.Directory) ? dir : null;
+}
+
 /** The `.log` directory for a workspace folder, or null when this project doesn't use the skill. */
-export function codexRescueLogDir(workspaceFsPath: string): string | null {
-    const dir = path.join(workspaceFsPath, 'docs', 'codex_rescue');
+export async function codexRescueLogDir(folderUri: vscode.Uri): Promise<vscode.Uri | null> {
+    const docs = await codexRescueDocsDir(folderUri);
+    return docs ? vscode.Uri.joinPath(docs, '.log') : null;
+}
+
+async function listNames(dir: vscode.Uri): Promise<string[] | null> {
     try {
-        return fs.statSync(dir).isDirectory() ? path.join(dir, '.log') : null;
+        return (await vscode.workspace.fs.readDirectory(dir)).map(([name]) => name);
     } catch {
         return null;
     }
+}
+
+export interface DiscoverOptions {
+    /**
+     * Skip transferring `events.jsonl` bodies. Cleanup only needs each run's phase and
+     * timestamps, and a legacy run (no status sidecar) is *always* terminal regardless of
+     * what the stream says, so the verdict cleanup acts on is unchanged — but scanning
+     * every run ever recorded without this would drag megabytes across SSH.
+     */
+    skipEventBodies?: boolean;
 }
 
 /**
@@ -245,19 +324,17 @@ export function codexRescueLogDir(workspaceFsPath: string): string | null {
  * Returns [] when the project doesn't use the skill — which is how the whole feature
  * stays invisible to ordinary users of this extension.
  */
-export function discoverRuns(workspaceFsPath: string, nowMs: number, limit = 20): CodexRun[] {
-    const logDir = codexRescueLogDir(workspaceFsPath);
-    if (!logDir) return [];
+export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit = 20,
+                                   opts: DiscoverOptions = {}): Promise<CodexRun[]> {
+    const docsDir = await codexRescueDocsDir(folderUri);
+    if (!docsDir) return [];
+    const logDir = vscode.Uri.joinPath(docsDir, '.log');
 
-    let names: string[];
-    try {
-        names = fs.readdirSync(logDir);
-    } catch {
-        return [];   // .log/ not created yet — no run has ever started here
-    }
+    const logNames = await listNames(logDir);
+    if (!logNames) return [];   // .log/ not created yet — no run has ever started here
 
-    const docsDir = path.join(workspaceFsPath, 'docs', 'codex_rescue');
-    const stamps = names
+    const present = new Set(logNames);
+    const stamps = logNames
         .map(n => /^(\d{6}_\d{6})_events\.jsonl$/.exec(n)?.[1])
         .filter((s): s is string => !!s)
         .sort()
@@ -265,19 +342,52 @@ export function discoverRuns(workspaceFsPath: string, nowMs: number, limit = 20)
         .slice(0, limit);
 
     // Sibling docs, used to recover the slug for runs whose status file is absent (either a
-    // legacy run, or one whose sidecar was lost). The naming convention is enforced by
-    // send.sh — `<stamp>_{request,response,review}_<slug>.md` — so this is a read of the
-    // contract, not a guess.
-    let docNames: string[] = [];
-    try { docNames = fs.readdirSync(docsDir); } catch { /* docs dir unreadable — skip */ }
+    // legacy run, or one whose sidecar was lost) and to resolve the result document without
+    // a stat per candidate. The naming convention is enforced by send.sh —
+    // `<stamp>_{request,response,review}_<slug>.md` — so this is a read of the contract.
+    const docNames = (await listNames(docsDir)) ?? [];
+    const docSet = new Set(docNames);
 
     const runs: CodexRun[] = [];
     for (const stamp of stamps) {
-        const eventsPath = path.join(logDir, `${stamp}_events.jsonl`);
-        const status = readStatus(path.join(logDir, `${stamp}_status.json`));
-        const hb = mtimeMs(path.join(logDir, `${stamp}_heartbeat`));
-        const events = tailEvents(eventsPath, nowMs);
-        const { phase, staleForMs } = decidePhase(status, events, hb, nowMs);
+        const eventsUri = vscode.Uri.joinPath(logDir, `${stamp}_events.jsonl`);
+        const cacheKey = keyOf(eventsUri);
+
+        // One stat, reused: it decides whether a frozen run is still valid, and failing that
+        // it is the size the tail parser needs anyway.
+        const eventsStat = await statOf(eventsUri);
+
+        const cached = settled.get(cacheKey);
+        if (cached) {
+            if (eventsStat && eventsStat.size === cached.size && eventsStat.mtime === cached.mtime) {
+                runs.push(cached.run);
+                continue;
+            }
+            // The file moved under a stamp we had already written off — a re-run. Drop the
+            // frozen verdict and the parser offset with it; the new stream starts at 0.
+            settled.delete(cacheKey);
+            tails.delete(cacheKey);
+        }
+
+        // Status first: when it already carries a terminal verdict there is no reason to
+        // stat the heartbeat at all.
+        const status = present.has(`${stamp}_status.json`)
+            ? await readStatus(vscode.Uri.joinPath(logDir, `${stamp}_status.json`))
+            : null;
+        const terminalStatus = status?.state === 'done' || status?.state === 'failed'
+            || status?.state === 'interrupted';
+
+        let heartbeatMs: number | undefined;
+        if (!terminalStatus && present.has(`${stamp}_heartbeat`)) {
+            const st = await statOf(vscode.Uri.joinPath(logDir, `${stamp}_heartbeat`));
+            heartbeatMs = st?.mtime;
+        }
+
+        const events = (opts.skipEventBodies || !eventsStat)
+            ? (tails.get(cacheKey)?.state ?? createRunState())
+            : await tailEvents(eventsUri, eventsStat.size, nowMs);
+
+        const { phase, staleForMs } = decidePhase(status, events, heartbeatMs, nowMs);
 
         // End time: prefer the sidecar, fall back to the event file's last-write time.
         // Without the fallback a finished run reports no end at all and the panel's clock
@@ -285,7 +395,7 @@ export function discoverRuns(workspaceFsPath: string, nowMs: number, limit = 20)
         // Legacy runs (written before the sidecar existed) always hit this path.
         let endedAtMs = parseIso(status?.finished_at ?? undefined);
         if (endedAtMs === undefined && isTerminalPhase(phase)) {
-            endedAtMs = mtimeMs(eventsPath);
+            endedAtMs = eventsStat?.mtime;
         }
 
         let slug = status?.slug || '';
@@ -303,16 +413,16 @@ export function discoverRuns(workspaceFsPath: string, nowMs: number, limit = 20)
         const candidates = isReview
             ? [`${stamp}_review_${slug}.md`, `${stamp}_response_${slug}.md`]
             : [`${stamp}_response_${slug}.md`, `${stamp}_review_${slug}.md`];
-        let resultPath: string | undefined;
+        let resultUri: string | undefined;
         for (const name of candidates) {
-            const p = path.join(docsDir, name);
-            if (fs.existsSync(p)) { resultPath = p; break; }
+            if (docSet.has(name)) { resultUri = vscode.Uri.joinPath(docsDir, name).toString(); break; }
         }
-        const requestPath = path.join(docsDir, `${stamp}_request_${slug}.md`);
+        const requestName = `${stamp}_request_${slug}.md`;
 
-        runs.push({
+        const run: CodexRun = {
             stamp,
             slug,
+            subject: status?.subject?.trim() || undefined,
             mode: status?.mode || 'readonly',
             scope: status?.scope,
             phase,
@@ -320,18 +430,36 @@ export function discoverRuns(workspaceFsPath: string, nowMs: number, limit = 20)
             startedAtMs: parseIso(status?.started_at) ?? parseStamp(stamp),
             endedAtMs,
             events,
-            requestPath: fs.existsSync(requestPath) ? requestPath : undefined,
-            resultPath,
-        });
+            requestUri: docSet.has(requestName)
+                ? vscode.Uri.joinPath(docsDir, requestName).toString() : undefined,
+            resultUri,
+        };
+
+        // Freeze finished runs so the next poll costs nothing. Only when the bodies were
+        // actually read — a cleanup scan must never poison the cache with empty streams —
+        // and only with a snapshot to check it against, since a stamp can be re-run.
+        if (!opts.skipEventBodies && isTerminalPhase(phase) && eventsStat) {
+            settled.set(cacheKey, { run, size: eventsStat.size, mtime: eventsStat.mtime });
+        }
+
+        runs.push(run);
     }
     return runs;
 }
 
-/** Drop cached tail state for files that no longer exist (deleted logs, closed folders). */
-export function pruneTailCache(keepPaths: Set<string>): void {
+/** Drop cached state for files that no longer exist (deleted logs, closed folders). */
+export function pruneTailCache(keepKeys: Set<string>): void {
     for (const key of Array.from(tails.keys())) {
-        if (!keepPaths.has(key)) tails.delete(key);
+        if (!keepKeys.has(key)) tails.delete(key);
     }
+    for (const key of Array.from(settled.keys())) {
+        if (!keepKeys.has(key)) settled.delete(key);
+    }
+}
+
+/** Cache key for a run, so callers can build the keep-set for `pruneTailCache`. */
+export function runCacheKey(logDir: vscode.Uri, stamp: string): string {
+    return keyOf(vscode.Uri.joinPath(logDir, `${stamp}_events.jsonl`));
 }
 
 /** True once a run has reached a terminal phase — the edge the completion chime fires on. */
@@ -365,12 +493,13 @@ export interface CleanupResult {
     skippedLive: number;
 }
 
-function unlinkCounting(p: string, res: CleanupResult): void {
+async function unlinkCounting(uri: vscode.Uri, res: CleanupResult): Promise<void> {
+    const st = await statOf(uri);
+    if (!st) return;
     try {
-        const size = fs.statSync(p).size;
-        fs.unlinkSync(p);
+        await vscode.workspace.fs.delete(uri, { useTrash: false });
         res.removedFiles++;
-        res.freedBytes += size;
+        res.freedBytes += st.size;
     } catch {
         /* already gone, locked by AV, or permission — never fatal */
     }
@@ -380,30 +509,30 @@ function unlinkCounting(p: string, res: CleanupResult): void {
  * Delete one run's files. Returns false without touching anything when the run still holds
  * a lock (i.e. send.sh may still be writing).
  */
-export function deleteRun(workspaceFsPath: string, stamp: string, slug: string, deleteDocs: boolean,
-                          res: CleanupResult): boolean {
+export async function deleteRun(folderUri: vscode.Uri, stamp: string, slug: string, deleteDocs: boolean,
+                                res: CleanupResult): Promise<boolean> {
     if (!/^\d{6}_\d{6}$/.test(stamp)) return false;   // never accept a stamp we didn't parse ourselves
-    const logDir = codexRescueLogDir(workspaceFsPath);
-    if (!logDir) return false;
+    const docsDir = await codexRescueDocsDir(folderUri);
+    if (!docsDir) return false;
+    const logDir = vscode.Uri.joinPath(docsDir, '.log');
 
     // The lock is send.sh's liveness marker; its presence means a run may be mid-write.
-    if (fs.existsSync(path.join(logDir, `.${stamp}.lock`))) { res.skippedLive++; return false; }
+    if (await statOf(vscode.Uri.joinPath(logDir, `.${stamp}.lock`))) { res.skippedLive++; return false; }
 
     for (const name of [`${stamp}_events.jsonl`, `${stamp}_status.json`, `${stamp}_stderr.log`,
                         `${stamp}_last_message.md`, `${stamp}_heartbeat`]) {
-        const p = path.join(logDir, name);
-        if (fs.existsSync(p)) unlinkCounting(p, res);
+        await unlinkCounting(vscode.Uri.joinPath(logDir, name), res);
     }
 
     if (deleteDocs && slug && slug !== '(unknown)') {
-        const docsDir = path.join(workspaceFsPath, 'docs', 'codex_rescue');
         for (const kind of ['request', 'response', 'review']) {
-            const p = path.join(docsDir, `${stamp}_${kind}_${slug}.md`);
-            if (fs.existsSync(p)) unlinkCounting(p, res);
+            await unlinkCounting(vscode.Uri.joinPath(docsDir, `${stamp}_${kind}_${slug}.md`), res);
         }
     }
 
-    tails.delete(path.join(logDir, `${stamp}_events.jsonl`));
+    const key = runCacheKey(logDir, stamp);
+    tails.delete(key);
+    settled.delete(key);
     res.removedRuns++;
     return true;
 }
@@ -412,19 +541,22 @@ export function deleteRun(workspaceFsPath: string, stamp: string, slug: string, 
  * Remove finished runs older than `retentionDays`. Live, locked and too-recent runs are left
  * alone. Returns what was actually removed so the caller can log or report it.
  */
-export function cleanupOldRuns(workspaceFsPath: string, opts: CleanupOptions, nowMs: number): CleanupResult {
+export async function cleanupOldRuns(folderUri: vscode.Uri, opts: CleanupOptions, nowMs: number)
+    : Promise<CleanupResult> {
     const res: CleanupResult = { removedRuns: 0, removedFiles: 0, freedBytes: 0, skippedLive: 0 };
     if (!opts.retentionDays || opts.retentionDays <= 0) return res;
-    if (!codexRescueLogDir(workspaceFsPath)) return res;
+    if (!await codexRescueDocsDir(folderUri)) return res;
 
     const cutoff = nowMs - opts.retentionDays * 24 * 60 * 60 * 1000;
-    // Scan without a cap: cleanup must be able to reach runs far past the display limit,
-    // which is exactly where the accumulation everyone worries about lives.
-    for (const run of discoverRuns(workspaceFsPath, nowMs, Number.MAX_SAFE_INTEGER)) {
+    // Scan without a display cap — cleanup must reach runs far past the panel's limit, which
+    // is exactly where the accumulation everyone worries about lives — but without the event
+    // bodies, which is what keeps that unbounded scan cheap on a remote workspace.
+    const runs = await discoverRuns(folderUri, nowMs, Number.MAX_SAFE_INTEGER, { skipEventBodies: true });
+    for (const run of runs) {
         if (!isTerminalPhase(run.phase)) { res.skippedLive++; continue; }
         const when = run.endedAtMs ?? run.startedAtMs;
         if (when === undefined || when > cutoff) continue;
-        deleteRun(workspaceFsPath, run.stamp, run.slug, opts.deleteDocs, res);
+        await deleteRun(folderUri, run.stamp, run.slug, opts.deleteDocs, res);
     }
     return res;
 }

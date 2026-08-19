@@ -11,7 +11,7 @@ import * as blockPrimer from './blockPrimer';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
 import { createOrShowWorkflowPanel, pushWorkflows, getTrackedSessionFile, pushLanguage } from './workflowPanel';
 import { createOrShowCodexPanel, pushRuns, pushCodexLanguage, isCodexPanelOpen, CodexRunView } from './codexRescuePanel';
-import { discoverRuns, codexRescueLogDir, isTerminalPhase, pruneTailCache, deleteRun, cleanupOldRuns, CleanupResult, RunPhase } from './providers/codexRescue/runDiscovery';
+import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runCacheKey, deleteRun, cleanupOldRuns, CleanupResult, RunPhase } from './providers/codexRescue/runDiscovery';
 import { getDict, Lang } from './i18n';
 import { readTextFile } from './core/fs';
 import { log, setLogChannel, getLogChannel } from './core/logger';
@@ -464,7 +464,7 @@ export function activate(context: vscode.ExtensionContext) {
         // 항목 자체가 없다. 실행 기록이 아직 없어도(0건) 항목은 보여준다: 패널을 열어
         // "여기서 볼 수 있다"는 걸 알 수 있어야 하기 때문이다.
         if (codexRescueSkillInstalled()) {
-            const cxRuns = collectCodexRuns();
+            const cxRuns = await collectCodexRuns();
             const cxLive = cxRuns.filter(r => !isTerminalPhase(r.phase)).length;
             items.push({ label: planT('menu.sepCodex'), kind: vscode.QuickPickItemKind.Separator });
             items.push({
@@ -609,16 +609,18 @@ export function activate(context: vscode.ExtensionContext) {
     // codex_rescue live progress panel. The command is registered unconditionally (cheap)
     // but package.json hides it from the palette unless `claudeStateBar.hasCodexRescue` is
     // set, which only happens in a workspace that has docs/codex_rescue/.
-    const codexRunsCmd = vscode.commands.registerCommand('claudeContextBar.showCodexRuns', () => {
-        createOrShowCodexPanel(context, collectCodexRuns(), {
-            onOpenDoc: (fsPath: string) => {
-                vscode.workspace.openTextDocument(vscode.Uri.file(fsPath)).then(
+    const codexRunsCmd = vscode.commands.registerCommand('claudeContextBar.showCodexRuns', async () => {
+        createOrShowCodexPanel(context, await collectCodexRuns(), {
+            // A URI string, not a path: `Uri.file` would send a remote workspace's document
+            // to a non-existent local path. `Uri.parse` round-trips the remote authority.
+            onOpenDoc: (docUri: string) => {
+                vscode.workspace.openTextDocument(vscode.Uri.parse(docUri)).then(
                     doc => vscode.window.showTextDocument(doc, { preview: false }),
                     e => log(`[codex-rescue] open failed: ${e}`)
                 );
             },
             onDelete: async (stamp: string) => {
-                const target = collectCodexRuns().find(r => r.stamp === stamp);
+                const target = (await collectCodexRuns()).find(r => r.stamp === stamp);
                 if (!target) return;
                 // Manual deletion asks every time rather than obeying the retention setting:
                 // it's an explicit act on one specific run, and whether that run's documents
@@ -632,15 +634,14 @@ export function activate(context: vscode.ExtensionContext) {
                 const deleteDocs = choice === withDocs;
                 const res: CleanupResult = { removedRuns: 0, removedFiles: 0, freedBytes: 0, skippedLive: 0 };
                 for (const f of vscode.workspace.workspaceFolders || []) {
-                    if (f.uri.scheme !== 'file') continue;
-                    if (deleteRun(f.uri.fsPath, stamp, target.slug, deleteDocs, res)) break;
+                    if (await deleteRun(f.uri, stamp, target.slug, deleteDocs, res)) break;
                 }
                 if (res.skippedLive) {
                     vscode.window.showWarningMessage(planT('cx.del.skippedLive'));
                 } else {
                     log(`[codex-rescue] deleted ${stamp}: ${res.removedFiles} files, ${Math.round(res.freedBytes / 1024)}KB`);
                 }
-                syncCodexRuns();
+                void syncCodexRuns();
             }
         });
     });
@@ -689,7 +690,7 @@ export function activate(context: vscode.ExtensionContext) {
     // codex_rescue log retention. Runs once per activation — VS Code gets restarted often
     // enough that a timer would add nothing but a way to delete files unexpectedly mid-session.
     // Off by default; only finished, unlocked runs past the retention window are removed.
-    setTimeout(() => {
+    setTimeout(async () => {
         const cfg = vscode.workspace.getConfiguration('claudeContextBar');
         if (!cfg.get<boolean>('codexRunAutoCleanup', false)) return;
         const opts = {
@@ -697,9 +698,8 @@ export function activate(context: vscode.ExtensionContext) {
             deleteDocs: cfg.get<boolean>('codexRunDeleteDocs', false),
         };
         for (const f of vscode.workspace.workspaceFolders || []) {
-            if (f.uri.scheme !== 'file') continue;
             try {
-                const r = cleanupOldRuns(f.uri.fsPath, opts, Date.now());
+                const r = await cleanupOldRuns(f.uri, opts, Date.now());
                 if (r.removedRuns) {
                     log(`[codex-rescue] auto-cleanup: ${r.removedRuns} run(s), ${r.removedFiles} file(s), `
                         + `${Math.round(r.freedBytes / 1024)}KB freed (older than ${opts.retentionDays}d, docs=${opts.deleteDocs})`);
@@ -2617,8 +2617,9 @@ async function refreshAllSessions() {
     }
 
     // codex_rescue runs ride the same refresh tick. No-ops instantly unless this workspace
-    // actually uses the skill, so ordinary users pay nothing for it.
-    syncCodexRuns();
+    // actually uses the skill, so ordinary users pay nothing for it. Deliberately not
+    // awaited — the status bar must not wait on a remote filesystem round trip.
+    void syncCodexRuns().catch(e => log(`[codex-rescue] sync error: ${e}`));
 }
 
 // ============================================================================
@@ -2657,32 +2658,34 @@ function codexRescueSkillInstalled(): boolean {
 }
 
 /** True when any workspace folder has codex_rescue run records to display. */
-function workspaceUsesCodexRescue(): boolean {
+async function workspaceUsesCodexRescue(): Promise<boolean> {
     for (const f of vscode.workspace.workspaceFolders || []) {
-        // Local disk only: this extension is extensionKind "ui" (always runs on the local
-        // host), so a vscode-remote workspace's files are not reachable via node fs.
-        if (f.uri.scheme !== 'file') continue;
-        if (codexRescueLogDir(f.uri.fsPath)) return true;
+        // Remote folders included: reads go through vscode.workspace.fs, which VS Code
+        // routes to the remote host even though this extension itself runs locally
+        // (extensionKind "ui"). Restricting this to scheme 'file' is what made the panel
+        // report "no runs" in every Remote-SSH window until 2026-08-19.
+        if (await codexRescueDocsDir(f.uri)) return true;
     }
     return false;
 }
 
-/** Scan every local workspace folder and shape the runs for the panel. */
-function collectCodexRuns(): CodexRunView[] {
+/** Scan every workspace folder — local or remote — and shape the runs for the panel. */
+async function collectCodexRuns(): Promise<CodexRunView[]> {
     const now = Date.now();
     const out: CodexRunView[] = [];
-    const keepPaths = new Set<string>();
+    const keepKeys = new Set<string>();
 
     for (const f of vscode.workspace.workspaceFolders || []) {
-        if (f.uri.scheme !== 'file') continue;
-        const logDir = codexRescueLogDir(f.uri.fsPath);
-        if (!logDir) continue;
-        for (const run of discoverRuns(f.uri.fsPath, now)) {
-            keepPaths.add(path.join(logDir, `${run.stamp}_events.jsonl`));
+        const docsDir = await codexRescueDocsDir(f.uri);
+        if (!docsDir) continue;
+        const logDir = vscode.Uri.joinPath(docsDir, '.log');
+        for (const run of await discoverRuns(f.uri, now)) {
+            keepKeys.add(runCacheKey(logDir, run.stamp));
             const usage = run.events.usage;
             out.push({
                 stamp: run.stamp,
                 slug: run.slug,
+                subject: run.subject,
                 mode: run.mode,
                 phase: run.phase,
                 startedAt: run.startedAtMs,
@@ -2690,8 +2693,8 @@ function collectCodexRuns(): CodexRunView[] {
                 threadId: run.events.threadId,
                 todo: run.events.todo,
                 staleForMs: run.staleForMs,
-                requestPath: run.requestPath,
-                resultPath: run.resultPath,
+                requestUri: run.requestUri,
+                resultUri: run.resultUri,
                 totalTokens: usage ? usage.inputTokens + usage.outputTokens : undefined,
                 items: run.events.items.map(i => ({
                     id: i.id,
@@ -2699,6 +2702,7 @@ function collectCodexRuns(): CodexRunView[] {
                     status: i.status,
                     label: i.label,
                     body: i.body,
+                    raw: i.raw,
                     // Observation-based: exec JSONL carries no timestamps. A run scanned only
                     // after it finished yields 0 here, which the webview renders as blank
                     // rather than a fake "0.0s".
@@ -2709,7 +2713,7 @@ function collectCodexRuns(): CodexRunView[] {
         }
     }
     out.sort((a, b) => b.stamp.localeCompare(a.stamp));
-    pruneTailCache(keepPaths);
+    pruneTailCache(keepKeys);
     return out;
 }
 
@@ -2732,15 +2736,32 @@ function updateCodexContext(has: boolean): void {
     log(`[codex-rescue] context hasCodexRescue=${has}`);
 }
 
-function syncCodexRuns(): void {
+/**
+ * Guards against overlapping scans. On a remote workspace every read is an RPC round trip
+ * and one pass can easily outlast the 2s poll; two passes in flight would double-fire the
+ * completion chime and interleave writes to `codexRunPhases`.
+ */
+let codexSyncInFlight = false;
+
+async function syncCodexRuns(): Promise<void> {
     // Command/menu visibility follows the SKILL install, not this workspace's history.
     updateCodexContext(codexRescueSkillInstalled());
-    // Scanning, though, only makes sense where run records actually exist.
-    if (!workspaceUsesCodexRescue()) return;
+    if (codexSyncInFlight) return;
+    codexSyncInFlight = true;
+    try {
+        await syncCodexRunsInner();
+    } finally {
+        codexSyncInFlight = false;
+    }
+}
+
+async function syncCodexRunsInner(): Promise<void> {
+    // Scanning only makes sense where run records actually exist.
+    if (!await workspaceUsesCodexRescue()) return;
 
     let runs: CodexRunView[];
     try {
-        runs = collectCodexRuns();
+        runs = await collectCodexRuns();
     } catch (e) {
         log(`[codex-rescue] scan error: ${e}`);
         return;
@@ -2786,7 +2807,7 @@ function ensureCodexFastPolling(hasLive: boolean): void {
     if (hasLive && !codexFastTimer) {
         log('[codex-rescue] live run detected → 2s polling');
         codexFastTimer = setInterval(() => {
-            try { syncCodexRuns(); } catch (e) { log(`[codex-rescue] fast poll error: ${e}`); }
+            void syncCodexRuns().catch(e => log(`[codex-rescue] fast poll error: ${e}`));
         }, 2000);
     } else if (!hasLive && codexFastTimer) {
         log('[codex-rescue] no live runs → back to the shared tick');

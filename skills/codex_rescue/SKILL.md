@@ -163,6 +163,13 @@ Codex 는 `-s workspace-write` 로 실행된다(응답 파일을 직접 저장�
 
 **응답 파일명은 Claude가 정해서 요청서 frontmatter 의 `response_path` 에 박아 넣는다.** Codex에게 이름을 짓게 하면 스탬프를 지어내거나 슬러그가 어긋나 짝이 깨진다. 그리고 **`send.sh` 가 그 `response_path` 값을 읽어서 동작한다** — 이 필드가 없으면 스크립트가 즉시 멈춘다.
 
+**`subject` 는 사람이 목록에서 읽을 한 줄이다.** `send.sh` 가 `status.json` 에 실어 보내고, VS Code 확장의 진행 패널이 그것을 카드 제목으로 쓴다. 슬러그(`poi-cache-namespace-latency`)는 파일명을 위한 영문 kebab 이라 목록에서 무슨 건인지 읽히지 않는다.
+
+- **한국어로, 20자 이내.** 카드 한 줄에 들어가야 한다. 넘으면 화면에서 잘린다.
+- 파일명이 아니므로 문장으로 써도 된다 — `출발지·도착지가 뒤바뀜`, `가드 배포 후 통화 3배 지연`.
+- 없어도 `send.sh` 는 멈추지 않는다. 그 경우 카드에 슬러그가 그대로 보인다.
+- REVIEW 는 요청서가 없으므로 `--subject "..."` 로 넘긴다. **`--title` 과 혼동하지 마라** — 그쪽은 `codex exec review` 에 그대로 전달되는 Codex 인자다.
+
 ## 모드
 
 | 모드 | Codex 가 하는 일 | 코드 수정 | 리뷰 대상 | 요청서 |
@@ -243,7 +250,7 @@ Codex 가 지적한 혼동 지점이라 표로 고정한다.
 
    ```
    Bash(run_in_background: true):
-     bash ~/.claude/skills/codex_rescue/send.sh --review --slug <슬러그> [--base X|--commit Y] [집중지시]
+     bash ~/.claude/skills/codex_rescue/send.sh --review --slug <슬러그> --subject "<한 줄 제목 20자 이내>" [--base X|--commit Y] [집중지시]
    ```
 
 5. **자동 재호출 → 검토.** 리뷰 결과는 `docs/codex_rescue/<스탬프>_review_<슬러그>.md` 에 저장된다.
@@ -302,7 +309,7 @@ error: the argument '--uncommitted' cannot be used with '[PROMPT]'
 
 6. **관련 코드를 실제로 Read해서 인용** — 추측 금지. Codex CLI 는 워크스페이스 파일을 직접 읽을 수 있지만, **워크스페이스 밖 경로는 못 읽을 수 있다.** 요청서 하나만으로 판단이 서게 자체완결적으로 쓴다.
 
-7. **request 파일 Write** — frontmatter 의 **`response_path` 를 완성된 실제 경로로 박는다.** `send.sh` 가 이 값을 읽어 동작하므로 빠지면 스크립트가 멈춘다.
+7. **request 파일 Write** — frontmatter 의 **`response_path` 를 완성된 실제 경로로 박는다.** `send.sh` 가 이 값을 읽어 동작하므로 빠지면 스크립트가 멈춘다. `subject` 에는 진행 패널 카드에 뜰 한국어 한 줄(20자 이내)을 쓴다.
 
 8. **`send.sh` 를 백그라운드로 실행** — 이게 전달이다. 사용자에게 붙여넣기를 시키지 않는다.
 
@@ -342,6 +349,7 @@ type: codex_request
 mode: readonly
 stamp: <260726_014119>
 slug: <mms-jar-encoding>
+subject: <MMS 첨부 파일명이 깨진다>
 response_path: docs/codex_rescue/<260726_014119>_response_<mms-jar-encoding>.md
 ---
 
@@ -420,6 +428,7 @@ type: codex_request
 mode: edit
 stamp: <스탬프>
 slug: <슬러그>
+subject: <한 줄 제목 20자 이내>
 response_path: docs/codex_rescue/<스탬프>_response_<슬러그>.md
 ---
 
@@ -635,7 +644,7 @@ Codex 의 2차 검토(2026-08-17)에서 확인된 것이다. "응답 파일 외 
 send.sh <request 파일 경로>
 
 # REVIEW — git diff 기반. 요청서가 없다
-send.sh --review --slug <슬러그> [--uncommitted|--base <브랜치>|--commit <SHA>] [집중지시]
+send.sh --review --slug <슬러그> [--subject "<한 줄 제목>"] [--uncommitted|--base <브랜치>|--commit <SHA>] [집중지시]
 ```
 
 환경변수는 양쪽 공통이다 — `CR_MODEL` · `CR_SANDBOX`(REVIEW 는 read-only 고정이라 무시) ·

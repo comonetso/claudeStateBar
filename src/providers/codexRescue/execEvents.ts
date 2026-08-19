@@ -37,6 +37,11 @@ export interface CodexRunItem {
     /** Full text for agent_message / reasoning / error — the part worth reading. */
     body?: string;
     /**
+     * `command_execution` only: the command as it actually ran, shell wrapper included.
+     * `label` shows the unwrapped form; this is what you need to reproduce it by hand.
+     */
+    raw?: string;
+    /**
      * Observation timestamps. exec JSONL carries NO timestamps (verified against the
      * 0.145.0 contract), so these are when *we* first/last saw the item — good enough for
      * relative durations, and never presented as authoritative event times.
@@ -89,6 +94,32 @@ function oneLine(s: unknown, max = 200): string {
     return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
 }
 
+/**
+ * Drop the shell Codex runs everything through, so the row starts with the actual command.
+ *
+ * Every `command_execution` arrives wrapped: `/bin/bash -lc "…"` on Linux, and on Windows
+ * `"C:\Program Files\PowerShell\7\pwsh.exe" -Command "…"` — 48 characters of identical
+ * prefix on every row, which pushed the real command off the end of the line.
+ *
+ * The wrapper is kept as `raw` on the item, since it is what actually ran.
+ */
+function stripShellWrapper(raw: unknown): string {
+    if (typeof raw !== 'string') return '';
+    const s = raw.trim();
+    const posix = /^(?:[^\s"]*[/\\])?(?:bash|sh|zsh|dash)\s+-[A-Za-z]*c\s+([\s\S]+)$/.exec(s);
+    const win = posix ? null
+        : /^(?:"[^"]*(?:pwsh|powershell)(?:\.exe)?"|[^\s"]*(?:pwsh|powershell)(?:\.exe)?)\s+-Command\s+([\s\S]+)$/i.exec(s);
+    const inner = (posix ?? win)?.[1];
+    if (!inner) return s;
+    // The wrapped command is itself quoted; peel one balanced layer, never more.
+    const t = inner.trim();
+    const first = t[0];
+    if ((first === '"' || first === "'") && t.length >= 2 && t[t.length - 1] === first) {
+        return t.slice(1, -1).trim() || s;
+    }
+    return t;
+}
+
 /** Keep full text readable but bounded — a pathological agent_message shouldn't be unbounded. */
 function clipBody(s: unknown, max = 4000): string | undefined {
     if (typeof s !== 'string') return undefined;
@@ -108,7 +139,7 @@ function labelFor(item: any): string {
         case 'reasoning':
             return oneLine(item.text) || kind;
         case 'command_execution': {
-            const cmd = oneLine(item.command, 160);
+            const cmd = oneLine(stripShellWrapper(item.command), 160);
             const code = item.exit_code;
             return code === null || code === undefined ? cmd : `${cmd}  (exit ${code})`;
         }
@@ -165,15 +196,17 @@ function upsert(st: CodexRunState, item: any, completed: boolean, nowMs: number)
         ? clipBody(item.text ?? item.message)
         : undefined;
     const status = statusFor(item, completed);
+    const raw = kind === 'command_execution' ? oneLine(item.command, 600) || undefined : undefined;
 
     if (existing) {
         existing.kind = kind;
         existing.status = status;
         if (label) existing.label = label;
         if (body) existing.body = body;
+        if (raw) existing.raw = raw;
         if (completed) existing.lastSeenMs = nowMs;
     } else {
-        st.items.push({ id, kind, status, label, body, firstSeenMs: nowMs, lastSeenMs: completed ? nowMs : undefined });
+        st.items.push({ id, kind, status, label, body, raw, firstSeenMs: nowMs, lastSeenMs: completed ? nowMs : undefined });
     }
 
     if (kind === 'todo_list' && Array.isArray(item.items)) {

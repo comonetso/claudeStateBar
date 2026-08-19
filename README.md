@@ -1,4 +1,4 @@
-# Claude & Codex State Bar
+# Claude Code & Codex Status Bar
 
 **Claude Code and OpenAI Codex, side by side in your VS Code status bar** — per‑session context usage, model and effort, task‑complete beeps, and account limits (Claude.ai 5‑hour session & weekly, Codex weekly usage), with a live Workflow/Agent viewer panel, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.
 
@@ -15,7 +15,7 @@
 
 ## Two layers in one status bar
 
-Claude & Codex State Bar shows two complementary things, merged into a single hover tooltip with clearly separated sections:
+Claude Code & Codex Status Bar shows two complementary things, merged into a single hover tooltip with clearly separated sections:
 
 ### 🧠 claudeContext — Claude Code context monitor
 Reads Claude Code's local session logs (`~/.claude/projects/*.jsonl`) and shows, per active session:
@@ -124,7 +124,7 @@ Codex rollout logs contain the full text of your conversations, but the rollout 
 
 ## 🌐 Remote‑SSH support
 
-Working over **Remote‑SSH**? Claude & Codex State Bar runs as a **UI (local) extension** so it can do both jobs at once:
+Working over **Remote‑SSH**? Claude Code & Codex Status Bar runs as a **UI (local) extension** so it can do both jobs at once:
 
 - **Plan usage** is fetched from your **local machine** via Electron's network stack — this passes Cloudflare's bot challenge. (Plain Node `https` from a remote/headless host gets a Cloudflare `403`, and cloud/datacenter IPs such as AWS EC2 are blocked regardless of TLS fingerprint.)
 - **Token counts** are read from the **remote** host's `~/.claude/projects` through `vscode.workspace.fs`, which VS Code transparently routes over the SSH connection. The remote home is auto‑detected (`/root`, else `/home/*`).
@@ -171,7 +171,8 @@ It needs the [`codex_rescue`](skills/codex_rescue/) skill for Claude Code, which
 With the skill installed, open it from the status-bar menu or `claudeStateBar: Show Codex Runs`. Each run is one card:
 
 - **What Codex just said** — its own narration of what it's about to do, far more useful than a spinner
-- **Commands, searches, file changes, MCP calls** — colour-coded by kind, commands with their exit code
+- **Commands, searches, file changes, MCP calls** — colour-coded by kind, commands with their exit code. Runs of consecutive successful commands or searches fold into one line you can expand; **failures never fold**, so they stay visible
+- **A title you can read** — the request's `subject` heads the card, not the English slug. Requires a `codex_rescue` build from 2026-08-19 or later; older runs show the slug
 - **Plan** — shown as `2/5`, but only when Codex actually produced one
 - **Elapsed time and activity count** — no percentage. Codex never declares how many tool calls remain, so a progress bar would be fiction
 - **Completion chime** — the same `claudeContextBar.workflowCompleteBeep` setting as workflow completion
@@ -187,7 +188,7 @@ The first run creates `docs/codex_rescue/` inside your project. The panel reads 
 
 Logs are never deleted by default. Manage them with the 🗑 button on a card (it asks each time whether to remove the documents too) or by enabling automatic cleanup — see [settings](#codex-run-logs-codex_rescue).
 
-> Not available over Remote-SSH. The extension runs on the local host (`extensionKind: ui`), so it can't read files in a remote workspace.
+Works over Remote-SSH. Run records are read from the remote workspace through `vscode.workspace.fs` — the same path the extension already uses for Claude and Codex session files — so there is nothing to install on the server. One difference: the VS Code file API has no range read, so a live run's event file is transferred whole instead of by delta. Status and the completion chime still refresh every 2 seconds; the activity list refreshes at most every 5 seconds, which keeps a few hundred KB off the wire on most of those ticks.
 
 ## 🎚️ Effort level display
 
@@ -207,7 +208,7 @@ Additional speed indicators:
 
 ## 🔔 Sound alerts
 
-Claude & Codex State Bar plays configurable WAV sounds for key events:
+Claude Code & Codex Status Bar plays configurable WAV sounds for key events:
 
 | Event | Default sound | Setting |
 |---|---|---|
@@ -286,7 +287,7 @@ The primer only makes sense while headless `claude -p` runs draw on your **subsc
 
 ## 🧹 Zombie status‑bar cleanup
 
-When VS Code updates the extension while a window is open, the old instance's status‑bar items can remain as unresponsive "zombie" pixels. Claude & Codex State Bar handles this two ways:
+When VS Code updates the extension while a window is open, the old instance's status‑bar items can remain as unresponsive "zombie" pixels. Claude Code & Codex Status Bar handles this two ways:
 
 1. **Version‑change detection** — on activation, if the version changed since last run, a one‑time "Reload window to clear stale items?" notice appears.
 2. **QuickPick cleanup** — the session menu always contains a **🗑 Clean up stale/zombie items (Reload Window)** option.

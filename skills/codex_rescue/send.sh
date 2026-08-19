@@ -2,9 +2,9 @@
 # codex_rescue — Codex CLI 에 일을 넘기고, 답변과 "Codex 가 만진 것"을 회수한다.
 #
 #   send.sh <request 파일 경로>                      ← 상담/수정 (요청서 기반)
-#   send.sh --review --slug <슬러그> [옵션] [집중지시] ← 코드 리뷰 (git diff 기반)
+#   send.sh --review --slug <슬러그> [--subject "<한 줄>"] [옵션] [집중지시] ← 코드 리뷰 (git diff 기반)
 #
-#     리뷰 옵션: --uncommitted | --base <브랜치> | --commit <SHA> | --title <제목>
+#     리뷰 옵션: --uncommitted | --base <브랜치> | --commit <SHA> | --title <제목> | --subject <한 줄>
 #     스코프를 안 주면 자동 판정한다 — 커밋 안 된 변경이 있으면 그것을, 없으면 기본 브랜치 대비.
 #
 # Claude 는 이걸 **Bash(run_in_background: true)** 로 던진다. 명령이 끝나면 Claude Code 가
@@ -34,6 +34,10 @@ die() { printf 'codex_rescue: %s\n' "$*" >&2; exit 2; }
 # KIND=review  `codex exec review` 기반. 요청서가 없다 — 대상이 git diff 이기 때문이다
 KIND=doc
 REQ=""; SLUG=""; STAMP=""; SCOPE=""; SCOPE_VAL=""; TITLE=""; FOCUS=""; SCOPE_VIA=""
+# 사람이 읽는 한 줄 제목. status.json 에 실려 확장 패널의 카드 제목이 된다 — slug 는
+# 영문 kebab 이라 목록에서 무슨 건인지 읽히지 않는다. `--title` 과는 다르다:
+# 저쪽은 `codex exec review` 에 그대로 넘어가는 Codex 쪽 인자다.
+SUBJECT=""
 
 if [ "${1:-}" = "--review" ]; then
   KIND=review; shift
@@ -43,6 +47,7 @@ if [ "${1:-}" = "--review" ]; then
       --base)        [ -n "${2:-}" ] || die "--base 값이 없다";   SCOPE=base;   SCOPE_VAL="$2"; shift 2 ;;
       --commit)      [ -n "${2:-}" ] || die "--commit 값이 없다"; SCOPE=commit; SCOPE_VAL="$2"; shift 2 ;;
       --title)       [ -n "${2:-}" ] || die "--title 값이 없다";  TITLE="$2";     shift 2 ;;
+      --subject)     [ -n "${2:-}" ] || die "--subject 값이 없다"; SUBJECT="$2";  shift 2 ;;
       --uncommitted) SCOPE=uncommitted; shift ;;
       --)            shift; FOCUS="$FOCUS${FOCUS:+ }$*"; break ;;
       *)             FOCUS="$FOCUS${FOCUS:+ }$1"; shift ;;
@@ -56,7 +61,7 @@ if [ "${1:-}" = "--review" ]; then
 else
   REQ="${1:-}"
   [ -n "$REQ" ] || die "사용법: send.sh <request 파일 경로>
-      또는: send.sh --review --slug <슬러그> [--uncommitted|--base <브랜치>|--commit <SHA>] [집중지시]"
+      또는: send.sh --review --slug <슬러그> [--subject \"<한 줄>\"] [--uncommitted|--base <브랜치>|--commit <SHA>] [집중지시]"
   [ -f "$REQ" ] || die "요청서 파일이 없다: $REQ"
   REQ_ABS="$(cd "$(dirname "$REQ")" && pwd)/$(basename "$REQ")" || die "요청서 경로 해석 실패"
   case "$REQ_ABS" in
@@ -110,6 +115,7 @@ else
   SLUG=$(fm slug)
   MODE=$(fm mode)
   RESP=$(fm response_path)
+  SUBJECT=$(fm subject)   # 없어도 된다 — 구형 요청서는 카드에 slug 로 남는다
 
   [ -n "$STAMP" ] || die "frontmatter 에 stamp 가 없다"
   [ -n "$SLUG" ]  || die "frontmatter 에 slug 가 없다"
@@ -241,6 +247,8 @@ HEARTBEAT="$LOGD/${STAMP}_heartbeat"
 # status 값에 들어갈 문자열을 JSON 안전하게 만든다.
 # 손으로 만든 부실한 escape 대신 **위험 문자를 아예 제거**한다 — 여기 들어가는 값은
 # stamp(숫자·밑줄)·slug(검증됨)·mode(고정어)·state(고정어)·브랜치/SHA 정도라 손실이 없다.
+# 예외는 subject 다: 사람이 쓴 자유 문장이라 따옴표·역슬래시가 들어올 수 있고, 그건
+# 소리 없이 지워진다. 제목에서 그 두 글자가 빠지는 편이 깨진 JSON 보다 낫다.
 # 요청서 경로는 넣지 않는다: 규약상 `<LOGD상위>/<stamp>_request_<slug>.md` 로 재구성되므로
 # 굳이 넣어 escape 위험을 만들 이유가 없다.
 jsan() { printf '%s' "$1" | tr -d '"\\' | tr -d '\000-\037'; }
@@ -254,6 +262,7 @@ write_status() {
     printf '{"schema":1'
     printf ',"stamp":"%s"'  "$(jsan "$STAMP")"
     printf ',"slug":"%s"'   "$(jsan "$SLUG")"
+    [ -n "$SUBJECT" ] && printf ',"subject":"%s"' "$(jsan "$SUBJECT")"
     printf ',"mode":"%s"'   "$(jsan "$MODE")"
     printf ',"kind":"%s"'   "$(jsan "$KIND")"
     [ "$KIND" = review ] && printf ',"scope":"%s"' "$(jsan "$SCOPE${SCOPE_VAL:+:$SCOPE_VAL}")"

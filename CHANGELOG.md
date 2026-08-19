@@ -1,5 +1,90 @@
 # Changelog
 
+## [1.9.2] - 2026-08-19
+
+> **The Codex progress panel works over Remote-SSH.** Since 1.9.0 it had been telling every
+> remote window there was nothing to show, while the runs it was looking for sat on the server
+> the whole time.
+
+### Remote workspaces
+
+Open a folder over Remote-SSH, run `codex_rescue` there, and the panel lists those runs — live,
+with the same activity feed and completion chime as a local run. Until now every remote window
+reported "no runs recorded in this workspace" no matter how many there were.
+
+The logs were never the problem; they were on the server all along. The extension runs on your
+own machine and was reading them with Node's file calls, which have no way to reach a path that
+lives on the server. It now reads them the way it already read Claude and Codex session files.
+Nothing has to be installed on the server.
+
+### What a live run costs over SSH
+
+Reading a remote file through VS Code cannot fetch just the new bytes, so a running Codex run's
+event file comes across whole each time instead of as a delta. Three things keep that in check.
+
+- Status and the completion chime still poll every 2 seconds. They read a 220-byte status file,
+  not the event log, so the chime is as prompt as it ever was.
+- The activity list refreshes at most every 5 seconds on a remote workspace. Local workspaces
+  are unchanged at 2 seconds.
+- A finished run is read once and then cached, and the retention scan never reads event bodies
+  at all.
+
+### Opening a run's documents
+
+The request and response links on a card open the real file on the server. They used to build a
+local path, which pointed nowhere when the document lived on a remote host.
+
+### Which project, and which day
+
+The tab now names the project it is showing — `Codex Runs · CCB` — and the full folder path sits
+under the heading. With two windows open, both tabs used to read `Codex Runs` and nothing told
+you which was which. The abbreviation follows the same rule as the status bar, including any
+`shortNames` overrides you have set, so a project reads the same in both places.
+
+Cards carry the date as well. A card read `17:46:27`, which looks like this morning even when
+the run was two days ago, and logs are kept for a week. It now reads `08/19 17:46` — no year,
+since a week rarely spans one, and no seconds, since the elapsed time beside it is where that
+detail belongs.
+
+### Cards say what the run was about
+
+A card was headed by its slug — `poi-cache-namespace-latency` — which is a filename fragment
+rather than a sentence, and in a list of four it told you very little. The request's new
+`subject` line heads the card instead, with the slug moved to the hover since that is still
+what the files are named. Runs recorded before this keep showing the slug.
+
+The subject travels in the status sidecar the panel already reads every couple of seconds, so
+it costs no extra transfer, not even over SSH. It does mean the **`codex_rescue` skill has to
+be updated alongside the extension** — the skill is what writes the field, and on a remote host
+it is the server's copy that writes it.
+
+### Routine tool calls fold away
+
+An expanded run was mostly noise. In one measured run 76% of the rows were commands — greps and
+file reads nobody inspects — and a research-heavy one added a dozen searches on top. Runs of
+consecutive successful calls of the same kind now collapse to one line, `commands 10` or
+`searches 6`, with an expand control on the row. That run went from 57 rows to 30.
+
+**A failure never folds.** Those are the rows worth reading, and a group ends the moment one
+appears, so a failed command still sits in the list at full width with its exit code.
+
+Commands also read as commands now. Codex runs everything through a shell, so every row began
+with the same 48 characters — `"C:\Program Files\PowerShell\7\pwsh.exe" -Command "` on Windows,
+`/bin/bash -lc "` on Linux — which pushed the actual command off the end of the line. The
+wrapper is stripped for display and kept on hover, since that is what you would need to
+reproduce the call by hand.
+
+### Renamed on the marketplace
+
+The extension is now listed as **Claude Code & Codex Status Bar**. Searching `claude code` did
+not turn it up: it ranked 347th, below extensions with three installs sitting in the top 40,
+because the old name never contained the phrase people search for. Long-tail queries like
+`claude token` and `codex usage` were already matching, so the tags were doing their job — the
+title wasn't.
+
+Only the display name changed. The extension id is the same, so updates and settings carry over
+untouched.
+
 ## [1.9.1] - 2026-08-19
 
 The marketplace icon now shows both tools. The extension is Claude-first and the icon said

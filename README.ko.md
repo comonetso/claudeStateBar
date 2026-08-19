@@ -1,4 +1,4 @@
-# Claude & Codex State Bar
+# Claude Code & Codex Status Bar
 
 **Claude Code와 OpenAI Codex를 VS Code 상태바에 나란히** — 세션별 컨텍스트 사용량, 모델·Effort, 작업 완료 비프, 그리고 계정 한도(Claude.ai 5시간 세션 & 주간, Codex 주간 사용량)까지. 실시간 워크플로우/에이전트 뷰어 패널, Remote‑SSH 지원, 텔레그램 리셋 알림, 한/영 설정 패널 포함.
 
@@ -15,7 +15,7 @@
 
 ## 상태바 안의 두 계층
 
-Claude & Codex State Bar는 서로 보완되는 두 가지를 보여주며, 하나의 호버 툴팁 안에서 섹션으로 명확히 구분됩니다.
+Claude Code & Codex Status Bar는 서로 보완되는 두 가지를 보여주며, 하나의 호버 툴팁 안에서 섹션으로 명확히 구분됩니다.
 
 ### 🧠 claudeContext — Claude Code 컨텍스트 모니터
 Claude Code의 세션 로그(`~/.claude/projects/*.jsonl`)를 읽어 활성 세션별로 표시:
@@ -124,7 +124,7 @@ Codex rollout 로그에는 대화 원문 전체가 들어 있지만 rollout 파�
 
 ## 🌐 Remote‑SSH 지원
 
-**Remote‑SSH** 환경에서도 두 가지를 동시에 합니다. Claude & Codex State Bar는 **UI(로컬) 확장**으로 실행됩니다:
+**Remote‑SSH** 환경에서도 두 가지를 동시에 합니다. Claude Code & Codex Status Bar는 **UI(로컬) 확장**으로 실행됩니다:
 
 - **플랜 사용량**은 **로컬 PC**의 Electron 네트워크 스택으로 가져옵니다 — Cloudflare 봇 챌린지를 통과합니다. (원격/헤드리스 호스트의 순수 Node `https`는 Cloudflare `403`을 받고, AWS EC2 같은 클라우드·데이터센터 IP는 TLS 핑거프린트와 무관하게 차단됩니다.)
 - **토큰 카운트**는 **원격** 호스트의 `~/.claude/projects`를 `vscode.workspace.fs`로 읽습니다. VS Code가 SSH 너머로 자동 라우팅합니다. 원격 홈은 자동 탐색(`/root`, 없으면 `/home/*`)합니다.
@@ -171,7 +171,8 @@ Claude Code가 막힌 문제를 Codex에 넘겨 2차 의견을 받는 동안, Co
 스킬이 설치돼 있으면 상태바 메뉴와 `claudeStateBar: Show Codex Runs`로 열립니다. 실행 한 건이 카드 하나입니다:
 
 - **Codex가 방금 한 말** — "이제 뭘 하겠다"는 자기 서술. 스피너보다 훨씬 쓸모 있습니다
-- **명령 · 검색 · 파일 변경 · MCP 호출** — 종류별 색으로 구분, 명령은 종료 코드까지
+- **명령 · 검색 · 파일 변경 · MCP 호출** — 종류별 색으로 구분, 명령은 종료 코드까지. 연달아 성공한 명령이나 검색은 한 줄로 접히며 펼쳐 볼 수 있습니다. **실패한 것은 접지 않으므로** 그대로 보입니다
+- **읽을 수 있는 제목** — 영문 슬러그 대신 요청서의 `subject`가 카드 제목이 됩니다. 2026-08-19 이후 버전의 `codex_rescue`가 필요하며, 그 전 실행은 슬러그로 표시됩니다
 - **계획** — Codex가 계획을 세운 경우에만 `2/5` 형태로
 - **경과 시간과 활동 수** — 진행률(%)은 표시하지 않습니다. Codex는 앞으로 도구를 몇 번 부를지 미리 알리지 않으므로 진행률 막대는 지어낸 숫자가 됩니다
 - **완료음** — 워크플로우 완료와 같은 `claudeContextBar.workflowCompleteBeep` 설정을 씁니다
@@ -187,7 +188,7 @@ Claude Code가 막힌 문제를 Codex에 넘겨 2차 의견을 받는 동안, Co
 
 로그는 기본적으로 지워지지 않습니다. 패널 카드의 🗑(문서까지 지울지 매번 물어봅니다)이나 자동 정리 설정으로 관리합니다 — [설정 항목](#codex-실행-기록-codex_rescue) 참조.
 
-> Remote‑SSH에서는 동작하지 않습니다. 확장이 로컬 호스트에서 돌기 때문에(`extensionKind: ui`) 원격 워크스페이스의 파일을 읽지 못합니다.
+Remote‑SSH에서도 동작합니다. 실행 기록은 `vscode.workspace.fs`로 원격 워크스페이스에서 읽습니다 — Claude·Codex 세션 파일에 이미 쓰고 있는 것과 같은 경로라, 서버에 따로 설치할 것은 없습니다. 차이가 하나 있습니다. VS Code 파일 API에는 구간 읽기가 없어서 진행 중인 실행의 이벤트 파일을 증분이 아니라 통째로 가져옵니다. 상태와 완료음은 그대로 2초마다 갱신되고, 활동 목록만 최대 5초 간격으로 갱신해 대부분의 틱에서 수백 KB 전송을 아낍니다.
 
 ## 🎚️ Effort 레벨 표시
 
@@ -207,7 +208,7 @@ Claude Code가 막힌 문제를 Codex에 넘겨 2차 의견을 받는 동안, Co
 
 ## 🔔 사운드 알림
 
-Claude & Codex State Bar는 주요 이벤트에 설정 가능한 WAV 사운드를 재생합니다:
+Claude Code & Codex Status Bar는 주요 이벤트에 설정 가능한 WAV 사운드를 재생합니다:
 
 | 이벤트 | 기본 사운드 | 관련 설정 |
 |---|---|---|
@@ -286,7 +287,7 @@ Click for menu (hide / restore / settings)
 
 ## 🧹 좀비 상태바 항목 정리
 
-VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인스턴스의 상태바 아이템이 클릭에 반응하지 않는 "좀비" 픽셀로 남을 수 있습니다. Claude & Codex State Bar는 두 가지 방법으로 처리합니다:
+VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인스턴스의 상태바 아이템이 클릭에 반응하지 않는 "좀비" 픽셀로 남을 수 있습니다. Claude Code & Codex Status Bar는 두 가지 방법으로 처리합니다:
 
 1. **버전 변경 감지** — 활성화 시 마지막 실행 버전이 바뀌었으면 "창 다시 로드해서 오래된 항목 정리?" 알림을 1회 표시합니다.
 2. **QuickPick 정리** — 세션 메뉴에 항상 **🗑 오래된/좀비 항목 정리 (창 다시 로드)** 항목이 있습니다.

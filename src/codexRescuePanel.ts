@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { getDict } from './i18n';
 import * as creds from './credentials';
+import { getShortName } from './core/displayName';
 import type { RunPhase } from './providers/codexRescue/runDiscovery';
 
 // Live view of codex_rescue runs — the Codex counterpart to the Claude workflow panel.
@@ -16,12 +17,16 @@ export interface CodexItemView {
     status: 'running' | 'done' | 'failed' | 'warn';
     label: string;
     body?: string;                             // prose for agent_message / reasoning / error
+    /** command_execution only: the wrapped command as it ran. Hover text; label is stripped. */
+    raw?: string;
     durationMs?: number;
 }
 
 export interface CodexRunView {
     stamp: string;
     slug: string;
+    /** Card heading when present; the slug is the fallback for runs recorded without one. */
+    subject?: string;
     mode: string;
     phase: RunPhase;
     startedAt?: number;
@@ -31,14 +36,18 @@ export interface CodexRunView {
     todo?: { text: string; done: boolean }[];
     /** Only known once the turn completes — exec JSONL has no live token counter. */
     totalTokens?: number;
-    /** Present when the run's own doc exists on disk; clicking opens it. */
-    resultPath?: string;
-    requestPath?: string;
+    /**
+     * Present when the run's own doc exists on disk; clicking opens it. A URI *string*, not
+     * a filesystem path: over Remote-SSH the doc lives on the remote host and only the URI
+     * (scheme + authority) can still address it once it reaches the webview and comes back.
+     */
+    resultUri?: string;
+    requestUri?: string;
     staleForMs?: number;
 }
 
 export interface CodexPanelCallbacks {
-    onOpenDoc: (fsPath: string) => void;
+    onOpenDoc: (docUri: string) => void;
     /** User clicked a run's delete button (confirmation happens on the extension side). */
     onDelete: (stamp: string) => void;
 }
@@ -50,9 +59,45 @@ let lastPushedSignature: string | null = null;
 export function isCodexPanelOpen(): boolean { return panel !== null; }
 
 /** Editor-tab caption. Localised like the panel body — the tab is the first thing read. */
+/**
+ * Which project this panel is showing, since the runs come from the open workspace folders.
+ * Every window's tab reads "Codex Runs" otherwise, so with two windows open there is no way
+ * to tell which project's panel is in front. Abbreviated with the same rule (and the same
+ * `shortNames` overrides) the status bar uses, so one project reads the same in both places.
+ */
+function workspaceLabel(): { short: string; full: string } | null {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) return null;
+    const shortNames = vscode.workspace.getConfiguration('claudeContextBar')
+        .get<Record<string, string>>('shortNames', {});
+    // A remote folder's fsPath comes back with Windows separators and is meaningless, but the
+    // raw URI is no better: VS Code encodes an SSH target as `ssh-remote+<hex>`, where the hex
+    // is `{"hostName":"..."}` — 68 characters of gibberish on screen. Decode it back to the
+    // host alias, which is what the user actually calls that machine.
+    const locate = (f: vscode.WorkspaceFolder): string => {
+        if (f.uri.scheme === 'file') return f.uri.fsPath;
+        const auth = f.uri.authority;
+        const plus = auth.indexOf('+');
+        let host = plus >= 0 ? auth.slice(plus + 1) : auth;
+        if (/^(?:[0-9a-f]{2})+$/i.test(host)) {
+            try {
+                const decoded = JSON.parse(Buffer.from(host, 'hex').toString('utf8'));
+                if (typeof decoded?.hostName === 'string') host = decoded.hostName;
+            } catch { /* not the JSON form — fall through with the authority as-is */ }
+        }
+        return host ? `${host}: ${f.uri.path}` : f.uri.path;
+    };
+    return {
+        short: folders.map(f => getShortName(f.name, shortNames)).join(' + '),
+        full: folders.map(locate).join('\n'),
+    };
+}
+
 function panelTitle(): string {
     const v = getDict(creds.getLanguage())['cx.panelTitle'];
-    return typeof v === 'string' ? v : 'Codex Runs';
+    const base = typeof v === 'string' ? v : 'Codex Runs';
+    const ws = workspaceLabel();
+    return ws ? `${base} · ${ws.short}` : base;
 }
 
 // Same dedup contract as the workflow panel: re-pushing identical data would rebuild the
@@ -62,7 +107,7 @@ function signature(runs: CodexRunView[]): string {
     return JSON.stringify((runs || []).map(r => ({
         s: r.stamp, p: r.phase, e: r.endedAt || 0, t: r.totalTokens || 0,
         d: r.todo, k: r.staleForMs ? Math.floor(r.staleForMs / 5000) : 0,
-        r: !!r.resultPath,
+        r: !!r.resultUri,
         i: r.items.map(i => [i.id, i.status, i.label, i.body, i.durationMs]),
     })));
 }
@@ -123,6 +168,14 @@ export function pushCodexLanguage(): void {
 
 function getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
+    // Folder locations are baked in at panel creation. They only change if the user adds or
+    // removes a workspace folder, which reloads the window anyway.
+    const ws = workspaceLabel();
+    const escHtml = (s: string) =>
+        s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+    const wsRow = ws
+        ? `  <div class="wspath" title="${escHtml(ws.full)}">${escHtml(ws.full.replace(/\n/g, '   ·   '))}</div>\n`
+        : '';
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -136,6 +189,8 @@ function getHtml(webview: vscode.Webview): string {
   .fbtn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; padding:2px 11px; cursor:pointer; font-size:1em; line-height:1.4; }
   .fbtn:hover { background: var(--vscode-button-secondaryHoverBackground); }
   h1 { font-size:1.2em; margin:0 0 4px 0; }
+  .wspath { color: var(--vscode-descriptionForeground); font-size:.8em; margin:0 0 2px 0; opacity:.75;
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .sub { color: var(--vscode-descriptionForeground); font-size:.85em; margin-bottom:16px; }
 
   .run { border:1px solid var(--vscode-panel-border); border-radius:6px; padding:10px 14px; margin-bottom:12px; }
@@ -181,6 +236,24 @@ function getHtml(webview: vscode.Webview): string {
   .kind.k-error { background:#4a3f22; color:#f0d9a8; }
   .lbl { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family: var(--vscode-editor-font-family); font-size:.92em; }
   .dur { color: var(--vscode-descriptionForeground); font-size:.82em; flex-shrink:0; }
+  details.cmdgroup { margin:0; }
+  /* The summary lines up with ordinary rows — no leading marker, no indent on the rows it
+     reveals — so a collapsed group reads as one of the list rather than a nested block. */
+  details.cmdgroup > summary { display:flex; align-items:center; gap:7px; cursor:pointer;
+    padding:3px 0; list-style:none; color: var(--vscode-descriptionForeground); }
+  details.cmdgroup > summary::-webkit-details-marker { display:none; }
+  details.cmdgroup > summary:hover { color: var(--vscode-foreground); }
+  details.cmdgroup .gcount { font-size:.9em; }
+  details.cmdgroup > .it { margin-left:0; }
+  /* Affordance sits after the count, where the eye already is. */
+  .ghint { font-size:.82em; opacity:.8; padding:0 6px; border-radius:4px;
+    border:1px solid var(--vscode-panel-border); white-space:nowrap; }
+  details.cmdgroup > summary:hover .ghint { opacity:1; border-color: var(--vscode-focusBorder); }
+  .ghint::before { content:'▸'; display:inline-block; margin-right:4px; font-size:.9em;
+    transition:transform .12s; }
+  details.cmdgroup[open] .ghint::before { transform:rotate(90deg); }
+  details.cmdgroup[open] .gh-open { display:none; }
+  details.cmdgroup:not([open]) .gh-close { display:none; }
   details.say { margin:3px 0 0 17px; }
   details.say > summary { color: var(--vscode-descriptionForeground); font-size:.92em; line-height:1.45; cursor:pointer; white-space:pre-wrap; word-break:break-word; }
   details.say[open] > summary { color: var(--vscode-foreground); font-weight:600; }
@@ -197,7 +270,7 @@ function getHtml(webview: vscode.Webview): string {
     <button class="fbtn" data-font="inc" data-i18n-title="wf.fontLarger" title="Larger">A+</button>
   </div>
   <h1 data-i18n="cx.title">🔶 Codex Runs</h1>
-  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
+${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
   <div id="list"></div>
 <script nonce="${nonce}">
   const vscodeApi = acquireVsCodeApi();
@@ -235,7 +308,14 @@ function getHtml(webview: vscode.Webview): string {
 
   function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
   function pad2(n) { return String(n).padStart(2, '0'); }
-  function fmtClock(ms) { const d = new Date(ms); return pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds()); }
+  // The date is part of the clock here, unlike the workflow panel: retention is 7 days, so a
+  // card can be several days old and a bare 10:13 reads as this morning when it was not.
+  // No year (a week never spans one that matters) and no seconds (nobody reads them off a
+  // start time) — the elapsed figure beside it is where sub-minute detail belongs.
+  function fmtClock(ms) {
+    const d = new Date(ms);
+    return pad2(d.getMonth()+1)+'/'+pad2(d.getDate())+' '+pad2(d.getHours())+':'+pad2(d.getMinutes());
+  }
   function fmtElapsed(ms) {
     if (!ms || ms < 0) ms = 0;
     const tt = Math.floor(ms/1000), h = Math.floor(tt/3600), m = Math.floor((tt%3600)/60), s = tt%60;
@@ -268,13 +348,13 @@ function getHtml(webview: vscode.Webview): string {
     return (id in userToggled) ? userToggled[id] : false;
   }
   function captureOpenDetails() {
-    document.querySelectorAll('details.say[data-dkey]').forEach(function (d) {
+    document.querySelectorAll('details[data-dkey]').forEach(function (d) {
       openDetails[d.getAttribute('data-dkey')] = d.open;
     });
   }
   function sigOf(runs) {
     return JSON.stringify((runs||[]).map(function (r) {
-      return [r.stamp, r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultPath,
+      return [r.stamp, r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultUri,
         r.items.map(function (i) { return [i.id,i.status,i.label,i.body,i.durationMs]; })];
     }));
   }
@@ -336,12 +416,15 @@ function getHtml(webview: vscode.Webview): string {
             return '<span class="plan-chip' + (x.done?' on':'') + '">' + esc(x.text) + '</span>'; }).join('') + '</div>'
         : '';
 
-      const items = run.items.length ? '<div class="items">' + run.items.map(function (it) {
+      function renderItem(it) {
           const dur = fmtDur(it.durationMs);
           const durStr = dur ? '<span class="dur">· ' + dur + '</span>' : '';
+          // Commands hover the command as it actually ran, wrapper and all — the row shows
+          // the unwrapped form, but that is not what you would paste to reproduce it.
+          const hover = it.raw && it.raw !== it.label ? it.raw : it.label;
           const head = '<div class="it-head"><span class="dot ' + esc(it.status) + '"></span>' +
             '<span class="kind k-' + esc(it.kind) + '">' + esc(t('cx.kind.'+it.kind)) + '</span>' +
-            '<span class="lbl" title="' + esc(it.label) + '">' + esc(it.label) + '</span>' + durStr + '</div>';
+            '<span class="lbl" title="' + esc(hover) + '">' + esc(it.label) + '</span>' + durStr + '</div>';
           let bodyHtml = '';
           if (it.body && it.body.length > it.label.length) {
             const dkey = run.stamp + ' ' + it.id;
@@ -350,12 +433,51 @@ function getHtml(webview: vscode.Webview): string {
               esc(t('cx.readMore')) + '</summary><div class="full">' + esc(it.body) + '</div></details>';
           }
           return '<div class="it">' + head + bodyHtml + '</div>';
+      }
+
+      // Runs are dominated by routine tool calls — 76% of the rows in a measured EDIT run were
+      // commands, and a research-heavy run adds a dozen searches on top. Consecutive
+      // *successful* ones of the SAME kind collapse into a single line; mixing kinds would
+      // hide what a run actually spent its time on. A failure never joins a group: those are
+      // the rows worth reading, and burying them is the one thing this must not do. A group
+      // of one stays a plain row.
+      const GROUPABLE = { command_execution: 'cx.cmdGroup', web_search: 'cx.searchGroup' };
+      function groupRuns(list) {
+        const out = [];
+        let bucket = null, bucketKind = null;
+        list.forEach(function (it) {
+          const can = GROUPABLE[it.kind] && it.status === 'done';
+          if (can && it.kind === bucketKind) {
+            bucket.push(it);
+          } else if (can) {
+            bucket = [it]; bucketKind = it.kind;
+            out.push({ cmds: bucket, kind: it.kind });
+          } else {
+            bucket = null; bucketKind = null;
+            out.push({ one: it });
+          }
+        });
+        return out;
+      }
+
+      const items = run.items.length ? '<div class="items">' + groupRuns(run.items).map(function (node) {
+          if (node.one) return renderItem(node.one);
+          if (node.cmds.length === 1) return renderItem(node.cmds[0]);
+          const gkey = run.stamp + ' g' + node.cmds[0].id;
+          const openAttr = openDetails[gkey] ? ' open' : '';
+          return '<details class="cmdgroup" data-dkey="' + esc(gkey) + '"' + openAttr + '><summary>' +
+            '<span class="dot done"></span><span class="kind k-' + esc(node.kind) + '">' +
+            esc(t('cx.kind.' + node.kind)) + '</span><span class="gcount">' +
+            esc(t(GROUPABLE[node.kind], node.cmds.length)) + '</span>' +
+            '<span class="ghint"><span class="gh-open">' + esc(t('cx.expand')) + '</span>' +
+            '<span class="gh-close">' + esc(t('cx.collapse')) + '</span></span></summary>' +
+            node.cmds.map(renderItem).join('') + '</details>';
         }).join('') + '</div>'
         : '<div class="empty">' + esc(t('cx.noItems')) + '</div>';
 
       const links = [];
-      if (run.resultPath) links.push('<span class="doclink" data-open="' + esc(run.resultPath) + '">📄 ' + esc(t('cx.openResult')) + '</span>');
-      if (run.requestPath) links.push('<span class="doclink" data-open="' + esc(run.requestPath) + '">📝 ' + esc(t('cx.openRequest')) + '</span>');
+      if (run.resultUri) links.push('<span class="doclink" data-open="' + esc(run.resultUri) + '">📄 ' + esc(t('cx.openResult')) + '</span>');
+      if (run.requestUri) links.push('<span class="doclink" data-open="' + esc(run.requestUri) + '">📝 ' + esc(t('cx.openRequest')) + '</span>');
 
       const tokenLine = run.totalTokens ? '<br>' + esc(t('cx.tokens', run.totalTokens.toLocaleString())) : '';
       const staleLine = (phase === 'stale')
@@ -369,7 +491,13 @@ function getHtml(webview: vscode.Webview): string {
       return '<div class="run' + (isExpanded(run.stamp)?'':' collapsed') + '" data-id="' + esc(run.stamp) + '">' +
         '<div class="run-head">' +
           '<span class="arrow">▾</span>' +
-          '<span class="run-name" title="' + esc(run.slug) + '">' + esc(run.slug) + '</span>' +
+          // Prefer the subject: the slug is a filename fragment and reads as a symbol. Either
+          // way the slug stays in the hover, since it is what the files on disk are named.
+          // The newline is escaped twice on purpose: this line lives inside the getHtml
+          // template literal, where one backslash would become a real newline and split the
+          // JS string in two. Backticks are forbidden here for the same reason.
+          '<span class="run-name" title="' + esc(run.subject ? run.subject + '\\n' + run.slug : run.slug) + '">' +
+            esc(run.subject || run.slug) + '</span>' +
           '<span class="mode-chip">' + esc(run.mode.toUpperCase()) + '</span>' +
           timeHtml + '<span class="spacer"></span>' + badge +
           // Only finished runs get a delete button — deleting mid-write would race send.sh.
@@ -407,7 +535,7 @@ function getHtml(webview: vscode.Webview): string {
   });
   document.addEventListener('toggle', e => {
     const d = e.target;
-    if (d && d.matches && d.matches('details.say[data-dkey]')) openDetails[d.getAttribute('data-dkey')] = d.open;
+    if (d && d.matches && d.matches('details[data-dkey]')) openDetails[d.getAttribute('data-dkey')] = d.open;
   }, true);
 
   window.addEventListener('message', e => {
