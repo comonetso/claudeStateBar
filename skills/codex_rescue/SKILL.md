@@ -140,7 +140,10 @@ Codex 는 `-s workspace-write` 로 실행된다(응답 파일을 직접 저장�
 - 정상 산출물(`response_path`, `.log/`)을 뺀 나머지가 **"Codex가 몰래 만진 것"**
 - 있으면 stdout에 🔴 로 보고된다. Claude는 그것을 **반드시 사용자에게 보고**한다
 - 🔴 **임의로 되돌리지 않는다.** 되돌릴지 살릴지는 사용자 판단이다
-- `.log/<스탬프>_events.jsonl` 에 Codex가 실행한 모든 이벤트가 남는다. 무엇을 했는지 따질 때 이걸 읽는다
+- `.log/<스탬프>_events.jsonl` 에 Codex가 실행한 모든 이벤트가 남는다. 무엇을 했는지 따질 때 이걸 읽는다.
+  **이 파일은 실행 중에도 실시간으로 쌓이므로**, 도는 동안 진행 상황을 물어보면 이걸 읽어 답할 수 있다
+  (`_status.json` 의 `state` 가 현재 단계 — `running` / `finalizing` / `done` / `failed` / `interrupted`).
+  claudeStateBar 확장(v1.9.0+)이 이 두 파일로 진행 패널을 그린다
   (포맷이 바뀌면 깨지므로 스크립트는 파싱하지 않고 보존만 한다)
 
 성능 때문에 `.git`·`node_modules`·`build`·`.gradle`·`.dart_tool`·`.venv`·`.next`·`__pycache__` 는 스캔에서 제외한다. **그 안의 변경은 못 잡는다** — 의도된 절충이다.
@@ -156,7 +159,7 @@ Codex 는 `-s workspace-write` 로 실행된다(응답 파일을 직접 저장�
 | 요청 파일 | `docs/codex_rescue/<스탬프>_request_<슬러그>.md` — **Claude가 작성** (CONSULT·EDIT 만) |
 | 응답 파일 | `docs/codex_rescue/<스탬프>_response_<슬러그>.md` — **Codex가 작성**(저장 실패 시 send.sh 가 대신). request와 동일 스탬프·슬러그로 짝을 맞춘다. |
 | 리뷰 파일 | `docs/codex_rescue/<스탬프>_review_<슬러그>.md` — **`send.sh` 가 작성.** REVIEW 는 요청서가 없고(대상이 git diff), Codex 도 파일을 쓰지 않으므로(read-only) `-o` 로 받은 결과를 스크립트가 규약 형식으로 저장한다. 스탬프도 `send.sh` 가 만든다 — 짝 맞출 요청서가 없기 때문이다. |
-| 실행 기록 | `docs/codex_rescue/.log/<스탬프>_events.jsonl` (Codex 이벤트 전문) · `_last_message.md` (최종 메시지 원본) · `_stderr.log` |
+| 실행 기록 | `docs/codex_rescue/.log/<스탬프>_events.jsonl` (Codex 이벤트 전문 — **실행 중 실시간으로 쌓인다**) · `_status.json` (진행 상태) · `_heartbeat` (5초 갱신) · `_last_message.md` · `_stderr.log`. 이 디렉토리에는 `.gitignore`(`*`)가 자동 생성되어 **커밋되지 않는다** |
 
 **응답 파일명은 Claude가 정해서 요청서 frontmatter 의 `response_path` 에 박아 넣는다.** Codex에게 이름을 짓게 하면 스탬프를 지어내거나 슬러그가 어긋나 짝이 깨진다. 그리고 **`send.sh` 가 그 `response_path` 값을 읽어서 동작한다** — 이 필드가 없으면 스크립트가 즉시 멈춘다.
 
