@@ -26,3 +26,6 @@ docs/codex_rescue/.log/
 Thumbs.db
 .claude/
 .file_history/
+
+# Byte-compiled icon build script
+__pycache__/

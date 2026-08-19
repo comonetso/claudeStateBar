@@ -21,6 +21,7 @@ src/**
 skills/**
 images/provider-icons-src/**
 images/provider-icons/*.json
+images/icon-src/**
 **/*.ts
 **/*.map
 tsconfig.json

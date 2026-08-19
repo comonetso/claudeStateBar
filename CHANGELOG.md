@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.1] - 2026-08-19
+
+The marketplace icon now shows both tools. The extension is Claude-first and the icon said
+only that, even though it has read Codex sessions for several releases. The Claude star is
+still the subject; OpenAI's mark sits in the bottom-right corner as a badge.
+
+Icon only. No code, settings or behaviour changed.
+
 ## [1.9.0] - 2026-08-19
 
 > **Codex is no longer a black box while it works.** When Claude Code sends a problem to Codex
