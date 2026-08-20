@@ -172,6 +172,7 @@ With the skill installed, open it from the status-bar menu or `claudeStateBar: S
 
 - **What Codex just said** — its own narration of what it's about to do, far more useful than a spinner
 - **Commands, searches, file changes, MCP calls** — colour-coded by kind, commands with their exit code. Runs of consecutive successful commands or searches fold into one line you can expand; **failures never fold**, so they stay visible
+- **Nothing cut off for good** — a row too wide for the panel opens in place when you click it, wrapped. Messages open onto the whole message, commands onto the form that actually ran. One row stays open at a time
 - **A title you can read** — the request's `subject` heads the card, not the English slug. Requires a `codex_rescue` build from 2026-08-19 or later; older runs show the slug
 - **Plan** — shown as `2/5`, but only when Codex actually produced one
 - **Elapsed time and activity count** — no percentage. Codex never declares how many tool calls remain, so a progress bar would be fiction

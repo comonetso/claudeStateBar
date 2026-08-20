@@ -254,10 +254,19 @@ function getHtml(webview: vscode.Webview): string {
   details.cmdgroup[open] .ghint::before { transform:rotate(90deg); }
   details.cmdgroup[open] .gh-open { display:none; }
   details.cmdgroup:not([open]) .gh-close { display:none; }
-  details.say { margin:3px 0 0 17px; }
-  details.say > summary { color: var(--vscode-descriptionForeground); font-size:.92em; line-height:1.45; cursor:pointer; white-space:pre-wrap; word-break:break-word; }
-  details.say[open] > summary { color: var(--vscode-foreground); font-weight:600; }
-  .full { margin:6px 0 2px 0; padding:8px 10px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); border-radius:4px; white-space:pre-wrap; word-break:break-word; font-family: var(--vscode-editor-font-family); font-size:.88em; line-height:1.5; max-height:420px; overflow:auto; }
+  /* A row whose label doesn't fit opens in place: the one-line summary is replaced by the
+     wrapped full text. '.plain' marks rows with nothing more to show — see markClipped(). */
+  details.row { margin:0; }
+  details.row > summary { list-style:none; }
+  details.row > summary::-webkit-details-marker { display:none; }
+  details.row:not(.plain) > summary { cursor:pointer; }
+  details.row:not(.plain) > summary:hover { background: var(--vscode-list-hoverBackground); border-radius:4px; }
+  details.row.plain > summary { cursor:default; }
+  /* No body block: unwrap the label itself so the tail that was clipped becomes readable. */
+  details.row[open] > summary .lbl { white-space:pre-wrap; word-break:break-word; overflow:visible; text-overflow:clip; }
+  /* With a body block the label would just repeat its first line. */
+  details.row.hasfull[open] > summary .lbl { display:none; }
+  .full { margin:6px 0 2px 17px; padding:8px 10px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); border-radius:4px; white-space:pre-wrap; word-break:break-word; font-family: var(--vscode-editor-font-family); font-size:.88em; line-height:1.5; max-height:420px; overflow:auto; }
   .empty { color: var(--vscode-descriptionForeground); font-style:italic; }
   .warn { color:#d29922; font-size:.85em; margin-top:6px; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
@@ -297,6 +306,8 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
   let fontPx = savedState.fontPx || 15;
   function applyFont() {
     document.body.style.fontSize = fontPx + 'px';
+    // Bigger text clips more labels, smaller text clips fewer — re-measure after every change.
+    markClipped();
     vscodeApi.setState(Object.assign({}, vscodeApi.getState(), { fontPx }));
   }
   applyFont();
@@ -422,17 +433,22 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
           // Commands hover the command as it actually ran, wrapper and all — the row shows
           // the unwrapped form, but that is not what you would paste to reproduce it.
           const hover = it.raw && it.raw !== it.label ? it.raw : it.label;
-          const head = '<div class="it-head"><span class="dot ' + esc(it.status) + '"></span>' +
+          const head = '<summary class="it-head"><span class="dot ' + esc(it.status) + '"></span>' +
             '<span class="kind k-' + esc(it.kind) + '">' + esc(t('cx.kind.'+it.kind)) + '</span>' +
-            '<span class="lbl" title="' + esc(hover) + '">' + esc(it.label) + '</span>' + durStr + '</div>';
-          let bodyHtml = '';
-          if (it.body && it.body.length > it.label.length) {
-            const dkey = run.stamp + ' ' + it.id;
-            const openAttr = openDetails[dkey] ? ' open' : '';
-            bodyHtml = '<details class="say" data-dkey="' + esc(dkey) + '"' + openAttr + '><summary>' +
-              esc(t('cx.readMore')) + '</summary><div class="full">' + esc(it.body) + '</div></details>';
-          }
-          return '<div class="it">' + head + bodyHtml + '</div>';
+            '<span class="lbl" title="' + esc(hover) + '">' + esc(it.label) + '</span>' + durStr + '</summary>';
+          // What opening the row reveals: the full message text for a message, and for a
+          // command the wrapped form — what you would actually paste to re-run it.
+          const full = it.body || it.raw || '';
+          const hasFull = !!full && full !== it.label;
+          // A label the parser itself truncated is known-clipped without measuring. Everything
+          // else depends on the panel's width, so markClipped() decides after layout.
+          const more = !!(it.body && it.body.length > it.label.length);
+          const dkey = run.stamp + ' ' + it.id;
+          const openAttr = openDetails[dkey] ? ' open' : '';
+          return '<div class="it"><details class="row' + (hasFull ? ' hasfull' : '') +
+            '" data-dkey="' + esc(dkey) + '" data-more="' + (more ? '1' : '0') + '"' + openAttr + '>' +
+            head + (hasFull ? '<div class="full">' + esc(full) + '</div>' : '') +
+            '</details></div>';
       }
 
       // Runs are dominated by routine tool calls — 76% of the rows in a measured EDIT run were
@@ -513,7 +529,23 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
       '</div>';
     }).join('');
     tick();
+    markClipped();
   }
+
+  // Whether a row is worth opening is a layout question: the same label fits at one panel
+  // width and is cut at another, so it can only be answered after the browser has laid the
+  // list out. Rows with nothing more to reveal get '.plain' and stop responding to clicks —
+  // a row that opens onto the text you were already reading is worse than no affordance.
+  // Open rows are skipped: their label is wrapped or hidden, so it would measure as "fits".
+  function markClipped() {
+    document.querySelectorAll('details.row').forEach(function (d) {
+      if (d.open) return;
+      const lbl = d.querySelector('.lbl');
+      const clipped = !!lbl && lbl.scrollWidth > lbl.clientWidth + 1;
+      d.classList.toggle('plain', d.getAttribute('data-more') !== '1' && !clipped);
+    });
+  }
+  window.addEventListener('resize', markClipped);
 
   document.addEventListener('click', e => {
     const fb = e.target.closest('[data-font]');
@@ -525,6 +557,9 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
     if (op) { vscodeApi.postMessage({ type:'open', path: op.getAttribute('data-open') }); return; }
     const del = e.target.closest('[data-del]');
     if (del) { vscodeApi.postMessage({ type:'delete', stamp: del.getAttribute('data-del') }); return; }
+    // A fully-visible row has nothing to open; swallow the click so it doesn't flicker.
+    const plain = e.target.closest('details.row.plain > summary');
+    if (plain) { e.preventDefault(); return; }
     const head = e.target.closest('.run-head');
     if (head) {
       const card = head.closest('.run');
@@ -535,7 +570,22 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
   });
   document.addEventListener('toggle', e => {
     const d = e.target;
-    if (d && d.matches && d.matches('details[data-dkey]')) openDetails[d.getAttribute('data-dkey')] = d.open;
+    if (!d || !d.matches || !d.matches('details[data-dkey]')) return;
+    openDetails[d.getAttribute('data-dkey')] = d.open;
+    if (d.open) {
+      // Accordion: an opened row is a wall of text, and two of them side by side leave no
+      // list to navigate by. Command groups are containers, not text, so they are exempt.
+      if (d.matches('details.row')) {
+        document.querySelectorAll('details.row[open]').forEach(function (other) {
+          if (other === d) return;
+          other.open = false;
+          openDetails[other.getAttribute('data-dkey')] = false;
+        });
+      }
+    } else {
+      // Closing restores the one-line label, which is measurable again.
+      markClipped();
+    }
   }, true);
 
   window.addEventListener('message', e => {

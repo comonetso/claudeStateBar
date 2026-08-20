@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.9.3] - 2026-08-21
+
+> **Rows that were cut off now open where they are.** A message wider than the panel ended in an
+> ellipsis and stayed there. Reading it meant spotting a separate "show full text" line
+> underneath — and rows that weren't messages didn't get one at all.
+
+### Click the row
+
+Any activity row whose label doesn't fit opens in place, wrapped across as many lines as it
+needs. Messages and reasoning open onto the whole message. A command opens onto the form that
+actually ran, shell wrapper and all, which is what you would paste to reproduce it.
+
+Rows that already fit don't respond to the click and their cursor doesn't change. Whether a
+label is cut depends on how wide the panel happens to be, so it's measured once the list is laid
+out, and measured again when you resize the window or change the font size.
+
+Only one row stays open at a time — opening a second closes the first. An expanded message runs
+a paragraph or more, and two of them at once leave no list to navigate by. Command groups are
+not affected; they hold rows rather than text.
+
+The separate "show full text" line is gone.
+
 ## [1.9.2] - 2026-08-19
 
 > **The Codex progress panel works over Remote-SSH.** Since 1.9.0 it had been telling every
