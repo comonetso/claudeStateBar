@@ -9,9 +9,10 @@ import { fetchUsage, AuthExpiredError, CloudflareBlockedError, NormalizedUsage, 
 import * as telegram from './telegram';
 import * as blockPrimer from './blockPrimer';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
-import { createOrShowWorkflowPanel, pushWorkflows, getTrackedSessionFile, pushLanguage } from './workflowPanel';
-import { createOrShowCodexPanel, pushRuns, pushCodexLanguage, isCodexPanelOpen, CodexRunView } from './codexRescuePanel';
-import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runCacheKey, deleteRun, cleanupOldRuns, CleanupResult, RunPhase } from './providers/codexRescue/runDiscovery';
+import { createOrShowWorkflowPanel, pushWorkflows, pushWorkflowTrash, getTrackedSessionFile, pushLanguage } from './workflowPanel';
+import { createOrShowCodexPanel, pushRuns, pushTrash, pushCodexLanguage, isCodexPanelOpen, CodexRunView, CodexTrashView } from './codexRescuePanel';
+import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runCacheKey, deleteRun, cleanupOldRuns, CleanupResult, RunPhase,
+         trashRun, listTrash, restoreTrashed, purgeTrashed, emptyTrash } from './providers/codexRescue/runDiscovery';
 import { getDict, Lang } from './i18n';
 import { readTextFile } from './core/fs';
 import { log, setLogChannel, getLogChannel } from './core/logger';
@@ -551,8 +552,45 @@ export function activate(context: vscode.ExtensionContext) {
                                 deleteBtn
                             );
                             if (confirm !== deleteBtn) return;
-                            await deleteWorkflowDir(sessionFile, wfId);
+                            // Carry the name and agent count into the trash: wf_a1b2c3 tells you
+                            // nothing about what you deleted, and the journal that would have
+                            // told you is inside the bin you'd have to restore to read.
+                            const before = await findWorkflowsForSession(sessionFile);
+                            const target = before.find(w => w.wfId === wfId);
+                            if (await trashWorkflowDir(sessionFile, wfId, target?.name, target?.agents.length ?? 0)) {
+                                vscode.window.setStatusBarMessage(planT('wf.trash.trashed'), 5000);
+                            }
                             pushWorkflows(await findWorkflowsForSession(sessionFile));
+                            void pushWfTrash(sessionFile);
+                        },
+                        onTrashOpen: () => { void pushWfTrash(sessionFile); },
+                        onRestore: async (wfId: string) => {
+                            if (await restoreWorkflow(sessionFile, wfId)) {
+                                vscode.window.setStatusBarMessage(planT('wf.trash.restored', wfId), 5000);
+                            } else {
+                                vscode.window.showWarningMessage(planT('wf.trash.conflict', wfId));
+                            }
+                            pushWorkflows(await findWorkflowsForSession(sessionFile));
+                            void pushWfTrash(sessionFile);
+                        },
+                        onPurge: async (wfId: string) => {
+                            const deleteBtn = planT('common.delete');
+                            const ok = await vscode.window.showWarningMessage(
+                                planT('wf.trash.purgeConfirm', wfId), { modal: true }, deleteBtn);
+                            if (ok !== deleteBtn) return;
+                            await purgeWorkflow(sessionFile, wfId);
+                            void pushWfTrash(sessionFile);
+                        },
+                        onEmptyTrash: async () => {
+                            const items = await listWorkflowTrash(sessionFile);
+                            if (!items.length) return;
+                            const emptyBtn = planT('wf.trash.empty');
+                            const ok = await vscode.window.showWarningMessage(
+                                planT('wf.trash.emptyConfirm', items.length), { modal: true }, emptyBtn);
+                            if (ok !== emptyBtn) return;
+                            const n = await emptyWorkflowTrash(sessionFile);
+                            vscode.window.showInformationMessage(planT('wf.trash.emptied', n));
+                            void pushWfTrash(sessionFile);
                         }
                     });
                 }
@@ -628,20 +666,63 @@ export function activate(context: vscode.ExtensionContext) {
                 const logsOnly = planT('cx.del.logsOnly');
                 const withDocs = planT('cx.del.withDocs');
                 const choice = await vscode.window.showWarningMessage(
-                    planT('cx.del.ask', target.slug), { modal: true }, logsOnly, withDocs
+                    planT('cx.del.ask', target.subject || target.slug), { modal: true }, logsOnly, withDocs
                 );
                 if (choice !== logsOnly && choice !== withDocs) return;
-                const deleteDocs = choice === withDocs;
-                const res: CleanupResult = { removedRuns: 0, removedFiles: 0, freedBytes: 0, skippedLive: 0 };
+                let moved = false;
                 for (const f of vscode.workspace.workspaceFolders || []) {
-                    if (await deleteRun(f.uri, stamp, target.slug, deleteDocs, res)) break;
+                    if (await trashRun(f.uri, stamp, target.slug, choice === withDocs,
+                                       target.subject, target.mode, Date.now())) { moved = true; break; }
                 }
-                if (res.skippedLive) {
+                if (!moved) {
+                    // Either the lock is still held or the files were already gone; the lock is
+                    // the case worth naming, since it's the one the user can act on.
                     vscode.window.showWarningMessage(planT('cx.del.skippedLive'));
                 } else {
-                    log(`[codex-rescue] deleted ${stamp}: ${res.removedFiles} files, ${Math.round(res.freedBytes / 1024)}KB`);
+                    log(`[codex-rescue] trashed ${stamp}`);
+                    vscode.window.setStatusBarMessage(planT('cx.del.trashed'), 5000);
                 }
                 void syncCodexRuns();
+                void pushCodexTrash();
+            },
+            onTrashOpen: () => { void pushCodexTrash(); },
+            onRestore: async (stamp: string) => {
+                for (const f of vscode.workspace.workspaceFolders || []) {
+                    const res = await restoreTrashed(f.uri, stamp);
+                    if (!res.restored && !res.conflicts.length) continue;
+                    if (res.conflicts.length) {
+                        vscode.window.showWarningMessage(planT('cx.trash.conflict', res.conflicts.length));
+                    } else {
+                        vscode.window.setStatusBarMessage(planT('cx.trash.restored', stamp), 5000);
+                    }
+                    log(`[codex-rescue] restored ${stamp}: ${res.restored} file(s), ${res.conflicts.length} conflict(s)`);
+                    break;
+                }
+                void syncCodexRuns();
+                void pushCodexTrash();
+            },
+            onPurge: async (stamp: string) => {
+                const deleteBtn = planT('common.delete');
+                const ok = await vscode.window.showWarningMessage(
+                    planT('cx.trash.purgeConfirm', stamp), { modal: true }, deleteBtn);
+                if (ok !== deleteBtn) return;
+                for (const f of vscode.workspace.workspaceFolders || []) {
+                    if (await purgeTrashed(f.uri, stamp)) { log(`[codex-rescue] purged ${stamp}`); break; }
+                }
+                void pushCodexTrash();
+            },
+            onEmptyTrash: async () => {
+                const items = await collectCodexTrash();
+                if (!items.length) return;
+                const emptyBtn = planT('cx.trash.empty');
+                const ok = await vscode.window.showWarningMessage(
+                    planT('cx.trash.emptyConfirm', items.length), { modal: true }, emptyBtn);
+                if (ok !== emptyBtn) return;
+                let n = 0;
+                for (const f of vscode.workspace.workspaceFolders || []) n += await emptyTrash(f.uri);
+                log(`[codex-rescue] emptied trash: ${n} run(s)`);
+                vscode.window.showInformationMessage(planT('cx.trash.emptied', n));
+                void pushCodexTrash();
             }
         });
     });
@@ -1329,7 +1410,7 @@ async function parseTaskAgent(
 
 // Scan subagents/ for Task-subagent logs (agent-*.jsonl, NOT under workflows/) and
 // bundle them into a single pseudo-workflow. wfId = 'tasks' (does NOT start with
-// 'wf_'), so the delete path (deleteWorkflowDir) naturally refuses it. Returns null
+// 'wf_'), so the trash path (trashWorkflowDir) naturally refuses it. Returns null
 // when there are no Task agents.
 // Bundle the flat subagents/agent-*.jsonl logs into ONE pseudo-workflow PER BATCH. Agents
 // spun up together (a fan-out) share a near-identical start time; a batch launched later
@@ -1597,19 +1678,127 @@ async function readWorkflowTerminalStatus(sessionFileUri: string, wfId: string):
 
 // Delete a workflow's data directory (.../subagents/workflows/<wfId>/). Used by the
 // panel's delete button. Returns true on success.
-async function deleteWorkflowDir(sessionFileUri: string, wfId: string): Promise<boolean> {
+// --- Workflow trash -------------------------------------------------------
+//
+// The Codex panel's counterpart, and for the same reason: a workflow's journal and agent logs
+// live under ~/.claude and are not in any repository, so the delete button used to be the end
+// of them. Trashed workflows move to `workflows/.trash/<wfId>/`, which the discovery loop
+// already skips — it only descends into names starting with `wf_`.
+
+export interface TrashedWorkflow {
+    wfId: string;
+    name?: string;
+    deletedAt: number;
+    agentCount: number;
+}
+
+function workflowsDirOf(sessionFileUri: string): vscode.Uri {
+    const uri = vscode.Uri.parse(sessionFileUri);
+    const sessionDirUri = uri.with({ path: uri.path.replace(/\.jsonl$/, '') });
+    return vscode.Uri.joinPath(sessionDirUri, 'subagents', 'workflows');
+}
+
+/** Move a workflow into the trash. Returns false when it isn't there or the move fails. */
+async function trashWorkflowDir(sessionFileUri: string, wfId: string,
+                                name: string | undefined, agentCount: number): Promise<boolean> {
     if (!wfId.startsWith('wf_')) return false;
     try {
-        const uri = vscode.Uri.parse(sessionFileUri);
-        const sessionDirUri = uri.with({ path: uri.path.replace(/\.jsonl$/, '') });
-        const wfDirUri = vscode.Uri.joinPath(sessionDirUri, 'subagents', 'workflows', wfId);
-        await vscode.workspace.fs.delete(wfDirUri, { recursive: true, useTrash: false });
-        log(`[workflows] deleted ${wfId}`);
+        const wfRoot = workflowsDirOf(sessionFileUri);
+        const trashRoot = vscode.Uri.joinPath(wfRoot, '.trash');
+        await vscode.workspace.fs.createDirectory(trashRoot);
+        const dst = vscode.Uri.joinPath(trashRoot, wfId);
+        // Re-trashing the same id would otherwise fail on an existing destination.
+        try { await vscode.workspace.fs.delete(dst, { recursive: true, useTrash: false }); } catch { /* absent */ }
+        await vscode.workspace.fs.rename(vscode.Uri.joinPath(wfRoot, wfId), dst, { overwrite: true });
+        const meta = { schema: 1, wfId, name, agentCount, deletedAt: Date.now() };
+        await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(trashRoot, `${wfId}.json`),
+                                            Buffer.from(JSON.stringify(meta), 'utf8'));
+        log(`[workflows] trashed ${wfId}`);
         return true;
     } catch (e) {
-        log(`[workflows] delete failed for ${wfId}: ${e}`);
+        log(`[workflows] trash failed for ${wfId}: ${e}`);
         return false;
     }
+}
+
+async function listWorkflowTrash(sessionFileUri: string): Promise<TrashedWorkflow[]> {
+    const trashRoot = vscode.Uri.joinPath(workflowsDirOf(sessionFileUri), '.trash');
+    let entries: [string, vscode.FileType][];
+    try {
+        entries = await vscode.workspace.fs.readDirectory(trashRoot);
+    } catch {
+        return [];
+    }
+    const out: TrashedWorkflow[] = [];
+    for (const [name, type] of entries) {
+        if (!(type & vscode.FileType.Directory) || !name.startsWith('wf_')) continue;
+        let meta: any = null;
+        try {
+            const raw = Buffer.from(await vscode.workspace.fs.readFile(
+                vscode.Uri.joinPath(trashRoot, `${name}.json`)));
+            meta = JSON.parse(raw.toString('utf8'));
+        } catch { /* metadata is a convenience, not a requirement */ }
+        out.push({
+            wfId: name,
+            name: meta?.name,
+            deletedAt: typeof meta?.deletedAt === 'number' ? meta.deletedAt : 0,
+            agentCount: typeof meta?.agentCount === 'number' ? meta.agentCount : 0,
+        });
+    }
+    return out.sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+/** Put a trashed workflow back. Refuses when a live workflow already holds that id. */
+async function restoreWorkflow(sessionFileUri: string, wfId: string): Promise<boolean> {
+    if (!wfId.startsWith('wf_')) return false;
+    try {
+        const wfRoot = workflowsDirOf(sessionFileUri);
+        const dst = vscode.Uri.joinPath(wfRoot, wfId);
+        try {
+            await vscode.workspace.fs.stat(dst);
+            log(`[workflows] restore refused for ${wfId}: id already in use`);
+            return false;
+        } catch { /* free — proceed */ }
+        const trashRoot = vscode.Uri.joinPath(wfRoot, '.trash');
+        await vscode.workspace.fs.rename(vscode.Uri.joinPath(trashRoot, wfId), dst, { overwrite: false });
+        try {
+            await vscode.workspace.fs.delete(vscode.Uri.joinPath(trashRoot, `${wfId}.json`), { useTrash: false });
+        } catch { /* metadata may not exist */ }
+        log(`[workflows] restored ${wfId}`);
+        return true;
+    } catch (e) {
+        log(`[workflows] restore failed for ${wfId}: ${e}`);
+        return false;
+    }
+}
+
+async function purgeWorkflow(sessionFileUri: string, wfId: string): Promise<boolean> {
+    if (!wfId.startsWith('wf_')) return false;
+    const trashRoot = vscode.Uri.joinPath(workflowsDirOf(sessionFileUri), '.trash');
+    let ok = false;
+    try {
+        await vscode.workspace.fs.delete(vscode.Uri.joinPath(trashRoot, wfId),
+                                         { recursive: true, useTrash: false });
+        ok = true;
+    } catch (e) {
+        log(`[workflows] purge failed for ${wfId}: ${e}`);
+    }
+    try {
+        await vscode.workspace.fs.delete(vscode.Uri.joinPath(trashRoot, `${wfId}.json`), { useTrash: false });
+    } catch { /* metadata may not exist */ }
+    return ok;
+}
+
+async function pushWfTrash(sessionFileUri: string): Promise<void> {
+    pushWorkflowTrash(await listWorkflowTrash(sessionFileUri));
+}
+
+async function emptyWorkflowTrash(sessionFileUri: string): Promise<number> {
+    let n = 0;
+    for (const it of await listWorkflowTrash(sessionFileUri)) {
+        if (await purgeWorkflow(sessionFileUri, it.wfId)) n++;
+    }
+    return n;
 }
 
 // Clear the COMPLETED Task-subagent logs (agent-*.jsonl + paired .meta.json) for a
@@ -2670,6 +2859,20 @@ async function workspaceUsesCodexRescue(): Promise<boolean> {
 }
 
 /** Scan every workspace folder — local or remote — and shape the runs for the panel. */
+/** Everything in the trash across all open folders, newest deletion first. */
+async function collectCodexTrash(): Promise<CodexTrashView[]> {
+    const out: CodexTrashView[] = [];
+    for (const f of vscode.workspace.workspaceFolders || []) {
+        out.push(...await listTrash(f.uri));
+    }
+    return out.sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+async function pushCodexTrash(): Promise<void> {
+    if (!isCodexPanelOpen()) return;
+    pushTrash(await collectCodexTrash());
+}
+
 async function collectCodexRuns(): Promise<CodexRunView[]> {
     const now = Date.now();
     const out: CodexRunView[] = [];

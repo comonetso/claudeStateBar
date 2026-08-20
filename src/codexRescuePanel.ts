@@ -46,10 +46,26 @@ export interface CodexRunView {
     staleForMs?: number;
 }
 
+/** One trashed run as the panel lists it. Mirrors TrashedRun from runDiscovery. */
+export interface CodexTrashView {
+    stamp: string;
+    slug: string;
+    subject?: string;
+    deletedAt: number;
+    fileCount: number;
+    bytes: number;
+    docsIncluded: boolean;
+}
+
 export interface CodexPanelCallbacks {
     onOpenDoc: (docUri: string) => void;
     /** User clicked a run's delete button (confirmation happens on the extension side). */
     onDelete: (stamp: string) => void;
+    /** User opened the trash drawer — the host answers with pushTrash(). */
+    onTrashOpen: () => void;
+    onRestore: (stamp: string) => void;
+    onPurge: (stamp: string) => void;
+    onEmptyTrash: () => void;
 }
 
 let panel: vscode.WebviewPanel | null = null;
@@ -148,8 +164,22 @@ export function createOrShowCodexPanel(
             callbacks?.onOpenDoc(msg.path);
         } else if (msg?.type === 'delete' && typeof msg.stamp === 'string') {
             callbacks?.onDelete(msg.stamp);
+        } else if (msg?.type === 'trashOpen') {
+            callbacks?.onTrashOpen();
+        } else if (msg?.type === 'restore' && typeof msg.stamp === 'string') {
+            callbacks?.onRestore(msg.stamp);
+        } else if (msg?.type === 'purge' && typeof msg.stamp === 'string') {
+            callbacks?.onPurge(msg.stamp);
+        } else if (msg?.type === 'emptyTrash') {
+            callbacks?.onEmptyTrash();
         }
     }, null, context.subscriptions);
+}
+
+/** Hand the trash drawer its contents. Unconditional: the drawer is only open on request. */
+export function pushTrash(items: CodexTrashView[]): void {
+    if (!panel) return;
+    panel.webview.postMessage({ type: 'trash', items });
 }
 
 export function pushRuns(runs: CodexRunView[]): void {
@@ -268,18 +298,45 @@ function getHtml(webview: vscode.Webview): string {
   details.row.hasfull[open] > summary .lbl { display:none; }
   .full { margin:6px 0 2px 17px; padding:8px 10px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); border-radius:4px; white-space:pre-wrap; word-break:break-word; font-family: var(--vscode-editor-font-family); font-size:.88em; line-height:1.5; max-height:420px; overflow:auto; }
   .empty { color: var(--vscode-descriptionForeground); font-style:italic; }
+
+  /* Trash drawer. Sits above the list rather than replacing it: what you deleted only makes
+     sense next to what you kept, and restoring is usually a comparison, not a lookup. */
+  .trash { border:1px dashed var(--vscode-panel-border); border-radius:6px;
+    padding:10px 14px; margin-bottom:14px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.06)); }
+  .trash-head { display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
+  .trash-note { color: var(--vscode-descriptionForeground); font-size:.8em; }
+  .trash-row { display:flex; align-items:baseline; gap:8px; padding:5px 0;
+    border-top:1px solid var(--vscode-panel-border); }
+  .trash-row:first-child { border-top:none; }
+  .trash-name { font-weight:600; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .trash-meta { color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; }
+  .tbtn { background:transparent; color: var(--vscode-textLink-foreground); border:1px solid var(--vscode-panel-border);
+    border-radius:4px; padding:1px 9px; cursor:pointer; font-size:.85em; flex-shrink:0; }
+  .tbtn:hover { background: var(--vscode-list-hoverBackground); }
+  .tbtn.danger { color: var(--vscode-statusBarItem-errorBackground, #f85149); }
   .warn { color:#d29922; font-size:.85em; margin-top:6px; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
 </style>
 </head>
 <body>
   <div class="toolbar">
+    <button class="fbtn" data-trash="toggle"><span data-i18n="cx.trash.btn">🗑 Trash</span></button>
+    <span class="spacer"></span>
     <span class="flabel" data-i18n="wf.fontSize">Font size</span>
     <button class="fbtn" data-font="dec" data-i18n-title="wf.fontSmaller" title="Smaller">A−</button>
     <button class="fbtn" data-font="inc" data-i18n-title="wf.fontLarger" title="Larger">A+</button>
   </div>
   <h1 data-i18n="cx.title">🔶 Codex Runs</h1>
 ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
+  <div id="trash" class="trash" style="display:none">
+    <div class="trash-head">
+      <strong data-i18n="cx.trash.title">Trash</strong>
+      <span class="trash-note" data-i18n="cx.trash.note">Deleted runs are kept here until you empty it.</span>
+      <span class="spacer"></span>
+      <button class="fbtn" data-trash="empty" data-i18n="cx.trash.empty">Empty trash</button>
+    </div>
+    <div id="trash-list"></div>
+  </div>
   <div id="list"></div>
 <script nonce="${nonce}">
   const vscodeApi = acquireVsCodeApi();
@@ -547,12 +604,53 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
   }
   window.addEventListener('resize', markClipped);
 
+  // --- Trash drawer -------------------------------------------------------
+  let trashOpen = false;
+  function toggleTrash() {
+    trashOpen = !trashOpen;
+    document.getElementById('trash').style.display = trashOpen ? '' : 'none';
+    // Ask on every open rather than caching: the host is the only thing that knows what is
+    // actually on disk, and a run can be deleted from another window between two opens.
+    if (trashOpen) vscodeApi.postMessage({ type: 'trashOpen' });
+  }
+  function renderTrash(items) {
+    const box = document.getElementById('trash-list');
+    if (!items.length) {
+      box.innerHTML = '<div class="empty">' + esc(t('cx.trash.none')) + '</div>';
+      return;
+    }
+    box.innerHTML = items.map(function (it) {
+      const kb = Math.max(1, Math.round((it.bytes||0)/1024));
+      const what = it.docsIncluded ? t('cx.trash.withDocs') : t('cx.trash.logsOnly');
+      return '<div class="trash-row">' +
+        '<span class="trash-name" title="' + esc(it.slug) + '">' + esc(it.subject || it.slug) + '</span>' +
+        '<span class="trash-meta">' + esc(it.stamp) + ' · ' + esc(what) + ' · ' +
+          esc(t('cx.trash.files', it.fileCount, kb)) + '</span>' +
+        '<span class="spacer"></span>' +
+        '<span class="trash-meta">' + esc(t('cx.trash.deletedAt', fmtClock(it.deletedAt))) + '</span>' +
+        '<button class="tbtn" data-restore="' + esc(it.stamp) + '">' + esc(t('cx.trash.restore')) + '</button>' +
+        '<button class="tbtn danger" data-purge="' + esc(it.stamp) + '">' + esc(t('cx.trash.purge')) + '</button>' +
+      '</div>';
+    }).join('');
+  }
+
   document.addEventListener('click', e => {
     const fb = e.target.closest('[data-font]');
     if (fb) {
       fontPx = fb.getAttribute('data-font')==='inc' ? Math.min(28,fontPx+1) : Math.max(10,fontPx-1);
       applyFont(); return;
     }
+    const tt = e.target.closest('[data-trash]');
+    if (tt) {
+      const act = tt.getAttribute('data-trash');
+      if (act === 'toggle') toggleTrash();
+      else if (act === 'empty') vscodeApi.postMessage({ type: 'emptyTrash' });
+      return;
+    }
+    const rs = e.target.closest('[data-restore]');
+    if (rs) { vscodeApi.postMessage({ type: 'restore', stamp: rs.getAttribute('data-restore') }); return; }
+    const pg = e.target.closest('[data-purge]');
+    if (pg) { vscodeApi.postMessage({ type: 'purge', stamp: pg.getAttribute('data-purge') }); return; }
     const op = e.target.closest('[data-open]');
     if (op) { vscodeApi.postMessage({ type:'open', path: op.getAttribute('data-open') }); return; }
     const del = e.target.closest('[data-del]');
@@ -592,6 +690,7 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
     const m = e.data;
     if (m && m.type === 'i18n') { dict = m.dict || {}; applyI18n(); render(lastRuns, true); }
     else if (m && m.type === 'runs') render(m.runs);
+    else if (m && m.type === 'trash') renderTrash(m.items || []);
   });
   vscodeApi.postMessage({ type: 'ready' });
 </script>

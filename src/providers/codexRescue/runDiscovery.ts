@@ -560,3 +560,248 @@ export async function cleanupOldRuns(folderUri: vscode.Uri, opts: CleanupOptions
     }
     return res;
 }
+
+// ---------------------------------------------------------------------------
+// Trash
+//
+// Manual deletion moves files instead of unlinking them, because the two things a run leaves
+// behind have no other safety net: `.log/` is gitignored by design, and the request/response
+// documents are only recoverable through git once they have actually been committed. A misclick
+// on the 🗑 used to be final for both.
+//
+// Automatic cleanup deliberately does NOT come through here — it exists to reclaim disk, and a
+// trash that fills up as fast as cleanup empties the log directory would defeat its own purpose.
+//
+// Files are moved with fs.rename within the same directory tree, so this stays cheap on a remote
+// workspace: nothing is read into the extension host, only renamed on the far side.
+// ---------------------------------------------------------------------------
+
+/** One run sitting in the trash, as the panel shows it. */
+export interface TrashedRun {
+    stamp: string;
+    slug: string;
+    subject?: string;
+    mode?: string;
+    deletedAt: number;
+    fileCount: number;
+    bytes: number;
+    /** Whether the request/response documents went in too, or only the raw logs. */
+    docsIncluded: boolean;
+}
+
+/** Where a trashed file came from, so restore can put it back. */
+interface TrashEntry {
+    /** File name, unchanged. */
+    n: string;
+    /** Origin directory relative to docs/codex_rescue: '.log' or '.'. */
+    d: string;
+}
+
+interface TrashMeta {
+    schema: 1;
+    stamp: string;
+    slug: string;
+    subject?: string;
+    mode?: string;
+    deletedAt: number;
+    docsIncluded: boolean;
+    entries: TrashEntry[];
+}
+
+const TRASH_DIR = '.trash';
+
+function trashRoot(docsDir: vscode.Uri): vscode.Uri {
+    return vscode.Uri.joinPath(docsDir, TRASH_DIR);
+}
+
+/**
+ * The trash holds copies of documents that are otherwise tracked, so it must never itself become
+ * something git offers to commit — same reasoning (and same mechanism) as `.log/`.
+ */
+async function ensureTrashDir(docsDir: vscode.Uri): Promise<vscode.Uri> {
+    const root = trashRoot(docsDir);
+    await vscode.workspace.fs.createDirectory(root);
+    const ignore = vscode.Uri.joinPath(root, '.gitignore');
+    if (!await statOf(ignore)) {
+        try {
+            await vscode.workspace.fs.writeFile(ignore, Buffer.from('*\n', 'utf8'));
+        } catch { /* the directory still works without it */ }
+    }
+    return root;
+}
+
+async function readTrashMeta(dir: vscode.Uri): Promise<TrashMeta | null> {
+    try {
+        const raw = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(dir, 'meta.json')));
+        const m = JSON.parse(raw.toString('utf8'));
+        if (!m || typeof m.stamp !== 'string' || !Array.isArray(m.entries)) return null;
+        return m as TrashMeta;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Move one run's files into the trash. Same liveness rule as `deleteRun`: a run still holding
+ * its lock is left alone, because send.sh may be mid-write and moving a file out from under it
+ * would corrupt the record rather than preserve it.
+ *
+ * Returns false when nothing was moved (still locked, or no files found).
+ */
+export async function trashRun(folderUri: vscode.Uri, stamp: string, slug: string,
+                               includeDocs: boolean, subject: string | undefined, mode: string | undefined,
+                               nowMs: number): Promise<boolean> {
+    if (!/^\d{6}_\d{6}$/.test(stamp)) return false;
+    const docsDir = await codexRescueDocsDir(folderUri);
+    if (!docsDir) return false;
+    const logDir = vscode.Uri.joinPath(docsDir, '.log');
+
+    if (await statOf(vscode.Uri.joinPath(logDir, `.${stamp}.lock`))) return false;
+
+    const root = await ensureTrashDir(docsDir);
+    const bin = vscode.Uri.joinPath(root, stamp);
+    // A run can be trashed, restored and trashed again; start from a clean bin each time so a
+    // stale meta.json can never claim files that are no longer there.
+    try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* absent */ }
+    await vscode.workspace.fs.createDirectory(bin);
+
+    const entries: TrashEntry[] = [];
+    const move = async (src: vscode.Uri, name: string, origin: string): Promise<void> => {
+        if (!await statOf(src)) return;
+        try {
+            await vscode.workspace.fs.rename(src, vscode.Uri.joinPath(bin, name), { overwrite: true });
+            entries.push({ n: name, d: origin });
+        } catch { /* locked by AV or permission — skip, never fatal */ }
+    };
+
+    for (const name of [`${stamp}_events.jsonl`, `${stamp}_status.json`, `${stamp}_stderr.log`,
+                        `${stamp}_last_message.md`, `${stamp}_heartbeat`]) {
+        await move(vscode.Uri.joinPath(logDir, name), name, '.log');
+    }
+    if (includeDocs && slug && slug !== '(unknown)') {
+        for (const kind of ['request', 'response', 'review']) {
+            const name = `${stamp}_${kind}_${slug}.md`;
+            await move(vscode.Uri.joinPath(docsDir, name), name, '.');
+        }
+    }
+
+    if (!entries.length) {
+        try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* ignore */ }
+        return false;
+    }
+
+    const meta: TrashMeta = {
+        schema: 1, stamp, slug, subject, mode, deletedAt: nowMs,
+        docsIncluded: entries.some(e => e.d === '.'), entries,
+    };
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(bin, 'meta.json'),
+                                        Buffer.from(JSON.stringify(meta), 'utf8'));
+
+    const key = runCacheKey(logDir, stamp);
+    tails.delete(key);
+    settled.delete(key);
+    return true;
+}
+
+/** Everything currently in the trash, newest deletion first. */
+export async function listTrash(folderUri: vscode.Uri): Promise<TrashedRun[]> {
+    const docsDir = await codexRescueDocsDir(folderUri);
+    if (!docsDir) return [];
+    const root = trashRoot(docsDir);
+    let dirs: [string, vscode.FileType][];
+    try {
+        dirs = await vscode.workspace.fs.readDirectory(root);
+    } catch {
+        return [];   // no trash yet
+    }
+
+    const out: TrashedRun[] = [];
+    for (const [name, type] of dirs) {
+        if (!(type & vscode.FileType.Directory)) continue;
+        const bin = vscode.Uri.joinPath(root, name);
+        const meta = await readTrashMeta(bin);
+        if (!meta) continue;
+        let bytes = 0, fileCount = 0;
+        for (const e of meta.entries) {
+            const st = await statOf(vscode.Uri.joinPath(bin, e.n));
+            if (!st) continue;
+            bytes += st.size;
+            fileCount++;
+        }
+        out.push({
+            stamp: meta.stamp, slug: meta.slug, subject: meta.subject, mode: meta.mode,
+            deletedAt: meta.deletedAt, fileCount, bytes, docsIncluded: meta.docsIncluded,
+        });
+    }
+    return out.sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+export interface RestoreResult {
+    restored: number;
+    /** Files left in the trash because something already occupies their original path. */
+    conflicts: string[];
+}
+
+/**
+ * Put a trashed run back where it came from.
+ *
+ * An existing file at the destination is never overwritten. codex_rescue re-runs a dead request
+ * under the SAME stamp, so the name a trashed file wants can legitimately belong to newer work —
+ * silently overwriting it would destroy the very thing the user kept.
+ */
+export async function restoreTrashed(folderUri: vscode.Uri, stamp: string): Promise<RestoreResult> {
+    const res: RestoreResult = { restored: 0, conflicts: [] };
+    if (!/^\d{6}_\d{6}$/.test(stamp)) return res;
+    const docsDir = await codexRescueDocsDir(folderUri);
+    if (!docsDir) return res;
+    const bin = vscode.Uri.joinPath(trashRoot(docsDir), stamp);
+    const meta = await readTrashMeta(bin);
+    if (!meta) return res;
+
+    const logDir = vscode.Uri.joinPath(docsDir, '.log');
+    await vscode.workspace.fs.createDirectory(logDir);
+
+    for (const e of meta.entries) {
+        const src = vscode.Uri.joinPath(bin, e.n);
+        if (!await statOf(src)) continue;
+        const dst = e.d === '.log' ? vscode.Uri.joinPath(logDir, e.n) : vscode.Uri.joinPath(docsDir, e.n);
+        if (await statOf(dst)) { res.conflicts.push(e.n); continue; }
+        try {
+            await vscode.workspace.fs.rename(src, dst, { overwrite: false });
+            res.restored++;
+        } catch {
+            res.conflicts.push(e.n);
+        }
+    }
+
+    // Only retire the bin once everything is out; otherwise the conflicting files would be
+    // deleted by the cleanup below, which is the opposite of what restore promises.
+    if (!res.conflicts.length) {
+        try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* ignore */ }
+    }
+    return res;
+}
+
+/** Delete one trashed run for good. */
+export async function purgeTrashed(folderUri: vscode.Uri, stamp: string): Promise<boolean> {
+    if (!/^\d{6}_\d{6}$/.test(stamp)) return false;
+    const docsDir = await codexRescueDocsDir(folderUri);
+    if (!docsDir) return false;
+    try {
+        await vscode.workspace.fs.delete(vscode.Uri.joinPath(trashRoot(docsDir), stamp),
+                                         { recursive: true, useTrash: false });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** Empty the trash. Returns how many runs were removed. */
+export async function emptyTrash(folderUri: vscode.Uri): Promise<number> {
+    const items = await listTrash(folderUri);
+    let n = 0;
+    for (const it of items) {
+        if (await purgeTrashed(folderUri, it.stamp)) n++;
+    }
+    return n;
+}

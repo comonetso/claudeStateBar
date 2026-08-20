@@ -111,7 +111,7 @@ Everything else is **shared between Claude and Codex** — warning/danger thresh
 - **No Codex workflow / sub‑agent viewer in this extension** — clicking a Codex session does not open the Claude workflow menu. Explicit spawned-agent links are read only for the all-agents-complete sound; Codex's own background-agent panel remains the place to inspect or open individual threads.
 - **Codex sub‑agent sessions are not shown as status-bar items** — spawned-agent rollouts are aggregated under their parent turn for the completion sound, while internal guardian rollouts remain excluded.
 - **No Codex question‑pause beep or stuck detection yet.**
-- **No Codex log deletion.**
+- **No deletion of Codex rollout/session logs.** (The Codex Runs panel does delete `codex_rescue` run records, but only when you ask it to — see that section.)
 - **Account usage is queried from your *local* `codex`, even in a Remote‑SSH window** — the live query runs the **local** `codex` executable, so the figures reflect your local account. With the same ChatGPT account the numbers are identical; with a different account they can differ. (Context monitoring is unaffected — it reads the remote files correctly.)
 - **If `codex` isn't available or the app‑server query fails, the context monitor keeps working normally** — only usage falls back to the log snapshot. The query has a **15‑second timeout**, and the helper process is cleaned up every time (verified in practice: no process leaks).
 - **Sidebar selection uses an internal OpenAI log marker as a compatibility fallback.** Active Codex editor tabs use the stable VS Code tab URI. The newest `active=true` UUID is retained per window because `active=false` also means ordinary window focus loss. On Remote‑SSH, the local window is matched to its remote OpenAI extension-host log by process ID, with activation time as a bounded fallback. A future OpenAI log-format change can temporarily reduce a sidebar-only window to the account-only item. `scope: all` intentionally remains a recent-session list.
@@ -156,6 +156,7 @@ Open the **Workflow Viewer** from the session QuickPick menu to see a live WebVi
 - **Role labels** — each agent's role is auto‑extracted from its prompt header, so you see "Lens A: Bug Detection" instead of "agent-1"
 - **Task (Agent tool) sub‑agents** — sub‑agents spawned via Claude Code's Agent tool are shown separately, grouped into **batches by start time** (5‑minute gap = new batch)
 - **Per‑batch 🗑 cleanup** — delete finished task‑agent logs for a specific batch while keeping any still‑running agents untouched
+- **Trash** — deleting a workflow moves it aside instead of destroying it. Open 🗑 at the top of the panel to restore it or delete it for good
 - **Details-open persistence** — expanded `<details>` panels stay open across live re‑renders
 - **Font size control** — `A−` / `A+` buttons adjust the panel text size
 - **Bilingual UI** — full EN / 한국어 toggle, same as the settings panel
@@ -172,11 +173,11 @@ With the skill installed, open it from the status-bar menu or `claudeStateBar: S
 
 - **What Codex just said** — its own narration of what it's about to do, far more useful than a spinner
 - **Commands, searches, file changes, MCP calls** — colour-coded by kind, commands with their exit code. Runs of consecutive successful commands or searches fold into one line you can expand; **failures never fold**, so they stay visible
-- **Nothing cut off for good** — a row too wide for the panel opens in place when you click it, wrapped. Messages open onto the whole message, commands onto the form that actually ran. One row stays open at a time
+- **Clipped rows open in place** — a row too wide for the panel expands where it is, wrapped, when you click it. One row stays open at a time. What you get is what the panel kept: messages up to 4,000 characters, a command's wrapped form up to 600. Past that, read the raw event log
 - **A title you can read** — the request's `subject` heads the card, not the English slug. Requires a `codex_rescue` build from 2026-08-19 or later; older runs show the slug
 - **Plan** — shown as `2/5`, but only when Codex actually produced one
 - **Elapsed time and activity count** — no percentage. Codex never declares how many tool calls remain, so a progress bar would be fiction
-- **Completion chime** — the same `claudeContextBar.workflowCompleteBeep` setting as workflow completion
+- **Completion chime** — for runs the extension watched while they were live, using the same `claudeContextBar.workflowCompleteBeep` setting as workflow completion. A run that finished before the extension started appears silently
 
 States run `starting → running → finalizing → done / failed / stopped / unresponsive`. `finalizing` is separate because Codex's turn ending isn't the run ending — the skill still has change detection and response recovery to do, and calling that window "done" would report a finish that hasn't happened. A killed run stays `unresponsive` instead of being promoted to done.
 
@@ -185,11 +186,13 @@ States run `starting → running → finalizing → done / failed / stopped / un
 The first run creates `docs/codex_rescue/` inside your project. The panel reads only this directory — no network calls.
 
 - `<stamp>_request_*.md` · `<stamp>_response_*.md` — what was asked and what Codex answered. **These are meant to be committed**; the next session picks up the thread from them
-- `.log/` — raw run records. Full command output lands here, so it runs about 300 KB per run; the skill drops its own `.gitignore` in this directory to **keep it out of git**
+- `.log/` — raw run records. Full command output lands here, so size varies a lot by run (measured samples: 409 KB for one run, 394–750 KB for others); the skill drops its own `.gitignore` in this directory to **keep it out of git**
 
 Logs are never deleted by default. Manage them with the 🗑 button on a card (it asks each time whether to remove the documents too) or by enabling automatic cleanup — see [settings](#codex-run-logs-codex_rescue).
 
-Works over Remote-SSH. Run records are read from the remote workspace through `vscode.workspace.fs` — the same path the extension already uses for Claude and Codex session files — so there is nothing to install on the server. One difference: the VS Code file API has no range read, so a live run's event file is transferred whole instead of by delta. Status and the completion chime still refresh every 2 seconds; the activity list refreshes at most every 5 seconds, which keeps a few hundred KB off the wire on most of those ticks.
+Deleting from a card doesn't destroy anything: it moves the run into a **trash** you open with 🗑 at the top of the panel, where you can put it back or delete it for good. The trash keeps things until you empty it. Two exceptions worth knowing — automatic cleanup deletes outright (it exists to reclaim disk, and a trash that fills as fast as cleanup empties would defeat that), and restoring never overwrites a file that has since taken the same name.
+
+Works over Remote-SSH. Run records are read from the remote workspace through `vscode.workspace.fs` — the same path the extension already uses for Claude and Codex session files — so the extension itself doesn't go on the server. Starting a run there is a separate matter: that needs Codex CLI and the `codex_rescue` skill installed on the server. One difference: the VS Code file API has no range read, so a live run's event file is transferred whole instead of by delta. Status and the completion chime still refresh every 2 seconds; the activity list refreshes at most every 5 seconds, which keeps a few hundred KB off the wire on most of those ticks.
 
 ## 🎚️ Effort level display
 
@@ -264,14 +267,14 @@ Add a Telegram Bot Token in settings, send your bot any message, click **"Link m
 
 ---
 
-## 🚀 Auto‑start the next block at the reset (optional, off by default)
+## 🚀 Auto‑start the next block once a reset is detected (optional, off by default)
 
 A 5‑hour block is an **anchor model**: it starts from your **first message** and resets exactly 5 hours later — it does **not** auto‑cycle on a fixed schedule. So if a block resets while you're away, nothing opens until you next type.
 
 Turn on **`claudeState.autoStartBlockOnReset`** and the extension fires a throwaway `claude -p` prompt **the moment it detects the block has closed** (session usage drops to 0%), opening the next block for you. The primer runs in its own temp directory, and those dummy sessions are filtered out of the status bar.
 
 - **Fires once per reset** — even across multiple VS Code windows or a wake‑from‑sleep burst — via an atomic 10‑minute event lock.
-- **Wake‑from‑sleep:** if the machine slept through a reset, the primer fires on the first poll after you wake, so you **wake up to an already‑started block**. While awake it fires within seconds of the reset, anchoring the new block essentially at the reset time.
+- **Wake‑from‑sleep:** if the machine slept through a reset, the primer fires on the first poll after you wake, so you **wake up to an already‑started block**. While awake it fires on the **first successful plan‑usage poll after the block closes** — every 5 minutes by default (`claudeState.refreshIntervalSec`), so the new block anchors at detection, not at the reset instant.
 - ⚠️ The new window starts counting down immediately — including while you sleep. That's the point, but know it.
 - Requires the `claude` CLI on your PATH and VS Code running. While the machine is fully asleep, polling is paused — so the primer fires on **wake**, not at the exact reset instant. For reset‑instant firing you'd need an OS scheduler.
 
@@ -356,8 +359,8 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 
 ### Codex run logs (codex_rescue)
 
-Run logs accumulate at roughly **300 KB per run** — about 86% of that is captured command
-output. They are never deleted unless you opt in.
+Run logs vary a lot in size — measured samples run from **409 KB to 750 KB per run**, and in one
+464 KB sample about 86% was captured command output. They are never deleted unless you opt in.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -366,7 +369,8 @@ output. They are never deleted unless you opt in.
 | `claudeContextBar.codexRunDeleteDocs` | `false` | Whether **automatic** cleanup also deletes the request/response/review `.md` documents. Off by default: those are the record of what was asked and answered, and are normally committed. Manual deletion ignores this and asks each time. |
 
 Deleting a run from the panel (🗑) always asks whether to remove the documents too, and the
-button only appears on finished runs.
+button only appears on finished runs. Whichever you pick, the files go to the panel's trash
+rather than being unlinked — automatic cleanup is the only path that deletes outright.
 
 All other settings — thresholds, sounds, `compactMode`, `idleTimeout`, `hideAfter`, `scope` — are shared by Claude and Codex.
 
@@ -381,7 +385,7 @@ All other settings — thresholds, sounds, `compactMode`, `idleTimeout`, `hideAf
 
 ## How it works
 
-No network calls except the optional claude.ai plan‑usage fetch and Telegram. Context monitoring is pure disk reads of Claude Code's JSONL logs via `vscode.workspace.fs` (local or remote). Plan usage calls the claude.ai usage endpoint using Electron's Chromium network stack (to pass Cloudflare) with a plain‑`https` fallback. The workflow viewer reads `~/.claude/projects/<slug>/<uuid>/subagents/` directly from disk. Codex **context and spawned-agent completion** monitoring is likewise pure disk reads of `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` via `vscode.workspace.fs` (local or remote) — no network calls, and only structural fields are parsed. Codex **account usage** is read live from a short‑lived local `codex app-server` process over JSON‑RPC, on its own timer (≥ 60 s), falling back to the rollout log's `rate_limits` snapshot. When several VS Code windows are open, only **one** of them runs that probe — the result goes into a non‑secret cache in the extension's `globalStorage`, guarded by an atomic cross‑process lock, and every other window reads and watches that same value, so all windows always show the identical number.
+Context monitoring makes no network calls at all. The network paths that do exist are optional and separate: the claude.ai plan‑usage fetch, Telegram, and the Codex account‑usage probe described below. Context monitoring is pure disk reads of Claude Code's JSONL logs via `vscode.workspace.fs` (local or remote). Plan usage calls the claude.ai usage endpoint using Electron's Chromium network stack (to pass Cloudflare) with a plain‑`https` fallback. The workflow viewer reads `~/.claude/projects/<slug>/<uuid>/subagents/` directly from disk. Codex **context and spawned-agent completion** monitoring is likewise pure disk reads of `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` via `vscode.workspace.fs` (local or remote) — no network calls, and only structural fields are parsed. Codex **account usage** is read live from a short‑lived local `codex app-server` process over JSON‑RPC, on its own timer (≥ 60 s), falling back to the rollout log's `rate_limits` snapshot. When several VS Code windows are open, only **one** of them runs that probe — the result goes into a non‑secret cache in the extension's `globalStorage`, guarded by an atomic cross‑process lock, and every other window reads and watches that same value, so all windows always show the identical number.
 
 ---
 

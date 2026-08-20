@@ -1,5 +1,54 @@
 # Changelog
 
+## [1.10.0] - 2026-08-21
+
+> **Deleting a run or a workflow no longer destroys it.** Both panels now delete into a trash you
+> can open and take things back out of. Until now the 🗑 button unlinked the files immediately —
+> not even to the OS recycle bin — and a modal confirmation was the only thing between a misclick
+> and a permanently lost record.
+
+### The trash
+
+Open it with 🗑 at the top of either panel. Each entry shows what it was, how much it holds, and
+when you deleted it, with **Restore** and **Delete for good** beside it. Nothing leaves on a timer;
+the trash keeps what you put in it until you empty it.
+
+Deleted files move next to where they came from — `docs/codex_rescue/.trash/` for Codex runs, and
+a `.trash/` inside the session's workflow directory for workflows. They are moved, not copied, so
+this stays cheap on a Remote-SSH workspace: nothing crosses the wire. The Codex trash writes its
+own `.gitignore`, the same way the skill does for `.log/`, so trashed documents never show up as
+something to commit.
+
+Two behaviours are worth knowing about.
+
+- **Automatic cleanup still deletes outright.** It exists to reclaim disk, and a trash that fills
+  up as fast as cleanup empties the log directory would defeat the point of running it.
+- **Restoring never overwrites.** codex_rescue re-runs a dead request under the same stamp, so a
+  name a trashed file wants can legitimately belong to newer work. Those files stay in the trash
+  and are reported instead of replacing anything.
+
+A run that still holds its lock is refused, as before — send.sh may be mid-write, and moving a
+file out from under it would corrupt the record rather than preserve it.
+
+### Documentation
+
+Codex audited the READMEs and the codex_rescue guide against the actual source, and most of what
+it found was real. The corrections that matter to what you'd do differently:
+
+- The skill was described as running everything with workspace write access. Review mode doesn't —
+  `codex exec review` is read-only by CLI design and doesn't even accept the flag, and the review
+  document is written by the skill's own script rather than by Codex.
+- The auto-cleanup settings were written without their `claudeContextBar.` prefix, so copying them
+  into settings.json produced keys that do nothing.
+- "Fires within seconds of the reset" was wrong for the block primer: it runs on the next
+  successful plan-usage poll, which is every 5 minutes by default.
+- "Nothing to install on the server" conflated two things. The extension doesn't go on the server;
+  starting a run there still needs Codex CLI and the skill installed on that machine.
+- The 1.9.3 expand-a-clipped-row feature was described as showing the full text. The parser keeps
+  4,000 characters of a message and 600 of a command, and the raw event log is the rest.
+- Size figures were presented as typical when they came from single samples, and the panel's
+  20-runs-per-folder display limit wasn't documented anywhere.
+
 ## [1.9.3] - 2026-08-21
 
 > **Rows that were cut off now open where they are.** A message wider than the panel ended in an

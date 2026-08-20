@@ -23,9 +23,22 @@ export interface WorkflowView {
     endedAt?: number;    // epoch ms — final elapsed (endedAt - startedAt) once all agents are done
 }
 
+/** One trashed workflow as the panel lists it. */
+export interface WorkflowTrashView {
+    wfId: string;
+    name?: string;
+    deletedAt: number;
+    agentCount: number;
+}
+
 export interface WorkflowPanelCallbacks {
     // Called when the user clicks a workflow's delete button (after they confirm).
     onDelete: (wfId: string) => void;
+    /** User opened the trash drawer — the host answers with pushWorkflowTrash(). */
+    onTrashOpen: () => void;
+    onRestore: (wfId: string) => void;
+    onPurge: (wfId: string) => void;
+    onEmptyTrash: () => void;
 }
 
 let panel: vscode.WebviewPanel | null = null;
@@ -111,7 +124,17 @@ export function createOrShowWorkflowPanel(
             lastPushedSignature = null; pushWorkflows(workflows);
         }
         else if (msg?.type === 'delete' && typeof msg.wfId === 'string') callbacks?.onDelete(msg.wfId);
+        else if (msg?.type === 'trashOpen') callbacks?.onTrashOpen();
+        else if (msg?.type === 'restore' && typeof msg.wfId === 'string') callbacks?.onRestore(msg.wfId);
+        else if (msg?.type === 'purge' && typeof msg.wfId === 'string') callbacks?.onPurge(msg.wfId);
+        else if (msg?.type === 'emptyTrash') callbacks?.onEmptyTrash();
     }, null, context.subscriptions);
+}
+
+/** Hand the trash drawer its contents. Unconditional: the drawer is only open on request. */
+export function pushWorkflowTrash(items: WorkflowTrashView[]): void {
+    if (!panel) return;
+    panel.webview.postMessage({ type: 'trash', items });
 }
 
 // Push fresh workflow data into the open panel. No-op when the panel is closed or when
@@ -187,16 +210,43 @@ function getHtml(webview: vscode.Webview): string {
   .full { margin: 6px 0 2px 0; padding: 8px 10px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.1)); border-radius: 4px; white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family); font-size: 0.88em; line-height: 1.5; max-height: 420px; overflow: auto; }
   .empty { color: var(--vscode-descriptionForeground); font-style: italic; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  /* Trash drawer — the same shape as the Codex panel's, since it answers the same question. */
+  .tspacer { flex:1 1 auto; }
+  .trash { border:1px dashed var(--vscode-panel-border); border-radius:6px;
+    padding:10px 14px; margin-bottom:14px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.06)); }
+  .trash-head { display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
+  .trash-note { color: var(--vscode-descriptionForeground); font-size:.8em; }
+  .trash-row { display:flex; align-items:baseline; gap:8px; padding:5px 0;
+    border-top:1px solid var(--vscode-panel-border); }
+  .trash-row:first-child { border-top:none; }
+  .trash-name { font-weight:600; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .trash-meta { color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; }
+  .tbtn { background:transparent; color: var(--vscode-textLink-foreground); border:1px solid var(--vscode-panel-border);
+    border-radius:4px; padding:1px 9px; cursor:pointer; font-size:.85em; flex-shrink:0; }
+  .tbtn:hover { background: var(--vscode-list-hoverBackground); }
+  .tbtn.danger { color: var(--vscode-statusBarItem-errorBackground, #f85149); }
 </style>
 </head>
 <body>
   <div class="toolbar">
+    <button class="fbtn" data-trash="toggle"><span data-i18n="wf.trash.btn">🗑 Trash</span></button>
+    <span class="tspacer"></span>
     <span class="flabel" data-i18n="wf.fontSize">Font size</span>
     <button class="fbtn" data-font="dec" data-i18n-title="wf.fontSmaller" title="Smaller">A−</button>
     <button class="fbtn" data-font="inc" data-i18n-title="wf.fontLarger" title="Larger">A+</button>
   </div>
   <h1 data-i18n="wf.title">⚡ Claude Workflows</h1>
   <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
+  <div id="trash" class="trash" style="display:none">
+    <div class="trash-head">
+      <strong data-i18n="wf.trash.title">Trash</strong>
+      <span class="trash-note" data-i18n="wf.trash.note">Deleted workflows stay here until you empty it.</span>
+      <span class="tspacer"></span>
+      <button class="fbtn" data-trash="empty" data-i18n="wf.trash.empty">Empty trash</button>
+    </div>
+    <div id="trash-list"></div>
+  </div>
   <div id="list"></div>
 <script nonce="${nonce}">
   const vscodeApi = acquireVsCodeApi();
@@ -414,7 +464,44 @@ function getHtml(webview: vscode.Webview): string {
     tickElapsed();  // fill the title clocks immediately instead of waiting for the next tick
   }
 
+  // --- Trash drawer -------------------------------------------------------
+  let trashOpen = false;
+  function toggleTrash() {
+    trashOpen = !trashOpen;
+    document.getElementById('trash').style.display = trashOpen ? '' : 'none';
+    if (trashOpen) vscodeApi.postMessage({ type: 'trashOpen' });
+  }
+  function renderTrash(items) {
+    const box = document.getElementById('trash-list');
+    if (!items.length) {
+      box.innerHTML = '<div class="empty">' + esc(t('wf.trash.none')) + '</div>';
+      return;
+    }
+    box.innerHTML = items.map(function (it) {
+      const when = it.deletedAt ? t('wf.trash.deletedAt', fmtClock(it.deletedAt)) : '';
+      return '<div class="trash-row">' +
+        '<span class="trash-name" title="' + esc(it.wfId) + '">' + esc(it.name || it.wfId) + '</span>' +
+        '<span class="trash-meta">' + esc(t('wf.trash.agents', it.agentCount || 0)) + '</span>' +
+        '<span class="tspacer"></span>' +
+        '<span class="trash-meta">' + esc(when) + '</span>' +
+        '<button class="tbtn" data-restore="' + esc(it.wfId) + '">' + esc(t('wf.trash.restore')) + '</button>' +
+        '<button class="tbtn danger" data-purge="' + esc(it.wfId) + '">' + esc(t('wf.trash.purge')) + '</button>' +
+      '</div>';
+    }).join('');
+  }
+
   document.addEventListener('click', e => {
+    const tt = e.target.closest('[data-trash]');
+    if (tt) {
+      const act = tt.getAttribute('data-trash');
+      if (act === 'toggle') toggleTrash();
+      else if (act === 'empty') vscodeApi.postMessage({ type: 'emptyTrash' });
+      return;
+    }
+    const rs = e.target.closest('[data-restore]');
+    if (rs) { vscodeApi.postMessage({ type: 'restore', wfId: rs.getAttribute('data-restore') }); return; }
+    const pg = e.target.closest('[data-purge]');
+    if (pg) { vscodeApi.postMessage({ type: 'purge', wfId: pg.getAttribute('data-purge') }); return; }
     const fb = e.target.closest('[data-font]');
     if (fb) {
       fontPx = fb.getAttribute('data-font') === 'inc' ? Math.min(28, fontPx + 1) : Math.max(10, fontPx - 1);
@@ -449,6 +536,7 @@ function getHtml(webview: vscode.Webview): string {
     const m = e.data;
     if (m && m.type === 'i18n') { dict = m.dict || {}; applyI18n(); render(lastWorkflows, true); }
     else if (m && m.type === 'workflows') render(m.workflows);
+    else if (m && m.type === 'trash') renderTrash(m.items || []);
   });
   vscodeApi.postMessage({ type: 'ready' });
 </script>
