@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.10.1] - 2026-08-21
+
+> **The "documents too?" question moved to the end.** 1.10.0 asked it on the way into the trash,
+> where it protected nothing — whatever you chose, you could take it back. It now asks at the
+> point of no return instead.
+
+Clicking 🗑 on a card takes the whole run — raw logs and the request/response documents together —
+straight to the trash. No question, no confirmation dialog. The workflow panel behaves the same way.
+
+Deleting an item out of the trash, or emptying it, is where you now choose: **logs only**, or
+**logs and documents**. Keeping the documents leaves them sitting in the trash on their own, with
+no run behind them, and the list says so — a row reads `logs + documents`, `logs only` or
+`documents only` depending on what is actually left. That orphan is the point: the logs are bulk,
+while the documents are the record of what was asked and answered.
+
+When there is nothing to choose between it stops offering a choice, which is what made the old
+version feel like it was asking twice. With only documents left the dialog says so plainly:
+this click ends the last of that run.
+
+How much is at stake is now visible before you click. The **Delete for good** button is red when
+documents are all that remain, amber when the logs are still there to give up first, and neutral
+when only logs are left. The contents label on the row is coloured to match.
+
+### A run with documents but no log is now a card
+
+Keeping the documents while purging the logs used to make a run vanish from the panel entirely.
+The files were on disk and restoring them worked, but the list is built from event logs, so
+there was nothing left to draw — and "Restore" looked like it had failed.
+
+Those runs now appear as cards marked **documents only**. There is no activity list, because
+there is no log to build one from; the card exists to open the request and response. Its mode
+chip is left off rather than guessed, since the mode lived in the status file that went with the
+logs — a purged `edit` run would otherwise have been labelled `READONLY`.
+
+This also covers a case that never worked: `docs/codex_rescue/` documents committed by someone
+else and pulled in through git. There were no logs on your machine, so the panel showed nothing.
+Now they are listed.
+
+Automatic cleanup is unchanged, and `claudeContextBar.codexRunDeleteDocs` still governs whether it
+takes documents along. Manual deletion always does, but only as far as the trash.
+
 ## [1.10.0] - 2026-08-21
 
 > **Deleting a run or a workflow no longer destroys it.** Both panels now delete into a trash you

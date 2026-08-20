@@ -44,6 +44,8 @@ export interface CodexRunView {
     resultUri?: string;
     requestUri?: string;
     staleForMs?: number;
+    /** Documents survive but the event log is gone — the card exists to reach the documents. */
+    docsOnly?: boolean;
 }
 
 /** One trashed run as the panel lists it. Mirrors TrashedRun from runDiscovery. */
@@ -55,6 +57,8 @@ export interface CodexTrashView {
     fileCount: number;
     bytes: number;
     docsIncluded: boolean;
+    hasLogs: boolean;
+    hasDocs: boolean;
 }
 
 export interface CodexPanelCallbacks {
@@ -229,6 +233,10 @@ function getHtml(webview: vscode.Webview): string {
   .run.collapsed .arrow { transform: rotate(-90deg); }
   .run-name { font-weight:600; font-size:1.05em; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .mode-chip { font-size:.72em; padding:1px 7px; border-radius:4px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); flex-shrink:0; letter-spacing:.3px; }
+  /* A card with no run behind it. Outlined rather than filled, so it reads as "less than a
+     normal card" instead of competing with the mode chip beside it. */
+  .mode-chip.docs-chip { background:transparent; color: var(--vscode-descriptionForeground);
+    border:1px solid var(--vscode-panel-border); }
   .run-time { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; font-variant-numeric: tabular-nums; }
   .spacer { flex:1 1 auto; }
   .badge { font-size:.8em; padding:2px 9px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
@@ -313,7 +321,18 @@ function getHtml(webview: vscode.Webview): string {
   .tbtn { background:transparent; color: var(--vscode-textLink-foreground); border:1px solid var(--vscode-panel-border);
     border-radius:4px; padding:1px 9px; cursor:pointer; font-size:.85em; flex-shrink:0; }
   .tbtn:hover { background: var(--vscode-list-hoverBackground); }
-  .tbtn.danger { color: var(--vscode-statusBarItem-errorBackground, #f85149); }
+  /* How much is at stake, in the button itself. Red means the documents are all that's left —
+     this click ends the record. Amber means the logs are bulk and the documents can still be
+     kept back. Neutral means only logs remain, so nothing irreplaceable is going. */
+  .tbtn.danger { color:#f85149; border-color: rgba(248,81,73,.55); font-weight:600; }
+  .tbtn.danger:hover { background: rgba(248,81,73,.15); border-color:#f85149; }
+  .tbtn.warn { color:#d29922; border-color: rgba(210,153,34,.55); }
+  .tbtn.warn:hover { background: rgba(210,153,34,.15); border-color:#d29922; }
+  /* Same three-way coding on the contents label, so the row and its button agree. */
+  .what { font-size:.8em; padding:0 6px; border-radius:3px; white-space:nowrap;
+    border:1px solid transparent; }
+  .what.docs-only { color:#f85149; border-color: rgba(248,81,73,.45); font-weight:600; }
+  .what.both { color:#d29922; border-color: rgba(210,153,34,.45); }
   .warn { color:#d29922; font-size:.85em; margin-top:6px; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
 </style>
@@ -546,7 +565,7 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
             '<span class="gh-close">' + esc(t('cx.collapse')) + '</span></span></summary>' +
             node.cmds.map(renderItem).join('') + '</details>';
         }).join('') + '</div>'
-        : '<div class="empty">' + esc(t('cx.noItems')) + '</div>';
+        : '<div class="empty">' + esc(t(run.docsOnly ? 'cx.docsOnly.note' : 'cx.noItems')) + '</div>';
 
       const links = [];
       if (run.resultUri) links.push('<span class="doclink" data-open="' + esc(run.resultUri) + '">📄 ' + esc(t('cx.openResult')) + '</span>');
@@ -571,7 +590,8 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
           // JS string in two. Backticks are forbidden here for the same reason.
           '<span class="run-name" title="' + esc(run.subject ? run.subject + '\\n' + run.slug : run.slug) + '">' +
             esc(run.subject || run.slug) + '</span>' +
-          '<span class="mode-chip">' + esc(run.mode.toUpperCase()) + '</span>' +
+          (run.mode ? '<span class="mode-chip">' + esc(run.mode.toUpperCase()) + '</span>' : '') +
+          (run.docsOnly ? '<span class="mode-chip docs-chip">' + esc(t('cx.docsOnly.badge')) + '</span>' : '') +
           timeHtml + '<span class="spacer"></span>' + badge +
           // Only finished runs get a delete button — deleting mid-write would race send.sh.
           (finished ? '<button class="del-btn" data-del="' + esc(run.stamp) + '" title="' + esc(t('common.delete')) + '">🗑</button>' : '') +
@@ -621,15 +641,23 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
     }
     box.innerHTML = items.map(function (it) {
       const kb = Math.max(1, Math.round((it.bytes||0)/1024));
-      const what = it.docsIncluded ? t('cx.trash.withDocs') : t('cx.trash.logsOnly');
+      // Three states, not two: purging the logs on their own leaves the documents orphaned here.
+      const docsOnly = it.hasDocs && !it.hasLogs;
+      const both = it.hasDocs && it.hasLogs;
+      const what = both ? t('cx.trash.withDocs')
+                 : docsOnly ? t('cx.trash.docsOnly')
+                 : t('cx.trash.logsOnly');
+      const whatCls = docsOnly ? 'what docs-only' : both ? 'what both' : 'what';
+      const purgeCls = docsOnly ? 'tbtn danger' : both ? 'tbtn warn' : 'tbtn';
       return '<div class="trash-row">' +
         '<span class="trash-name" title="' + esc(it.slug) + '">' + esc(it.subject || it.slug) + '</span>' +
-        '<span class="trash-meta">' + esc(it.stamp) + ' · ' + esc(what) + ' · ' +
+        '<span class="' + whatCls + '">' + esc(what) + '</span>' +
+        '<span class="trash-meta">' + esc(it.stamp) + ' · ' +
           esc(t('cx.trash.files', it.fileCount, kb)) + '</span>' +
         '<span class="spacer"></span>' +
         '<span class="trash-meta">' + esc(t('cx.trash.deletedAt', fmtClock(it.deletedAt))) + '</span>' +
         '<button class="tbtn" data-restore="' + esc(it.stamp) + '">' + esc(t('cx.trash.restore')) + '</button>' +
-        '<button class="tbtn danger" data-purge="' + esc(it.stamp) + '">' + esc(t('cx.trash.purge')) + '</button>' +
+        '<button class="' + purgeCls + '" data-purge="' + esc(it.stamp) + '">' + esc(t('cx.trash.purge')) + '</button>' +
       '</div>';
     }).join('');
   }

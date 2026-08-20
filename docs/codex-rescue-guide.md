@@ -135,8 +135,10 @@ was captured command output. Read those as **samples, not an average.**
 
 With the claudeStateBar extension you have two options:
 
-- **Manual** — the 🗑 button on a run card. It **asks every time** whether to remove the
-  documents as well as the raw logs, and only appears on finished runs
+- **Manual** — the 🗑 button on a run card. It takes the **whole run, documents included, to the
+  trash** without asking; the 🗑 at the top of the panel is where you get it back. Only appears
+  on finished runs. Whether the documents go too is decided **when you delete for good from the
+  trash** — keep them and the run stays visible as a `documents only` card
 - **Automatic** — enable `claudeContextBar.codexRunAutoCleanup` and the extension cleans up once
   per activation. Retention is `claudeContextBar.codexRunRetentionDays` (default 7) and whether
   documents go too is `claudeContextBar.codexRunDeleteDocs` (default off). Live or still-locked
@@ -178,6 +180,10 @@ States progress `starting → running → finalizing → done / failed / stopped
   command — past that, read `.log/<stamp>_events.jsonl` itself.
 - The panel lists at most the **20 most recent runs per workspace folder**. Older ones are still
   on disk and still subject to cleanup, but they don't appear in the list.
+- **A run with documents but no log** still appears, marked `documents only`. There is no activity
+  list — nothing to build one from — but the request and response open as usual. That covers runs
+  whose raw logs you purged, and documents a teammate committed that you pulled in. No mode chip
+  is shown: that value lived in the deleted status file, and guessing it would be worse.
 
 **It works in a Remote-SSH workspace too** — runs you started on the server show up in the same
 list. This needs extension **1.9.2 or later**. **The extension itself doesn't go on the server** — it

@@ -545,13 +545,8 @@ export function activate(context: vscode.ExtensionContext) {
                                 pushWorkflows(await findWorkflowsForSession(sessionFile));
                                 return;
                             }
-                            const deleteBtn = planT('common.delete');
-                            const confirm = await vscode.window.showWarningMessage(
-                                planT('msg.wfDeleteConfirm', wfId),
-                                { modal: true },
-                                deleteBtn
-                            );
-                            if (confirm !== deleteBtn) return;
+                            // Straight to the trash, no confirmation — same reasoning as the
+                            // Codex panel: the prompt belongs at the irreversible end.
                             // Carry the name and agent count into the trash: wf_a1b2c3 tells you
                             // nothing about what you deleted, and the journal that would have
                             // told you is inside the bin you'd have to restore to read.
@@ -660,19 +655,15 @@ export function activate(context: vscode.ExtensionContext) {
             onDelete: async (stamp: string) => {
                 const target = (await collectCodexRuns()).find(r => r.stamp === stamp);
                 if (!target) return;
-                // Manual deletion asks every time rather than obeying the retention setting:
-                // it's an explicit act on one specific run, and whether that run's documents
-                // are worth keeping is a per-run judgement. The setting governs auto-cleanup.
-                const logsOnly = planT('cx.del.logsOnly');
-                const withDocs = planT('cx.del.withDocs');
-                const choice = await vscode.window.showWarningMessage(
-                    planT('cx.del.ask', target.subject || target.slug), { modal: true }, logsOnly, withDocs
-                );
-                if (choice !== logsOnly && choice !== withDocs) return;
+                // No prompt, and documents always go along: the destination is the trash, so
+                // there is nothing here to get wrong. Asking "logs only or documents too?" made
+                // sense when the answer was irreversible; now it only stands between the user
+                // and an action they can undo. The questions live at the irreversible end
+                // instead — purging one run, or emptying the trash.
                 let moved = false;
                 for (const f of vscode.workspace.workspaceFolders || []) {
-                    if (await trashRun(f.uri, stamp, target.slug, choice === withDocs,
-                                       target.subject, target.mode, Date.now())) { moved = true; break; }
+                    if (await trashRun(f.uri, stamp, target.slug, true, target.subject,
+                                       target.mode || undefined, Date.now())) { moved = true; break; }
                 }
                 if (!moved) {
                     // Either the lock is still held or the files were already gone; the lock is
@@ -692,6 +683,11 @@ export function activate(context: vscode.ExtensionContext) {
                     if (!res.restored && !res.conflicts.length) continue;
                     if (res.conflicts.length) {
                         vscode.window.showWarningMessage(planT('cx.trash.conflict', res.conflicts.length));
+                    } else if (res.restoredDocs && !res.restoredLogs) {
+                        // The card comes back, but empty of activity — the event log it would
+                        // have been drawn from was purged. Say so, or the card reads as broken.
+                        vscode.window.showInformationMessage(
+                            planT('cx.trash.restoredDocsOnly', res.restoredDocs));
                     } else {
                         vscode.window.setStatusBarMessage(planT('cx.trash.restored', stamp), 5000);
                     }
@@ -702,25 +698,59 @@ export function activate(context: vscode.ExtensionContext) {
                 void pushCodexTrash();
             },
             onPurge: async (stamp: string) => {
-                const deleteBtn = planT('common.delete');
-                const ok = await vscode.window.showWarningMessage(
-                    planT('cx.trash.purgeConfirm', stamp), { modal: true }, deleteBtn);
-                if (ok !== deleteBtn) return;
+                // This is where the "documents too?" question belongs. On the way into the trash
+                // it protected nothing; here it is the difference between losing bulky logs and
+                // losing the record of what was asked and answered.
+                const target = (await collectCodexTrash()).find(t => t.stamp === stamp);
+                if (!target) return;
+                const logsOnly = planT('cx.trash.purgeLogsOnly');
+                const withDocs = planT('cx.trash.purgeWithDocs');
+                const purgeNow = planT('cx.trash.purgeNow');
+                const label = target.subject || target.slug;
+                // Three cases, because offering a choice that doesn't exist reads as being asked
+                // the same question twice — which is exactly how the earlier version felt.
+                let choice: string | undefined;
+                if (target.hasDocs && target.hasLogs) {
+                    choice = await vscode.window.showWarningMessage(
+                        planT('cx.trash.purgeAsk', label), { modal: true }, logsOnly, withDocs);
+                } else if (target.hasDocs) {
+                    // Documents alone: this click ends the only record of the run.
+                    choice = await vscode.window.showWarningMessage(
+                        planT('cx.trash.purgeFinal', label), { modal: true }, purgeNow);
+                } else {
+                    choice = await vscode.window.showWarningMessage(
+                        planT('cx.trash.purgeConfirm', label), { modal: true }, purgeNow);
+                }
+                if (choice !== logsOnly && choice !== withDocs && choice !== purgeNow) return;
+                const takeDocs = choice !== logsOnly;
                 for (const f of vscode.workspace.workspaceFolders || []) {
-                    if (await purgeTrashed(f.uri, stamp)) { log(`[codex-rescue] purged ${stamp}`); break; }
+                    if (await purgeTrashed(f.uri, stamp, takeDocs)) {
+                        log(`[codex-rescue] purged ${stamp} (docs: ${takeDocs})`);
+                        break;
+                    }
                 }
                 void pushCodexTrash();
             },
             onEmptyTrash: async () => {
                 const items = await collectCodexTrash();
                 if (!items.length) return;
-                const emptyBtn = planT('cx.trash.empty');
-                const ok = await vscode.window.showWarningMessage(
-                    planT('cx.trash.emptyConfirm', items.length), { modal: true }, emptyBtn);
-                if (ok !== emptyBtn) return;
+                const logsOnly = planT('cx.trash.purgeLogsOnly');
+                const withDocs = planT('cx.trash.purgeWithDocs');
+                const purgeNow = planT('cx.trash.purgeNow');
+                const anyDocs = items.some(i => i.hasDocs);
+                const anyLogs = items.some(i => i.hasLogs);
+                const choice = anyDocs && anyLogs
+                    ? await vscode.window.showWarningMessage(
+                        planT('cx.trash.emptyAsk', items.length), { modal: true }, logsOnly, withDocs)
+                    : await vscode.window.showWarningMessage(
+                        planT('cx.trash.emptyConfirm', items.length), { modal: true }, purgeNow);
+                if (choice !== logsOnly && choice !== withDocs && choice !== purgeNow) return;
+                const takeDocs = choice !== logsOnly;
                 let n = 0;
-                for (const f of vscode.workspace.workspaceFolders || []) n += await emptyTrash(f.uri);
-                log(`[codex-rescue] emptied trash: ${n} run(s)`);
+                for (const f of vscode.workspace.workspaceFolders || []) {
+                    n += await emptyTrash(f.uri, takeDocs);
+                }
+                log(`[codex-rescue] emptied trash: ${n} run(s), docs: ${takeDocs}`);
                 vscode.window.showInformationMessage(planT('cx.trash.emptied', n));
                 void pushCodexTrash();
             }
@@ -2896,6 +2926,7 @@ async function collectCodexRuns(): Promise<CodexRunView[]> {
                 threadId: run.events.threadId,
                 todo: run.events.todo,
                 staleForMs: run.staleForMs,
+                docsOnly: run.docsOnly,
                 requestUri: run.requestUri,
                 resultUri: run.resultUri,
                 totalTokens: usage ? usage.inputTokens + usage.outputTokens : undefined,

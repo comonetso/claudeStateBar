@@ -156,7 +156,7 @@ Open the **Workflow Viewer** from the session QuickPick menu to see a live WebVi
 - **Role labels** — each agent's role is auto‑extracted from its prompt header, so you see "Lens A: Bug Detection" instead of "agent-1"
 - **Task (Agent tool) sub‑agents** — sub‑agents spawned via Claude Code's Agent tool are shown separately, grouped into **batches by start time** (5‑minute gap = new batch)
 - **Per‑batch 🗑 cleanup** — delete finished task‑agent logs for a specific batch while keeping any still‑running agents untouched
-- **Trash** — deleting a workflow moves it aside instead of destroying it. Open 🗑 at the top of the panel to restore it or delete it for good
+- **Trash** — deleting a workflow moves it aside instead of destroying it, with no confirmation to click through. Open 🗑 at the top of the panel to restore it or delete it for good. Restoring is refused if a live workflow has since taken that id
 - **Details-open persistence** — expanded `<details>` panels stay open across live re‑renders
 - **Font size control** — `A−` / `A+` buttons adjust the panel text size
 - **Bilingual UI** — full EN / 한국어 toggle, same as the settings panel
@@ -174,6 +174,7 @@ With the skill installed, open it from the status-bar menu or `claudeStateBar: S
 - **What Codex just said** — its own narration of what it's about to do, far more useful than a spinner
 - **Commands, searches, file changes, MCP calls** — colour-coded by kind, commands with their exit code. Runs of consecutive successful commands or searches fold into one line you can expand; **failures never fold**, so they stay visible
 - **Clipped rows open in place** — a row too wide for the panel expands where it is, wrapped, when you click it. One row stays open at a time. What you get is what the panel kept: messages up to 4,000 characters, a command's wrapped form up to 600. Past that, read the raw event log
+- **Runs with documents but no log still show** — marked `documents only`, with no activity list but the request/response links intact. That covers a run whose raw logs you purged, and documents a teammate committed and you pulled in
 - **A title you can read** — the request's `subject` heads the card, not the English slug. Requires a `codex_rescue` build from 2026-08-19 or later; older runs show the slug
 - **Plan** — shown as `2/5`, but only when Codex actually produced one
 - **Elapsed time and activity count** — no percentage. Codex never declares how many tool calls remain, so a progress bar would be fiction
@@ -188,9 +189,21 @@ The first run creates `docs/codex_rescue/` inside your project. The panel reads 
 - `<stamp>_request_*.md` · `<stamp>_response_*.md` — what was asked and what Codex answered. **These are meant to be committed**; the next session picks up the thread from them
 - `.log/` — raw run records. Full command output lands here, so size varies a lot by run (measured samples: 409 KB for one run, 394–750 KB for others); the skill drops its own `.gitignore` in this directory to **keep it out of git**
 
-Logs are never deleted by default. Manage them with the 🗑 button on a card (it asks each time whether to remove the documents too) or by enabling automatic cleanup — see [settings](#codex-run-logs-codex_rescue).
+Logs are never deleted by default. Manage them with the 🗑 button on a card (it takes the whole run, documents included, straight to the trash) or by enabling automatic cleanup — see [settings](#codex-run-logs-codex_rescue).
 
-Deleting from a card doesn't destroy anything: it moves the run into a **trash** you open with 🗑 at the top of the panel, where you can put it back or delete it for good. The trash keeps things until you empty it. Two exceptions worth knowing — automatic cleanup deletes outright (it exists to reclaim disk, and a trash that fills as fast as cleanup empties would defeat that), and restoring never overwrites a file that has since taken the same name.
+### Trash
+
+Deleting from a card doesn't destroy anything. The run — logs and documents together — moves into a **trash** you open with 🗑 at the top of the panel, and it stays there until you empty it. Nothing expires on a timer.
+
+The choice comes at the far end. **Delete for good** asks whether to take the raw logs only or the documents as well, and the button tells you what is at stake before you click: red when documents are all that's left, amber when the logs can still be given up first, neutral when only logs remain. Keeping the documents leaves them in the trash on their own — deliberately, since the logs are bulk and the documents are the record of what was asked and answered.
+
+Three more things worth knowing:
+
+- **Automatic cleanup skips the trash entirely.** It exists to reclaim disk, and a trash filling as fast as cleanup empties would defeat that.
+- **Restoring never overwrites.** codex_rescue re-runs a dead request under the same stamp, so a name a trashed file wants can belong to newer work. Those files stay in the trash and are reported.
+- **A run still holding its lock is refused** — `send.sh` may be mid-write, and moving a file out from under it would corrupt the record rather than preserve it.
+
+Files move rather than copy, so this costs nothing extra on a Remote-SSH workspace. The trash writes its own `.gitignore`, the way the skill does for `.log/`, so trashed documents never show up as something to commit.
 
 Works over Remote-SSH. Run records are read from the remote workspace through `vscode.workspace.fs` — the same path the extension already uses for Claude and Codex session files — so the extension itself doesn't go on the server. Starting a run there is a separate matter: that needs Codex CLI and the `codex_rescue` skill installed on the server. One difference: the VS Code file API has no range read, so a live run's event file is transferred whole instead of by delta. Status and the completion chime still refresh every 2 seconds; the activity list refreshes at most every 5 seconds, which keeps a few hundred KB off the wire on most of those ticks.
 
@@ -366,11 +379,12 @@ Run logs vary a lot in size — measured samples run from **409 KB to 750 KB per
 |---------|---------|-------------|
 | `claudeContextBar.codexRunAutoCleanup` | `false` | Delete old run logs once per activation. Off by default because it deletes files. Runs that are still live, or still holding a lock, are never touched. |
 | `claudeContextBar.codexRunRetentionDays` | `7` | How many days to keep, when auto-cleanup is on |
-| `claudeContextBar.codexRunDeleteDocs` | `false` | Whether **automatic** cleanup also deletes the request/response/review `.md` documents. Off by default: those are the record of what was asked and answered, and are normally committed. Manual deletion ignores this and asks each time. |
+| `claudeContextBar.codexRunDeleteDocs` | `false` | Whether **automatic** cleanup also deletes the request/response/review `.md` documents. Off by default: those are the record of what was asked and answered, and are normally committed. Manual deletion ignores this — it always takes the documents, but only as far as the trash. |
 
-Deleting a run from the panel (🗑) always asks whether to remove the documents too, and the
-button only appears on finished runs. Whichever you pick, the files go to the panel's trash
-rather than being unlinked — automatic cleanup is the only path that deletes outright.
+Deleting a run from the panel (🗑) takes the whole run — documents included — to the trash
+without asking, and the button only appears on finished runs. The prompts sit at the
+irreversible end instead: purging one run, or emptying the trash. Automatic cleanup is the
+only path that deletes outright, and that is what the setting above governs.
 
 All other settings — thresholds, sounds, `compactMode`, `idleTimeout`, `hideAfter`, `scope` — are shared by Claude and Codex.
 

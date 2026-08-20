@@ -63,6 +63,12 @@ export interface CodexRun {
     resultUri?: string;
     /** Diagnostic surface for a run whose heartbeat went cold. */
     staleForMs?: number;
+    /**
+     * The run has documents but no event log — its raw records were deleted for good, or the
+     * documents were committed by someone else and pulled in. There is no activity to show,
+     * but the documents are the part worth keeping, so the card exists to reach them.
+     */
+    docsOnly?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,16 +336,8 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
     if (!docsDir) return [];
     const logDir = vscode.Uri.joinPath(docsDir, '.log');
 
-    const logNames = await listNames(logDir);
-    if (!logNames) return [];   // .log/ not created yet — no run has ever started here
-
+    const logNames = (await listNames(logDir)) ?? [];
     const present = new Set(logNames);
-    const stamps = logNames
-        .map(n => /^(\d{6}_\d{6})_events\.jsonl$/.exec(n)?.[1])
-        .filter((s): s is string => !!s)
-        .sort()
-        .reverse()
-        .slice(0, limit);
 
     // Sibling docs, used to recover the slug for runs whose status file is absent (either a
     // legacy run, or one whose sidecar was lost) and to resolve the result document without
@@ -347,9 +345,61 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
     // `<stamp>_{request,response,review}_<slug>.md` — so this is a read of the contract.
     const docNames = (await listNames(docsDir)) ?? [];
     const docSet = new Set(docNames);
+    if (!logNames.length && !docNames.length) return [];
+
+    const eventStamps = new Set(
+        logNames.map(n => /^(\d{6}_\d{6})_events\.jsonl$/.exec(n)?.[1])
+                .filter((s): s is string => !!s));
+
+    // Documents with no event log behind them. That happens when the raw records were purged
+    // from the trash while the documents were kept, and when a teammate's committed documents
+    // arrive through git. Listing only what has a log would make those invisible — including,
+    // confusingly, a document you just restored yourself.
+    const docOnlyStamps = new Map<string, string>();
+    for (const n of docNames) {
+        const m = /^(\d{6}_\d{6})_(?:request|response|review)_(.+)\.md$/.exec(n);
+        if (!m || eventStamps.has(m[1]) || docOnlyStamps.has(m[1])) continue;
+        docOnlyStamps.set(m[1], m[2]);
+    }
+
+    const stamps = Array.from(new Set([...eventStamps, ...docOnlyStamps.keys()]))
+        .sort()
+        .reverse()
+        .slice(0, limit);
 
     const runs: CodexRun[] = [];
     for (const stamp of stamps) {
+        const docSlug = docOnlyStamps.get(stamp);
+        if (docSlug !== undefined) {
+            const pick = async (names: string[]): Promise<string | undefined> => {
+                for (const name of names) {
+                    if (docSet.has(name)) return vscode.Uri.joinPath(docsDir, name).toString();
+                }
+                return undefined;
+            };
+            const resultName = [`${stamp}_response_${docSlug}.md`, `${stamp}_review_${docSlug}.md`]
+                .find(n => docSet.has(n));
+            // The document's own mtime is the only end time available here, and without one the
+            // card's clock would count up forever beside a finished badge.
+            const endedAtMs = resultName
+                ? (await statOf(vscode.Uri.joinPath(docsDir, resultName)))?.mtime
+                : undefined;
+            runs.push({
+                stamp,
+                slug: docSlug,
+                // Unknown, and not guessable: the mode lived in the status sidecar, which went
+                // with the logs. Claiming 'readonly' would mislabel what may have been an edit.
+                mode: '',
+                phase: 'done',
+                docsOnly: true,
+                startedAtMs: parseStamp(stamp),
+                endedAtMs,
+                events: createRunState(),
+                requestUri: await pick([`${stamp}_request_${docSlug}.md`]),
+                resultUri: resultName ? vscode.Uri.joinPath(docsDir, resultName).toString() : undefined,
+            });
+            continue;
+        }
         const eventsUri = vscode.Uri.joinPath(logDir, `${stamp}_events.jsonl`);
         const cacheKey = keyOf(eventsUri);
 
@@ -587,6 +637,10 @@ export interface TrashedRun {
     bytes: number;
     /** Whether the request/response documents went in too, or only the raw logs. */
     docsIncluded: boolean;
+    /** Raw `.log/` files still present. False once they've been purged on their own. */
+    hasLogs: boolean;
+    /** Request/response/review documents still present. */
+    hasDocs: boolean;
 }
 
 /** Where a trashed file came from, so restore can put it back. */
@@ -721,16 +775,20 @@ export async function listTrash(folderUri: vscode.Uri): Promise<TrashedRun[]> {
         const bin = vscode.Uri.joinPath(root, name);
         const meta = await readTrashMeta(bin);
         if (!meta) continue;
-        let bytes = 0, fileCount = 0;
+        // Count what is actually on disk, not what the metadata once listed: purging the logs
+        // on their own leaves the documents behind, and the row has to say so.
+        let bytes = 0, fileCount = 0, hasLogs = false, hasDocs = false;
         for (const e of meta.entries) {
             const st = await statOf(vscode.Uri.joinPath(bin, e.n));
             if (!st) continue;
             bytes += st.size;
             fileCount++;
+            if (e.d === '.log') hasLogs = true; else hasDocs = true;
         }
         out.push({
             stamp: meta.stamp, slug: meta.slug, subject: meta.subject, mode: meta.mode,
             deletedAt: meta.deletedAt, fileCount, bytes, docsIncluded: meta.docsIncluded,
+            hasLogs, hasDocs,
         });
     }
     return out.sort((a, b) => b.deletedAt - a.deletedAt);
@@ -740,6 +798,10 @@ export interface RestoreResult {
     restored: number;
     /** Files left in the trash because something already occupies their original path. */
     conflicts: string[];
+    /** Raw `.log/` files put back. Zero means the panel cannot show this run as a card again. */
+    restoredLogs: number;
+    /** Documents put back under docs/codex_rescue/. */
+    restoredDocs: number;
 }
 
 /**
@@ -750,7 +812,7 @@ export interface RestoreResult {
  * silently overwriting it would destroy the very thing the user kept.
  */
 export async function restoreTrashed(folderUri: vscode.Uri, stamp: string): Promise<RestoreResult> {
-    const res: RestoreResult = { restored: 0, conflicts: [] };
+    const res: RestoreResult = { restored: 0, conflicts: [], restoredLogs: 0, restoredDocs: 0 };
     if (!/^\d{6}_\d{6}$/.test(stamp)) return res;
     const docsDir = await codexRescueDocsDir(folderUri);
     if (!docsDir) return res;
@@ -769,6 +831,7 @@ export async function restoreTrashed(folderUri: vscode.Uri, stamp: string): Prom
         try {
             await vscode.workspace.fs.rename(src, dst, { overwrite: false });
             res.restored++;
+            if (e.d === '.log') res.restoredLogs++; else res.restoredDocs++;
         } catch {
             res.conflicts.push(e.n);
         }
@@ -782,26 +845,60 @@ export async function restoreTrashed(folderUri: vscode.Uri, stamp: string): Prom
     return res;
 }
 
-/** Delete one trashed run for good. */
-export async function purgeTrashed(folderUri: vscode.Uri, stamp: string): Promise<boolean> {
+/**
+ * Delete one trashed run for good.
+ *
+ * With `includeDocs` false only the raw `.log/` files go; the request/response documents stay in
+ * the trash on their own. That leaves an orphan — a record with no run behind it — and that is
+ * the point: the logs are bulk, the documents are what was actually asked and answered.
+ */
+export async function purgeTrashed(folderUri: vscode.Uri, stamp: string,
+                                   includeDocs: boolean): Promise<boolean> {
     if (!/^\d{6}_\d{6}$/.test(stamp)) return false;
     const docsDir = await codexRescueDocsDir(folderUri);
     if (!docsDir) return false;
-    try {
-        await vscode.workspace.fs.delete(vscode.Uri.joinPath(trashRoot(docsDir), stamp),
-                                         { recursive: true, useTrash: false });
-        return true;
-    } catch {
-        return false;
+    const bin = vscode.Uri.joinPath(trashRoot(docsDir), stamp);
+
+    if (includeDocs) {
+        try {
+            await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false });
+            return true;
+        } catch {
+            return false;
+        }
     }
+
+    const meta = await readTrashMeta(bin);
+    if (!meta) return false;
+    let removed = 0;
+    for (const e of meta.entries) {
+        if (e.d !== '.log') continue;
+        try {
+            await vscode.workspace.fs.delete(vscode.Uri.joinPath(bin, e.n), { useTrash: false });
+            removed++;
+        } catch { /* already gone */ }
+    }
+    // Nothing but metadata left — keeping an empty bin would show a row that restores nothing.
+    const survivors = meta.entries.filter(e => e.d !== '.log');
+    if (!survivors.length) {
+        try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* ignore */ }
+        return removed > 0;
+    }
+    // Rewrite the manifest so a later restore doesn't look for files that are gone.
+    const next: TrashMeta = { ...meta, entries: survivors };
+    try {
+        await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(bin, 'meta.json'),
+                                            Buffer.from(JSON.stringify(next), 'utf8'));
+    } catch { /* the stale manifest is tolerated: restore skips missing files */ }
+    return removed > 0;
 }
 
-/** Empty the trash. Returns how many runs were removed. */
-export async function emptyTrash(folderUri: vscode.Uri): Promise<number> {
+/** Empty the trash. Returns how many runs were acted on. */
+export async function emptyTrash(folderUri: vscode.Uri, includeDocs: boolean): Promise<number> {
     const items = await listTrash(folderUri);
     let n = 0;
     for (const it of items) {
-        if (await purgeTrashed(folderUri, it.stamp)) n++;
+        if (await purgeTrashed(folderUri, it.stamp, includeDocs)) n++;
     }
     return n;
 }
