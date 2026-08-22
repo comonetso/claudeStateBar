@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.13.0] - 2026-08-23
+
+> **The chat panel keeps one turn open at a time.**
+> Folding turns arrived in 1.12.0 as something you did by hand. In actual use that was the wrong
+> default: every turn stayed open, so a conversation a few exchanges long meant scrolling past
+> answers already read to reach the one that just landed.
+
+So the panel now decides which turn is the current one, and folds the rest down to the first line
+of their question. Which turn that is depends on why you are looking at the conversation, and the
+two cases pull in opposite directions.
+
+Opening the panel, or opening a conversation you have not looked at this session, opens its
+**first** turn — a past conversation is read from the top. A turn arriving in a conversation you
+are already watching opens that **last** turn instead. Anything you opened or folded yourself is
+left alone from then on, so reading an older turn while an answer lands elsewhere no longer costs
+you your place.
+
+Opening the panel also no longer jumps to the bottom. That was reasonable when everything was
+expanded; with the first turn open it would have pointed you away from the turn just opened.
+Following new answers down is unchanged.
+
 ## [1.12.0] - 2026-08-22
 
 > **The chat panel shows the question before the answer arrives.**

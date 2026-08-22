@@ -270,9 +270,17 @@ function getHtml(webview: vscode.Webview): string {
   let chats = [];
   let collapsed = {};
   let drawerOpen = false;
-  // Turn folds. Default is open, so only an explicit true means folded — an untouched turn
-  // reads normally without having to be seeded.
+  // Turn folds, but only the ones the reader set by hand: true is folded, false is open, and an
+  // absent key means nobody has touched that turn, so the focus rule below decides it.
   let folded = {};
+  // One turn per conversation reads as the current one; everything else folds down to its first
+  // line. Which turn that is depends on why you are looking (user's call, 2026-08-23): opening
+  // the panel or a past conversation means reading it from the top, so the FIRST turn opens —
+  // while a turn arriving in a conversation you are already in means the LAST one opens.
+  let focus = {};
+  // Entry count per conversation as of the previous message, which is how an arrival is told
+  // apart from a re-render carrying the same turns.
+  let seenCount = {};
 
   // How close to the bottom still counts as being at the bottom. There is no principled value
   // here; 80px is roughly a line and a half, enough that a stray wheel notch does not count as
@@ -280,6 +288,7 @@ function getHtml(webview: vscode.Webview): string {
   const BOTTOM_SLACK = 80;
   let lastCount = null;    // total entries last render, to tell an arrival from a re-render
   let jumpShown = false;
+  let firstPaint = true;   // consumed by the first render that actually has content
 
   function scroller() { return document.documentElement; }
   function atBottom() {
@@ -332,12 +341,49 @@ function getHtml(webview: vscode.Webview): string {
     return nl < 0 ? v : v.slice(0, nl);
   }
 
+  /** Turn number of the first or last exchange in a conversation; null if it has none yet. */
+  function edgeTurnNo(c, wantLast) {
+    let n = null;
+    for (let i = 0; i < c.entries.length; i++) {
+      const e = c.entries[i];
+      if (e.type !== 'turn' && e.type !== 'pending') continue;
+      if (n === null || wantLast) n = e.n;
+      if (n !== null && !wantLast) break;
+    }
+    return n;
+  }
+
+  /**
+   * Whether a turn draws folded. A hand-set fold always wins — reading an older turn is a
+   * deliberate act, and an answer landing elsewhere must not undo it.
+   */
+  function foldedNow(c, e) {
+    const v = folded[c.stamp + '#' + e.n];
+    if (v === true || v === false) return v;
+    return focus[c.stamp] !== e.n;
+  }
+
+  /**
+   * Move the focus, once per conversation per message. A conversation seen for the first time
+   * focuses its opening turn; one that just grew focuses what arrived.
+   */
+  function refocus(c) {
+    const before = seenCount[c.stamp];
+    const now = c.entries.length;
+    seenCount[c.stamp] = now;
+    if (before === undefined) focus[c.stamp] = edgeTurnNo(c, false);
+    else if (now > before) focus[c.stamp] = edgeTurnNo(c, true);
+  }
+
   /**
    * The fold handle. A pending turn keeps the same key as the turn it becomes, so folding one
    * mid-flight does not spring back open the moment the answer lands.
+   *
+   * The rendered state rides along in data-fold: the click handler has to flip what is on screen,
+   * and for an untouched turn that is the focus rule's answer, not anything stored in the map.
    */
   function turnHead(key, e, isFolded) {
-    let h = '<div class="turn-head" data-turn="' + esc(key) + '">';
+    let h = '<div class="turn-head" data-turn="' + esc(key) + '" data-fold="' + (isFolded ? '1' : '0') + '">';
     h += '<span class="tarrow">&#9660;</span>';
     h += '<span class="turn-no">' + tn('cxc.turnNo', e.n) + (e.time ? '  ·  ' + esc(e.time) : '') + '</span>';
     if (isFolded) {
@@ -349,7 +395,7 @@ function getHtml(webview: vscode.Webview): string {
 
   function turnHtml(c, e) {
     const key = c.stamp + '#' + e.n;
-    const isFolded = folded[key] === true;
+    const isFolded = foldedNow(c, e);
     let h = '<div class="turn' + (isFolded ? ' folded' : '') + '">';
     h += turnHead(key, e, isFolded);
     if (e.claude) {
@@ -366,7 +412,7 @@ function getHtml(webview: vscode.Webview): string {
   /** Claude has spoken and Codex has not answered yet — the question shows immediately. */
   function pendingHtml(c, e) {
     const key = c.stamp + '#' + e.n;
-    const isFolded = folded[key] === true;
+    const isFolded = foldedNow(c, e);
     let h = '<div class="turn' + (isFolded ? ' folded' : '') + '">';
     h += turnHead(key, e, isFolded);
     if (e.claude) {
@@ -430,6 +476,10 @@ function getHtml(webview: vscode.Webview): string {
    * So: if the reader was at the bottom, follow the conversation down; otherwise restore the
    * exact offset. Nothing else is allowed to move the viewport — a turn arriving while someone
    * reads an older one must not yank the page.
+   *
+   * The very first paint is the exception. An empty page counts as being at the bottom, so the
+   * old rule scrolled the panel down the moment it had content — which now contradicts the point
+   * of opening the first turn. Opening the panel leaves you at the top.
    */
   function render() {
     const stick = atBottom();
@@ -442,6 +492,7 @@ function getHtml(webview: vscode.Webview): string {
     let h = '';
     for (let i = 0; i < chats.length; i++) h += chatHtml(chats[i]);
     list.innerHTML = h;
+    if (firstPaint) { firstPaint = false; return; }
     if (stick) { toBottom(); showJump(false); }
     else { window.scrollTo(0, keepY); }
   }
@@ -503,8 +554,9 @@ function getHtml(webview: vscode.Webview): string {
         return;
       }
       if (el.hasAttribute && el.hasAttribute('data-turn')) {
-        const k = el.getAttribute('data-turn');
-        folded[k] = folded[k] !== true;
+        // Flip what is on screen rather than the stored map — a turn the focus rule folded has
+        // no entry there yet, and reading its absence as 'open' would fold it twice.
+        folded[el.getAttribute('data-turn')] = el.getAttribute('data-fold') !== '1';
         render();
         return;
       }
@@ -541,6 +593,7 @@ function getHtml(webview: vscode.Webview): string {
       let count = 0;
       for (let i = 0; i < chats.length; i++) {
         if (collapsed[chats[i].stamp] === undefined) collapsed[chats[i].stamp] = i !== 0;
+        refocus(chats[i]);
         count += chats[i].entries.length;
       }
       // Only an actual arrival raises the button — not the first paint, and not a re-render

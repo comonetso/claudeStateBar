@@ -2,7 +2,7 @@
     "name": "claude-state-bar",
     "displayName": "Claude Code & Codex Status Bar",
     "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly usage read live from the Codex app-server and kept identical across every window. Includes a live Workflow/Agent viewer, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
-    "version": "1.12.0",
+    "version": "1.13.0",
     "extensionKind": ["ui"],
     "publisher": "blueming",
     "author": {

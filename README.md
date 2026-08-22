@@ -218,7 +218,7 @@ It sits directly below the progress panel. One conversation is one card, and the
 - **Breaks stay visible** — where a run died and the thread was discarded, or where a new conversation replaced the old one. Without those markers there is no way to tell why the context suddenly changed
 - **The question shows first** — during the 7–13 seconds a turn is in flight, the line just thrown appears on the card immediately and Codex's side reads as waiting for an answer. The answer fills that slot when it lands. A card is created even on a conversation's first turn, before the document exists
 - **It follows new turns down** — if you are at the bottom, the view keeps up on its own. If you have scrolled up to reread an older turn it does not move the page; a **New reply ↓** button appears instead, so you keep your place and still know something arrived
-- **Turns fold** — click a turn's number line to collapse it; the folded line keeps the first line of the question, so it still says what it was about. Useful for skimming a conversation where several long answers have piled up
+- **One turn reads as the current one** — the rest fold down to the first line of their question. Which turn that is depends on why you are looking: opening the panel, or a conversation you have not looked at this session, opens its **first** turn, because you read a past conversation from the top. A turn arriving in a conversation you are already watching opens that **last** turn instead. Turns you opened or folded by hand are left exactly as you set them
 - Click the document name to open the original in an editor
 
 Ping-pong turns never appear in the progress panel. That one is for watching work that takes minutes, and ten-second exchanges piling up there would only get in the way.
