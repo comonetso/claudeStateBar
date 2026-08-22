@@ -33,7 +33,15 @@ export interface ChatBreakView {
     text: string;
 }
 
-export type ChatEntryView = ChatTurnView | ChatBreakView;
+/** The turn in flight: Claude has spoken, Codex has not answered. Mirrors ChatPending. */
+export interface ChatPendingView {
+    type: 'pending';
+    n: number;
+    time?: string;
+    claude: string;
+}
+
+export type ChatEntryView = ChatTurnView | ChatBreakView | ChatPendingView;
 
 export interface CodexChatView {
     stamp: string;
@@ -200,7 +208,17 @@ function getHtml(webview: vscode.Webview): string {
   .doclink:hover { text-decoration:underline; }
 
   .turn { margin:0 0 14px 0; }
-  .turn-no { color: var(--vscode-descriptionForeground); font-size:.75em; margin-bottom:5px; font-variant-numeric: tabular-nums; }
+  /* The whole header line is the fold handle, not just the arrow — a 12px target for something
+     used this often is a nuisance. */
+  .turn-head { display:flex; align-items:baseline; gap:7px; cursor:pointer; user-select:none; margin-bottom:5px; }
+  .turn-head:hover .turn-no { color: var(--vscode-foreground); }
+  .tarrow { flex-shrink:0; width:9px; font-size:.6em; color: var(--vscode-descriptionForeground); transition: transform .12s; }
+  .turn.folded .tarrow { transform: rotate(-90deg); }
+  .turn-no { color: var(--vscode-descriptionForeground); font-size:.75em; font-variant-numeric: tabular-nums; flex-shrink:0; }
+  /* Only shown while folded: the first line of the question, so a folded turn still says what
+     it was about. Clipped rather than wrapped — the fold exists to keep it to one line. */
+  .turn-peek { color: var(--vscode-descriptionForeground); font-size:.8em; flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.8; }
+  .turn.folded .say { display:none; }
   .say { display:flex; gap:8px; margin-bottom:7px; align-items:flex-start; }
   .who { flex-shrink:0; font-size:.85em; font-weight:600; width:66px; padding-top:1px; }
   /* Same colours as the status bar provider glyphs and the chat-window prefixes:
@@ -208,6 +226,16 @@ function getHtml(webview: vscode.Webview): string {
   .who.claude { color:#d98b45; }
   .who.codex  { color:#5aa9e6; }
   .msg { flex:1 1 auto; min-width:0; white-space:pre-wrap; word-break:break-word; line-height:1.55; font-size:.93em; }
+  /* The answer that has not arrived yet. Dimmed and italic so it never reads as something
+     Codex actually said. */
+  .say.waiting .msg { color: var(--vscode-descriptionForeground); font-style:italic; }
+  .dots { display:inline-block; animation: blink 1.2s steps(1,end) infinite; }
+  @keyframes blink { 0%,60% { opacity:1; } 61%,100% { opacity:.25; } }
+
+  /* Only appears when a new turn landed while the reader was scrolled up. Clicking it is the
+     only thing that moves the viewport in that case. */
+  .jump { position:fixed; right:22px; bottom:22px; z-index:20; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border:none; border-radius:14px; padding:6px 15px; cursor:pointer; font-size:.85em; box-shadow:0 2px 8px rgba(0,0,0,.35); }
+  .jump:hover { background: var(--vscode-button-hoverBackground); }
 
   .brk { margin:0 0 14px 0; padding:8px 11px; border-left:2px solid #d29922; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); border-radius:0 4px 4px 0; font-size:.85em; line-height:1.5; white-space:pre-wrap; }
   .brk.superseded { border-left-color: var(--vscode-descriptionForeground); }
@@ -233,6 +261,7 @@ function getHtml(webview: vscode.Webview): string {
   </div>
   <div id="drawer"></div>
   <div id="list"></div>
+  <button class="jump" id="jumpBtn" style="display:none" data-i18n="cxc.newReply">New reply &#8595;</button>
 
 <script nonce="${nonce}">
 (function () {
@@ -241,6 +270,28 @@ function getHtml(webview: vscode.Webview): string {
   let chats = [];
   let collapsed = {};
   let drawerOpen = false;
+  // Turn folds. Default is open, so only an explicit true means folded — an untouched turn
+  // reads normally without having to be seeded.
+  let folded = {};
+
+  // How close to the bottom still counts as being at the bottom. There is no principled value
+  // here; 80px is roughly a line and a half, enough that a stray wheel notch does not count as
+  // 'the reader scrolled away'. Easy to change if it feels wrong in use.
+  const BOTTOM_SLACK = 80;
+  let lastCount = null;    // total entries last render, to tell an arrival from a re-render
+  let jumpShown = false;
+
+  function scroller() { return document.documentElement; }
+  function atBottom() {
+    const el = scroller();
+    return (el.scrollHeight - el.scrollTop - el.clientHeight) <= BOTTOM_SLACK;
+  }
+  function toBottom() { window.scrollTo(0, scroller().scrollHeight); }
+  function showJump(on) {
+    jumpShown = on;
+    const b = document.getElementById('jumpBtn');
+    if (b) b.style.display = on ? '' : 'none';
+  }
 
   function t(key) {
     const v = dict[key];
@@ -274,9 +325,33 @@ function getHtml(webview: vscode.Webview): string {
     return Math.round(n / 1024) + ' KB';
   }
 
-  function turnHtml(e) {
-    let h = '<div class="turn">';
-    h += '<div class="turn-no">' + tn('cxc.turnNo', e.n) + (e.time ? '  ·  ' + esc(e.time) : '') + '</div>';
+  function firstLine(s) {
+    const v = String(s == null ? '' : s).trim();
+    if (!v) return '';
+    const nl = v.indexOf('\\n');
+    return nl < 0 ? v : v.slice(0, nl);
+  }
+
+  /**
+   * The fold handle. A pending turn keeps the same key as the turn it becomes, so folding one
+   * mid-flight does not spring back open the moment the answer lands.
+   */
+  function turnHead(key, e, isFolded) {
+    let h = '<div class="turn-head" data-turn="' + esc(key) + '">';
+    h += '<span class="tarrow">&#9660;</span>';
+    h += '<span class="turn-no">' + tn('cxc.turnNo', e.n) + (e.time ? '  ·  ' + esc(e.time) : '') + '</span>';
+    if (isFolded) {
+      const peek = firstLine(e.claude);
+      if (peek) h += '<span class="turn-peek">' + esc(peek) + '</span>';
+    }
+    return h + '</div>';
+  }
+
+  function turnHtml(c, e) {
+    const key = c.stamp + '#' + e.n;
+    const isFolded = folded[key] === true;
+    let h = '<div class="turn' + (isFolded ? ' folded' : '') + '">';
+    h += turnHead(key, e, isFolded);
     if (e.claude) {
       h += '<div class="say"><div class="who claude">' + esc(t('cxc.claude')) + '</div>'
          + '<div class="msg">' + esc(e.claude) + '</div></div>';
@@ -285,6 +360,21 @@ function getHtml(webview: vscode.Webview): string {
       h += '<div class="say"><div class="who codex">' + esc(t('cxc.codex')) + '</div>'
          + '<div class="msg">' + esc(e.codex) + '</div></div>';
     }
+    return h + '</div>';
+  }
+
+  /** Claude has spoken and Codex has not answered yet — the question shows immediately. */
+  function pendingHtml(c, e) {
+    const key = c.stamp + '#' + e.n;
+    const isFolded = folded[key] === true;
+    let h = '<div class="turn' + (isFolded ? ' folded' : '') + '">';
+    h += turnHead(key, e, isFolded);
+    if (e.claude) {
+      h += '<div class="say"><div class="who claude">' + esc(t('cxc.claude')) + '</div>'
+         + '<div class="msg">' + esc(e.claude) + '</div></div>';
+    }
+    h += '<div class="say waiting"><div class="who codex">' + esc(t('cxc.codex')) + '</div>'
+       + '<div class="msg">' + esc(t('cxc.waiting')) + '<span class="dots">&#8230;</span></div></div>';
     return h + '</div>';
   }
 
@@ -318,17 +408,32 @@ function getHtml(webview: vscode.Webview): string {
     h += '</div>';
 
     h += '<div class="chat-body">';
-    h += '<div class="meta"><span class="doclink" data-open="' + esc(c.docUri) + '">'
-       + esc(c.stamp) + '_chat_' + esc(c.slug) + '.md</span></div>';
+    // A conversation whose first turn is still in flight has no document yet — nothing to link.
+    if (c.docUri) {
+      h += '<div class="meta"><span class="doclink" data-open="' + esc(c.docUri) + '">'
+         + esc(c.stamp) + '_chat_' + esc(c.slug) + '.md</span></div>';
+    }
     for (let i = 0; i < c.entries.length; i++) {
       const e = c.entries[i];
-      h += e.type === 'turn' ? turnHtml(e) : breakHtml(e);
+      if (e.type === 'turn') h += turnHtml(c, e);
+      else if (e.type === 'pending') h += pendingHtml(c, e);
+      else h += breakHtml(e);
     }
     h += '</div></div>';
     return h;
   }
 
+  /**
+   * Re-render the list, and put the viewport back where the reader had it.
+   *
+   * The whole list is replaced wholesale, which on its own throws the scroll position away.
+   * So: if the reader was at the bottom, follow the conversation down; otherwise restore the
+   * exact offset. Nothing else is allowed to move the viewport — a turn arriving while someone
+   * reads an older one must not yank the page.
+   */
   function render() {
+    const stick = atBottom();
+    const keepY = window.scrollY;
     const list = document.getElementById('list');
     if (!chats.length) {
       list.innerHTML = '<div class="empty">' + esc(t('cxc.empty')) + '</div>';
@@ -337,6 +442,8 @@ function getHtml(webview: vscode.Webview): string {
     let h = '';
     for (let i = 0; i < chats.length; i++) h += chatHtml(chats[i]);
     list.innerHTML = h;
+    if (stick) { toBottom(); showJump(false); }
+    else { window.scrollTo(0, keepY); }
   }
 
   function renderTrash(items) {
@@ -390,6 +497,17 @@ function getHtml(webview: vscode.Webview): string {
         vscodeApi.postMessage({ type: 'emptyTrash' });
         return;
       }
+      if (el.id === 'jumpBtn') {
+        toBottom();
+        showJump(false);
+        return;
+      }
+      if (el.hasAttribute && el.hasAttribute('data-turn')) {
+        const k = el.getAttribute('data-turn');
+        folded[k] = folded[k] !== true;
+        render();
+        return;
+      }
       if (el.id === 'trashBtn') {
         drawerOpen = !drawerOpen;
         if (drawerOpen) vscodeApi.postMessage({ type: 'trashOpen' });
@@ -416,19 +534,32 @@ function getHtml(webview: vscode.Webview): string {
       return;
     }
     if (m.type === 'chats') {
+      const wasAtBottom = atBottom();
       chats = m.chats || [];
       // Newest conversation opens by default; the rest stay folded. Re-reading almost always
       // means the one that just happened.
+      let count = 0;
       for (let i = 0; i < chats.length; i++) {
         if (collapsed[chats[i].stamp] === undefined) collapsed[chats[i].stamp] = i !== 0;
+        count += chats[i].entries.length;
       }
+      // Only an actual arrival raises the button — not the first paint, and not a re-render
+      // that happens to carry the same turns.
+      const grew = lastCount !== null && count > lastCount;
+      lastCount = count;
       render();
+      if (grew && !wasAtBottom) showJump(true);
       return;
     }
     if (m.type === 'trash') {
       renderTrash(m.items || []);
       return;
     }
+  });
+
+  // Scrolling back down yourself dismisses the button — it has nothing left to offer.
+  window.addEventListener('scroll', function () {
+    if (jumpShown && atBottom()) showJump(false);
   });
 
   vscodeApi.postMessage({ type: 'ready' });

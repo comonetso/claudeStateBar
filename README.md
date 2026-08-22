@@ -216,7 +216,9 @@ It sits directly below the progress panel. One conversation is one card, and the
 - **Who spoke reads as colour first** — Claude in orange, Codex in blue, matching the provider glyphs in the status bar
 - **Turn count and the machine it started on** — conversation documents travel through git; Codex sessions do not. A conversation started on another PC cannot be resumed here, so the card names that machine
 - **Breaks stay visible** — where a run died and the thread was discarded, or where a new conversation replaced the old one. Without those markers there is no way to tell why the context suddenly changed
-- **Talking** — a badge during the 7–13 seconds a turn is in flight. Brief, but it is the only window in which the panel would otherwise look frozen
+- **The question shows first** — during the 7–13 seconds a turn is in flight, the line just thrown appears on the card immediately and Codex's side reads as waiting for an answer. The answer fills that slot when it lands. A card is created even on a conversation's first turn, before the document exists
+- **It follows new turns down** — if you are at the bottom, the view keeps up on its own. If you have scrolled up to reread an older turn it does not move the page; a **New reply ↓** button appears instead, so you keep your place and still know something arrived
+- **Turns fold** — click a turn's number line to collapse it; the folded line keeps the first line of the question, so it still says what it was about. Useful for skimming a conversation where several long answers have piled up
 - Click the document name to open the original in an editor
 
 Ping-pong turns never appear in the progress panel. That one is for watching work that takes minutes, and ten-second exchanges piling up there would only get in the way.

@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.12.0] - 2026-08-22
+
+> **The chat panel shows the question before the answer arrives.**
+> A ping-pong turn takes seven to thirteen seconds. Until now the panel showed nothing at all during
+> that window — the line Claude threw appeared only once Codex had answered, so the panel sat there
+> looking stuck on the one occasion you were actually watching it.
+
+The reason was in the plumbing, not the panel. `send.sh` writes a turn to the conversation document
+only after it has the answer in hand, and the panel reads that document. So the fix went into the
+marker the script already drops before calling Codex: it now carries the question itself, along with
+the conversation's stamp and slug. The panel reads that and draws a **waiting for an answer** turn
+straight away. The document is still left alone until the answer is real — a failed turn should not
+leave half a turn in the record.
+
+This also covers the case that looked worst: the very first turn of a conversation, where no document
+existed yet and the panel had nothing at all to show. That now gets a card too.
+
+### Following the conversation, and folding it
+
+The panel never touched the scroll position, so a long exchange simply ran off the bottom. It now
+follows new turns down **when you are already at the bottom**. If you have scrolled up to reread
+something it leaves the page where it is and raises a **New reply ↓** button instead — losing your
+place is worse than missing a notification.
+
+Turns fold. Click a turn's number line and it collapses to one line that keeps the first line of the
+question, so a conversation with several long answers can be skimmed like a table of contents.
+Everything starts expanded; folding is something you reach for, not a state to undo.
+
+### Requires the updated `codex_rescue` skill
+
+The waiting turn is drawn from the marker, so it needs the `send.sh` that writes the question into
+it. An older skill will simply behave as before — the panel stays blank during a turn. Nothing breaks.
+
 ## [1.11.0] - 2026-08-22
 
 > **A second Codex panel, for the conversations that are too short for the first one.**

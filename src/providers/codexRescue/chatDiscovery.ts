@@ -37,7 +37,25 @@ export interface ChatBreak {
     text: string;
 }
 
-export type ChatEntry = ChatTurn | ChatBreak;
+/**
+ * The turn that is happening right now: Claude has spoken, Codex has not answered yet.
+ *
+ * This never comes from the document — send.sh writes a turn only once the answer is in hand,
+ * so for the 7–13s of a round trip the document says nothing at all. It comes from the
+ * in-flight marker, which now carries the question text alongside its crash-recovery fields.
+ * Without this the panel showed a LIVE badge over an unchanged transcript, which reads as
+ * frozen rather than as working.
+ */
+export interface ChatPending {
+    type: 'pending';
+    /** What this turn will be numbered once it lands. */
+    n: number;
+    /** `HH:MM:SS`, from the marker's `started=`. */
+    time?: string;
+    claude: string;
+}
+
+export type ChatEntry = ChatTurn | ChatBreak | ChatPending;
 
 export interface CodexChat {
     stamp: string;
@@ -187,6 +205,57 @@ function findSpeaker(text: string, emoji: string, name: string): { at: number; l
     return p >= 0 ? { at: p, len: plain.length } : null;
 }
 
+/** The in-flight marker `.log/.chat_<slug>.inflight`, as send.sh writes it. */
+interface InflightMarker {
+    slug: string;
+    /** Which conversation this turn belongs to. Absent on markers written before 2026-08-22. */
+    stamp?: string;
+    subject?: string;
+    /** `HH:MM:SS`, sliced out of the ISO `started=` field. */
+    time?: string;
+    /** The question, verbatim. Empty on an older marker — then there is nothing to preview. */
+    msg: string;
+}
+
+const MSG_SEP = '--- msg ---';
+
+/**
+ * Parse a marker. Header lines are `key=value`; everything after the separator is the message.
+ *
+ * Only the header is scanned for keys, so a question that happens to contain a line like
+ * `stamp=...` cannot rewrite the card it belongs to.
+ */
+function parseInflight(slug: string, text: string): InflightMarker {
+    const idx = text.indexOf('\n' + MSG_SEP + '\n');
+    const head = idx < 0 ? text : text.slice(0, idx);
+    const msg = idx < 0 ? '' : text.slice(idx + MSG_SEP.length + 2);
+    const pick = (k: string): string | undefined => {
+        const m = new RegExp('^' + k + '=(.*)$', 'm').exec(head);
+        const v = m ? m[1].replace(/\r$/, '').trim() : '';
+        return v || undefined;
+    };
+    const started = pick('started');
+    const hhmmss = started ? /(\d{2}:\d{2}:\d{2})/.exec(started)?.[1] : undefined;
+    return {
+        slug,
+        stamp: pick('stamp'),
+        subject: pick('subject'),
+        time: hhmmss,
+        msg: msg.replace(/\s+$/, ''),
+    };
+}
+
+/** The next turn number, given what the document already holds. */
+function nextTurnNo(entries: ChatEntry[]): number {
+    let max = 0;
+    for (const e of entries) if (e.type === 'turn' && e.n > max) max = e.n;
+    return max + 1;
+}
+
+function pendingFrom(mk: InflightMarker, entries: ChatEntry[]): ChatPending {
+    return { type: 'pending', n: nextTurnNo(entries), time: mk.time, claude: mk.msg };
+}
+
 /**
  * Scan one workspace folder for CHAT conversations, newest first.
  * Returns [] when the project has no conversations — which is how the panel stays empty
@@ -202,22 +271,37 @@ export async function discoverChats(folderUri: vscode.Uri, limit = 50): Promise<
         const m = /^(\d{6}_\d{6})_chat_(.+)\.md$/.exec(n);
         if (m) found.push({ stamp: m[1], slug: m[2], name: n });
     }
-    if (!found.length) return [];
-
     // Stamps are `ymd_His`, so lexical order is chronological.
     found.sort((a, b) => (a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0));
 
     const logDir = vscode.Uri.joinPath(docs, '.log');
     const logNames = (await listNames(logDir)) ?? [];
-    const inflight = new Set(
-        logNames.map(n => /^\.chat_(.+)\.inflight$/.exec(n)?.[1]).filter((s): s is string => !!s));
+    const markers = new Map<string, InflightMarker>();
+    for (const n of logNames) {
+        const m = /^\.chat_(.+)\.inflight$/.exec(n);
+        if (!m) continue;
+        const raw = await readText(vscode.Uri.joinPath(logDir, n));
+        markers.set(m[1], parseInflight(m[1], raw ?? ''));
+    }
 
     const out: CodexChat[] = [];
+    const claimed = new Set<string>();
     for (const f of found.slice(0, limit)) {
         const uri = vscode.Uri.joinPath(docs, f.name);
         const text = await readText(uri);
         if (text === null) continue;
         const st = await statOf(uri);
+        const entries = parseEntries(text);
+
+        // Which document does the marker belong to? It says so, unless it predates the stamp
+        // field — then it goes to the newest document of that slug, which is the one send.sh
+        // would have resumed. `found` is newest-first, so the first match is that one.
+        const mk = markers.get(f.slug);
+        const mine = !!mk && !claimed.has(f.slug) && (!mk.stamp || mk.stamp === f.stamp);
+        if (mk && mine) {
+            claimed.add(f.slug);
+            entries.push(pendingFrom(mk, entries));
+        }
 
         out.push({
             stamp: f.stamp,
@@ -227,12 +311,29 @@ export async function discoverChats(folderUri: vscode.Uri, limit = 50): Promise<
             threadId: fm(text, 'thread_id'),
             docUri: uri.toString(),
             lastAtMs: st?.mtime ?? parseStamp(f.stamp),
-            // The marker is per-slug, not per-document: send.sh locks and marks by slug.
-            live: inflight.has(f.slug),
-            entries: parseEntries(text),
+            live: mine,
+            entries,
         });
     }
-    return out;
+
+    // A marker with no document yet — the very first turn of a conversation, or the first turn
+    // after `--new`. This is the case that looked most broken: nothing on screen at all until
+    // the answer landed. A marker too old to name its stamp cannot be placed, so it is skipped.
+    for (const [slug, mk] of markers) {
+        if (claimed.has(slug) || !mk.stamp) continue;
+        const st = await statOf(vscode.Uri.joinPath(logDir, '.chat_' + slug + '.inflight'));
+        out.push({
+            stamp: mk.stamp,
+            slug,
+            subject: mk.subject,
+            docUri: '',                       // no document to open yet
+            lastAtMs: st?.mtime ?? parseStamp(mk.stamp),
+            live: true,
+            entries: [pendingFrom(mk, [])],
+        });
+    }
+
+    return out.sort((a, b) => (b.lastAtMs ?? 0) - (a.lastAtMs ?? 0));
 }
 
 // ---------------------------------------------------------------------------
