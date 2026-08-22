@@ -11,6 +11,8 @@ import * as blockPrimer from './blockPrimer';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
 import { createOrShowWorkflowPanel, pushWorkflows, pushWorkflowTrash, getTrackedSessionFile, pushLanguage } from './workflowPanel';
 import { createOrShowCodexPanel, pushRuns, pushTrash, pushCodexLanguage, isCodexPanelOpen, CodexRunView, CodexTrashView } from './codexRescuePanel';
+import { createOrShowChatPanel, pushChats, pushChatTrash, pushChatLanguage, isChatPanelOpen, CodexChatView, ChatTrashView } from './codexChatPanel';
+import { discoverChats, trashChat, listChatTrash, restoreChat, purgeChat, emptyChatTrash } from './providers/codexRescue/chatDiscovery';
 import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runCacheKey, deleteRun, cleanupOldRuns, CleanupResult, RunPhase,
          trashRun, listTrash, restoreTrashed, purgeTrashed, emptyTrash } from './providers/codexRescue/runDiscovery';
 import { getDict, Lang } from './i18n';
@@ -380,7 +382,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Status bar click → QuickPick menu (hide this / restore hidden / open settings)
     const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
-        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'cleanupGhosts'; sessionFile?: string };
+        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'codexChats' | 'cleanupGhosts'; sessionFile?: string };
         const items: Item[] = [];
 
         const clickedEntry = sessionFile ? statusBarItems.get(sessionFile) : undefined;
@@ -422,10 +424,11 @@ export function activate(context: vscode.ExtensionContext) {
             for (const [hiddenPath] of hiddenSessions) {
                 const fileName = path.basename(hiddenPath).replace(/\.jsonl$/, '');
                 const projectDir = path.basename(path.dirname(hiddenPath));
+                // 한 줄로 유지한다 — 전체 경로는 projectDir + 세션 앞 8자로 이미 구분되므로
+                // 두 번째 줄을 차지할 값이 없었다 (2026-08-22 사용자 지시: 메뉴를 한 줄로).
                 items.push({
                     label: '$(eye) ' + planT('menu.restoreOne', fileName.substring(0, 8)),
                     description: projectDir,
-                    detail: hiddenPath,
                     action: 'restoreOne',
                     sessionFile: hiddenPath
                 });
@@ -446,7 +449,6 @@ export function activate(context: vscode.ExtensionContext) {
                 items.push({
                     label: icon + ' ' + planT('menu.viewWorkflows', workflows.length),
                     description: runningWf > 0 ? planT('menu.running', runningWf) : planT('menu.allDone'),
-                    detail: planT('menu.viewDetail'),
                     action: 'workflows'
                 });
             } else {
@@ -454,8 +456,7 @@ export function activate(context: vscode.ExtensionContext) {
                 // place to look, instead of the menu just closing on click.
                 items.push({
                     label: '$(circuit-board) ' + planT('menu.noWorkflows'),
-                    description: '',
-                    detail: planT('menu.openPanelDetail'),
+                    description: planT('menu.noneRunning'),
                     action: 'workflows'
                 });
             }
@@ -471,8 +472,17 @@ export function activate(context: vscode.ExtensionContext) {
             items.push({
                 label: (cxLive > 0 ? '$(sync~spin) ' : '$(flame) ') + planT('menu.viewCodexRuns', cxRuns.length),
                 description: cxLive > 0 ? planT('menu.running', cxLive) : planT('menu.allDone'),
-                detail: planT('menu.codexDetail'),
                 action: 'codexRuns'
+            });
+            // 핑퐁 대화. 진행 상황 바로 아래에 둔다 (2026-08-22 사용자 지시) — 같은 스킬의
+            // 두 얼굴이라 나란히 있어야 어느 쪽을 볼지 고르기 쉽다.
+            const cxChats = await collectCodexChats();
+            const cxTalking = cxChats.filter(c => c.live).length;
+            items.push({
+                label: (cxTalking > 0 ? '$(sync~spin) ' : '$(comment-discussion) ')
+                       + planT('menu.viewCodexChats', cxChats.length),
+                description: cxTalking > 0 ? planT('cxc.live') : '',
+                action: 'codexChats'
             });
         }
 
@@ -483,7 +493,6 @@ export function activate(context: vscode.ExtensionContext) {
         items.push({
             label: '$(trash) ' + planT('menu.cleanupGhosts'),
             description: planT('menu.cleanupGhostsDesc'),
-            detail: planT('menu.cleanupGhostsDetail'),
             action: 'cleanupGhosts'
         });
         items.push({
@@ -520,6 +529,9 @@ export function activate(context: vscode.ExtensionContext) {
                 break;
             case 'codexRuns':
                 vscode.commands.executeCommand('claudeContextBar.showCodexRuns');
+                break;
+            case 'codexChats':
+                vscode.commands.executeCommand('claudeContextBar.showCodexChats');
                 break;
             case 'cleanupGhosts':
                 // 죽은 인스턴스가 남긴 좀비 StatusBarItem은 VS Code API로 직접 제거 불가 →
@@ -758,6 +770,79 @@ export function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(codexRunsCmd);
 
+    // Codex chat (핑퐁) panel. Same visibility gate as the runs panel above.
+    const codexChatsCmd = vscode.commands.registerCommand('claudeContextBar.showCodexChats', async () => {
+        createOrShowChatPanel(context, await collectCodexChats(), {
+            onOpenDoc: (docUri: string) => {
+                vscode.workspace.openTextDocument(vscode.Uri.parse(docUri)).then(
+                    doc => vscode.window.showTextDocument(doc, { preview: false }),
+                    e => log(`[codex-chat] open failed: ${e}`)
+                );
+            },
+            // Into the trash without a prompt — it is reversible, so a question here would only
+            // stand between the user and an action they can undo. The confirmation lives at the
+            // irreversible end instead (purge / empty), which is the policy the progress panel
+            // already follows.
+            onDelete: async (stamp: string) => {
+                let moved = false;
+                for (const f of vscode.workspace.workspaceFolders || []) {
+                    if (await trashChat(f.uri, stamp, Date.now())) { moved = true; break; }
+                }
+                if (moved) {
+                    log(`[codex-chat] trashed ${stamp}`);
+                    vscode.window.setStatusBarMessage(planT('cx.del.trashed'), 5000);
+                }
+                void syncCodexChats();
+                void pushChatTrashNow();
+            },
+            onTrashOpen: () => { void pushChatTrashNow(); },
+            onRestore: async (stamp: string) => {
+                for (const f of vscode.workspace.workspaceFolders || []) {
+                    const res = await restoreChat(f.uri, stamp);
+                    if (res.conflict) {
+                        vscode.window.showWarningMessage(planT('cxc.restoreConflict'));
+                        break;
+                    }
+                    if (res.restored) {
+                        log(`[codex-chat] restored ${stamp}`);
+                        break;
+                    }
+                }
+                void syncCodexChats();
+                void pushChatTrashNow();
+            },
+            // 🔴 Irreversible — this is where the question belongs (user's call, 2026-08-22).
+            onPurge: async (stamp: string) => {
+                const yes = planT('cxc.confirmDelete');
+                const choice = await vscode.window.showWarningMessage(
+                    planT('cxc.purgeConfirm'), { modal: true }, yes);
+                if (choice !== yes) return;
+                for (const f of vscode.workspace.workspaceFolders || []) {
+                    if (await purgeChat(f.uri, stamp)) {
+                        log(`[codex-chat] purged ${stamp}`);
+                        break;
+                    }
+                }
+                void pushChatTrashNow();
+            },
+            onEmptyTrash: async () => {
+                const items = await collectChatTrash();
+                if (!items.length) return;
+                const yes = planT('cxc.confirmDelete');
+                const choice = await vscode.window.showWarningMessage(
+                    planT('cxc.emptyConfirm', items.length), { modal: true }, yes);
+                if (choice !== yes) return;
+                let n = 0;
+                for (const f of vscode.workspace.workspaceFolders || []) {
+                    n += await emptyChatTrash(f.uri);
+                }
+                log(`[codex-chat] emptied trash: ${n} conversation(s)`);
+                void pushChatTrashNow();
+            },
+        });
+    });
+    context.subscriptions.push(codexChatsCmd);
+
     // Shown only to people who DON'T have the skill: a pointer to the guide, nothing more.
     // The extension never installs the skill itself — it spawns `codex exec` with workspace
     // write access, so that has to be a deliberate act by the user, not a side effect of
@@ -838,6 +923,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (e.affectsConfiguration('claudeState.language')) {
             pushLanguage();
             pushCodexLanguage();
+            pushChatLanguage();
             refreshAllSessions();
         }
     });
@@ -2839,6 +2925,7 @@ async function refreshAllSessions() {
     // actually uses the skill, so ordinary users pay nothing for it. Deliberately not
     // awaited — the status bar must not wait on a remote filesystem round trip.
     void syncCodexRuns().catch(e => log(`[codex-rescue] sync error: ${e}`));
+    void syncCodexChats().catch(e => log(`[codex-chat] sync error: ${e}`));
 }
 
 // ============================================================================
@@ -2901,6 +2988,52 @@ async function collectCodexTrash(): Promise<CodexTrashView[]> {
 async function pushCodexTrash(): Promise<void> {
     if (!isCodexPanelOpen()) return;
     pushTrash(await collectCodexTrash());
+}
+
+// ---------------------------------------------------------------------------
+// Codex chat (핑퐁) — the panel below the progress one.
+//
+// Its source is the conversation documents themselves, not `.log/`: CHAT writes no event
+// stream by design. That also means there is nothing to cache — a conversation document is
+// a few KB and only grows by one turn at a time, so each poll just re-reads it.
+// ---------------------------------------------------------------------------
+
+async function collectCodexChats(): Promise<CodexChatView[]> {
+    const out: CodexChatView[] = [];
+    for (const f of vscode.workspace.workspaceFolders || []) {
+        for (const c of await discoverChats(f.uri)) {
+            out.push({
+                stamp: c.stamp, slug: c.slug, subject: c.subject, origin: c.origin,
+                threadId: c.threadId, docUri: c.docUri, lastAtMs: c.lastAtMs,
+                live: c.live, entries: c.entries as CodexChatView['entries'],
+            });
+        }
+    }
+    // Across several folders the per-folder ordering no longer holds.
+    return out.sort((a, b) => (b.lastAtMs ?? 0) - (a.lastAtMs ?? 0));
+}
+
+async function collectChatTrash(): Promise<ChatTrashView[]> {
+    const out: ChatTrashView[] = [];
+    for (const f of vscode.workspace.workspaceFolders || []) {
+        out.push(...await listChatTrash(f.uri));
+    }
+    return out.sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+/** Refresh the chat panel if it is open. Cheap enough to ride the same poll as the runs. */
+async function syncCodexChats(): Promise<void> {
+    if (!isChatPanelOpen()) return;
+    try {
+        pushChats(await collectCodexChats());
+    } catch (e) {
+        log(`[codex-chat] scan error: ${e}`);
+    }
+}
+
+async function pushChatTrashNow(): Promise<void> {
+    if (!isChatPanelOpen()) return;
+    pushChatTrash(await collectChatTrash());
 }
 
 async function collectCodexRuns(): Promise<CodexRunView[]> {
@@ -3042,6 +3175,7 @@ function ensureCodexFastPolling(hasLive: boolean): void {
         log('[codex-rescue] live run detected → 2s polling');
         codexFastTimer = setInterval(() => {
             void syncCodexRuns().catch(e => log(`[codex-rescue] fast poll error: ${e}`));
+            void syncCodexChats().catch(e => log(`[codex-chat] fast poll error: ${e}`));
         }, 2000);
     } else if (!hasLive && codexFastTimer) {
         log('[codex-rescue] no live runs → back to the shared tick');

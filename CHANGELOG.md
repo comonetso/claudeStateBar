@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.11.0] - 2026-08-22
+
+> **A second Codex panel, for the conversations that are too short for the first one.**
+> `codex_rescue` gained a ping-pong mode: instead of writing a request and waiting minutes, you
+> throw one line at Codex and get an answer in about ten seconds. Those answers land in the Claude
+> Code chat window, where a few turns quickly scatter between everything else that was said.
+
+The new **Codex chat panel** puts one conversation back on one screen. It sits directly below the
+progress panel in the status-bar menu, and appears under the same condition — the `codex_rescue`
+skill installed on this machine.
+
+One conversation is one card, newest expanded, because re-reading almost always means the exchange
+that just happened. Claude's lines are orange and Codex's are blue, matching the provider glyphs in
+the status bar, so who spoke reads as colour before it reads as a label.
+
+Two things the panel deliberately shows rather than hides. **Breaks** — where a run died and the
+thread was discarded, or where a new conversation replaced the old one — because otherwise there is
+no way to tell why the context suddenly changed halfway down. And the **machine a conversation
+started on**: these documents travel through git, but Codex sessions do not, so a conversation
+begun on another PC cannot be continued here.
+
+While a turn is in flight the card shows **talking**. That lasts seven to thirteen seconds, which is
+brief but is also the only window in which the panel would look frozen.
+
+Ping-pong turns never appear in the progress panel. That one exists to watch work that takes
+minutes; ten-second exchanges accumulating there would only get in the way.
+
+### The chat trash is a separate can
+
+It uses its own directory rather than sharing the progress panel's. Neither panel can list or
+destroy the other's items, and a conversation and a run may carry the same stamp without colliding.
+
+Deleting from a card goes to the trash with no prompt — it is reversible, so a question there only
+stands between you and something you can undo. The confirmation is at **delete-for-good** and
+**empty**, the one point of no return. There is no automatic cleanup: run logs are bulk and worth
+reclaiming, but a conversation is the record itself, and age is not a reason to destroy it.
+
+### The status-bar menu is one line per item again
+
+Every entry had grown a second line of explanatory text, and with workflows, Codex runs and the
+cleanup entry all carrying one, the menu had become something to read rather than something to pick
+from. The second lines are gone. Where an entry needed its detail to make sense, it moved into the
+label — "View workflows" is now "Workflow panel", so it says what it opens without a caption
+underneath. The stale-item entry keeps one short note that it reloads the window, since a window
+reloading unannounced is worth a warning.
+
 ## [1.10.1] - 2026-08-21
 
 > **The "documents too?" question moved to the end.** 1.10.0 asked it on the way into the trash,

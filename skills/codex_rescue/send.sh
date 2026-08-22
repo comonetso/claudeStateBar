@@ -29,6 +29,375 @@ set -uo pipefail
 
 die() { printf 'codex_rescue: %s\n' "$*" >&2; exit 2; }
 
+# ── Codex 에 넘기는 경로는 Windows 형식으로 바꾼다 ──────────────
+# codex 진입점은 Node 스크립트(Windows 네이티브)다. Git Bash 의 MSYS 경로(`/d/OneDrive/...`)를
+# 그대로 넘기면 디렉토리를 못 찾고, 프롬프트에 박은 요청서 경로도 읽지 못한다.
+# bash 쪽 파일 조작은 계속 MSYS 경로로 하고, **codex 인자에만** 변환을 적용한다.
+#
+# 변환 실패를 원본으로 조용히 폴백하지 않는다 — 그러면 못 읽는 경로로 Codex 를 부르고
+# "요청서를 못 읽었다" 는 답을 받는다. Windows 계열에서는 변환 성공을 요구한다.
+IS_WIN=0
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WIN=1 ;; esac
+winp() {
+  if [ "$IS_WIN" = 1 ]; then
+    cygpath -m -- "$1" || die "cygpath 변환 실패: $1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# CHAT — 핑퐁 (2026-08-22 신설)
+#
+#   send.sh --chat --slug <슬러그> [--subject "<한 줄>"] [--new] <던질 말>
+#
+# 다른 세 모드와 **목적이 반대**라서 배관을 공유하지 않고 여기서 끝낸다.
+# 저쪽은 "한 번 무겁게 던지고 오래 기다린다"이고, 이쪽은 "짧게 여러 번 주고받는다"이다.
+# 그래서 아래를 전부 타지 않고 조기 종료한다:
+#
+#   - `.log/<stamp>_events.jsonl` · `_status.json` · `_heartbeat`
+#     → 🔴 **의도적으로 안 쓴다.** 확장의 진행 패널은 이 파일들로 카드를 그리므로,
+#       안 쓰면 핑퐁이 패널에 뜨지 않는다. 패널은 오래 도는 작업을 지켜보는 창이고
+#       핑퐁은 채팅에서 즉시 읽는 것이라 카드가 쌓이면 방해만 된다.
+#       **확장 코드를 고쳐서 거르는 방식이 아니다** — 안 쓰면 애초에 안 보인다(사용자 지시).
+#   - marker·baseline·변경 감지 → read-only 로 돌아 Codex 에게 쓰기 권한이 아예 없다.
+#     감지할 변경이 원리적으로 생기지 않으므로 스캔 비용(수천 파일)을 통째로 뺀다.
+#   - stale 판정 → 응답 파일을 Codex 가 쓰지 않고 `-o` 회수분을 이 스크립트가 쓴다.
+#     매번 새로 쓰므로 "이전 실행 결과를 이번 것으로 오인"할 여지가 없다(REVIEW 와 같은 이유).
+#
+# 맥락은 `codex exec resume <thread_id>` 가 잇는다. thread_id 는 대화 문서 frontmatter 에
+# 박아 두고 다음 턴에 읽는다 — 그래서 Claude 는 슬러그만 기억하면 된다.
+#
+# 🔴 세션별 락을 건다. 같은 세션에 두 턴이 동시에 들어가면 응답 순서가 뒤섞인다
+#    (Codex 자신이 이 설계에서 지적한 함정이다).
+# ═══════════════════════════════════════════════════════════════
+if [ "${1:-}" = "--chat" ]; then
+  shift
+  CH_SLUG=""; CH_SUBJECT=""; CH_NEW=0; CH_MSG=""; CH_STAMP=""; CH_THREAD=""; CH_DOC=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --slug)    [ -n "${2:-}" ] || die "--chat: --slug 값이 없다";    CH_SLUG="$2";    shift 2 ;;
+      --subject) [ -n "${2:-}" ] || die "--chat: --subject 값이 없다"; CH_SUBJECT="$2"; shift 2 ;;
+      --new)     CH_NEW=1; shift ;;
+      --)        shift; CH_MSG="$CH_MSG${CH_MSG:+ }$*"; break ;;
+      *)         CH_MSG="$CH_MSG${CH_MSG:+ }$1"; shift ;;
+    esac
+  done
+  [ -n "$CH_SLUG" ] || die "--chat 은 --slug <영문-kebab> 이 필요하다 — 이게 대화 스레드 식별자다"
+  # 🔴 소문자만 받는다 (2026-08-22, Codex 지적). 대문자를 허용하면 Windows 에서는 `Foo` 와 `foo`
+  #    가 같은 파일이고 Linux 에서는 다른 파일이라, 5대에 배포된 이 스킬에서 같은 슬러그가
+  #    머신마다 다른 대화를 가리키게 된다. 문서도 처음부터 kebab-case 를 요구하고 있었다.
+  case "$CH_SLUG" in
+    *[!a-z0-9-]*) die "슬러그는 **소문자** 영문·숫자·하이픈만 쓴다: $CH_SLUG
+  (대문자를 허용하면 Windows/Linux 에서 같은 슬러그가 다른 파일을 가리킨다)" ;;
+  esac
+  [ -n "$CH_MSG" ] || die "--chat: Codex 에게 던질 말이 없다"
+
+  # 🔴 subject 는 frontmatter 에 그대로 들어간다. 개행이나 `---`·`thread_id:` 가 섞이면
+  #    frontmatter 경계가 깨지고, 다음 턴의 thread_id 추출이 **엉뚱한 줄을 읽는다**
+  #    (2026-08-22, Codex 지적). 한 줄로 눌러 붙이고 위험 문자를 뺀다.
+  #    이 값은 사람이 읽는 제목일 뿐이라 글자 몇 개가 빠지는 편이 깨진 frontmatter 보다 낫다.
+  if [ -n "$CH_SUBJECT" ]; then
+    CH_SUBJECT=$(printf '%s' "$CH_SUBJECT" | tr '\n\r\t' '   ' | tr -d '"\\' \
+                 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  fi
+
+  CH_ROOT="$PWD"
+  CH_DOCS="$CH_ROOT/docs/codex_rescue"
+  CH_LOGD="$CH_DOCS/.log"
+  # 이 대화가 어느 머신 것인지. 대화 문서는 git 으로 5대 사이를 오가지만 Codex 세션은 안 따라간다.
+  CH_ORIGIN=$(hostname 2>/dev/null || echo unknown)
+  mkdir -p "$CH_LOGD" || die "디렉토리 생성 실패: $CH_LOGD"
+  # 락 파일이 git 에 노출되지 않게. 기존 파일은 건드리지 않는다.
+  [ -f "$CH_LOGD/.gitignore" ] || printf '*\n' > "$CH_LOGD/.gitignore" 2>/dev/null
+
+  # 🔴 락에 **소유 토큰**을 적는다 (2026-08-22, Codex 지적 — ABA).
+  #    빈 파일이면 cleanup 이 "경로가 같다"는 이유만으로 지운다. 그 사이 다른 실행이 락을 다시
+  #    잡았다면 **남의 락을 풀어 주고** 세 번째 실행까지 들여보낸다. nonce 를 대조해 내 것일
+  #    때만 푼다. pid·host·시각도 같이 적어 두면 stale 판정을 사람이 눈으로 할 수 있다.
+  CH_LOCK="$CH_LOGD/.chat_${CH_SLUG}.lock"
+  CH_NONCE="$$.$(date "+%s" 2>/dev/null || echo 0).${RANDOM:-0}"
+  if ! (set -o noclobber; printf 'nonce=%s\npid=%s\nhost=%s\nstarted=%s\n' \
+          "$CH_NONCE" "$$" "$(hostname 2>/dev/null || echo unknown)" \
+          "$(date "+%Y-%m-%dT%H:%M:%S" 2>/dev/null)" > "$CH_LOCK") 2>/dev/null; then
+    die "같은 대화($CH_SLUG)가 이미 돌고 있다 — 한 세션에 두 턴을 동시에 던지면 응답 순서가 뒤섞인다.
+
+  lock: $CH_LOCK
+$(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
+
+  위 pid 의 프로세스가 없고 started 가 한참 전이면 비정상 종료로 남은 것이다. 지우고 다시 해라."
+  fi
+
+  CH_TMP=$(mktemp -d "${TMPDIR:-/tmp}/codex-chat.XXXXXX") \
+    || { rm -f -- "$CH_LOCK"; die "임시 디렉토리 생성 실패"; }
+  # 내가 잡은 락일 때만 푼다 — 위 ABA 방어의 나머지 절반이다.
+  ch_unlock() {
+    [ -n "${CH_LOCK:-}" ] || return 0
+    case "$(cat "$CH_LOCK" 2>/dev/null)" in
+      *"nonce=${CH_NONCE:-__none__}"*) rm -f -- "$CH_LOCK" 2>/dev/null ;;
+    esac
+    return 0
+  }
+  ch_cleanup() { rm -rf -- "${CH_TMP:-}" 2>/dev/null; ch_unlock; return 0; }
+  trap ch_cleanup EXIT
+  trap 'ch_cleanup; echo "codex_rescue: 중단됨(신호 수신)" >&2; exit 130' HUP INT TERM
+
+  # 문서의 thread_id 를 비우고 끊긴 사유를 남긴다. 실제로 비워졌을 때만 0 을 돌려준다 —
+  # 실패를 성공으로 보고하면 다음 턴이 어긋난 세션을 조용히 재개한다.
+  ch_discard_thread() {   # $1=문서 경로  $2=사유 한 줄
+    [ -f "$1" ] || return 1
+    sed -i "1,/^---$/ s|^thread_id:.*|thread_id:|" "$1" 2>/dev/null
+    [ -z "$(sed -n "1,/^---\$/ s/^thread_id:[[:space:]]*//p" "$1" | head -1 | tr -d '\r')" ] || return 1
+    {
+      echo
+      echo "## ⚠️ 스레드 끊김 · $(date "+%H:%M:%S")"
+      echo
+      echo "$2"
+      echo "Codex 세션과 이 문서의 맥락이 어긋났을 수 있어 스레드를 폐기했다."
+      echo "이 슬러그로 다시 물으면 **맥락 없는 새 대화**가 시작된다."
+    } >> "$1" 2>/dev/null
+    return 0
+  }
+
+  # 같은 슬러그의 기존 대화를 잇는다. 스탬프가 `ymd_His` 라 glob 의 사전순이 곧 시간순이고,
+  # 마지막 것이 가장 최근 대화다.
+  CH_PREV_DOC=""
+  for f in "$CH_DOCS"/*_chat_"${CH_SLUG}".md; do
+    [ -f "$f" ] && CH_PREV_DOC="$f"
+  done
+
+  # ── 🔴 in-flight 복구 (2026-08-22, Codex 가 P0 로 꼽은 크래시 간격) ──────────
+  #
+  # codex 호출이 끝나는 지점과 대화 문서에 턴을 적는 지점 **사이**에 강제 종료(SIGKILL·
+  # 상위 도구 타임아웃·전원 차단)가 들어오면, Codex 세션에는 이번 사용자 턴이 남는데
+  # 문서에는 안 남는다. 문서의 thread_id 는 멀쩡하므로 **다음 호출이 어긋난 세션을 그대로
+  # 재개한다.** 사용자는 그걸 알 방법이 없다.
+  #
+  # trap 은 이걸 못 막는다 — SIGKILL 에는 trap 이 안 걸린다. 그래서 "다음 실행이 흔적을 보고
+  # 복구"하는 쪽으로 푼다: codex 를 부르기 **전에** 마커를 남기고, 턴을 문서에 적은 뒤에 지운다.
+  # 마커가 남아 있다 = 지난 실행이 그 사이에서 죽었다.
+  CH_INFLIGHT="$CH_LOGD/.chat_${CH_SLUG}.inflight"
+  if [ -f "$CH_INFLIGHT" ]; then
+    CH_IF_WHEN=$(sed -n 's/^started=//p' "$CH_INFLIGHT" 2>/dev/null | head -1)
+    if [ -n "$CH_PREV_DOC" ]; then
+      ch_discard_thread "$CH_PREV_DOC" \
+        "지난 실행이 codex 호출과 기록 사이에서 강제 종료됐다(마커: ${CH_IF_WHEN:-시각 불명})." \
+        && echo "⚠️ 지난 실행이 중간에 죽어 있었다 — 스레드를 폐기하고 새 대화로 시작한다." \
+        || die "지난 실행의 스레드를 폐기하지 못했다: $CH_PREV_DOC
+  그대로 두면 어긋난 세션을 재개한다. 손으로 thread_id 를 비우고 다시 해라."
+    fi
+    rm -f -- "$CH_INFLIGHT" 2>/dev/null
+  fi
+
+  CH_DOC="$CH_PREV_DOC"
+  if [ -n "$CH_DOC" ] && [ "$CH_NEW" = 0 ]; then
+    CH_THREAD=$(sed -n "1,/^---$/ s/^thread_id:[[:space:]]*//p" "$CH_DOC" | head -1 | tr -d '\r')
+    CH_STAMP=$(sed -n "1,/^---$/ s/^stamp:[[:space:]]*//p"     "$CH_DOC" | head -1 | tr -d '\r')
+    # 🔴 다른 머신에서 시작된 대화는 이어받지 않는다 (2026-08-22, Codex 지적).
+    #    이 문서는 git 으로 5대 사이를 오가는데 Codex 세션 저장소는 머신마다 따로다.
+    #    남의 thread_id 로 resume 하면 "no rollout found" 로 실패하고, 그러면 스레드 폐기까지
+    #    돌아 턴 하나를 통째로 버린다. 미리 알아채고 새 대화로 시작하는 편이 낫다.
+    #    origin 이 없는 구형 문서는 그대로 이어받는다 — 판단할 근거가 없으니 기존 동작을 지킨다.
+    CH_DOC_ORIGIN=$(sed -n "1,/^---$/ s/^origin:[[:space:]]*//p" "$CH_DOC" | head -1 | tr -d '\r')
+    if [ -n "$CH_DOC_ORIGIN" ] && [ "$CH_DOC_ORIGIN" != "$CH_ORIGIN" ]; then
+      echo "⚠️ 이 대화는 다른 머신($CH_DOC_ORIGIN)에서 시작됐다 — 여기($CH_ORIGIN)서는 이어받을 수 없어 새 대화로 시작한다."
+      CH_THREAD=""
+    fi
+  fi
+  # 이어받을 게 없으면(첫 대화·`--new`·thread_id 유실) 새 스레드로 시작한다.
+  if [ -z "$CH_THREAD" ]; then
+    CH_STAMP=$(date "+%y%m%d_%H%M%S") || die "스탬프 생성 실패"
+    CH_DOC="$CH_DOCS/${CH_STAMP}_chat_${CH_SLUG}.md"
+
+    # 🔴 `--new` 는 "이전 맥락을 버린다"는 결정이다. 그 결정을 **codex 를 부르기 전에**
+    #    영속화한다 (2026-08-22, Codex 지적).
+    #
+    #    안 그러면: 새 턴이 실패 → 새 문서가 안 생김 → 다음 호출이 glob 으로 이전 문서를 찾음
+    #    → **버리기로 한 스레드가 되살아난다.** 사용자는 새 대화인 줄 알고 옛 맥락을 이어가게 된다.
+    #
+    #    thread_id 유실로 여기 온 경우는 해당 없다 — 이미 비어 있어 되살아날 것이 없다.
+    if [ "$CH_NEW" = 1 ] && [ -n "$CH_PREV_DOC" ]; then
+      sed -i "1,/^---$/ s|^thread_id:.*|thread_id:|" "$CH_PREV_DOC" \
+        || die "이전 대화를 닫지 못했다: $CH_PREV_DOC
+  --new 를 진행하면 실패 시 옛 스레드가 되살아난다. 파일 권한을 확인해라."
+      # 정말 비었는지 되읽어 확인한다. 실패를 성공으로 보고하지 않기 위해서다.
+      [ -z "$(sed -n "1,/^---$/ s/^thread_id:[[:space:]]*//p" "$CH_PREV_DOC" | head -1 | tr -d '\r')" ] \
+        || die "이전 대화의 thread_id 가 지워지지 않았다: $CH_PREV_DOC"
+      {
+        echo
+        echo "## ⏹ 새 대화로 전환 · $(date "+%H:%M:%S")"
+        echo
+        echo '`--new` 로 새 대화를 시작했다. 이 세대는 여기서 닫힌다.'
+      } >> "$CH_PREV_DOC" 2>/dev/null
+    fi
+  fi
+
+  CH_LAST="$CH_TMP/last.md"
+  CH_LAST_W=$(winp "$CH_LAST") || exit 2
+  CH_EV="$CH_TMP/events.jsonl"
+  CH_ERR="$CH_TMP/stderr.log"
+
+  # 🔴 `codex exec resume` 에는 `-s`(샌드박스)도 `-C`(작업 디렉토리)도 **없다.**
+  #
+  # 🔴🔴 그리고 **첫 턴의 read-only 는 상속되지 않는다** — 2026-08-22 실측으로 확인했다.
+  #      resume 턴에 "파일을 써봐라"를 시켰더니 **실제로 파일이 만들어졌다.** 즉 아무 조치 없이는
+  #      2턴부터 Codex 가 워크스페이스에 쓸 수 있고, CHAT 은 변경 감지를 빼 놨으므로
+  #      **아무도 그걸 못 잡는다.** "Codex 는 아무것도 못 쓴다"는 전제가 통째로 깨진다.
+  #
+  #      `-c` 는 resume 도 받으므로 config 오버라이드로 강제한다. 같은 실측에서
+  #      `-c sandbox_mode="read-only"` 를 붙이면 쓰기가 차단되는 것(파일 미생성)을 확인했다.
+  #      🔴 이 오버라이드를 빼지 마라. 빼는 순간 감시 없는 쓰기 권한이 열린다.
+  #
+  # cwd 는 이미 CH_ROOT 이므로 `-C` 없이도 맞다(`codex exec review` 와 같은 처지).
+  if [ -n "$CH_THREAD" ]; then
+    set -- codex exec resume "$CH_THREAD" --skip-git-repo-check --json \
+           -c sandbox_mode="read-only" -o "$CH_LAST_W"
+  else
+    CH_ROOT_W=$(winp "$CH_ROOT") || exit 2
+    set -- codex exec --skip-git-repo-check --json -s read-only -C "$CH_ROOT_W" -o "$CH_LAST_W"
+  fi
+  [ -n "${CR_MODEL:-}" ] && set -- "$@" -m "$CR_MODEL"
+  # Windows 샌드박스 안전망 — 아래 doc/review 경로와 같은 이유다(§ 트러블슈팅).
+  if [ "$IS_WIN" = 1 ]; then
+    CH_WIN_SB="${CR_WIN_SANDBOX-unelevated}"
+    [ -n "$CH_WIN_SB" ] && set -- "$@" -c "windows.sandbox=$CH_WIN_SB"
+  fi
+  set -- "$@" "$CH_MSG"
+
+  if [ -n "${CR_DRYRUN:-}" ]; then
+    echo "── CHAT dry-run ──"
+    echo "슬러그 : $CH_SLUG"
+    echo "이어받기: ${CH_THREAD:-(새 스레드)}"
+    echo "기록   : ${CH_DOC#"$CH_ROOT"/}"
+    printf '명령   :'; printf ' %q' "$@"; printf '\n'
+    exit 0
+  fi
+
+  # 🔴 codex 를 부르기 **전에** 마커를 남긴다 — 위 in-flight 복구의 나머지 절반이다.
+  #    이 지점부터 문서 기록이 끝나는 지점까지가 크래시에 취약한 구간이고, 마커가 그 구간을
+  #    표시한다. 강제 종료로 여기서 죽으면 다음 실행이 마커를 보고 스레드를 폐기한다.
+  printf 'started=%s\npid=%s\nthread=%s\n' \
+    "$(date "+%Y-%m-%dT%H:%M:%S" 2>/dev/null)" "$$" "${CH_THREAD:-(new)}" \
+    > "$CH_INFLIGHT" 2>/dev/null
+
+  "$@" > "$CH_EV" 2>"$CH_ERR"
+  CH_RC=$?
+
+  # 첫 턴이면 이번 실행에서 만들어진 스레드 id 를 회수한다. 다음 턴이 이걸로 이어붙는다.
+  # 🔴 공백을 허용하는 패턴을 쓴다 (2026-08-22, Codex 지적). 예전에는 `"thread_id":"..."` 라는
+  #    **공백 없는 정확한 모양**만 인정해서, CLI 가 JSON 서식을 바꾸기만 해도 이어받기가
+  #    조용히 끊길 수 있었다.
+  if [ -z "$CH_THREAD" ]; then
+    CH_THREAD=$(grep -o '"thread_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$CH_EV" 2>/dev/null \
+                | head -1 | sed 's/.*"\([^"]*\)"[[:space:]]*$/\1/')
+  fi
+
+  # 🔴 실패 판정은 **종료 코드와 응답 유무를 함께** 본다 (2026-08-22, Codex 지적).
+  #    예전에는 `-s "$CH_LAST"` 하나로만 갈랐다. 그러면 CLI 가 비정상 종료했는데 출력이 일부
+  #    남은 경우를 **성공으로 승격**해 문서에 박고 `exit 0` 으로 보고했다. 텍스트가 있다는 것이
+  #    턴이 온전했다는 뜻은 아니다.
+  if [ ! -s "$CH_LAST" ] || [ "$CH_RC" != 0 ]; then
+    # 실패하면 스레드를 폐기한다.
+    #
+    # 실패 시점에 따라 **Codex 세션 쪽에는 이 턴의 사용자 메시지가 남는다.** 문서에는 답이
+    # 없으니 그대로 같은 thread_id 를 재개하면 세션과 문서의 맥락이 어긋난 채로 대화가 이어진다.
+    # thread_id 를 비워 다음 턴이 새 스레드로 시작하게 하는 것이 일치를 보장하는 유일한 방법이다.
+    # 다만 문서에는 끊긴 흔적을 남긴다 — 없으면 나중에 읽을 때 스레드가 왜 바뀌었는지 알 수 없다.
+    #
+    # 🔴 폐기가 **실제로 됐는지 되읽어 확인**한다. 예전에는 `sed -i` 실패를 버리고도
+    #    "스레드를 폐기했다"고 보고했다 — 그러면 다음 턴이 어긋난 세션을 조용히 재개한다.
+    CH_DISCARDED=0
+    ch_discard_thread "$CH_DOC" "codex 실행이 실패했다(exit: $CH_RC)." && CH_DISCARDED=1
+    # 이 경로는 실패를 **인지하고** 처리했으므로 마커를 남길 이유가 없다. 남기면 다음 실행이
+    # 이미 끝난 일을 "죽은 실행"으로 또 처리한다.
+    rm -f -- "$CH_INFLIGHT" 2>/dev/null
+    echo "🔴 코덱스 턴이 실패했다 (codex exit: $CH_RC, 응답 $([ -s "$CH_LAST" ] && echo '일부 있음' || echo '없음'))"
+    echo
+    if [ -s "$CH_LAST" ]; then
+      echo "--- 받은 출력(신뢰할 수 없다 — 종료 코드가 0이 아니다) ---"
+      cat "$CH_LAST"
+      echo
+    fi
+    echo "--- stderr 마지막 20줄 ---"
+    tail -20 "$CH_ERR" 2>/dev/null
+    echo "-------------------------"
+    echo "실패한 턴은 대화 문서에 기록하지 않았다 — 온전하지 않은 턴이 다음 턴의 맥락을 오염시킨다."
+    if [ -f "$CH_DOC" ] && [ "$CH_DISCARDED" = 1 ]; then
+      echo "스레드를 폐기했다: 같은 슬러그로 다시 물으면 새 대화로 시작한다."
+    elif [ -f "$CH_DOC" ]; then
+      echo "🔴 스레드 폐기에 **실패했다** — $CH_DOC 의 thread_id 가 그대로다."
+      echo "   그대로 두면 다음 턴이 어긋난 세션을 재개한다. 손으로 thread_id 를 비우거나 --new 를 써라."
+    fi
+    exit 1
+  fi
+
+  CH_TIME=$(date "+%H:%M:%S")
+  if [ ! -f "$CH_DOC" ]; then
+    {
+      echo '---'
+      echo 'type: codex_chat'
+      echo "stamp: $CH_STAMP"
+      echo "slug: $CH_SLUG"
+      [ -n "$CH_SUBJECT" ] && echo "subject: $CH_SUBJECT"
+      # 🔴 이 대화가 **어느 머신에서** 시작됐는지 (2026-08-22, Codex 지적).
+      #    `docs/codex_rescue/` 는 git 에 커밋되므로 이 문서가 다른 PC·서버로 건너간다. 그런데
+      #    Codex 의 세션 저장소는 머신마다 따로다 — 남의 thread_id 로 resume 하면 실패한다.
+      #    origin 이 다르면 아래에서 이어받기를 포기하고 새 대화로 시작한다.
+      echo "origin: $CH_ORIGIN"
+      echo "thread_id: $CH_THREAD"
+      echo '---'
+      echo
+      echo "# Codex 핑퐁 — ${CH_SUBJECT:-$CH_SLUG}"
+      echo
+      echo '> 짧은 턴으로 주고받은 대화 기록이다. 이 문서는 `send.sh` 가 쓴다.'
+      echo '> Codex 는 read-only 로 돌았다 — 첫 턴은 `-s read-only`, 이어받기는'
+      echo '> `-c sandbox_mode=read-only`(resume 은 첫 턴 설정을 상속하지 않는다. 2026-08-22 실측).'
+    } > "$CH_DOC" || die "대화 문서 생성 실패: $CH_DOC"
+    CH_TURN=1
+  else
+    # 🔴 턴 수는 **대화 본문이 흉내낼 수 없는 마커**로 센다 (2026-08-22, Codex 지적).
+    #    예전에는 `^## [0-9]*턴 ` 을 셌는데, 질문이나 Codex 답변에 같은 모양의 마크다운 제목이
+    #    들어가기만 해도 번호가 틀어졌다. 코드 얘기를 하다 보면 충분히 생긴다.
+    CH_TURN=$(grep -c '^<!-- codex_rescue:turn ' "$CH_DOC" 2>/dev/null || true)
+    CH_TURN=$(( ${CH_TURN:-0} + 1 ))
+  fi
+
+  {
+    echo
+    echo "<!-- codex_rescue:turn ${CH_TURN} -->"
+    echo "## ${CH_TURN}턴 · ${CH_TIME}"
+    echo
+    # 이모지는 채팅창 표기와 맞춘 것이다 — 주황이 Claude, 푸른색이 Codex(상태바 아이콘 색).
+    # 같은 대화인데 화면과 기록의 표기가 다르면 나중에 읽을 때 누가 말했는지 눈에 안 들어온다.
+    echo '✳️ **클로드**'
+    echo
+    printf '%s\n' "$CH_MSG"
+    echo
+    echo '🔷 **코덱스**'
+    echo
+    cat "$CH_LAST"
+    echo
+  } >> "$CH_DOC" || die "대화 문서 기록 실패: $CH_DOC"
+
+  # 🔴 턴이 문서에 안전하게 들어갔다 — 취약 구간이 닫혔으므로 마커를 내린다.
+  #    이 줄이 in-flight 복구의 마지막 조각이다. 여기 도달하지 못하고 죽으면 마커가 남고,
+  #    다음 실행이 그걸 보고 스레드를 폐기한다.
+  rm -f -- "$CH_INFLIGHT" 2>/dev/null
+
+  echo "── codex_rescue CHAT ──────────────────────────────────"
+  echo "슬러그: $CH_SLUG   ·   ${CH_TURN}턴   ·   codex exit: $CH_RC"
+  echo "기록  : ${CH_DOC#"$CH_ROOT"/}"
+  echo "스레드: ${CH_THREAD:-(미확인)}"
+  echo
+  echo "↓ 코덱스 답변 원문. 사용자에게 '코덱스:' 를 달아 **그대로** 전해라 — 요약·윤색 금지."
+  echo "───────────────────────────────────────────────────────"
+  cat "$CH_LAST"
+  echo
+  echo "───────────────────────────────────────────────────────"
+  [ -z "$CH_THREAD" ] && echo "⚠️ thread_id 를 잡지 못했다 — 다음 턴은 맥락 없이 새로 시작된다"
+  exit 0
+fi
+
 # ── 종류 판정 ───────────────────────────────────────────────────
 # KIND=doc     요청서 기반. 상담(readonly) 또는 수정(edit) — 어느 쪽인지는 frontmatter 의 mode 가 정한다
 # KIND=review  `codex exec review` 기반. 요청서가 없다 — 대상이 git diff 이기 때문이다
@@ -308,21 +677,7 @@ if [ -z "${CR_DRYRUN:-}" ]; then
 fi
 
 # ── Codex 에 넘기는 경로는 Windows 형식으로 바꾼다 ──────────────
-# codex 진입점은 Node 스크립트(Windows 네이티브)다. Git Bash 의 MSYS 경로(`/d/OneDrive/...`)를
-# 그대로 넘기면 디렉토리를 못 찾고, 프롬프트에 박은 요청서 경로도 읽지 못한다.
-# bash 쪽 파일 조작은 계속 MSYS 경로로 하고, **codex 인자에만** 변환을 적용한다.
-#
-# 변환 실패를 원본으로 조용히 폴백하지 않는다 — 그러면 못 읽는 경로로 Codex 를 부르고
-# "요청서를 못 읽었다" 는 답을 받는다. Windows 계열에서는 변환 성공을 요구한다.
-IS_WIN=0
-case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WIN=1 ;; esac
-winp() {
-  if [ "$IS_WIN" = 1 ]; then
-    cygpath -m -- "$1" || die "cygpath 변환 실패: $1"
-  else
-    printf '%s' "$1"
-  fi
-}
+# `winp` 와 `IS_WIN` 은 파일 상단에 정의돼 있다 — CHAT 경로가 그보다 먼저 쓰기 때문이다.
 ROOT_W=$(winp "$ROOT")       || exit 2
 LASTMSG_W=$(winp "$LASTMSG") || exit 2
 REQ_W=""

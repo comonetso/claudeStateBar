@@ -52,16 +52,22 @@ extension; installing it is meant to be a deliberate act.
 
 ---
 
-## 1. Three phrases are all you need
+## 1. Four phrases are all you need
 
-| Say this | What it looks at | Does Codex edit code? |
-|---|---|---|
-| **"review it"** | **everything you changed** (git diff) | No |
-| **"analyse this"** | **one problem you're stuck on** | No |
-| **"analyse and fix it"** | above + edits directly | **Yes** (approval required) |
+| Say this | What it looks at | Does Codex edit code? | How long |
+|---|---|---|---|
+| **"review it"** | **everything you changed** (git diff) | No | minutes |
+| **"analyse this"** | **one problem you're stuck on** | No | minutes |
+| **"analyse and fix it"** | above + edits directly | **Yes** (approval required) | minutes |
+| **"talk to Codex"** | the one short question you're asking now | No | **about 10s** |
 
 These are not fixed keywords — **intent is what matters.** "Take a look before I commit"
 routes to review; "ask why this isn't working" routes to analysis.
+
+🔴 **The last row is the exception.** Ping-pong is only entered when you ask for it explicitly —
+"talk to Codex", "ping-pong this". Existing phrasings like "ask Codex about this" still route to
+analysis. Making the light mode the default would be convenient, but then a request meant for
+proper consultation quietly turns into a one-line answer.
 
 Claude states **which mode it picked, in one line.** If it guessed wrong, just say so.
 
@@ -77,6 +83,47 @@ paste, and no "it's done" to report.
 
 ⚠️ Closing the session breaks the automatic pickup. The result files remain, so pointing
 Claude at the path next time resumes where it left off.
+
+---
+
+## 2-1. Ping-pong — short exchanges, several of them
+
+The three modes above all work the same way: throw one heavy thing, wait a while. That is far too
+much ceremony for asking "Codex, what do you think?" mid-conversation. Ping-pong is for that.
+
+```
+✳️ Claude: <what Claude threw>
+🔷 Codex:  <the answer, verbatim>
+```
+
+Both sides show, so you can follow the exchange and judge it as it goes. Claude relays the answer
+without summarising it and adds its own take separately, underneath.
+
+**The same topic keeps going.** It resumes the Codex session, so earlier turns don't need
+re-explaining. A new topic starts a new conversation.
+
+### Ask short, get short
+
+Measured, on the same plumbing: `what is 1+1?` took 7 seconds; a design-review question with four
+bullet points took 2 minutes 20. What slows it down is not the plumbing but **the weight of the
+question**.
+
+- Ask one thing at a time. If it isn't enough, throw another line — that is the point
+- If the question is heavy, "analyse this" was the right mode to begin with. There is nothing to
+  gain by forcing it through ping-pong
+
+### What it leaves behind
+
+One file: `docs/codex_rescue/<stamp>_chat_<slug>.md`, with turns appended to it. No run records
+under `.log/`, which is why **ping-pong never appears in the Codex progress panel.** The
+claudeStateBar extension's **Codex chat panel** reads these documents instead and shows a
+conversation on one screen (1.11.0 and later).
+
+Codex is given no write access. The script recovers the answer and writes the document itself.
+
+⚠️ **Conversation documents travel through git; Codex sessions do not.** A conversation started on
+another PC cannot be resumed here even with the document present, so it starts a new one. The
+document records which machine it began on, so this is detected automatically.
 
 ---
 

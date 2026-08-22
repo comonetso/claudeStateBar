@@ -207,6 +207,28 @@ Files move rather than copy, so this costs nothing extra on a Remote-SSH workspa
 
 Works over Remote-SSH. Run records are read from the remote workspace through `vscode.workspace.fs` — the same path the extension already uses for Claude and Codex session files — so the extension itself doesn't go on the server. Starting a run there is a separate matter: that needs Codex CLI and the `codex_rescue` skill installed on the server. One difference: the VS Code file API has no range read, so a live run's event file is transferred whole instead of by delta. Status and the completion chime still refresh every 2 seconds; the activity list refreshes at most every 5 seconds, which keeps a few hundred KB off the wire on most of those ticks.
 
+## 💬 Codex chat panel (optional)
+
+`codex_rescue` also has a short back-and-forth mode. Unlike the one above — write a request, wait a few minutes — you throw a line at Codex mid-conversation and get an answer in about ten seconds. That answer lands straight in the Claude Code chat window, but once a conversation runs a few turns those turns end up scattered between everything else that was said. This panel puts one conversation back on **one screen**.
+
+It sits directly below the progress panel. One conversation is one card, and the newest opens expanded — re-reading almost always means the one that just happened.
+
+- **Who spoke reads as colour first** — Claude in orange, Codex in blue, matching the provider glyphs in the status bar
+- **Turn count and the machine it started on** — conversation documents travel through git; Codex sessions do not. A conversation started on another PC cannot be resumed here, so the card names that machine
+- **Breaks stay visible** — where a run died and the thread was discarded, or where a new conversation replaced the old one. Without those markers there is no way to tell why the context suddenly changed
+- **Talking** — a badge during the 7–13 seconds a turn is in flight. Brief, but it is the only window in which the panel would otherwise look frozen
+- Click the document name to open the original in an editor
+
+Ping-pong turns never appear in the progress panel. That one is for watching work that takes minutes, and ten-second exchanges piling up there would only get in the way.
+
+### Its trash is separate
+
+This panel uses a **completely separate directory** from the progress panel's trash. Neither panel can surface or destroy the other's items, and a conversation and a run can share a stamp without colliding.
+
+Deleting from a card goes straight to the trash without a prompt — it is reversible, so a question there only stands between you and something you can undo. The confirmation lives at **delete-for-good and empty**, which is the one point of no return.
+
+**There is no automatic cleanup.** Run logs are bulk, so there is a reason to drop old ones; a conversation is the record itself. Age is not a reason to destroy it.
+
 ## 🎚️ Effort level display
 
 The status bar and tooltip show Claude Code's current effort level:
