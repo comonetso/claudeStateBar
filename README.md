@@ -193,13 +193,18 @@ uses for Claude, with a rail down the left of the row. That is to keep it distin
 Codex prints at the start of every turn (`clamping SessionEnd hook timeout to 3s`) — they used to look
 the same, and the confusion was real.
 
-**Turning it on** is one environment variable:
+**You do not turn this on.** It rides on one environment variable:
 
 ```bash
 CR_LIVE_STEER=1
 ```
 
-With that set, a **CONSULT first turn** runs through the app-server bridge and accepts interruptions.
+and the skill sets it on every consultation. Asking for it up front does not work — nobody knows at the
+start of a run whether they will need to cut in, and `codex exec` cannot change transport once it is
+going, so by the time you have something to say the choice is already behind you. Ask for the old path
+explicitly and the skill drops the flag.
+
+With it set, a **CONSULT first turn** runs through the app-server bridge and accepts interruptions.
 Everything else is untouched — request validation, the lock, change detection, the edit gate, response
 recovery and the follow-up path all stay where they were. Follow-ups, reviews and edits keep their
 existing routes; moving them all at once would open the whole regression surface.
@@ -213,12 +218,25 @@ refuses to start rather than falling back quietly, so you always know which path
 ### Follow-up turns are split apart (1.14.0)
 
 Asking a second question stacks turns into one card. Turn boundaries now get a **Turn 1** / **Turn 2**
-header, and each turn keeps its own narration box — the sentence where Codex says what it is doing. The
-box stays after the turn ends, so a finished conversation still reads in order. If the last thing said
-in a turn was Claude cutting in, that is what the box shows, with the border in Claude's orange.
+header, and the turn that is still running keeps its own narration box — the sentence where Codex says
+what it is doing. If the last thing said in that turn was Claude cutting in, that is what the box
+shows, with the border in Claude's orange.
 
-**Single-turn runs look exactly as they did.** Headers appear only on cards that actually have a
-follow-up.
+A turn stops narrating the moment it ends. The last thing a finished turn said is its entire answer
+document, and leaving that pinned under the header buried the rest of the run in one enormous block of
+text. The answer is not lost — it is one click away on the header itself.
+
+Each header carries its own **Open result** and **Open request** pair. The request really is a separate
+file per turn: turn 1 has the original request, turn 2 onward the rebuttal that opened it. The result is
+not — every turn appends to the same response document — so a turn's result link opens that document and
+jumps to that turn's section rather than dropping you at the top.
+
+**Clicking a turn header collapses it.** A long consultation can put fifty activities in one card, and
+folding the turns you have already read leaves the one you care about on screen. The state survives the
+refresh, and turns start open: you opened the card to read it.
+
+**Single-turn runs look exactly as they did.** Headers, per-turn links and folding appear only on cards
+that actually have a follow-up.
 
 One bug went with it. `codex exec resume` numbers each turn's activities from `item_0` again, and the
 panel keyed activities by that number alone, so turn 2 overwrote turn 1. A real two-turn run showed

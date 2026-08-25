@@ -658,9 +658,21 @@ export function activate(context: vscode.ExtensionContext) {
         createOrShowCodexPanel(context, await collectCodexRuns(), {
             // A URI string, not a path: `Uri.file` would send a remote workspace's document
             // to a non-existent local path. `Uri.parse` round-trips the remote authority.
-            onOpenDoc: (docUri: string) => {
+            onOpenDoc: (docUri: string, anchor?: string) => {
                 vscode.workspace.openTextDocument(vscode.Uri.parse(docUri)).then(
-                    doc => vscode.window.showTextDocument(doc, { preview: false }),
+                    async doc => {
+                        const ed = await vscode.window.showTextDocument(doc, { preview: false });
+                        // A multi-turn run appends every turn to one response document, so a
+                        // per-turn link opens the same file and jumps instead. Scanned rather
+                        // than stored as a line number: the document grows with each turn, and
+                        // a number captured at discovery would point at the wrong place.
+                        if (!anchor) { return; }
+                        const at = doc.getText().indexOf(anchor);
+                        if (at < 0) { return; }
+                        const pos = doc.positionAt(at);
+                        ed.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.AtTop);
+                        ed.selection = new vscode.Selection(pos, pos);
+                    },
                     e => log(`[codex-rescue] open failed: ${e}`)
                 );
             },
@@ -3060,6 +3072,7 @@ async function collectCodexRuns(): Promise<CodexRunView[]> {
                 docsOnly: run.docsOnly,
                 requestUri: run.requestUri,
                 resultUri: run.resultUri,
+                turnDocs: run.turnDocs,
                 totalTokens: usage ? usage.inputTokens + usage.outputTokens : undefined,
                 items: run.events.items.map(i => ({
                     id: i.id,

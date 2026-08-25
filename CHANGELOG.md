@@ -51,9 +51,36 @@ was the most useful thing on screen and the first thing to break in a multi-turn
 block per card showing the most recent sentence, which meant turn 2's words sat above turn 1's
 activities and read as though they belonged to them.
 
-Each turn now has its own. It keeps the last thing said in that turn even after the turn is over, so
-a finished conversation still reads in order. Interruptions count as speech here: if the last thing
-in a turn was Claude cutting in, that is what the block shows, with the border in Claude's orange.
+Each turn now has its own, and only the turn still running shows one. Interruptions count as speech
+here: if the last thing in a turn was Claude cutting in, that is what the block shows, with the border
+in Claude's orange.
+
+Keeping the block after a turn ended was the first version of this, and it was wrong in practice. The
+last thing a finished turn says is its entire answer document — frontmatter and all — so the block
+stopped being a sentence and became a wall. A two-turn card was mostly one enormous quotation of a file
+you can open. Single-turn runs had always dropped the block on completion for exactly this reason; that
+rule now applies per turn.
+
+### Each turn carries its own documents
+
+The card used to show one **Open result** / **Open request** pair at the top. On a multi-turn run that
+pair can only point at the whole thing, which is the wrong granularity: what you want is the question
+that opened turn 2 and the answer it produced.
+
+Both now sit on the turn header. Requests genuinely are separate files — turn 1 is the request document,
+turn 2 onward the rebuttal that opened it — and the link appears only when the file is on disk. The
+result is not separate: every turn appends to the one response document. So a turn's result link opens
+that document and scrolls to that turn's marker. The marker is searched at open time rather than stored
+as a line number, because the document grows with every turn and a number captured at discovery would
+already be pointing somewhere else.
+
+### Turn headers fold
+
+Fifty activities in one card is normal for a long consultation, and once a turn is read it is only
+scrolling. Clicking a turn header collapses it, clicking again brings it back, and the state survives
+the two-second refresh — the toggle flips what is drawn rather than re-rendering, so a poll landing
+between click and repaint cannot undo it. Turns start open, since opening the card is already the
+decision to read it.
 
 ### Deleting a run now takes the whole run
 
@@ -82,16 +109,44 @@ competing answers to the same question: `Input 220K` and `Context total 221K`. U
 now the headline — **Context 221K / 828K (27%)** — and the table below it is just the breakdown.
 Applied to both providers.
 
-### Turning it on
+### A shell quoting bug was emptying part of the prompt
 
-Live steering is behind a flag, because it swaps the transport underneath a consultation and the
-old path is the one with years of use on it:
+`send.sh` assembled its prompts with unquoted heredocs, and an unquoted heredoc reads backticks in the
+body as command substitution. The consultation prompt used backticks the way prose does — to mark
+filenames — and one of those lines listed what Codex must never open:
+
+```
+Do not read credentials. SSH keys, `.env`, `credentials`, `auth.json`, tokens, passwords ...
+```
+
+Those three names were run as commands, failed, and disappeared. What reached Codex was the sentence
+with a hole in it, while `.env: command not found` went to a log nobody reads. Network access is open
+during a consultation, so the instruction that went missing was the one that mattered most.
+
+All three prompt heredocs are quoted literals now, with the two paths substituted in afterwards.
+Escaping the backticks would have fixed today's text and left the trap armed: the same heredoc already
+had one line escaped and another, sixteen lines away, not. The final prompts were diffed byte for byte
+before and after the change.
+
+The run report also claimed the wrong sandbox. Steered runs are read-only, but the report printed the
+value the old path would have used, so a consultation would say `workspace-write` while Codex was in
+fact being denied writes — which is why its answer arrived through the fallback instead of as a saved
+file. Two copies of one condition had drifted apart; there is one now.
+
+### Turning it on — the skill does this for you
+
+Live steering swaps the transport underneath a consultation, so it started life behind a flag:
 
 ```bash
 CR_LIVE_STEER=1
 ```
 
-With that set, a **CONSULT first turn** runs through the app-server bridge and accepts interruptions.
+The skill now sets it on every consultation. Leaving it to be asked for did not work, because nobody
+knows at the start of a run whether they will need to cut in, and `codex exec` cannot change transport
+once it is going. By the time you have something to say, the decision has already been made for you.
+Ask for the old path explicitly and the skill drops the flag.
+
+With it set, a **CONSULT first turn** runs through the app-server bridge and accepts interruptions.
 Everything else about the skill is untouched — request validation, the lock, change detection, the
 edit gate, response recovery and the follow-up path all stay exactly where they were. Follow-ups,
 reviews and edits keep their existing routes; each of those has its own proven plumbing, and moving

@@ -61,6 +61,16 @@ export interface CodexRun {
     requestUri?: string;
     /** URI *string* of the response/review doc, when it exists on disk. */
     resultUri?: string;
+    /**
+     * Per-turn document links, present only on a multi-turn run (a single-turn card keeps
+     * the pair at the top and this stays undefined).
+     *
+     * Requests really are separate files — turn 1 is `_request_`, turn N is `_followup<N>_`.
+     * The *result* is not: every turn appends to the one response document, so each entry
+     * points at the same `resultUri` and carries an anchor instead. The panel hands that
+     * anchor back on click and the opener scrolls to it.
+     */
+    turnDocs?: { turn: number; requestUri?: string; resultAnchor?: string }[];
     /** Diagnostic surface for a run whose heartbeat went cold. */
     staleForMs?: number;
     /**
@@ -469,6 +479,23 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
         }
         const requestName = `${stamp}_request_${slug}.md`;
 
+        // Per-turn links, built only when a follow-up actually happened. Turn 1 keeps the
+        // original request; turn N reads from the rebuttal that opened it. The anchor is the
+        // marker send.sh writes when it appends a turn — turn 1 has none because it starts at
+        // the top of the file. Existence is checked against the directory listing already in
+        // hand, so this costs no extra I/O.
+        let maxTurn = 1;
+        for (const it of events.items) { const n = it.turn || 1; if (n > maxTurn) { maxTurn = n; } }
+        const turnDocs = maxTurn < 2 ? undefined : Array.from({ length: maxTurn }, (_, i) => {
+            const turn = i + 1;
+            const name = turn === 1 ? requestName : `${stamp}_followup${turn}_${slug}.md`;
+            return {
+                turn,
+                requestUri: docSet.has(name) ? vscode.Uri.joinPath(docsDir, name).toString() : undefined,
+                resultAnchor: turn === 1 ? undefined : `<!-- codex_rescue:consult-turn ${turn} -->`,
+            };
+        });
+
         const run: CodexRun = {
             stamp,
             slug,
@@ -483,6 +510,7 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
             requestUri: docSet.has(requestName)
                 ? vscode.Uri.joinPath(docsDir, requestName).toString() : undefined,
             resultUri,
+            turnDocs,
         };
 
         // Freeze finished runs so the next poll costs nothing. Only when the bodies were

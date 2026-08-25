@@ -1346,13 +1346,18 @@ ${FOCUS}"
 elif [ "$KIND" = followup ]; then
   FUP_W=$(winp "$FUP_ABS")         || exit 2
   RESP_W=$(winp "$ROOT/$RESP_REL") || exit 2
-  read -r -d '' PROMPT <<EOF || :
+  # 🔴 quoted heredoc 이다 — 이유는 아래 CONSULT 쪽 주석과 같다 (2026-08-26).
+  #    이 본문은 원래 백틱을 `\`` 로 이스케이프해서 버티고 있었다. 그 방식은 한 줄만
+  #    놓쳐도 조용히 터지고, 실제로 CONSULT 히어독에서 **같은 히어독 안 16줄 차이로**
+  #    한 줄은 지키고 한 줄은 놓쳐 자격증명 금지 문구가 통째로 날아갔다.
+  #    여기서 날아가면 "## Claude 검토 를 읽어라"가 사라진다 — 되묻기의 작동 원리 자체다.
+  read -r -d '' PROMPT <<'EOF' || :
 같은 문제를 이어서 논의한다. 앞 턴에서 네가 한 분석에 대해, Claude 가 검토하고 되묻는다.
 
-반박서: $FUP_W
-직전까지의 대화 기록(네 원문 + Claude 의 검토): $RESP_W
+반박서: __CR_FUP_W__
+직전까지의 대화 기록(네 원문 + Claude 의 검토): __CR_RESP_W__
 
-먼저 위 두 파일을 읽어라. 특히 응답 문서의 \`## Claude 검토\` 섹션들 —
+먼저 위 두 파일을 읽어라. 특히 응답 문서의 `## Claude 검토` 섹션들 —
 **네 분석이 어떻게 해석됐는지가 거기 있다.**
 
 🔴 반드시 지켜라:
@@ -1366,25 +1371,42 @@ elif [ "$KIND" = followup ]; then
 - 반박서의 완료 게이트 각 항목에 대해 **충족/미충족을 네가 직접 판정**해라.
   이 대화는 "더 물을 게 없을 때"가 아니라 **"핵심 증상이 설명됐을 때"** 끝난다.
 EOF
+  PROMPT=${PROMPT//__CR_FUP_W__/"$FUP_W"}
+  PROMPT=${PROMPT//__CR_RESP_W__/"$RESP_W"}
 
 elif [ "$MODE" = "edit" ]; then
-  read -r -d '' PROMPT <<EOF || :
+  # 🔴 quoted heredoc 이다 (2026-08-26). 지금 이 본문에는 백틱이 없어 사고가 안 났을 뿐,
+  #    구조는 CONSULT 히어독과 똑같다. **EDIT 은 Codex 가 실제로 코드를 고치는 모드**라,
+  #    "대상 파일 외에는 건드리지 마라" 같은 제약 문장이 조용히 비면 손실이 파일 단위다.
+  #    마크다운 한 줄을 더 쓰는 순간 터지는 자리라 미리 막는다.
+  read -r -d '' PROMPT <<'EOF' || :
 아래 요청서 파일을 읽고, 그 안에 적힌 지시를 그대로 따라라.
 
-요청서: $REQ_W
+요청서: __CR_REQ_W__
 
 - 요청서에 보고서를 저장할 경로와 파일명이 명시되어 있다. 그 경로에 그 이름 그대로 저장해라.
 - 요청서가 지정한 대상 파일 외에는 건드리지 마라.
 - 단 **조사·검증은 자유다** — 디스크 읽기·네트워크 조회·명령 실행을 써라(네트워크는 조회 전용).
-  재현·검증용 임시 파일은 $SCRATCH_REL/ 안에 만들어라. 거긴 네 작업대다.
+  재현·검증용 임시 파일은 __CR_SCRATCH_REL__/ 안에 만들어라. 거긴 네 작업대다.
   🔴 **수정 대상 옆에 백업본·테스트 파일을 흩뿌리지 마라** — 전부 무단 변경으로 보고된다.
 - 저장이 실패하면 같은 내용을 최종 메시지로 그대로 출력해라. 자동으로 회수된다.
 EOF
+  PROMPT=${PROMPT//__CR_REQ_W__/"$REQ_W"}
+  PROMPT=${PROMPT//__CR_SCRATCH_REL__/"$SCRATCH_REL"}
 else
-  read -r -d '' PROMPT <<EOF || :
+  # ── 🔴 quoted heredoc 이다 — 백틱을 셸이 삼키지 않게 (2026-08-26) ─────────
+  #
+  # 예전에는 `<<EOF`(따옴표 없음) 였다. 그래서 본문의 **마크다운 백틱이 명령 치환으로
+  # 해석**됐고, 자격증명 금지 목록(.env·credentials·auth.json)이 프롬프트에서 통째로
+  # 사라진 채 Codex 에게 갔다. 실행 로그에 `.env: command not found` 로 찍혀 있었는데
+  # 아무도 안 봤다. **보안 지시문이 조용히 비어 나가고 있었다.**
+  #
+  # 🔴 백틱만 이스케이프하는 방식으로 고치지 마라. 다음에 마크다운을 한 줄 더 쓰는 순간
+  #    같은 사고가 다시 난다. **본문은 리터럴로 두고 변수만 아래에서 후주입한다.**
+  read -r -d '' PROMPT <<'EOF' || :
 아래 요청서 파일을 읽고, 그 안에 적힌 지시를 그대로 따라라.
 
-요청서: $REQ_W
+요청서: __CR_REQ_W__
 
 너는 이 사건의 **독립 조사자**다. 요청서는 출발점이지 경계가 아니다.
 Claude 는 이미 그 안의 자료로 답을 못 찾았다. 같은 자료를 같은 방식으로 읽으면 같은 결론이 나온다.
@@ -1394,7 +1416,7 @@ Claude 는 이미 그 안의 자료로 답을 못 찾았다. 같은 자료를 �
 - **코드를 고치지 마라.** 너는 분석·진단과 수정 방법 제시만 한다. 실제 수정은 Claude 가 한다.
 - 네가 쓸 수 있는 곳은 **정확히 두 곳**이다:
     ① 요청서가 지정한 응답 문서
-    ② $SCRATCH_REL/    ← 네 작업대다
+    ② __CR_SCRATCH_REL__/    ← 네 작업대다
   이 둘 밖의 파일은 만들거나 고치거나 지우지 마라. 저장소 상태를 바꾸는 명령도 금지다
   (git commit·checkout·stash·reset, 패키지 설치, 빌드).
 
@@ -1422,11 +1444,16 @@ Claude 는 이미 그 안의 자료로 답을 못 찾았다. 같은 자료를 �
 
 🔴 **지금 열 수 있는 자료를 남겨 둔 채 "자료를 더 달라"로 끝내지 마라.**
    요청서에 경로가 있거나 워크스페이스에서 찾을 수 있는 것은 네가 직접 연다.
-   \`ls\`·\`find\` 로 목록만 본 것은 연 것이 아니다 — 내용을 읽고 계산까지 해야 연 것이다.
+   `ls`·`find` 로 목록만 본 것은 연 것이 아니다 — 내용을 읽고 계산까지 해야 연 것이다.
 
 - 요청서에 응답을 저장할 경로와 파일명이 명시되어 있다. 그 경로에 그 이름 그대로 저장해라.
 - 저장이 실패하면 같은 내용을 최종 메시지로 그대로 출력해라. 자동으로 회수된다.
 EOF
+  # 🔴 위 히어독이 quoted 라 변수가 확장되지 않는다. 여기서 넣는다.
+  #    값이 셸 코드로 재해석되지 않으므로 경로에 백틱·`$`·공백이 있어도 안전하다.
+  #    (백슬래시를 그대로 담는 Windows 경로가 들어오는 자리라 이 성질이 필요하다)
+  PROMPT=${PROMPT//__CR_REQ_W__/"$REQ_W"}
+  PROMPT=${PROMPT//__CR_SCRATCH_REL__/"$SCRATCH_REL"}
 fi
 
 if [ "$KIND" = review ]; then
@@ -1533,11 +1560,31 @@ if [ -n "${CR_TIMEOUT:-}" ]; then
   CR_TIMEOUT 을 지우고 다시 실행해라."
 fi
 
+# ── 🔴 표시용 샌드박스 — 끼어들기 경로는 read-only 로 돈다 (2026-08-26) ──────
+#
+# 아래 실행부(§ CR_LIVE_STEER)는 중계기에 `--sandbox read-only` 를 **고정으로** 넘긴다.
+# 그런데 보고문은 `$SANDBOX`(exec 경로용 값)를 그대로 찍고 있어서, live steer 로 돌면
+# `workspace-write +net` 이라고 **거짓 보고**했다 (2026-08-26 실측).
+# 실제로는 read-only 라 Codex 가 응답 파일을 못 쓰고 `-o` 폴백으로 저장되는데,
+# 보고만 읽으면 "쓰기 권한이 있는데 왜 못 썼나"로 원인을 엉뚱한 데서 찾게 된다.
+#
+# 🔴 `$SANDBOX` 자체는 건드리지 않는다. 경고 출력·검증 로직이 그 값을 쓰고 있고,
+#    여기서 바꾸면 그쪽 판정까지 흔든다. **표시만 가른다.**
+LIVE_STEER_ON=0
+if [ "${CR_LIVE_STEER:-}" = "1" ] && [ "$KIND" = doc ] && [ "$MODE" = readonly ]; then
+  LIVE_STEER_ON=1
+fi
+if [ "$LIVE_STEER_ON" = 1 ]; then
+  SANDBOX_SHOWN="read-only (끼어들기 경로 고정)"
+else
+  SANDBOX_SHOWN="$SANDBOX"
+fi
+
 if [ -n "${CR_DRYRUN:-}" ]; then
   echo "── DRYRUN — 실행하지 않는다 ──"
   echo "종류     : $KIND"
   echo "루트     : $ROOT"
-  echo "모드     : $MODE / 샌드박스: $SANDBOX"
+  echo "모드     : $MODE / 샌드박스: $SANDBOX_SHOWN"
   [ "$KIND" = review ] && echo "리뷰 대상: $SCOPE ${SCOPE_VAL:+($SCOPE_VAL)} — 지정 방식: $SCOPE_VIA"
   echo "응답 경로: $RESP_REL (실행 전 존재: $RESP_EXISTED)"
   echo "run 디렉토리: $RUN_DIR"
@@ -1549,7 +1596,7 @@ fi
 if [ "$KIND" = review ]; then
   echo "→ Codex 리뷰 중… (대상: $SCOPE ${SCOPE_VAL:+$SCOPE_VAL})" >&2
 else
-  echo "→ Codex 실행 중… (요청서: $REQ / 샌드박스: $SANDBOX)" >&2
+  echo "→ Codex 실행 중… (요청서: $REQ / 샌드박스: $SANDBOX_SHOWN)" >&2
 fi
 
 # ── 진행 상황을 밖에서 볼 수 있게 준비한다 ──────────────────────
@@ -1612,7 +1659,10 @@ fi
 # 응답 문서는 Codex 가 아니라 이 스크립트가 만든다. 중계기가 최종 메시지를 `$LASTMSG` 에
 # 남기면 아래 회수 구간이 REVIEW·FOLLOWUP 과 같은 경로로 처리한다. 그래서 read-only 로 돈다.
 LIVE_BRIDGE=""
-if [ "${CR_LIVE_STEER:-}" = "1" ] && [ "$KIND" = doc ] && [ "$MODE" = readonly ]; then
+# 🔴 판정은 위에서 한 번 한 `LIVE_STEER_ON` 하나로 한다 (2026-08-26).
+#    예전에는 같은 조건식이 여기에만 있고 표시부는 `$SANDBOX` 를 그냥 찍어서,
+#    **보고문이 실제 샌드박스와 어긋나도 아무도 몰랐다.** 조건을 두 군데 두지 마라.
+if [ "$LIVE_STEER_ON" = 1 ]; then
   _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   LIVE_BRIDGE="$_SELF_DIR/scripts/live-consult.mjs"
   [ -f "$LIVE_BRIDGE" ] || die "CR_LIVE_STEER=1 인데 중계기가 없다: $LIVE_BRIDGE
@@ -1901,7 +1951,7 @@ elif [ "$KIND" = followup ]; then
 else
   echo "요청서   : $REQ"
 fi
-echo "모드     : $MODE / 샌드박스: $SANDBOX / codex exit: $RC"
+echo "모드     : $MODE / 샌드박스: $SANDBOX_SHOWN / codex exit: $RC"
 echo "이벤트   : $LOGD/${STAMP}_events.jsonl   (실행 중 실시간 기록 — 진행 패널이 이걸 읽는다)"
 echo "상태     : $STATUS"
 if [ "$TEE_RC" != 0 ]; then

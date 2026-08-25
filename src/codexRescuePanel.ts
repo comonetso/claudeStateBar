@@ -50,6 +50,11 @@ export interface CodexRunView {
      */
     resultUri?: string;
     requestUri?: string;
+    /**
+     * Multi-turn only. Requests are separate files per turn; the result is one document that
+     * every turn appends to, so each entry carries an anchor into it rather than its own URI.
+     */
+    turnDocs?: { turn: number; requestUri?: string; resultAnchor?: string }[];
     staleForMs?: number;
     /** Documents survive but the event log is gone — the card exists to reach the documents. */
     docsOnly?: boolean;
@@ -69,7 +74,7 @@ export interface CodexTrashView {
 }
 
 export interface CodexPanelCallbacks {
-    onOpenDoc: (docUri: string) => void;
+    onOpenDoc: (docUri: string, anchor?: string) => void;
     /** User clicked a run's delete button (confirmation happens on the extension side). */
     onDelete: (stamp: string) => void;
     /** User opened the trash drawer — the host answers with pushTrash(). */
@@ -172,7 +177,7 @@ export function createOrShowCodexPanel(
             panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()) });
             lastPushedSignature = null; pushRuns(runs);
         } else if (msg?.type === 'open' && typeof msg.path === 'string') {
-            callbacks?.onOpenDoc(msg.path);
+            callbacks?.onOpenDoc(msg.path, typeof msg.anchor === 'string' ? msg.anchor : undefined);
         } else if (msg?.type === 'delete' && typeof msg.stamp === 'string') {
             callbacks?.onDelete(msg.stamp);
         } else if (msg?.type === 'trashOpen') {
@@ -263,8 +268,17 @@ function getHtml(webview: vscode.Webview): string {
   /* The last word in a turn was Claude cutting in, not Codex. Same orange the row uses, so
      the reader does not have to parse the text to know who spoke. */
   .now.steer { border-left-color:#d98b45; }
-  /* A turn's says-block sits directly under its header, so it loses the top gap. */
-  .turn-hd + .now { margin-top:6px; }
+  /* A turn's says-block leads its body, right under the header, so it loses the top gap. */
+  .turn-body > .now:first-child { margin-top:6px; }
+  /* The body carries the same column layout the items container has, since it sits between
+     them — without this the activities inside a turn lose their spacing. */
+  .turn-body { display:flex; flex-direction:column; gap:6px; }
+  .turn-body.folded { display:none; }
+  .turn-fold { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; }
+  .turn-hd.folded .turn-fold { transform: rotate(-90deg); display:inline-block; }
+  /* Each turn owns its documents: the request really is a separate file per turn, and the
+     result link jumps into that turn's section of the one response document. */
+  .turn-links { flex-shrink:0; display:flex; gap:12px; font-size:.82em; }
   .plan { font-size:.82em; color: var(--vscode-descriptionForeground); margin-bottom:8px; }
   .plan-chip { display:inline-block; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius:4px; padding:1px 7px; margin:0 4px 3px 0; }
   .plan-chip.on { opacity:.55; text-decoration:line-through; }
@@ -275,7 +289,7 @@ function getHtml(webview: vscode.Webview): string {
      oversized number with a rule running off it — it has to survive a long scroll, which a
      text row of the same weight as its neighbours would not. Neutral colours on purpose:
      orange already means "Claude spoke" one row below. */
-  .turn-hd { display:flex; align-items:center; gap:8px; margin:12px 0 3px 0; }
+  .turn-hd { display:flex; align-items:center; gap:8px; margin:12px 0 3px 0; cursor:pointer; }
   .turn-hd:first-child { margin-top:2px; }
   .turn-hd::after { content:''; flex:1 1 auto; height:1px; background: var(--vscode-panel-border); }
   .turn-no { flex-shrink:0; padding:1px 12px; border-radius:5px;
@@ -423,6 +437,10 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
   let lastRuns = [];
   const userToggled = {};
   const openDetails = {};
+  // Turns start open and only close when clicked. Unlike the run cards above, a turn is
+  // already a chosen scope — the user opened this card to read it — so hiding it by default
+  // would just add a second click to reach what they asked for.
+  const foldedTurns = {};
   let lastRenderedSig = null;
 
   function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -498,10 +516,10 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
     return null;
   }
 
-  // Single-turn runs keep the old rule: nothing once the run is over. The last agent_message
-  // of a finished run is the whole answer document (26 KB in the reference run) and showing
-  // its frontmatter as "current activity" is noise — the result doc link covers that.
-  // Multi-turn is different: there the narration is a per-turn record, not a live ticker.
+  // Nothing once the run is over. The last agent_message of a finished run is the whole answer
+  // document (26 KB in the reference run) and showing its frontmatter as "current activity" is
+  // noise — the result doc link covers that. Multi-turn applies the same rule per turn, in
+  // turnHead(): a turn stops narrating the moment a later turn begins.
   function narrationOf(run) {
     if (run.phase === 'done' || run.phase === 'failed' || run.phase === 'stopped') return null;
     // 🔴 Multi-turn draws one of these under every turn header. Drawing a card-level one too
@@ -627,34 +645,101 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
       let maxTurn = 1;
       run.items.forEach(function (it) { const n = it.turn || 1; if (n > maxTurn) maxTurn = n; });
       let shownTurn = 0;
+      // A turn is over once a later turn exists, or once the whole run has stopped moving.
+      // Nothing else marks the boundary: there is no per-turn terminal event to read.
+      const runOver = run.phase === 'done' || run.phase === 'failed' || run.phase === 'stopped';
+      function turnFinished(turn) { return turn < maxTurn || runOver; }
+
+      // Per-turn document links. The request is a file of its own for every turn; the result
+      // is the one response document, so each turn points at it with an anchor and the opener
+      // scrolls there. Without the anchor a turn-3 link would drop you at turn 1 every time.
+      function turnLinks(turn) {
+        const docs = run.turnDocs || [];
+        let entry = null;
+        for (let i = 0; i < docs.length; i++) { if (docs[i].turn === turn) { entry = docs[i]; break; } }
+        const out = [];
+        if (run.resultUri) {
+          const anchor = entry && entry.resultAnchor
+            ? ' data-anchor="' + esc(entry.resultAnchor) + '"' : '';
+          out.push('<span class="doclink" data-open="' + esc(run.resultUri) + '"' + anchor + '">📄 '
+                 + esc(t('cx.openResult')) + '</span>');
+        }
+        if (entry && entry.requestUri) {
+          out.push('<span class="doclink" data-open="' + esc(entry.requestUri) + '">📝 '
+                 + esc(t('cx.openRequest')) + '</span>');
+        }
+        return out.length ? '<span class="turn-links">' + out.join('') + '</span>' : '';
+      }
+
+      // Only the turn still running says anything. A finished turn's last message is its whole
+      // answer document, and pinning that under the header buries the run in one enormous
+      // block — the single-turn rule in narrationOf(), applied per turn. The answer is not
+      // lost: it is one click away under this turn's own result link.
+      function turnSays(turn) {
+        return turnFinished(turn) ? '' : saysBlock(narrationOfTurn(run.items, turn));
+      }
+
       function turnHead(turn) {
         if (maxTurn < 2 || turn === shownTurn) return '';
         shownTurn = turn;
-        // The turn's own says-block rides with its header. That is the whole point of scoping
-        // narration per turn: turn 1 keeps saying what turn 1 said, even while turn 2 runs.
-        return '<div class="turn-hd"><span class="turn-no">' + esc(t('cx.turnHeader', turn)) + '</span></div>'
-             + saysBlock(narrationOfTurn(run.items, turn));
+        const fkey = run.stamp + ':' + turn;
+        const folded = !!foldedTurns[fkey];
+        return '<div class="turn-hd' + (folded ? ' folded' : '') + '" data-tfold="' + esc(fkey) + '">' +
+                 '<span class="turn-fold">▾</span>' +
+                 '<span class="turn-no">' + esc(t('cx.turnHeader', turn)) + '</span>' +
+                 turnLinks(turn) +
+               '</div>';
       }
 
-      const items = run.items.length ? '<div class="items">' + groupRuns(run.items).map(function (node) {
-          const hd = turnHead(node.turn);
-          if (node.one) return hd + renderItem(node.one);
-          if (node.cmds.length === 1) return hd + renderItem(node.cmds[0]);
+      function renderNode(node) {
+          if (node.one) return renderItem(node.one);
+          if (node.cmds.length === 1) return renderItem(node.cmds[0]);
           const gkey = run.stamp + ' g' + node.cmds[0].id;
           const openAttr = openDetails[gkey] ? ' open' : '';
-          return hd + '<details class="cmdgroup" data-dkey="' + esc(gkey) + '"' + openAttr + '><summary>' +
+          return '<details class="cmdgroup" data-dkey="' + esc(gkey) + '"' + openAttr + '><summary>' +
             '<span class="dot done"></span><span class="kind k-' + esc(node.kind) + '">' +
             esc(t('cx.kind.' + node.kind)) + '</span><span class="gcount">' +
             esc(t(GROUPABLE[node.kind], node.cmds.length)) + '</span>' +
             '<span class="ghint"><span class="gh-open">' + esc(t('cx.expand')) + '</span>' +
             '<span class="gh-close">' + esc(t('cx.collapse')) + '</span></span></summary>' +
             node.cmds.map(renderItem).join('') + '</details>';
-        }).join('') + '</div>'
+      }
+
+      // A multi-turn run wraps each turn's nodes so the header can collapse them. A single-turn
+      // one emits exactly what it did before: turnHead() returns nothing and no wrapper opens,
+      // so the markup is byte-identical to the pre-turn-header version.
+      function renderNodes(nodes) {
+          let out = '';
+          let openTurn = 0;
+          nodes.forEach(function (node) {
+            const tn = node.turn || 1;
+            if (maxTurn >= 2 && tn !== openTurn) {
+              if (openTurn) out += '</div>';
+              const fkey = run.stamp + ':' + tn;
+              // The says-block lives inside the body so one class toggle hides the whole turn.
+              out += turnHead(tn)
+                   + '<div class="turn-body' + (foldedTurns[fkey] ? ' folded' : '') + '">'
+                   + turnSays(tn);
+              openTurn = tn;
+            }
+            out += renderNode(node);
+          });
+          if (openTurn) out += '</div>';
+          return out;
+      }
+
+      const items = run.items.length
+        ? '<div class="items">' + renderNodes(groupRuns(run.items)) + '</div>'
         : '<div class="empty">' + esc(t(run.docsOnly ? 'cx.docsOnly.note' : 'cx.noItems')) + '</div>';
 
+      // Card-level links belong to a single-turn run. A multi-turn one moves them next to each
+      // turn header instead: one document pair per turn is what you actually want to open, and
+      // a single pair at the top can only point at the whole file.
       const links = [];
-      if (run.resultUri) links.push('<span class="doclink" data-open="' + esc(run.resultUri) + '">📄 ' + esc(t('cx.openResult')) + '</span>');
-      if (run.requestUri) links.push('<span class="doclink" data-open="' + esc(run.requestUri) + '">📝 ' + esc(t('cx.openRequest')) + '</span>');
+      if (!run.turnDocs) {
+        if (run.resultUri) links.push('<span class="doclink" data-open="' + esc(run.resultUri) + '">📄 ' + esc(t('cx.openResult')) + '</span>');
+        if (run.requestUri) links.push('<span class="doclink" data-open="' + esc(run.requestUri) + '">📝 ' + esc(t('cx.openRequest')) + '</span>');
+      }
 
       const tokenLine = run.totalTokens ? '<br>' + esc(t('cx.tokens', run.totalTokens.toLocaleString())) : '';
       const staleLine = (phase === 'stale')
@@ -765,7 +850,27 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
     const pg = e.target.closest('[data-purge]');
     if (pg) { vscodeApi.postMessage({ type: 'purge', stamp: pg.getAttribute('data-purge') }); return; }
     const op = e.target.closest('[data-open]');
-    if (op) { vscodeApi.postMessage({ type:'open', path: op.getAttribute('data-open') }); return; }
+    if (op) {
+      // The anchor rides along only for per-turn result links: every turn appends to the same
+      // response document, so the click has to say which part of it to land on.
+      vscodeApi.postMessage({ type:'open', path: op.getAttribute('data-open'),
+                              anchor: op.getAttribute('data-anchor') || undefined });
+      return;
+    }
+    // Turn header toggles its own body. Checked after the doc links above, since those sit
+    // inside this header and their click must open a file rather than collapse the turn.
+    const tf = e.target.closest('[data-tfold]');
+    if (tf) {
+      const fkey = tf.getAttribute('data-tfold');
+      foldedTurns[fkey] = !foldedTurns[fkey];
+      // Flip what is drawn instead of re-rendering: the 2s poll can land between the click
+      // and the repaint, and a re-render here would race it.
+      tf.classList.toggle('folded', !!foldedTurns[fkey]);
+      let body = tf.nextElementSibling;
+      while (body && !body.classList.contains('turn-body')) body = body.nextElementSibling;
+      if (body) body.classList.toggle('folded', !!foldedTurns[fkey]);
+      return;
+    }
     const del = e.target.closest('[data-del]');
     if (del) { vscodeApi.postMessage({ type:'delete', stamp: del.getAttribute('data-del') }); return; }
     // A fully-visible row has nothing to open; swallow the click so it doesn't flicker.
