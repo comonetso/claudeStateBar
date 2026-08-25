@@ -193,13 +193,16 @@ uses for Claude, with a rail down the left of the row. That is to keep it distin
 Codex prints at the start of every turn (`clamping SessionEnd hook timeout to 3s`) — they used to look
 the same, and the confusion was real.
 
-⚠️ **Not wired into the skill yet.** The bridge lives in this repository under
-[`tools/live-consult/`](tools/live-consult/) and it works — the description above comes from running
-it — but `send.sh` still calls `codex exec`, so installing the skill the usual way does not give you
-steering. Connecting the two is the next release; the plan and the decisions still open are in
+**Today you reach it through the bridge directly.** Everything described above came from running
+[`tools/live-consult/`](tools/live-consult/) — start a consultation with `run`, throw a line into it
+with `steer` while it works.
+
+What is missing is the shortcut. `send.sh` still takes the `codex exec` path, so asking the skill for
+a consultation the usual way goes through the old route without steering. Wiring the two together is
+the next release; the plan and the open decisions are in
 [the integration notes](docs/LIVE_STEER_INTEGRATION.md).
 
-**The turn display below works today**, because it reads only what the skill already writes.
+**The turn display below needs nothing from you**, because it reads only what the skill already writes.
 
 ### Follow-up turns are split apart (1.14.0)
 
