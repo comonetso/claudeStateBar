@@ -13,13 +13,20 @@ import type { RunPhase } from './providers/codexRescue/runDiscovery';
 
 export interface CodexItemView {
     id: string;
-    kind: string;                              // agent_message | command_execution | ...
+    kind: string;                              // agent_message | command_execution | claude_steer | ...
     status: 'running' | 'done' | 'failed' | 'warn';
     label: string;
     body?: string;                             // prose for agent_message / reasoning / error
     /** command_execution only: the wrapped command as it ran. Hover text; label is stripped. */
     raw?: string;
     durationMs?: number;
+    /**
+     * Which turn of the run produced this item, counting from 1. Optional because a run
+     * recorded before turns were tracked has none — the panel reads it as 1. The panel only
+     * draws turn headers when some item reports a turn above 1, so single-turn runs look
+     * exactly as they did before.
+     */
+    turn?: number;
 }
 
 export interface CodexRunView {
@@ -128,7 +135,7 @@ function signature(runs: CodexRunView[]): string {
         s: r.stamp, p: r.phase, e: r.endedAt || 0, t: r.totalTokens || 0,
         d: r.todo, k: r.staleForMs ? Math.floor(r.staleForMs / 5000) : 0,
         r: !!r.resultUri,
-        i: r.items.map(i => [i.id, i.status, i.label, i.body, i.durationMs]),
+        i: r.items.map(i => [i.id, i.status, i.label, i.body, i.durationMs, i.turn || 1]),
     })));
 }
 
@@ -253,11 +260,28 @@ function getHtml(webview: vscode.Webview): string {
   .doclink { color: var(--vscode-textLink-foreground); cursor:pointer; text-decoration:none; }
   .doclink:hover { text-decoration:underline; }
   .now { margin:2px 0 10px 0; padding:8px 11px; border-left:2px solid var(--vscode-textLink-foreground); background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); border-radius:0 4px 4px 0; line-height:1.5; font-size:.93em; white-space:pre-wrap; word-break:break-word; }
+  /* The last word in a turn was Claude cutting in, not Codex. Same orange the row uses, so
+     the reader does not have to parse the text to know who spoke. */
+  .now.steer { border-left-color:#d98b45; }
+  /* A turn's says-block sits directly under its header, so it loses the top gap. */
+  .turn-hd + .now { margin-top:6px; }
   .plan { font-size:.82em; color: var(--vscode-descriptionForeground); margin-bottom:8px; }
   .plan-chip { display:inline-block; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius:4px; padding:1px 7px; margin:0 4px 3px 0; }
   .plan-chip.on { opacity:.55; text-decoration:line-through; }
 
   .items { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+  /* Turn boundary in a multi-turn (follow-up) run. Twenty activities in one column give no
+     hint where one question ended and the next began, so the seam is drawn as a boxed,
+     oversized number with a rule running off it — it has to survive a long scroll, which a
+     text row of the same weight as its neighbours would not. Neutral colours on purpose:
+     orange already means "Claude spoke" one row below. */
+  .turn-hd { display:flex; align-items:center; gap:8px; margin:12px 0 3px 0; }
+  .turn-hd:first-child { margin-top:2px; }
+  .turn-hd::after { content:''; flex:1 1 auto; height:1px; background: var(--vscode-panel-border); }
+  .turn-no { flex-shrink:0; padding:1px 12px; border-radius:5px;
+    border:1.5px solid var(--vscode-focusBorder, var(--vscode-panel-border));
+    background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.12));
+    color: var(--vscode-foreground); font-size:1.2em; font-weight:700; letter-spacing:.5px; }
   .it { font-size:.9em; }
   .it-head { display:flex; align-items:baseline; gap:8px; }
   .dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; position:relative; top:1px; }
@@ -272,6 +296,14 @@ function getHtml(webview: vscode.Webview): string {
   .kind.k-web_search { background:#2f4a3a; color:#a8e6bf; }
   .kind.k-file_change { background:#4a3050; color:#e6b3f0; }
   .kind.k-error { background:#4a3f22; color:#f0d9a8; }
+  /* Claude steering the run mid-turn. Orange, matching the chat panel's Claude colour
+     (#d98b45) so the same speaker reads the same in both panels — and deliberately far from
+     k-error's amber, because that chip carries Codex CLI advisories and the two were
+     confused for each other on screen. */
+  .kind.k-claude_steer { background:#4a2b16; color:#e8a86a; font-weight:600; }
+  /* The chip alone gets lost in a fifty-row list, so the whole row carries a rail in the
+     same colour — an interjection is the row a user scans back for. */
+  .it.steer { border-left:2px solid #d98b45; padding-left:7px; margin-left:-9px; }
   .lbl { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family: var(--vscode-editor-font-family); font-size:.92em; }
   .dur { color: var(--vscode-descriptionForeground); font-size:.82em; flex-shrink:0; }
   details.cmdgroup { margin:0; }
@@ -442,20 +474,42 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
   function sigOf(runs) {
     return JSON.stringify((runs||[]).map(function (r) {
       return [r.stamp, r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultUri,
-        r.items.map(function (i) { return [i.id,i.status,i.label,i.body,i.durationMs]; })];
+        r.items.map(function (i) { return [i.id,i.status,i.label,i.body,i.durationMs,i.turn||1]; })];
     }));
   }
 
-  // Live runs lead with what Codex just said; finished ones don't, because the final
-  // agent_message is the whole answer document (26 KB in the reference run) and showing its
-  // frontmatter as "current activity" is noise. The result doc link covers that case.
-  function narrationOf(run) {
-    if (run.phase === 'done' || run.phase === 'failed' || run.phase === 'stopped') return '';
-    for (let i = run.items.length - 1; i >= 0; i--) {
-      const it = run.items[i];
-      if (it.kind === 'agent_message' || it.kind === 'reasoning') return it.body || it.label;
+  // The latest thing said inside ONE turn — Codex narrating its plan, or Claude cutting in.
+  //
+  // A multi-turn run used to show a single narration for the whole card, which meant turn 2's
+  // sentence sat above turn 1's activities and read as if it belonged to them. Scoping it per
+  // turn keeps each turn's own words with that turn, and a finished turn keeps the last thing
+  // it said instead of going blank the moment the next one starts.
+  //
+  // A steer counts as speech on purpose: an interruption is the one line a reader most needs
+  // to see, and the row itself can be too short to expand.
+  function narrationOfTurn(items, turn) {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if ((it.turn || 1) !== turn) continue;
+      if (it.kind === 'agent_message' || it.kind === 'reasoning' || it.kind === 'claude_steer') {
+        return { text: it.body || it.label, steer: it.kind === 'claude_steer' };
+      }
     }
-    return '';
+    return null;
+  }
+
+  // Single-turn runs keep the old rule: nothing once the run is over. The last agent_message
+  // of a finished run is the whole answer document (26 KB in the reference run) and showing
+  // its frontmatter as "current activity" is noise — the result doc link covers that.
+  // Multi-turn is different: there the narration is a per-turn record, not a live ticker.
+  function narrationOf(run) {
+    if (run.phase === 'done' || run.phase === 'failed' || run.phase === 'stopped') return null;
+    // 🔴 Multi-turn draws one of these under every turn header. Drawing a card-level one too
+    // renders turn 1's sentence twice — once at the top and once under its own header.
+    let maxT = 1;
+    run.items.forEach(function (it) { const n = it.turn || 1; if (n > maxT) maxT = n; });
+    if (maxT >= 2) return null;
+    return narrationOfTurn(run.items, 1);
   }
 
   function render(runs, force) {
@@ -495,8 +549,17 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
       const badgeCls = (phase==='starting'||phase==='finalizing') ? 'running' : phase;
       const badge = '<span class="badge ' + esc(badgeCls) + '">' + esc(t('cx.phase.'+phase)) + '</span>';
 
+      // Says-block markup, shared by the card-level one (single turn) and the per-turn ones.
+      // A steer gets the Claude orange so the eye lands on it without reading the text.
+      function saysBlock(n) {
+        if (!n || !n.text) return '';
+        return '<div class="now' + (n.steer ? ' steer' : '') + '">' + esc(n.text) + '</div>';
+      }
+
+      // Only drawn on a single-turn run — a multi-turn one puts one of these under each turn
+      // header instead, so having a card-level block too would duplicate turn 1's sentence.
       const narration = narrationOf(run);
-      const nowBlock = narration ? '<div class="now">' + esc(narration) + '</div>' : '';
+      const nowBlock = saysBlock(narration);
 
       const plan = (run.todo && run.todo.length)
         ? '<div class="plan">' + run.todo.map(function (x) {
@@ -521,7 +584,8 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
           const more = !!(it.body && it.body.length > it.label.length);
           const dkey = run.stamp + ' ' + it.id;
           const openAttr = openDetails[dkey] ? ' open' : '';
-          return '<div class="it"><details class="row' + (hasFull ? ' hasfull' : '') +
+          const rowCls = it.kind === 'claude_steer' ? 'it steer' : 'it';
+          return '<div class="' + rowCls + '"><details class="row' + (hasFull ? ' hasfull' : '') +
             '" data-dkey="' + esc(dkey) + '" data-more="' + (more ? '1' : '0') + '"' + openAttr + '>' +
             head + (hasFull ? '<div class="full">' + esc(full) + '</div>' : '') +
             '</details></div>';
@@ -536,28 +600,49 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
       const GROUPABLE = { command_execution: 'cx.cmdGroup', web_search: 'cx.searchGroup' };
       function groupRuns(list) {
         const out = [];
-        let bucket = null, bucketKind = null;
+        let bucket = null, bucketKind = null, bucketTurn = 0;
         list.forEach(function (it) {
+          const turn = it.turn || 1;
           const can = GROUPABLE[it.kind] && it.status === 'done';
-          if (can && it.kind === bucketKind) {
+          // A group must never straddle a turn boundary: folding the last commands of one
+          // turn together with the first of the next would swallow the very seam the turn
+          // headers exist to show, and the header could then only land above the whole group.
+          if (can && it.kind === bucketKind && turn === bucketTurn) {
             bucket.push(it);
           } else if (can) {
-            bucket = [it]; bucketKind = it.kind;
-            out.push({ cmds: bucket, kind: it.kind });
+            bucket = [it]; bucketKind = it.kind; bucketTurn = turn;
+            out.push({ cmds: bucket, kind: it.kind, turn: turn });
           } else {
-            bucket = null; bucketKind = null;
-            out.push({ one: it });
+            bucket = null; bucketKind = null; bucketTurn = 0;
+            out.push({ one: it, turn: turn });
           }
         });
         return out;
       }
 
+      // Headers are for follow-up runs only. A run that never got a second question must look
+      // exactly as it did before, so nothing is drawn unless some item reports a turn above 1 —
+      // and once one does, numbering starts at turn 1, since a header appearing first at turn 2
+      // leaves everything above it unlabelled.
+      let maxTurn = 1;
+      run.items.forEach(function (it) { const n = it.turn || 1; if (n > maxTurn) maxTurn = n; });
+      let shownTurn = 0;
+      function turnHead(turn) {
+        if (maxTurn < 2 || turn === shownTurn) return '';
+        shownTurn = turn;
+        // The turn's own says-block rides with its header. That is the whole point of scoping
+        // narration per turn: turn 1 keeps saying what turn 1 said, even while turn 2 runs.
+        return '<div class="turn-hd"><span class="turn-no">' + esc(t('cx.turnHeader', turn)) + '</span></div>'
+             + saysBlock(narrationOfTurn(run.items, turn));
+      }
+
       const items = run.items.length ? '<div class="items">' + groupRuns(run.items).map(function (node) {
-          if (node.one) return renderItem(node.one);
-          if (node.cmds.length === 1) return renderItem(node.cmds[0]);
+          const hd = turnHead(node.turn);
+          if (node.one) return hd + renderItem(node.one);
+          if (node.cmds.length === 1) return hd + renderItem(node.cmds[0]);
           const gkey = run.stamp + ' g' + node.cmds[0].id;
           const openAttr = openDetails[gkey] ? ' open' : '';
-          return '<details class="cmdgroup" data-dkey="' + esc(gkey) + '"' + openAttr + '><summary>' +
+          return hd + '<details class="cmdgroup" data-dkey="' + esc(gkey) + '"' + openAttr + '><summary>' +
             '<span class="dot done"></span><span class="kind k-' + esc(node.kind) + '">' +
             esc(t('cx.kind.' + node.kind)) + '</span><span class="gcount">' +
             esc(t(GROUPABLE[node.kind], node.cmds.length)) + '</span>' +

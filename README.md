@@ -1,6 +1,6 @@
 # Claude Code & Codex Status Bar
 
-**Claude Code and OpenAI Codex, side by side in your VS Code status bar** — per‑session context usage, model and effort, task‑complete beeps, and account limits (Claude.ai 5‑hour session & weekly, Codex weekly usage), with a live Workflow/Agent viewer panel, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.
+**Claude Code and OpenAI Codex, side by side in your VS Code status bar** — per‑session context usage, model and effort, task‑complete beeps, and account limits (Claude.ai 5‑hour session & weekly, Codex 5‑hour & weekly usage), with a live Workflow/Agent viewer panel, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.
 
 [![GitHub stars](https://img.shields.io/github/stars/comonetso/claudeStateBar?style=social)](https://github.com/comonetso/claudeStateBar)
 
@@ -64,7 +64,7 @@ The provider glyph is the identity cue: **Claude's `✳` is orange** and **Codex
 - **Effort** — Low / Medium / High / xHigh, etc.
 - **Idle dimming & `hideAfter` hiding** — exactly the same rules as Claude
 - **Completion beep** — driven by Codex's `task_complete` event. It **shares Claude's completion sound and threshold settings** — there is no separate Codex sound setting.
-- **Tooltip** — Codex weekly/secondary limits (used percentage, reset times, plan type) + context token breakdown + the session's cumulative processed tokens
+- **Tooltip** — Codex 5‑hour and weekly limits (used percentage, reset times, plan type) + context token breakdown + the session's cumulative processed tokens
 
 ### Codex account usage (rate limits)
 
@@ -182,6 +182,35 @@ With the skill installed, open it from the status-bar menu or `claudeStateBar: S
 
 States run `starting → running → finalizing → done / failed / stopped / unresponsive`. `finalizing` is separate because Codex's turn ending isn't the run ending — the skill still has change detection and response recovery to do, and calling that window "done" would report a finish that hasn't happened. A killed run stays `unresponsive` instead of being promoted to done.
 
+### Cutting in while it works (1.14.0)
+
+Codex can spend several minutes going the wrong way, and until now the only option was to watch it
+finish and ask again from the top. You can now **add to a turn already in progress.** It keeps the
+work it has done and folds the new instruction in rather than starting over.
+
+An interruption stays in the activity list under a **Claude** chip, in the same orange the chat panel
+uses for Claude, with a rail down the left of the row. That is to keep it distinct from the advisories
+Codex prints at the start of every turn (`clamping SessionEnd hook timeout to 3s`) — they used to look
+the same, and the confusion was real.
+
+This needs the bridge that ships with the skill (`tools/live-consult/`).
+
+### Follow-up turns are split apart (1.14.0)
+
+Asking a second question stacks turns into one card. Turn boundaries now get a **Turn 1** / **Turn 2**
+header, and each turn keeps its own narration box — the sentence where Codex says what it is doing. The
+box stays after the turn ends, so a finished conversation still reads in order. If the last thing said
+in a turn was Claude cutting in, that is what the box shows, with the border in Claude's orange.
+
+**Single-turn runs look exactly as they did.** Headers appear only on cards that actually have a
+follow-up.
+
+One bug went with it. `codex exec resume` numbers each turn's activities from `item_0` again, and the
+panel keyed activities by that number alone, so turn 2 overwrote turn 1. A real two-turn run showed
+twelve activities out of twenty — and the missing ones were scattered, not the last eight, because
+only colliding numbers were replaced. A row that had been a **file change** in turn 1 came back as a
+**command** in turn 2 and kept its place: the activity had not vanished, it had become a different one.
+
 ### What it creates in your project
 
 The first run creates `docs/codex_rescue/` inside your project. The panel reads only this directory — no network calls.
@@ -280,8 +309,8 @@ Fable: 12%  Opus: 4%
 ──────── claudeContext ────────
 🤖 Model: claude-opus-4-7
 🎚️ Effort: xHigh⁺
-📊 Context Usage: 4%
-| Cache Read | 8K |  | Cache Creation | 28K |  | Total | 37K / 1.0M |
+📊 Context 37K / 1.0M (4%)
+| Cache Read | 8K |  | Cache Creation | 28K |
 🕐 Last updated: 2:10:58 PM
 Click for menu (hide / restore / settings)
 ```

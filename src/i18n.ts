@@ -259,6 +259,12 @@ const EN: Dict = {
     'cx.kind.collab_tool_call': 'collab',
     'cx.kind.todo_list': 'plan',
     'cx.kind.error': 'notice',
+    // Distinct from `notice`: that one carries Codex CLI advisories, while this one is
+    // Claude steering the run mid-flight. Users read the two as the same thing when they
+    // shared a chip, so the wording stays as far apart as the colours do.
+    'cx.kind.claude_steer': 'Claude',
+    /** Only rendered when a run actually has more than one turn — see the panel. */
+    'cx.turnHeader': 'Turn {0}',
 
     // Status-bar click QuickPick menu (the "Q-Panel")
     'menu.hide': 'Hide this session',
@@ -312,9 +318,15 @@ const EN: Dict = {
 
     // Codex provider
     // Consumed percentages, matching the Claude plan block's direction (1.8.3).
-    'sb.codexLimit': 'Weekly',
-    'sb.codexPrimary': 'Weekly limit',
-    'sb.codexSecondary': 'Secondary limit',
+    // 🔴 These were mislabelled until 2026-08-26. The app-server reports `primary` with
+    // windowDurationMins=300 (the 5-hour window) and `secondary` with 10080 (the weekly one),
+    // but the strings said the opposite — so the status bar showed a 5-hour figure under a
+    // "Weekly" label. Verified against a live `account/rateLimits/read`.
+    // The status bar wording matches Claude's (`sb.sessionLabel`) so one glance reads the same
+    // for both providers.
+    'sb.codexLimit': 'Session',
+    'sb.codexPrimary': '5-hour limit',
+    'sb.codexSecondary': 'Weekly limit',
     'tt.credits': 'credits available',
     'tt.observed': 'Observed',
     'tt.stale': 'stale (rollout snapshot updates only while Codex works)',
@@ -324,6 +336,10 @@ const EN: Dict = {
     'tt.lifetime': 'Session processed total',
     'tt.cachedPortion': 'cached portion',
     'tt.contextTotal': 'Context total',
+    // Used / capacity belongs in the headline, not buried at the bottom of the table: the
+    // breakdown rows above it look like competing totals otherwise ("Input 220K" vs
+    // "Context total 221K" read as two different answers to the same question).
+    'tt.contextHead': 'Context {0} / {1} ({2}%)',
     'tt.codexUsageUnavailable': '_No Codex rate-limit snapshot yet_',
     'tt.codexNoWorkspaceSession': '_No Codex conversation UUID was resolved for this window. Account usage is shown without guessed session context._',
     'tt.codexForeignProject': 'This conversation belongs to another project — Codex lists chats per device, so the one restored in this window was created here:',
@@ -583,6 +599,10 @@ const KO: Dict = {
     'cx.kind.collab_tool_call': '협업',
     'cx.kind.todo_list': '계획',
     'cx.kind.error': '알림',
+    // '알림'(Codex CLI 안내)과 반드시 달라야 한다 — 사용자가 실제로 둘을 헷갈렸다.
+    'cx.kind.claude_steer': '클로드',
+    /** 턴이 둘 이상인 실행에서만 그려진다 — 패널 참조. */
+    'cx.turnHeader': '{0}턴',
 
     // 상태바 클릭 QuickPick 메뉴 ("Q-Panel")
     'menu.hide': '이 세션 숨기기',
@@ -636,9 +656,13 @@ const KO: Dict = {
 
     // Codex provider
     // 1.8.3부터 사용률(소진 비율)을 그대로 표시 — Claude 플랜 표기와 방향을 맞춤.
-    'sb.codexLimit': '주간한도',
-    'sb.codexPrimary': '주간 한도',
-    'sb.codexSecondary': '보조 한도',
+    // 🔴 2026-08-26 정정. app-server 의 `primary` 는 5시간 창(windowDurationMins=300),
+    // `secondary` 가 주간 창(10080)인데 문구가 서로 뒤바뀌어 있었다 — 상태바가 5시간 수치를
+    // "주간한도" 라는 이름으로 보여주고 있었다. 실제 `account/rateLimits/read` 로 확인했다.
+    // 상태바 문구는 Claude 쪽(`sb.sessionLabel`)과 맞춘다 — 한눈에 같은 뜻으로 읽히게.
+    'sb.codexLimit': '세션한도',
+    'sb.codexPrimary': '5시간 한도',
+    'sb.codexSecondary': '주간 한도',
     'tt.credits': '크레딧 있음',
     'tt.observed': '관측 시각',
     'tt.stale': '오래된 값 (세션 로그는 Codex 작업 중에만 갱신)',
@@ -648,6 +672,10 @@ const KO: Dict = {
     'tt.lifetime': '세션 누적 처리량',
     'tt.cachedPortion': '그중 캐시',
     'tt.contextTotal': '컨텍스트 합계',
+    // 쓴 양 / 전체 용량을 제목으로 올린다. 표 맨 아래에 두면 위의 내역 행들과 경쟁하는
+    // 것처럼 읽힌다 — "Input 220K" 와 "컨텍스트 합계 221K" 가 같은 질문에 대한 서로 다른
+    // 답으로 보였다(2026-08-26 사용자 지적).
+    'tt.contextHead': '컨텍스트 {0} / {1} ({2}%)',
     'tt.codexUsageUnavailable': '_아직 Codex 사용량 정보가 없습니다_',
     'tt.codexNoWorkspaceSession': '_이 창의 Codex 대화 UUID를 확인하지 못했습니다. 다른 세션을 추측하지 않고 계정 사용량만 표시합니다._',
     'tt.codexForeignProject': '다른 프로젝트의 대화입니다 — Codex는 대화 목록을 디바이스 단위로 관리하므로, 이 창에 복원된 대화는 아래 폴더에서 시작된 것입니다:',

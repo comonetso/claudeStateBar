@@ -2725,11 +2725,10 @@ async function refreshAllSessions() {
                 sectionHeader('Codex Context', '#AED581') +
                 `🤖 Model: \`${session.model || 'Unknown'}\`\n\n` +
                 effortLine +
-                `📊 **Context Usage: ${session.percentage}%**\n\n` +
+                `📊 **${planT('tt.contextHead', formatTokens(session.totalTokens), formatTokens(session.contextLimit), session.percentage)}**\n\n` +
                 `| Type | Tokens |\n|------|--------|\n` +
                 `| Input | ${formatTokens(session.inputTokens)} |\n` +
-                `| ↳ ${planT('tt.cachedPortion')} | ${formatTokens(session.cacheReadTokens)} |\n` +
-                `| **${planT('tt.contextTotal')}** | **${formatTokens(session.totalTokens)}** / ${formatTokens(session.contextLimit)} |\n\n` +
+                `| ↳ ${planT('tt.cachedPortion')} | ${formatTokens(session.cacheReadTokens)} |\n\n` +
                 cumulative +
                 `🕐 Last updated: ${session.lastUpdated.toLocaleTimeString()}\n\n` +
                 `*Click for menu (hide / restore / settings)*`
@@ -2746,11 +2745,10 @@ async function refreshAllSessions() {
                 `🤖 Model: \`${session.model || 'Unknown'}\`\n\n` +
                 effortLine +
                 speedLine +
-                `📊 **Context Usage: ${session.percentage}%**\n\n` +
+                `📊 **${planT('tt.contextHead', formatTokens(session.totalTokens), formatTokens(session.contextLimit), session.percentage)}**\n\n` +
                 `| Type | Tokens |\n|------|--------|\n` +
                 `| Cache Read | ${formatTokens(session.cacheReadTokens)} |\n` +
-                `| Cache Creation | ${formatTokens(session.cacheCreationTokens)} |\n` +
-                `| **Total** | **${formatTokens(session.totalTokens)}** / ${formatTokens(session.contextLimit)} |\n\n` +
+                `| Cache Creation | ${formatTokens(session.cacheCreationTokens)} |\n\n` +
                 `🕐 Last updated: ${session.lastUpdated.toLocaleTimeString()}\n\n` +
                 `*Click for menu (hide / restore / settings)*`
             );
@@ -3070,6 +3068,9 @@ async function collectCodexRuns(): Promise<CodexRunView[]> {
                     label: i.label,
                     body: i.body,
                     raw: i.raw,
+                    // Carried through so the panel can draw turn boundaries; without it a
+                    // followup run reads as one unbroken 20-row list.
+                    turn: i.turn,
                     // Observation-based: exec JSONL carries no timestamps. A run scanned only
                     // after it finished yields 0 here, which the webview renders as blank
                     // rather than a fake "0.0s".

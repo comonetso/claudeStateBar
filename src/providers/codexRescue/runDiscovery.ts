@@ -543,6 +543,51 @@ export interface CleanupResult {
     skippedLive: number;
 }
 
+/**
+ * Escape a string for literal use inside a `RegExp`.
+ *
+ * `deleteRun`/`trashRun` receive the slug from their caller. send.sh only ever mints
+ * `[a-z0-9-]` slugs, but the panel also recovers slugs by parsing filenames off disk, so the
+ * value is not guaranteed to have come from send.sh. An unescaped `.` or `*` in one would
+ * silently widen the pattern and let a run's cleanup reach another run's files.
+ */
+function escapeRe(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The extra files a multi-turn run leaves behind, found by scanning rather than by name.
+ *
+ * FOLLOWUP (2026-08-25) numbers every turn after the first: rebuttal documents are
+ * `<stamp>_followup<N>_<slug>.md`, and each turn writes its own
+ * `<stamp>_t<N>_stderr.log` and `<stamp>_t<N>_last_message.md` because a failure has to be
+ * attributable to a turn. The turn count is open-ended — an 11-turn thread leaves 20 log
+ * files — so no fixed name list can cover it; the directory has to be scanned.
+ *
+ * `<stamp>_events.jsonl` is deliberately NOT here: followup *appends* to the first turn's
+ * stream instead of writing a per-turn file, so the fixed list already covers it.
+ *
+ * 🔴 In-flight markers (`.consult_<stamp>.inflight`, `.chat_<slug>.inflight`) are excluded on
+ * purpose. They are send.sh's crash-recovery signal — it reads one to decide whether the
+ * previous turn died mid-write and the thread must be discarded. Removing one here would make
+ * the next run silently resume a broken session. Cleaning them up needs its own decision.
+ */
+async function followupExtras(docsDir: vscode.Uri, logDir: vscode.Uri, stamp: string,
+                              slug: string, includeDocs: boolean)
+    : Promise<{ logs: string[]; docs: string[] }> {
+    const st = escapeRe(stamp);
+
+    const logRe = new RegExp(`^${st}_t\\d+_(?:stderr\\.log|last_message\\.md)$`);
+    const logs = ((await listNames(logDir)) ?? []).filter(n => logRe.test(n)).sort();
+
+    let docs: string[] = [];
+    if (includeDocs && slug && slug !== '(unknown)') {
+        const docRe = new RegExp(`^${st}_followup\\d+_${escapeRe(slug)}\\.md$`);
+        docs = ((await listNames(docsDir)) ?? []).filter(n => docRe.test(n)).sort();
+    }
+    return { logs, docs };
+}
+
 async function unlinkCounting(uri: vscode.Uri, res: CleanupResult): Promise<void> {
     const st = await statOf(uri);
     if (!st) return;
@@ -569,14 +614,22 @@ export async function deleteRun(folderUri: vscode.Uri, stamp: string, slug: stri
     // The lock is send.sh's liveness marker; its presence means a run may be mid-write.
     if (await statOf(vscode.Uri.joinPath(logDir, `.${stamp}.lock`))) { res.skippedLive++; return false; }
 
+    // Per-turn logs are logs, not records, so they go regardless of `deleteDocs` — same rule
+    // as the fixed list they extend.
+    const extras = await followupExtras(docsDir, logDir, stamp, slug, deleteDocs);
+
     for (const name of [`${stamp}_events.jsonl`, `${stamp}_status.json`, `${stamp}_stderr.log`,
-                        `${stamp}_last_message.md`, `${stamp}_heartbeat`]) {
+                        `${stamp}_last_message.md`, `${stamp}_heartbeat`, ...extras.logs]) {
         await unlinkCounting(vscode.Uri.joinPath(logDir, name), res);
     }
 
     if (deleteDocs && slug && slug !== '(unknown)') {
         for (const kind of ['request', 'response', 'review']) {
             await unlinkCounting(vscode.Uri.joinPath(docsDir, `${stamp}_${kind}_${slug}.md`), res);
+        }
+        // Rebuttal documents are documents: same explicit opt-in as the request/response pair.
+        for (const name of extras.docs) {
+            await unlinkCounting(vscode.Uri.joinPath(docsDir, name), res);
         }
     }
 
@@ -728,13 +781,21 @@ export async function trashRun(folderUri: vscode.Uri, stamp: string, slug: strin
         } catch { /* locked by AV or permission — skip, never fatal */ }
     };
 
+    // Same split as `deleteRun`: per-turn logs always, rebuttal documents only on opt-in.
+    // `restoreTrashed` replays `meta.entries` verbatim, so recording the origin here is all
+    // that restore needs — both kinds come back on their own.
+    const extras = await followupExtras(docsDir, logDir, stamp, slug, includeDocs);
+
     for (const name of [`${stamp}_events.jsonl`, `${stamp}_status.json`, `${stamp}_stderr.log`,
-                        `${stamp}_last_message.md`, `${stamp}_heartbeat`]) {
+                        `${stamp}_last_message.md`, `${stamp}_heartbeat`, ...extras.logs]) {
         await move(vscode.Uri.joinPath(logDir, name), name, '.log');
     }
     if (includeDocs && slug && slug !== '(unknown)') {
         for (const kind of ['request', 'response', 'review']) {
             const name = `${stamp}_${kind}_${slug}.md`;
+            await move(vscode.Uri.joinPath(docsDir, name), name, '.');
+        }
+        for (const name of extras.docs) {
             await move(vscode.Uri.joinPath(docsDir, name), name, '.');
         }
     }

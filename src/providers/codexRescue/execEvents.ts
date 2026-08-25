@@ -28,13 +28,27 @@ export type ItemStatus = 'running' | 'done' | 'failed' | 'warn';
  * through postMessage every poll) would sink the panel for zero display value.
  */
 export interface CodexRunItem {
+    /**
+     * Unique within the run, which is not the same as the id Codex sent: a followup turn
+     * starts counting from `item_0` again, so items from turn 2 onwards are prefixed
+     * `t<N>:`. Turn 1 keeps the raw id, so single-turn runs are unchanged.
+     */
     id: string;
+    /**
+     * 1-based turn this item belongs to, copied from `CodexRunState.turnSeq` when the item is
+     * first seen and never rewritten — the same id arrives twice (started → completed) within
+     * one turn, and a later update must not drag the item into whatever turn is current then.
+     *
+     * The panel draws a turn header wherever this changes, and draws none at all when every
+     * item is turn 1, so single-turn runs (most of the corpus) look exactly as they did.
+     */
+    turn: number;
     /** Raw `item.type`, kept verbatim so unknown kinds can still be shown generically. */
     kind: string;
     status: ItemStatus;
     /** Single-line summary for the collapsed row. */
     label: string;
-    /** Full text for agent_message / reasoning / error — the part worth reading. */
+    /** Full text for agent_message / reasoning / error / claude_steer — the part worth reading. */
     body?: string;
     /**
      * `command_execution` only: the command as it actually ran, shell wrapper included.
@@ -65,13 +79,26 @@ export interface CodexRunState {
     threadId?: string;
     turnStarted: boolean;
     /**
-     * `turn.completed` / `turn.failed` only. A top-level `error` event is NOT terminal —
-     * the 0.145.0 mapper keeps the turn Running after emitting one, so treating it as the
-     * end would mark still-working runs as finished.
+     * `turn.completed` / `turn.failed` only, and only for the turn currently in flight —
+     * a followup turn resets it back to `none`, because the run is working again.
+     *
+     * A top-level `error` event is NOT terminal — the 0.145.0 mapper keeps the turn Running
+     * after emitting one, so treating it as the end would mark still-working runs as finished.
      */
     terminal: TurnTerminal;
-    /** Set by `turn.failed`. */
+    /** Set by `turn.failed` of the turn in flight; cleared when a later turn starts. */
     failureMessage?: string;
+    /**
+     * 1-based turn counter. A followup (`codex exec resume`) appends to the SAME events file
+     * and restarts item ids at `item_0`, so ids are only unique *within* a turn — see
+     * `openTurnIfPending`. Stays 1 for the single-turn runs that make up most of the corpus.
+     */
+    turnSeq: number;
+    /**
+     * Set the moment a turn goes terminal: the next sign of activity belongs to a new turn.
+     * See `openTurnIfPending` for why the boundary is detected here and not at `turn.started`.
+     */
+    pendingTurnBreak: boolean;
     /** Only ever present on `turn.completed`; there is no live token counter in exec JSONL. */
     usage?: CodexUsage;
     /** Insertion-ordered activities. */
@@ -84,7 +111,11 @@ export interface CodexRunState {
 }
 
 export function createRunState(): CodexRunState {
-    return { turnStarted: false, terminal: 'none', items: [], unknownTypes: 0, badLines: 0 };
+    return {
+        turnStarted: false, terminal: 'none', items: [],
+        turnSeq: 1, pendingTurnBreak: false,
+        unknownTypes: 0, badLines: 0,
+    };
 }
 
 /** Collapse whitespace and clip, so one row can never blow up the layout. */
@@ -163,7 +194,11 @@ function labelFor(item: any): string {
             return `계획 ${done}/${items.length}`;
         }
         case 'error':
-            return oneLine(item.message, 200) || 'error';
+        // Not a Codex item type: the app-server bridge synthesises this one so a steer
+        // (Claude interrupting a running turn) is visible in the activity list. It carries its
+        // text in `message`, like `error` does — hence the shared arm.
+        case 'claude_steer':
+            return oneLine(item.message, 200) || kind;
         default:
             return kind || 'unknown';
     }
@@ -175,6 +210,10 @@ function labelFor(item: any): string {
  * nothing, in which case the event kind (started vs completed) decides.
  */
 function statusFor(item: any, completed: boolean): ItemStatus {
+    // A steer is a deliberate intervention, not a problem: it is always `done`, checked before
+    // anything else so no stray `status` field on the synthesised item can downgrade it to
+    // warn/failed. Unlike `error` below, it must never be painted as a fault.
+    if (item?.type === 'claude_steer') return 'done';
     const raw = typeof item?.status === 'string' ? item.status : '';
     if (raw === 'failed' || raw === 'declined') return 'failed';
     if (raw === 'in_progress') return 'running';
@@ -188,11 +227,17 @@ function statusFor(item: any, completed: boolean): ItemStatus {
 }
 
 function upsert(st: CodexRunState, item: any, completed: boolean, nowMs: number): void {
-    const id = typeof item?.id === 'string' && item.id ? item.id : `anon_${st.items.length}`;
+    const rawId = typeof item?.id === 'string' && item.id ? item.id : `anon_${st.items.length}`;
+    // Namespace by turn so a followup's `item_0` cannot land on turn 1's `item_0`. Turn 1 is
+    // left bare on purpose: every single-turn run keeps the exact ids it had before, and the
+    // panel's `stamp + ' ' + id` details key stays stable across the fix.
+    const id = st.turnSeq > 1 ? `t${st.turnSeq}:${rawId}` : rawId;
     const kind = String(item?.type ?? 'unknown');
     const existing = st.items.find(i => i.id === id);
     const label = labelFor(item);
-    const body = (kind === 'agent_message' || kind === 'reasoning' || kind === 'error')
+    // `claude_steer` is included because a steer can be a long paragraph: without a body the
+    // row would be clipped at 200 chars with no way to read the rest.
+    const body = (kind === 'agent_message' || kind === 'reasoning' || kind === 'error' || kind === 'claude_steer')
         ? clipBody(item.text ?? item.message)
         : undefined;
     const status = statusFor(item, completed);
@@ -206,12 +251,65 @@ function upsert(st: CodexRunState, item: any, completed: boolean, nowMs: number)
         if (raw) existing.raw = raw;
         if (completed) existing.lastSeenMs = nowMs;
     } else {
-        st.items.push({ id, kind, status, label, body, raw, firstSeenMs: nowMs, lastSeenMs: completed ? nowMs : undefined });
+        // `turn` is set here and only here — see CodexRunItem.turn for why an update must not
+        // touch it.
+        st.items.push({ id, turn: st.turnSeq, kind, status, label, body, raw, firstSeenMs: nowMs, lastSeenMs: completed ? nowMs : undefined });
     }
 
     if (kind === 'todo_list' && Array.isArray(item.items)) {
         st.todo = item.items.map((t: any) => ({ text: oneLine(t?.text, 120), done: !!t?.completed }));
     }
+}
+
+/**
+ * Event types that prove a turn is producing something. Unknown types are excluded: they are
+ * no evidence that a new turn began, and rolling over on one would strand the real first item.
+ */
+const TURN_OPENING_TYPES = new Set([
+    'thread.started', 'turn.started', 'item.started', 'item.updated', 'item.completed', 'error',
+]);
+
+/**
+ * Whether an event that is otherwise turn-opening should actually open a turn.
+ *
+ * `claude_steer` is the one exception, and the asymmetry is the point:
+ *
+ * - A steer is by definition pushed into a turn that is *already running*, so it can never be
+ *   a turn's first event. But the bridge emits it as `item.completed`, and one caller flushes
+ *   leftover steers after `turn.completed` has already been written ("the turn had already
+ *   ended, so this never reached Codex"). Counted as turn-opening, a single-turn run grows a
+ *   phantom turn 2 holding nothing but that one rejection card, and the panel — which draws
+ *   headers as soon as any item reports a turn above 1 — starts numbering a run that only
+ *   ever had one question.
+ * - An advisory `error`, by contrast, is measured to arrive *before* `turn.started` on both
+ *   the exec and app-server paths, so it has to stay turn-opening or the real first item of
+ *   the new turn lands in the turn that just ended.
+ */
+function opensTurn(ev: any): boolean {
+    if (!TURN_OPENING_TYPES.has(ev.type)) return false;
+    return ev.item?.type !== 'claude_steer';
+}
+
+/**
+ * Start the next turn if the previous one already went terminal.
+ *
+ * A followup (`codex exec resume`) appends to the SAME events file and restarts item ids at
+ * `item_0`, so without a turn boundary the second turn overwrote the first through `upsert`'s
+ * id lookup — activities vanished, and an id reused for a different item type even flipped the
+ * surviving row's kind.
+ *
+ * The boundary is taken from the *previous* turn's terminal event rather than from
+ * `turn.started`, because `turn.started` is not the first line of a turn: measured runs emit an
+ * advisory `error` item as `item_0` just before it, which would then be filed under the turn
+ * that had already ended.
+ *
+ * A single-turn run never reaches this — its terminal event is the last line of the file — so
+ * the state it produces is identical to what it was before turns existed.
+ */
+function openTurnIfPending(st: CodexRunState): void {
+    if (!st.pendingTurnBreak) return;
+    st.pendingTurnBreak = false;
+    st.turnSeq++;
 }
 
 /**
@@ -230,12 +328,19 @@ export function feedExecLine(st: CodexRunState, line: string, nowMs: number): vo
     }
     if (!ev || typeof ev !== 'object') { st.badLines++; return; }
 
+    if (opensTurn(ev)) openTurnIfPending(st);
+
     switch (ev.type) {
         case 'thread.started':
             if (typeof ev.thread_id === 'string') st.threadId = ev.thread_id;
             return;
         case 'turn.started':
             st.turnStarted = true;
+            // A followup is working again, so the previous turn's verdict no longer describes
+            // the run. Leaving it set kept `decidePhase` on "finalizing" for the whole rerun,
+            // even though send.sh had already flipped its status back to running.
+            st.terminal = 'none';
+            st.failureMessage = undefined;
             return;
         case 'item.started':
             upsert(st, ev.item, false, nowMs);
@@ -248,6 +353,9 @@ export function feedExecLine(st: CodexRunState, line: string, nowMs: number): vo
             return;
         case 'turn.completed': {
             st.terminal = 'completed';
+            st.pendingTurnBreak = true;
+            // NOT accumulated: `usage` on a followup's `turn.completed` is already the running
+            // session total (measured: 293,443 → 546,777 input tokens), so summing double-counts.
             const u = ev.usage;
             if (u && typeof u === 'object') {
                 st.usage = {
@@ -262,6 +370,7 @@ export function feedExecLine(st: CodexRunState, line: string, nowMs: number): vo
         }
         case 'turn.failed':
             st.terminal = 'failed';
+            st.pendingTurnBreak = true;
             st.failureMessage = oneLine(ev.error?.message, 300) || undefined;
             return;
         case 'error':

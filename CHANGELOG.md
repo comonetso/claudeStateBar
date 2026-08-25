@@ -1,5 +1,92 @@
 # Changelog
 
+## [1.14.0] - 2026-08-26
+
+> **You can cut in while Codex is still working.**
+> A consultation used to be a throw and a wait. You wrote the request, Codex went away for several
+> minutes, and if it started down the wrong path there was nothing to do but watch it finish and then
+> ask again from the top — paying for the whole detour twice.
+
+Codex's app-server protocol has a call for this, `turn/steer`, and it turns out to do exactly what
+the name suggests: a message sent mid-turn joins the work already in progress instead of restarting
+it. We measured it. A command that had 40 seconds left to run kept running, and the token thrown in
+at second 25 showed up in the final answer alongside the original one. Codex said so itself in the
+transcript — *"the command is not being restarted, I am still waiting on the same run."*
+
+The panel now shows those interruptions inline. They carry a **Claude** chip in the same orange the
+chat panel uses for Claude, plus a rail down the left edge of the row, so an interruption is not
+mistaken for the CLI advisories that share the row style. That confusion was real: the notices Codex
+prints at the start of every turn (`clamping SessionEnd hook timeout to 3s`) looked identical to a
+human cutting in.
+
+The plumbing lives in `tools/live-consult/`. It is deliberately narrow — it owns the app-server
+connection and translates its notifications into the event format the panel already reads, and
+nothing else. Everything the skill does around a run (request validation, the lock, change detection,
+the edit gate, response recovery) stays in `send.sh` where it was proven.
+
+### Follow-up turns are legible now
+
+Asking Codex a second question reuses the same stamp and appends to the same event log, so both turns
+land in one card. That was the intent. What actually happened was worse than nobody noticed:
+
+`codex exec resume` numbers each turn's activities from `item_0` again, and the panel keyed
+activities by that id alone. Turn 2's `item_0` overwrote turn 1's. In a real two-turn run, twenty
+activities came out as twelve — and not the last twelve. Whichever ids happened to collide were
+replaced, so the loss was scattered through the list. One row had been a **file change** in turn 1
+and came back as a **command** in turn 2, keeping its old position: the activity had not disappeared,
+it had turned into a different activity.
+
+Activities are now namespaced per turn, and the card draws a header where one turn ends and the next
+begins. Single-turn runs are untouched — no header, identical markup, verified byte for byte against
+the previous build.
+
+The status badge was wrong too. `turn.completed` from turn 1 left the run marked as terminal, so the
+whole of turn 2 displayed as **Finalizing** while it was plainly still working. That flag now resets
+when a new turn opens.
+
+### What Codex is saying, per turn
+
+The narration block at the top of a card — the sentence where Codex explains what it is about to do —
+was the most useful thing on screen and the first thing to break in a multi-turn run. There was one
+block per card showing the most recent sentence, which meant turn 2's words sat above turn 1's
+activities and read as though they belonged to them.
+
+Each turn now has its own. It keeps the last thing said in that turn even after the turn is over, so
+a finished conversation still reads in order. Interruptions count as speech here: if the last thing
+in a turn was Claude cutting in, that is what the block shows, with the border in Claude's orange.
+
+### Deleting a run now takes the whole run
+
+Follow-ups leave files the cleanup never knew about: the rebuttal documents
+(`<stamp>_followup2_<slug>.md`) and per-turn logs (`<stamp>_t2_stderr.log`). Both the delete and the
+trash path worked from a fixed list of five names, so those stayed on disk forever — you deleted a
+run and it was still there. The turn count is open-ended, so the fix scans the directory by pattern
+rather than adding names to a list.
+
+In-flight markers are deliberately still excluded. They are how the skill recovers from a run that
+died mid-write, and removing one would make the next run resume a broken session in silence.
+
+### Codex usage limits were labelled backwards
+
+The status bar read **Weekly** and showed a five-hour figure. The app-server reports two windows and
+we had them the wrong way round: `primary` is the 5-hour window (300 minutes) and `secondary` is the
+weekly one (10,080). Confirmed against a live query.
+
+The numbers were always right — only the names lied. The status bar now says **Session**, matching
+the wording Claude sessions already use, and the tooltip reads **5-hour limit** and **Weekly limit**.
+
+### Context tooltip
+
+The token breakdown put the total at the bottom of the table, under two rows that looked like
+competing answers to the same question: `Input 220K` and `Context total 221K`. Used and capacity are
+now the headline — **Context 221K / 828K (27%)** — and the table below it is just the breakdown.
+Applied to both providers.
+
+### Requires the updated `codex_rescue` skill
+
+Live steering needs the app-server bridge, which ships with the skill rather than the extension. The
+panel changes are safe without it: runs recorded by an older skill keep displaying exactly as before.
+
 ## [1.13.0] - 2026-08-23
 
 > **The chat panel keeps one turn open at a time.**
