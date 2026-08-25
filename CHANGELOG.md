@@ -82,10 +82,20 @@ competing answers to the same question: `Input 220K` and `Context total 221K`. U
 now the headline — **Context 221K / 828K (27%)** — and the table below it is just the breakdown.
 Applied to both providers.
 
-### Requires the updated `codex_rescue` skill
+### What you can use today, and what is still wiring
 
-Live steering needs the app-server bridge, which ships with the skill rather than the extension. The
-panel changes are safe without it: runs recorded by an older skill keep displaying exactly as before.
+The **panel changes are live now** and need nothing from you. Turn headers, per-turn narration and the
+Claude chip all read from the event log the skill already writes, and a run recorded by an older skill
+displays exactly as it did before.
+
+**Live steering is not wired into the skill yet.** The bridge is in the repository under
+`tools/live-consult/` and works — the measurements above came from running it — but `send.sh` still
+calls `codex exec`, so installing the skill the usual way does not give you steering. Connecting the
+two is the next release; the plan, including the decisions still open, is in
+`docs/LIVE_STEER_INTEGRATION.md`.
+
+The rest of this release does not depend on that. The follow-up fixes, the deletion fix, the limit
+labels and the tooltip all apply the moment you update.
 
 ## [1.13.0] - 2026-08-23
 
