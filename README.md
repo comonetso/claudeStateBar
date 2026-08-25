@@ -213,6 +213,11 @@ The bridge ships with the skill under `scripts/`; fetch it alongside `send.sh` (
 [install instructions](docs/codex-rescue-guide.md#0-installation) include it). Without it the flag
 refuses to start rather than falling back quietly, so you always know which path you are on.
 
+🔴 **Steering needs Node 20 or newer.** The bridge uses Node's global `WebSocket`: 22 and 24 have it,
+20 gets it once the skill adds `--experimental-websocket` (which it does for you), and 18 has no such
+flag. On 18 the consultation still runs — you just cannot cut into it, and the skill says so rather
+than leaving you to find out when your message goes nowhere.
+
 **The turn display below needs nothing from you**, because it reads only what the skill already writes.
 
 ### Follow-up turns are split apart (1.14.0)

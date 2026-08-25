@@ -18,6 +18,32 @@ the problem Claude is stuck on.** You ask in plain language; the whole round tri
 - **Claude Code** — where the skill runs
 - **Codex CLI** — `npm i -g @openai/codex` (this guide is written against `0.145.0`)
 - **Git Bash on Windows** — `send.sh` is a POSIX shell script
+- 🔴 **Node 20 or newer** — required for live steering. See below.
+
+#### 🔴 Node 20+ , and why the version matters
+
+Live steering talks to `codex app-server` over a WebSocket, and it uses **Node's global
+`WebSocket`** rather than bundling the `ws` package. That global did not always exist:
+
+| Node | Live steering |
+|---|---|
+| **22 · 24** | Works as is |
+| **20** | Works — the skill adds `--experimental-websocket` for you (measured on 20.18 and 20.19) |
+| **18 and older** | **Not available.** That flag does not exist yet; the run falls back to the old path |
+
+The skill checks the capability rather than parsing a version string, so a backported build is
+detected correctly. If it cannot get a WebSocket it says so on stderr and runs the old
+`codex exec` path — **everything else about a consultation still works, you just cannot cut in
+mid-run.** Nothing breaks silently.
+
+```bash
+node -v                                                    # what you have
+node -e "console.log(typeof WebSocket)"                    # "function" → nothing to do
+node --experimental-websocket -e "console.log(typeof WebSocket)"   # "function" → the skill handles it
+```
+
+On a server where an older Node has to stay put, remember that this is per-shell: whichever
+`node` is first on `PATH` when `send.sh` runs is the one that decides.
 
 ### Get the skill
 

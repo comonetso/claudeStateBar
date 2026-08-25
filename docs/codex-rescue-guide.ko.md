@@ -18,6 +18,31 @@
 - **Claude Code** — 스킬이 도는 곳입니다
 - **Codex CLI** — `npm i -g @openai/codex` (이 문서는 `0.145.0` 기준입니다)
 - **Windows라면 Git Bash** — `send.sh`가 POSIX 셸 스크립트입니다
+- 🔴 **Node 20 이상** — 실행 중 끼어들기에 필요합니다. 아래를 보세요.
+
+#### 🔴 Node 20 이상이어야 합니다 — 버전이 왜 걸리는지
+
+끼어들기는 `codex app-server` 와 WebSocket 으로 이야기하는데, `ws` 패키지를 번들하지 않고
+**Node 의 전역 `WebSocket`** 을 씁니다. 그 전역이 예전 Node 에는 없었습니다.
+
+| Node | 끼어들기 |
+|---|---|
+| **22 · 24** | 그대로 됩니다 |
+| **20** | 됩니다 — 스킬이 `--experimental-websocket` 을 알아서 붙입니다 (20.18 · 20.19 실측) |
+| **18 이하** | **안 됩니다.** 그 플래그 자체가 없어서, 옛 경로로 돌아갑니다 |
+
+스킬은 버전 문자열을 파싱하지 않고 **능력을 직접 재기** 때문에 백포트된 빌드도 제대로 잡습니다.
+WebSocket 을 못 얻으면 그 사실을 stderr 로 알리고 옛 `codex exec` 경로로 돕니다 —
+**자문 자체는 그대로 되고, 도중에 끼어들 수만 없습니다.** 조용히 실패하지 않습니다.
+
+```bash
+node -v                                                    # 지금 버전
+node -e "console.log(typeof WebSocket)"                    # function 이면 그냥 됩니다
+node --experimental-websocket -e "console.log(typeof WebSocket)"   # function 이면 스킬이 처리합니다
+```
+
+서버에서 옛 Node 를 유지해야 한다면, 이건 셸 단위라는 점만 기억하시면 됩니다.
+`send.sh` 가 돌 때 `PATH` 앞에 있는 `node` 가 결정합니다.
 
 ### 스킬 받기
 

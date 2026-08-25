@@ -133,6 +133,27 @@ value the old path would have used, so a consultation would say `workspace-write
 fact being denied writes — which is why its answer arrived through the fallback instead of as a saved
 file. Two copies of one condition had drifted apart; there is one now.
 
+### Steering needs Node 20, and finding that out was the whole lesson
+
+The bridge uses Node's global `WebSocket` instead of bundling `ws`. That global arrived late: 22 and
+24 have it, 20 exposes it behind `--experimental-websocket`, and 18 has no such flag at all.
+
+This surfaced the worst way. The skill had been deployed to four servers, verified byte for byte, and
+reported as done — and three of those servers were on Node 20 or 18, where steering could not work at
+all. The check that mattered was never run. Files arriving is not the same as a feature working.
+
+Worse, steering being on by default meant those servers could not consult at all: the bridge failed,
+and a bridge failure is exit code 10, which is precisely the code that must not fall back
+automatically. A default that helps on one machine had broken the feature outright on three.
+
+`send.sh` now measures the capability instead of reading a version string — two `node -e` probes,
+first plain and then with the flag — and picks the invocation that works. If neither does, it runs
+the old `codex exec` path **and says why on stderr**. That message matters more than the fallback:
+without it you would only discover the limitation at the moment your interruption goes nowhere.
+
+Version strings were not an option here. Distributions backport, and a numeric comparison is quietly
+wrong at boundaries like 20.9 against 20.10. Asking the runtime costs a few dozen milliseconds.
+
 ### Turning it on — the skill does this for you
 
 Live steering swaps the transport underneath a consultation, so it started life behind a flag:

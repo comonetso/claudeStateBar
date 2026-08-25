@@ -1570,9 +1570,46 @@ fi
 #
 # 🔴 `$SANDBOX` 자체는 건드리지 않는다. 경고 출력·검증 로직이 그 값을 쓰고 있고,
 #    여기서 바꾸면 그쪽 판정까지 흔든다. **표시만 가른다.**
+# ── 🔴 전역 WebSocket 능력 판정 (2026-08-26) ──────────────────────────────
+#
+# 중계기는 Node 의 **전역 WebSocket** 을 쓴다 (`ws` npm 모듈은 번들하지 않는다).
+# 실측한 지형은 이렇다:
+#
+#   Node 22 · 24    기본 제공                        → 플래그 불필요
+#   Node 20.18/20.19  --experimental-websocket 로 열림 → 플래그 필요
+#   Node 18.20      플래그 자체가 없다 (bad option)    → 이 경로를 못 쓴다
+#
+# 🔴 **버전 문자열로 판정하지 마라. 능력을 직접 재라.** 배포판마다 백포트가 다르고,
+#    버전 비교는 20.9 / 20.10 같은 경계에서 조용히 틀린다. 두 번 재는 비용은 수십 ms 다.
+#
+# 🔴 이 판정을 빼면 Node 20 서버에서 **CONSULT 자체가 죽는다.** 끼어들기가 기본 ON 이라
+#    중계기가 항상 호출되는데, 거기서 나는 실패는 종료 코드 10 이고 10 은 자동 폴백 금지다.
+#    (2026-08-26 서버 4대 중 3대가 이 상태였다 — 배포 후에야 발견했다)
+NODE_WS_FLAG=""
+NODE_WS_OK=0
+if command -v node >/dev/null 2>&1; then
+  if node -e 'process.exit(typeof WebSocket === "undefined" ? 1 : 0)' 2>/dev/null; then
+    NODE_WS_OK=1
+  elif node --experimental-websocket -e 'process.exit(typeof WebSocket === "undefined" ? 1 : 0)' 2>/dev/null; then
+    NODE_WS_OK=1
+    NODE_WS_FLAG="--experimental-websocket"
+  fi
+fi
+
 LIVE_STEER_ON=0
-if [ "${CR_LIVE_STEER:-}" = "1" ] && [ "$KIND" = doc ] && [ "$MODE" = readonly ]; then
+if [ "${CR_LIVE_STEER:-}" = "1" ] && [ "$KIND" = doc ] && [ "$MODE" = readonly ] && [ "$NODE_WS_OK" = 1 ]; then
   LIVE_STEER_ON=1
+fi
+
+# 🔴 못 쓰는 이유를 반드시 말한다. 조용히 옛 경로로 떨어지면, 사용자는 도중에 말을 걸었다가
+#    전달이 안 되는 것을 그때서야 알게 된다. 그 시점엔 이미 늦다.
+if [ "$LIVE_STEER_ON" != 1 ] && [ "${CR_LIVE_STEER:-}" = "1" ] \
+   && [ "$KIND" = doc ] && [ "$MODE" = readonly ]; then
+  if [ "$NODE_WS_OK" != 1 ]; then
+    echo "⚠️  이번 실행에는 끼어들 수 없다 — 이 Node 에 전역 WebSocket 이 없다." >&2
+    echo "    Node 22+ 를 쓰거나, Node 20.10+ 라면 --experimental-websocket 이 있어야 한다." >&2
+    echo "    현재: $(node -v 2>/dev/null || echo 'node 없음') · 옛 exec 경로로 돈다." >&2
+  fi
 fi
 if [ "$LIVE_STEER_ON" = 1 ]; then
   SANDBOX_SHOWN="read-only (끼어들기 경로 고정)"
@@ -1674,7 +1711,10 @@ if [ -n "$LIVE_BRIDGE" ]; then
   echo "→ 실행 중 끼어들기 경로(app-server) 로 돈다 — 대화키: $STAMP" >&2
   # 🔴 `$LIVE_EVENTS` 에 직접 쓰고 끝나서 `$EVENTS` 로 복사한다. tee 파이프라인을 흉내내는
   #    것인데, 파이프가 아니라 단일 프로세스라 PIPESTATUS 가 성립하지 않기 때문이다.
-  node "$LIVE_BRIDGE" run \
+  # $NODE_WS_FLAG 는 따옴표 없이 편다 — 빈 값일 때 빈 인자가 생기면 안 된다.
+  # 값은 위에서 이 스크립트가 정한 리터럴 하나뿐이라 분할 위험이 없다.
+  # shellcheck disable=SC2086
+  node $NODE_WS_FLAG "$LIVE_BRIDGE" run \
     --request-file "$REQ_ABS" \
     --events-file "$LIVE_EVENTS" \
     --last-message-file "$LASTMSG" \
