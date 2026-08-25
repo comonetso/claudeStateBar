@@ -1596,15 +1596,59 @@ else
   LAST_DEST="$LOGD/${STAMP}_last_message.md"
 fi
 
-if [ -n "$PROMPT" ]; then
+# ── 🔴 실행 중 끼어들기 경로 (CR_LIVE_STEER=1, CONSULT 1턴 전용) ────────
+#
+# `codex exec` 에는 도는 중인 턴에 말을 넣을 방법이 없다. `codex app-server` 의 `turn/steer`
+# 가 그것을 하며, 하던 작업을 버리지 않고 다음 모델 경계에서 반영한다(2026-08-25 실측 3회).
+#
+# 🔴 범위를 CONSULT 1턴으로 좁힌 것은 의도다. FOLLOWUP·REVIEW·EDIT·CHAT 은 각자 검증된
+#    배관이 있고, 그것까지 한 번에 갈아타면 회귀 범위가 통째로 열린다.
+#    (Codex 자문 2026-08-25: "첫 구현은 CONSULT 1턴에만 feature flag 로")
+#
+# 🔴 중계기는 **transport 만** 한다. 요청서 검증·lock·heartbeat·status·변경 감지·EDIT 게이트·
+#    응답 회수·in-flight 복구는 전부 이 스크립트에 그대로 남는다. 중계기에 `--log-dir` 을
+#    주지 않는 이유가 그것이다 — status/heartbeat 를 두 곳에서 쓰면 서로 덮는다.
+#
+# 응답 문서는 Codex 가 아니라 이 스크립트가 만든다. 중계기가 최종 메시지를 `$LASTMSG` 에
+# 남기면 아래 회수 구간이 REVIEW·FOLLOWUP 과 같은 경로로 처리한다. 그래서 read-only 로 돈다.
+LIVE_BRIDGE=""
+if [ "${CR_LIVE_STEER:-}" = "1" ] && [ "$KIND" = doc ] && [ "$MODE" = readonly ]; then
+  _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  LIVE_BRIDGE="$_SELF_DIR/scripts/live-consult.mjs"
+  [ -f "$LIVE_BRIDGE" ] || die "CR_LIVE_STEER=1 인데 중계기가 없다: $LIVE_BRIDGE
+  스킬을 다시 받아라 (scripts/ 디렉토리가 함께 온다)."
+  command -v node >/dev/null 2>&1 || die "CR_LIVE_STEER=1 에는 node 가 필요하다."
+fi
+
+if [ -n "$LIVE_BRIDGE" ]; then
+  echo "→ 실행 중 끼어들기 경로(app-server) 로 돈다 — 대화키: $STAMP" >&2
+  # 🔴 `$LIVE_EVENTS` 에 직접 쓰고 끝나서 `$EVENTS` 로 복사한다. tee 파이프라인을 흉내내는
+  #    것인데, 파이프가 아니라 단일 프로세스라 PIPESTATUS 가 성립하지 않기 때문이다.
+  node "$LIVE_BRIDGE" run \
+    --request-file "$REQ_ABS" \
+    --events-file "$LIVE_EVENTS" \
+    --last-message-file "$LASTMSG" \
+    --appserver-log "$LOGD/${STAMP}_appserver.jsonl" \
+    --steers-log "$LOGD/${STAMP}_steers.jsonl" \
+    --stamp "$STAMP" \
+    --cwd "$ROOT" \
+    --sandbox read-only \
+    2>"$ERRLOG"
+  RC=$?
+  TEE_RC=0
+  cp -f -- "$LIVE_EVENTS" "$EVENTS" 2>/dev/null || :
+elif [ -n "$PROMPT" ]; then
   "$@" "$PROMPT" 2>"$ERRLOG" | tee $TEE_MODE -- "$LIVE_EVENTS" > "$EVENTS"
+  # 🔴 PIPESTATUS 는 **바로 다음 명령**에서 배열째 복사해야 한다. 다른 명령이 하나라도 끼면 덮인다.
+  PIPE_RC=("${PIPESTATUS[@]}")
+  RC=${PIPE_RC[0]}
+  TEE_RC=${PIPE_RC[1]:-0}
 else
   "$@" 2>"$ERRLOG" | tee $TEE_MODE -- "$LIVE_EVENTS" > "$EVENTS"
+  PIPE_RC=("${PIPESTATUS[@]}")
+  RC=${PIPE_RC[0]}
+  TEE_RC=${PIPE_RC[1]:-0}
 fi
-# 🔴 PIPESTATUS 는 **바로 다음 명령**에서 배열째 복사해야 한다. 다른 명령이 하나라도 끼면 덮인다.
-PIPE_RC=("${PIPESTATUS[@]}")
-RC=${PIPE_RC[0]}
-TEE_RC=${PIPE_RC[1]:-0}
 
 # 🔴 heartbeat 를 여기서 멈추지 않는다. heartbeat 의 계약은 "codex 가 살아있다"가 아니라
 #    **"send.sh 가 살아있다"** 다. 여기서 끊으면 아래 후처리(전체 파일 스캔 2회 + 해시 + 로그

@@ -193,14 +193,20 @@ uses for Claude, with a rail down the left of the row. That is to keep it distin
 Codex prints at the start of every turn (`clamping SessionEnd hook timeout to 3s`) — they used to look
 the same, and the confusion was real.
 
-**Today you reach it through the bridge directly.** Everything described above came from running
-[`tools/live-consult/`](tools/live-consult/) — start a consultation with `run`, throw a line into it
-with `steer` while it works.
+**Turning it on** is one environment variable:
 
-What is missing is the shortcut. `send.sh` still takes the `codex exec` path, so asking the skill for
-a consultation the usual way goes through the old route without steering. Wiring the two together is
-the next release; the plan and the open decisions are in
-[the integration notes](docs/LIVE_STEER_INTEGRATION.md).
+```bash
+CR_LIVE_STEER=1
+```
+
+With that set, a **CONSULT first turn** runs through the app-server bridge and accepts interruptions.
+Everything else is untouched — request validation, the lock, change detection, the edit gate, response
+recovery and the follow-up path all stay where they were. Follow-ups, reviews and edits keep their
+existing routes; moving them all at once would open the whole regression surface.
+
+The bridge ships with the skill under `scripts/`; fetch it alongside `send.sh` (the
+[install instructions](docs/codex-rescue-guide.md#0-installation) include it). Without it the flag
+refuses to start rather than falling back quietly, so you always know which path you are on.
 
 **The turn display below needs nothing from you**, because it reads only what the skill already writes.
 

@@ -19,7 +19,7 @@ mistaken for the CLI advisories that share the row style. That confusion was rea
 prints at the start of every turn (`clamping SessionEnd hook timeout to 3s`) looked identical to a
 human cutting in.
 
-The plumbing lives in `tools/live-consult/`. It is deliberately narrow — it owns the app-server
+The bridge ships with the skill under `scripts/`. It is deliberately narrow — it owns the app-server
 connection and translates its notifications into the event format the panel already reads, and
 nothing else. Everything the skill does around a run (request validation, the lock, change detection,
 the edit gate, response recovery) stays in `send.sh` where it was proven.
@@ -82,19 +82,28 @@ competing answers to the same question: `Input 220K` and `Context total 221K`. U
 now the headline — **Context 221K / 828K (27%)** — and the table below it is just the breakdown.
 Applied to both providers.
 
-### How to reach it
+### Turning it on
 
-The **panel changes need nothing from you**. Turn headers, per-turn narration and the Claude chip all
-read the event log the skill already writes, and a run recorded by an older skill displays exactly as
-it did before. Same for the deletion fix, the limit labels and the tooltip.
+Live steering is behind a flag, because it swaps the transport underneath a consultation and the
+old path is the one with years of use on it:
 
-**Live steering runs today through the bridge directly.** Every measurement above came from
-`tools/live-consult/live-consult.mjs` — start a consultation with `run`, throw a line into it with
-`steer` while it works. It is in the repository and it is what recorded the runs shown here.
+```bash
+CR_LIVE_STEER=1
+```
 
-What is not done is the shortcut: `send.sh` still takes the `codex exec` path, so asking the skill
-for a consultation the usual way goes through the old route without steering. Wiring the two together
-is the next release — the plan, and the decisions still open, are in `docs/LIVE_STEER_INTEGRATION.md`.
+With that set, a **CONSULT first turn** runs through the app-server bridge and accepts interruptions.
+Everything else about the skill is untouched — request validation, the lock, change detection, the
+edit gate, response recovery and the follow-up path all stay exactly where they were. Follow-ups,
+reviews and edits keep their existing routes; each of those has its own proven plumbing, and moving
+them all at once would open the whole regression surface.
+
+The bridge ships with the skill under `scripts/`. Fetch it alongside `send.sh` — the install
+instructions in the guide now include it. Without it the flag refuses to start rather than silently
+falling back, so you always know which path you are on.
+
+The panel changes need nothing from you. Turn headers, per-turn narration and the Claude chip read
+the event log the skill already writes, and a run recorded by an older skill displays exactly as it
+did before. Same for the deletion fix, the limit labels and the tooltip.
 
 ## [1.13.0] - 2026-08-23
 

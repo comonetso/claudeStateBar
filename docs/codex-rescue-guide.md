@@ -22,11 +22,16 @@ the problem Claude is stuck on.** You ask in plain language; the whole round tri
 ### Get the skill
 
 ```bash
-mkdir -p ~/.claude/skills/codex_rescue
+mkdir -p ~/.claude/skills/codex_rescue/scripts/lib
 BASE=https://raw.githubusercontent.com/comonetso/claudeStateBar/main/skills/codex_rescue
 curl -fsSL "$BASE/SKILL.md" -o ~/.claude/skills/codex_rescue/SKILL.md
 curl -fsSL "$BASE/send.sh"  -o ~/.claude/skills/codex_rescue/send.sh
 chmod +x ~/.claude/skills/codex_rescue/send.sh
+
+# For live steering, fetch these four as well (everything else works without them)
+for f in live-consult.mjs lib/appserver.mjs lib/bridge.mjs lib/runtime.mjs; do
+  curl -fsSL "$BASE/scripts/$f" -o ~/.claude/skills/codex_rescue/scripts/$f
+done
 ```
 
 If you cloned the repo, copying `skills/codex_rescue/` into `~/.claude/skills/` works too.

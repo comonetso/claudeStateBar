@@ -22,11 +22,16 @@
 ### 스킬 받기
 
 ```bash
-mkdir -p ~/.claude/skills/codex_rescue
+mkdir -p ~/.claude/skills/codex_rescue/scripts/lib
 BASE=https://raw.githubusercontent.com/comonetso/claudeStateBar/main/skills/codex_rescue
 curl -fsSL "$BASE/SKILL.md" -o ~/.claude/skills/codex_rescue/SKILL.md
 curl -fsSL "$BASE/send.sh"  -o ~/.claude/skills/codex_rescue/send.sh
 chmod +x ~/.claude/skills/codex_rescue/send.sh
+
+# 실행 중 끼어들기를 쓰려면 이 넷도 함께 받습니다 (안 받아도 나머지 기능은 그대로 됩니다)
+for f in live-consult.mjs lib/appserver.mjs lib/bridge.mjs lib/runtime.mjs; do
+  curl -fsSL "$BASE/scripts/$f" -o ~/.claude/skills/codex_rescue/scripts/$f
+done
 ```
 
 레포를 통째로 받았다면 `skills/codex_rescue/` 를 `~/.claude/skills/` 로 복사해도 됩니다.
