@@ -1487,8 +1487,12 @@ elif [ "$KIND" = followup ]; then
          -c sandbox_mode="read-only" -o "$LASTMSG_W"
 
 else
-  SANDBOX="${CR_SANDBOX:-workspace-write}"
-  set -- codex exec --skip-git-repo-check --json -s "$SANDBOX" -C "$ROOT_W" -o "$LASTMSG_W"
+  # 🔴 `$SANDBOX` 는 아래에서 " +net" 이 덧붙어 **표시용 문자열**이 된다. 그래서 실제 인자로
+  #    넘길 순수 값을 따로 보존한다 — 끼어들기 경로(§ CR_LIVE_STEER)의 `--sandbox` 가 이 값을
+  #    쓴다. `$SANDBOX` 를 그대로 넘기면 `workspace-write +net` 이 가서 중계기가 거부한다.
+  SANDBOX_RAW="${CR_SANDBOX:-workspace-write}"
+  SANDBOX="$SANDBOX_RAW"
+  set -- codex exec --skip-git-repo-check --json -s "$SANDBOX_RAW" -C "$ROOT_W" -o "$LASTMSG_W"
 
   # ── 🟢 네트워크 해금 (2026-08-25 사용자 결정) ────────────────────
   #
@@ -1560,13 +1564,19 @@ if [ -n "${CR_TIMEOUT:-}" ]; then
   CR_TIMEOUT 을 지우고 다시 실행해라."
 fi
 
-# ── 🔴 표시용 샌드박스 — 끼어들기 경로는 read-only 로 돈다 (2026-08-26) ──────
+# ── 🔴 표시용 샌드박스 — 끼어들기 경로도 exec 와 같은 권한으로 돈다 (2026-08-26 개정) ──
 #
-# 아래 실행부(§ CR_LIVE_STEER)는 중계기에 `--sandbox read-only` 를 **고정으로** 넘긴다.
-# 그런데 보고문은 `$SANDBOX`(exec 경로용 값)를 그대로 찍고 있어서, live steer 로 돌면
-# `workspace-write +net` 이라고 **거짓 보고**했다 (2026-08-26 실측).
-# 실제로는 read-only 라 Codex 가 응답 파일을 못 쓰고 `-o` 폴백으로 저장되는데,
-# 보고만 읽으면 "쓰기 권한이 있는데 왜 못 썼나"로 원인을 엉뚱한 데서 찾게 된다.
+# 예전에는 아래 실행부(§ CR_LIVE_STEER)가 중계기에 `--sandbox read-only` 를 **고정**으로
+# 넘겼다. 그런데 끼어들기가 CONSULT 의 기본값이 되면서(2026-08-26), 그 고정이
+# **2026-08-25 에 의도적으로 연 `.scratch/` 작업 권한을 하루 만에 도로 닫아 버렸다.**
+# CONSULT 3회 실패의 원인이 "조사 권한 부족"이라고 결론 내고 연 것인데, 같은 제약이
+# 조용히 되살아난 것이다 — 실제로 Codex 가 "샌드박스가 쓰기를 차단해 거부됐다"고 보고했다.
+#
+# 그래서 exec 경로와 같은 값(`$SANDBOX_RAW`)을 넘긴다. 중계기는 `read-only` 와
+# `workspace-write` 를 모두 받는다(live-consult.mjs:469-472 → thread/start 의 sandbox).
+#
+# 🔴 `$SANDBOX` 를 그대로 넘기지 마라. 아래 네트워크 블록에서 " +net" 이 덧붙어
+#    표시용 문자열이 되므로 중계기가 USAGE 로 거부한다. 순수 값은 `$SANDBOX_RAW` 다.
 #
 # 🔴 `$SANDBOX` 자체는 건드리지 않는다. 경고 출력·검증 로직이 그 값을 쓰고 있고,
 #    여기서 바꾸면 그쪽 판정까지 흔든다. **표시만 가른다.**
@@ -1612,7 +1622,8 @@ if [ "$LIVE_STEER_ON" != 1 ] && [ "${CR_LIVE_STEER:-}" = "1" ] \
   fi
 fi
 if [ "$LIVE_STEER_ON" = 1 ]; then
-  SANDBOX_SHOWN="read-only (끼어들기 경로 고정)"
+  # `+net` 은 붙이지 않는다 — 네트워크 해금은 exec 전용 `-c` 인자이고 중계기에는 넘어가지 않는다.
+  SANDBOX_SHOWN="${SANDBOX_RAW:-read-only} (끼어들기 경로 · 네트워크 없음)"
 else
   SANDBOX_SHOWN="$SANDBOX"
 fi
@@ -1722,7 +1733,7 @@ if [ -n "$LIVE_BRIDGE" ]; then
     --steers-log "$LOGD/${STAMP}_steers.jsonl" \
     --stamp "$STAMP" \
     --cwd "$ROOT" \
-    --sandbox read-only \
+    --sandbox "${SANDBOX_RAW:-read-only}" \
     2>"$ERRLOG"
   RC=$?
   TEE_RC=0

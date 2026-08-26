@@ -60,11 +60,18 @@ const EN: Dict = {
     'tg.notifyOnReset.label': 'Send a Telegram alert on each 5-hour reset',
     'st.autoStartBlock.label': 'Auto-start the next 5-hour block on reset (claude -p)',
     'st.autoStartBlock.hint': 'When the block closes, fire a throwaway claude -p to anchor the new block to the reset. The window starts counting immediately — even overnight. Requires the claude CLI and VS Code running; fires at most once per reset.',
-    'tg.resetMsg': '✅ <b>Claude session reset</b>\n\nYour 5-hour window is fully available.\nWeekly usage: {0}%',
+    'tg.resetMsg': '✅ <b>Claude session reset</b>\n\nWeekly usage: {0}% {1}',
     'tg.primerFired': '🚀 <b>New 5-hour block started</b>\n\nA throwaway prompt was sent at the reset, so the block is anchored to {0}.',
     'tg.primerFailed': '⚠️ <b>Auto-start failed</b>\n\nCould not run <code>claude -p</code> at the reset. The block was not started — see the claudeStateBar output channel.',
     'tg.primerUnverified': '🛑 <b>Auto-start disabled</b>\n\n<code>claude -p</code> ran, but no subscription block opened — headless runs may now bill the API instead of your plan. Auto-start has been turned OFF so it cannot keep charging you. Turn it back on only once you have confirmed the block opens.',
     'tg.primerApiKey': '🛑 <b>Auto-start disabled</b>\n\nAn API key is set in the environment, so <code>claude -p</code> would bill API credit instead of your subscription window. Auto-start has been turned OFF.',
+
+    // Codex 5-hour reset — the Codex counterpart to the Claude block above.
+    'tg.codexNotifyOnReset.label': 'Send a Telegram alert on each Codex 5-hour reset',
+    'st.codexAutoStartBlock.label': 'Auto-start the next Codex 5-hour block on reset (codex exec)',
+    'st.codexAutoStartBlock.hint': 'When the Codex block closes, fire a throwaway codex exec to anchor the new block to the reset. Runs ephemerally (no session file) in read-only sandbox. Requires the codex CLI signed in with a ChatGPT plan and VS Code running; fires at most once per reset.',
+    'tg.codexResetMsg': '✅ <b>Codex session reset</b>\n\nWeekly usage: {0}% {1}',
+    'tg.codexPrimerApiKey': '🛑 <b>Codex auto-start disabled</b>\n\nCodex is not signed in with a ChatGPT plan, so <code>codex exec</code> would bill API credit instead of your 5-hour window. Auto-start has been turned OFF.',
 
     // Status-bar plan usage labels
     'sb.sessionLabel': 'Session',
@@ -402,11 +409,18 @@ const KO: Dict = {
     'tg.notifyOnReset.label': '5시간 리셋 시 텔레그램 알림 보내기',
     'st.autoStartBlock.label': '리셋 시 다음 5시간 블록 자동 시작 (claude -p)',
     'st.autoStartBlock.hint': '블록이 닫히면 claude -p 더미를 발사해 새 블록을 리셋 시각에 앵커합니다. 창은 즉시 카운트다운 시작(밤새 포함). claude CLI와 VS Code 실행 필요. 리셋당 최대 1회 발사.',
-    'tg.resetMsg': '✅ <b>Claude 세션 리셋</b>\n\n지금 시작하면 5시간 풀로 사용 가능합니다.\n주간 사용률: {0}%',
+    'tg.resetMsg': '✅ <b>Claude 세션 리셋</b>\n\n주간 사용률: {0}% {1}',
     'tg.primerFired': '🚀 <b>새 5시간 블록 시작됨</b>\n\n리셋 시각에 더미 프롬프트를 보내 블록을 {0} 에 앵커했습니다.',
     'tg.primerFailed': '⚠️ <b>자동 시작 실패</b>\n\n리셋 시각에 <code>claude -p</code> 실행에 실패했습니다. 블록은 시작되지 않았습니다 — claudeStateBar 출력 채널을 확인하세요.',
     'tg.primerUnverified': '🛑 <b>자동 시작 기능이 꺼졌습니다</b>\n\n<code>claude -p</code> 는 실행됐지만 구독 블록이 열리지 않았습니다 — headless 실행이 구독이 아니라 API로 과금되도록 정책이 바뀌었을 수 있습니다. 반복 과금을 막기 위해 자동 시작을 <b>즉시 껐습니다.</b> 블록이 실제로 열리는 것을 확인한 뒤에만 다시 켜세요.',
     'tg.primerApiKey': '🛑 <b>자동 시작 기능이 꺼졌습니다</b>\n\n환경에 API 키가 설정되어 있어 <code>claude -p</code> 가 구독이 아니라 API 크레딧으로 과금됩니다. 자동 시작을 껐습니다.',
+
+    // Codex 5시간 리셋 — 위 Claude 블록의 Codex 짝
+    'tg.codexNotifyOnReset.label': 'Codex 5시간 리셋 시 텔레그램 알림 보내기',
+    'st.codexAutoStartBlock.label': '리셋 시 다음 Codex 5시간 블록 자동 시작 (codex exec)',
+    'st.codexAutoStartBlock.hint': 'Codex 블록이 닫히면 codex exec 더미를 발사해 새 블록을 리셋 시각에 앵커합니다. 세션 파일을 남기지 않는 ephemeral · read-only 샌드박스로 실행합니다. ChatGPT 플랜으로 로그인된 codex CLI와 VS Code 실행 필요. 리셋당 최대 1회 발사.',
+    'tg.codexResetMsg': '✅ <b>Codex 세션 리셋</b>\n\n주간 사용률: {0}% {1}',
+    'tg.codexPrimerApiKey': '🛑 <b>Codex 자동 시작 기능이 꺼졌습니다</b>\n\nCodex 가 ChatGPT 플랜으로 로그인되어 있지 않아 <code>codex exec</code> 가 5시간 창이 아니라 API 크레딧으로 과금됩니다. 자동 시작을 껐습니다.',
 
     'sb.sessionLabel': '세션한도',
     'sb.session': '세션',

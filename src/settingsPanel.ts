@@ -84,6 +84,8 @@ async function collectState() {
         telegramChatId: await creds.getTelegramChatId(),
         telegramNotifyOnReset: creds.getTelegramNotifyOnReset(),
         autoStartBlockOnReset: creds.getAutoStartBlockOnReset(),
+        codexTelegramNotifyOnReset: creds.getCodexTelegramNotifyOnReset(),
+        codexAutoStartBlockOnReset: creds.getCodexAutoStartBlockOnReset(),
         cb: {
             baseColor: cbCfg.get('baseColor', 'White'),
             contextLimitDefault: cbCfg.get('contextLimitDefault', 200000),
@@ -156,6 +158,12 @@ async function handleMessage(msg: any): Promise<void> {
                 }
                 if (typeof p.autoStartBlockOnReset === 'boolean') {
                     await creds.setAutoStartBlockOnReset(p.autoStartBlockOnReset);
+                }
+                if (typeof p.codexTelegramNotifyOnReset === 'boolean') {
+                    await creds.setCodexTelegramNotifyOnReset(p.codexTelegramNotifyOnReset);
+                }
+                if (typeof p.codexAutoStartBlockOnReset === 'boolean') {
+                    await creds.setCodexAutoStartBlockOnReset(p.codexAutoStartBlockOnReset);
                 }
                 // Persist claudeContextBar settings
                 if (p.cb) {
@@ -373,6 +381,20 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
           <span data-i18n="st.autoStartBlock.label">Auto-start the next 5-hour block on reset (claude -p)</span>
         </label>
         <p class="hint" data-i18n="st.autoStartBlock.hint"></p>
+      </div>
+
+      <div class="field" style="margin-top:10px;">
+        <label class="checkbox-label">
+          <input type="checkbox" id="tg-codexNotifyOnReset" />
+          <span data-i18n="tg.codexNotifyOnReset.label">Send a Telegram alert on each Codex 5-hour reset</span>
+        </label>
+      </div>
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="st-codexAutoStartBlock" />
+          <span data-i18n="st.codexAutoStartBlock.label">Auto-start the next Codex 5-hour block on reset (codex exec)</span>
+        </label>
+        <p class="hint" data-i18n="st.codexAutoStartBlock.hint"></p>
       </div>
     </div>
 

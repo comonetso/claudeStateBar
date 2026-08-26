@@ -127,10 +127,9 @@ let planTickInterval: NodeJS.Timeout | null = null;
 let lastUsage: NormalizedUsage | null = null;
 // [diag 1.7.39] Last sessionResetAt state written to diag.log, so each poll only records on change.
 let lastPollDiag = '';
-// [1.7.43] Wall-clock of the last successful block-close poll. A large gap means the machine slept
-// and just woke — used to fire the primer on wake even when there was no live >0%→0% transition.
-let lastBlockPollAt = 0;
-const WAKE_GAP_MS = 5 * 60 * 1000;
+// [diag 1.14.0] Last observedAt whose cache-repeat skip was recorded, so the log gets one line per
+// distinct skipped reading instead of one per poll.
+let lastCodexSkipDiag: number | null = null;
 type PlanStatus = 'unconfigured' | 'ok' | 'auth_expired' | 'blocked' | 'error';
 let planStatus: PlanStatus = 'unconfigured';
 
@@ -3249,6 +3248,14 @@ function resetAtLabel(iso: string | null): string {
     return `${d.getMonth() + 1}/${d.getDate()} (${days[d.getDay()]}) ${timePart}`;
 }
 
+// "(in 2d 23h)" — how long the weekly window still has to last. The calendar date and weekday
+// are deliberately left out: on a phone notification the remaining time is what you act on, and
+// the exact turnover timestamp is a tooltip away. Empty when the reset time is unknown, which
+// keeps a bare "(--)" out of the alert text.
+function weeklyResetPhrase(iso: string | null): string {
+    return iso ? `(${untilHuman(iso)})` : '';
+}
+
 // Human "in 2h 14m" style countdown to the reset time.
 function untilHuman(iso: string | null): string {
     if (!iso) return '--';
@@ -3341,6 +3348,7 @@ async function refreshCodexUsage(): Promise<void> {
         if (result) {
             codexLiveUsage = result.snapshot;
             log(`[codex-usage] ${result.source}: primary=${result.snapshot.primary?.usedPercent ?? '--'}% plan=${result.snapshot.planType ?? '?'}`);
+            await detectCodexBlockClose(result.snapshot);
             refreshAllSessions();
         }
         // On failure we keep the previous live value; the tooltip ages it into "stale"
@@ -3350,6 +3358,158 @@ async function refreshCodexUsage(): Promise<void> {
     } finally {
         codexUsageInFlight = false;
     }
+}
+
+// --- Codex 5-hour block close detection ---
+//
+// Deliberately NOT a copy of detectBlockClose(): Codex reports its window differently, and
+// copying the Claude rule sent a false "Codex session reset" on every wake-from-sleep.
+// Measured against a live account:
+//
+//   window OPEN   → resetsAt is a fixed timestamp (open time + 5h), identical on every poll
+//   window CLOSED → resetsAt is always "now + windowMinutes", so it advances with the clock
+//
+// The close signal is therefore "the value started moving". Usage % must not be used: an open
+// window that simply isn't being used also reads 0%, which is what made 0% → 0% look like a
+// reset. Separate event-lock namespace from Claude, since the two close independently.
+//
+// Only the live app-server probe feeds this. The rollout fallback is a per-thread snapshot
+// that freezes while Codex is idle, and a frozen resetsAt would read as a fixed one.
+async function detectCodexBlockClose(snap: CodexUsageSnapshot) {
+    // No 5-hour limit on this account → nothing to reset, so no alert and no primer. Weekly-only
+    // accounts must never get either. See codexHasFiveHourLimit() for why this is not plan-name based.
+    if (!codexHasFiveHourLimit(snap)) return;
+
+    const primary = snap.primary;
+    if (!primary || primary.resetsAt == null) return;
+
+    // 🔴 Drop repeats of the SAME reading before comparing anything. fetchSharedCodexRateLimits()
+    // returns the cached snapshot whenever it is younger than the TTL, and TTL and poll interval
+    // are both 60s — so clock jitter or a second VS Code window hands back an identical snapshot.
+    // Comparing it would read as "resetsAt held still" = timer running, and a real close would be
+    // missed for as long as the repeats continue. A cached repeat carries no new information.
+    const curObserved = snap.observedAt ? snap.observedAt.getTime() : null;
+    if (curObserved != null && curObserved === creds.getLastCodexObservedAt()) {
+        // [diag 1.14.0] Cache repeats are expected and frequent; recorded once per distinct skip so
+        // a missed close can be told apart from "the cache never let a fresh reading through".
+        if (curObserved !== lastCodexSkipDiag) {
+            blockPrimer.appendDiag(`codex-poll skipped (cached repeat) observedAt=${curObserved}`);
+            lastCodexSkipDiag = curObserved;
+        }
+        return;
+    }
+    await creds.setLastCodexObservedAt(curObserved);
+
+    const cur = primary.resetsAt;
+    const prev = creds.getLastCodexResetsAt();
+    await creds.setLastCodexResetsAt(cur);
+    if (prev == null) {
+        blockPrimer.appendDiag(`codex-poll first reading resetsAt=${cur} — nothing to compare`);
+        return;
+    }
+
+    const isOpen = cur === prev;
+    const wasOpen = creds.getCodexWindowWasOpen();
+    await creds.setCodexWindowWasOpen(isOpen);
+
+    // [diag 1.14.0] Every judged reading. This is what shows whether a close was seen at all —
+    // without it the log only proves a fire happened, never why one didn't.
+    blockPrimer.appendDiag(
+        `codex-poll used=${codexUsedPercent(primary.usedPercent)}% resetsAt=${cur} prev=${prev} ` +
+        `moved=${cur - prev}ms isOpen=${isOpen ? 'Y' : 'N'} wasOpen=${wasOpen ? 'Y' : 'N'}` +
+        `${!wasOpen || isOpen ? '' : '  ← CLOSE EDGE'}`);
+
+    // Fire only on the open → closed edge. Staying closed is NOT a reset — that is exactly what
+    // produced a "Codex session reset" alert on every wake-from-sleep. A window that has just
+    // opened also reads as "moved" for one poll before it settles, which is harmless here
+    // because wasOpen is false in that case.
+    if (!wasOpen || isOpen) return;
+
+    // Coarse wall-clock bucket, so several VS Code windows reacting to the same edge collapse
+    // into one claim.
+    const eventKey = String(Math.floor(Date.now() / (10 * 60 * 1000)));
+    if (!blockPrimer.claimResetEvent(eventKey, log, 'codex')) return;
+
+    blockPrimer.appendDiag(
+        `codex-block-closed prevResetsAt=${prev} curResetsAt=${cur} ` +
+        `event=${eventKey} autoStart=${creds.getCodexAutoStartBlockOnReset()}`);
+
+    const token = await creds.getTelegramToken();
+    const chatId = await creds.getTelegramChatId();
+    if (creds.getCodexTelegramNotifyOnReset() && token && chatId) {
+        // `secondary` is the weekly window — the Codex counterpart to Claude's weekly %.
+        const weekly = snap.secondary ? String(codexUsedPercent(snap.secondary.usedPercent)) : '?';
+        const weeklyWhen = weeklyResetPhrase(isoFromEpoch(snap.secondary?.resetsAt ?? null));
+        await telegram.sendMessage(token, chatId, planT('tg.codexResetMsg', weekly, weeklyWhen));
+    }
+    if (creds.getCodexAutoStartBlockOnReset()) {
+        primeNewCodexBlock();
+    }
+}
+
+// Open the new Codex 5-hour block. Same contract as primeNewBlock(): the caller has already
+// confirmed the window is closed and claimed the event. Deliberately not awaited.
+function primeNewCodexBlock() {
+    void (async () => {
+        const homeUri = await getCodexHomeUri();
+        const home = homeUri?.fsPath || blockPrimer.defaultCodexHome();
+        blockPrimer.fireCodexPrimer(home, log, (outcome, detail) => {
+            void handleCodexPrimerOutcome(outcome, detail);
+        });
+    })();
+}
+
+async function handleCodexPrimerOutcome(outcome: blockPrimer.FireOutcome, detail: string) {
+    blockPrimer.appendDiag(`codex-primer-outcome=${outcome} detail=${detail}`);
+
+    if (outcome === 'api-key-present') {
+        // Genuine billing hazard: without a ChatGPT-plan login the run spends API credit
+        // rather than the 5-hour window. Stop and say so, exactly as the Claude side does.
+        await creds.setCodexAutoStartBlockOnReset(false);
+        const msg = planT('tg.codexPrimerApiKey');
+        await notifyTelegram(msg);
+        void vscode.window.showWarningMessage(msg.replace(/<[^>]+>/g, ''));
+        return;
+    }
+    if (outcome === 'exec-failed') {
+        // Local fault (CLI missing / not signed in). Record it; leave auto-start on to retry.
+        log('[codex-primer] exec failed — leaving auto-start on');
+        return;
+    }
+
+    // outcome === 'fired' — the CLI exited 0, which only means it ran. The proof that a window
+    // opened is resetsAt STANDING STILL across two readings. Checking that it sits ~5h out
+    // proves nothing at all: a closed window reports exactly "now + 5h" on every single poll,
+    // so that test passed unconditionally and would have reported every failure as a success.
+    let prevSeen: number | null = null;
+    for (let i = 0; i < PRIMER_VERIFY_TRIES; i++) {
+        await new Promise((r) => setTimeout(r, PRIMER_VERIFY_INTERVAL_MS));
+        // maxAge 0 bypasses the shared cache, which would otherwise keep handing back the
+        // pre-primer snapshot for the rest of the poll interval and never verify.
+        const fresh = await fetchSharedCodexRateLimits(codexUsageCacheDir, 0);
+        const at = fresh?.snapshot.primary?.resetsAt ?? null;
+        if (fresh) {
+            codexLiveUsage = fresh.snapshot;
+            refreshAllSessions();
+        }
+        if (at != null && prevSeen != null && at === prevSeen) {
+            const iso = new Date(at).toISOString();
+            blockPrimer.appendDiag(`codex-primer-verified resetsAt=${iso} (fixed → window open)`);
+            log(`[codex-primer] verified — window open until ${iso}`);
+            // Record the confirmed open state so the next poll doesn't read the fresh window
+            // as an edge of its own.
+            await creds.setLastCodexResetsAt(at);
+            await creds.setCodexWindowWasOpen(true);
+            return;
+        }
+        prevSeen = at;
+    }
+
+    // Fired but resetsAt never moved into the 5-hour range. The plan login was already
+    // confirmed before firing, so there is no billing hazard here — record it and let the next
+    // close retry, rather than auto-disabling on what may just be a slow poll.
+    blockPrimer.appendDiag('codex-primer-unverified — left auto-start on');
+    log(`[codex-primer] not verified after ${PRIMER_VERIFY_TRIES} tries — left auto-start on`);
 }
 
 // Newest rate-limit snapshot across ALL visible Codex sessions, recomputed each refresh.
@@ -3399,16 +3559,44 @@ function codexUsedPercent(usedPercent: number): number {
     return Math.max(0, Math.min(100, Math.round(usedPercent)));
 }
 
+// ---------------------------------------------------------------------------
+// 🔴 Does this account have a 5-hour limit at all?
+//
+// Today only Plus does; Pro is weekly-only. But OpenAI has said Pro will get one, so keying this
+// on the plan NAME would need a code change on the day it lands — and there is no way to verify
+// what string a Pro account even reports (this machine is Plus). Asking "does a primary window
+// actually arrive?" answers the real question and follows the change on its own.
+//
+// Everything that branches on this — the status bar text, the account item, the reset detection —
+// calls this one function. If the rule ever changes, this is the only place to touch.
+// ---------------------------------------------------------------------------
+function codexHasFiveHourLimit(u: CodexUsageSnapshot | null): boolean {
+    return !!u?.primary;
+}
+
+// The window the status bar should lead with: the 5-hour one when the account has it, otherwise
+// the weekly one. Never showing nothing — a weekly-only account still has a number worth seeing.
+function codexHeadlineWindow(u: CodexUsageSnapshot | null) {
+    if (!u) return null;
+    return codexHasFiveHourLimit(u) ? u.primary : u.secondary;
+}
+
+// Label matching whichever window codexHeadlineWindow() picked.
+function codexHeadlineLabel(u: CodexUsageSnapshot | null): string {
+    return planT(codexHasFiveHourLimit(u) ? 'sb.codexLimit' : 'sb.codexSecondary');
+}
+
 // Suffix appended to the leading Codex session item — mirrors planTextSuffix().
 function codexUsageTextSuffix(compact: boolean): string {
     const u = accountCodexUsage();
-    if (!u || !u.primary) return '';
-    const p = codexUsedPercent(u.primary.usedPercent);
-    const iso = isoFromEpoch(u.primary.resetsAt);
+    const w = codexHeadlineWindow(u);
+    if (!w) return '';
+    const p = codexUsedPercent(w.usedPercent);
+    const iso = isoFromEpoch(w.resetsAt);
     if (compact) {
         return ` · ${p}% (${untilHumanCompact(iso)})`;
     }
-    return ` - ${planT('sb.codexLimit')} ${p}% (${untilHuman(iso)})`;
+    return ` - ${codexHeadlineLabel(u)} ${p}% (${untilHuman(iso)})`;
 }
 
 // Markdown block describing Codex account usage; inserted into Codex session tooltips.
@@ -3461,18 +3649,20 @@ function updateCodexUsageFallback(noCodexSessions: boolean): void {
     ensureCodexUsageFallback();
     const item = codexUsageFallbackItem!;
     const u = accountCodexUsage();
-    if (!isCodexEnabled() || !noCodexSessions || !u?.primary) {
+    // A weekly-only account leads with its weekly figure rather than showing nothing.
+    const w = codexHeadlineWindow(u);
+    if (!isCodexEnabled() || !noCodexSessions || !w) {
         item.hide();
         return;
     }
 
-    const used = codexUsedPercent(u.primary.usedPercent);
-    const iso = isoFromEpoch(u.primary.resetsAt);
+    const used = codexUsedPercent(w.usedPercent);
+    const iso = isoFromEpoch(w.resetsAt);
     const compact = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('compactMode', false);
     item.text = compact
         ? `${providerIcon('codex')} Codex · ${used}% (${untilHumanCompact(iso)})`
-        : `${providerIcon('codex')} Codex - ${planT('sb.codexLimit')} ${used}% (${untilHuman(iso)})`;
-    item.color = colorForPercent(u.primary.usedPercent) ?? '#FF9F6E';
+        : `${providerIcon('codex')} Codex - ${codexHeadlineLabel(u)} ${used}% (${untilHuman(iso)})`;
+    item.color = colorForPercent(w.usedPercent) ?? '#FF9F6E';
     item.backgroundColor = undefined;
     item.tooltip = new vscode.MarkdownString(
         sectionHeader('Codex Usage', '#FF9F6E') +
@@ -3622,9 +3812,16 @@ async function refreshPlanUsage() {
         // any moment, without waiting for a reset event.
         const nowReset = result.normalized.sessionResetAt;
         const nowFuture = !!nowReset && new Date(nowReset).getTime() > Date.now();
-        const diagKey = `resetAt=${nowReset ?? 'null'} future=${nowFuture ? 'Y' : 'N'}`;
+        // [diag 1.14.0] The verdict is part of the key, not just the raw fields. Both inputs decide
+        // it now, so a reading where only the percentage moved still gets recorded when that flips
+        // the answer — otherwise the log could show the fields but never why nothing fired.
+        const pct = result.normalized.sessionPercent;
+        const stopped = nowReset == null && pct === 0;
+        const skipped = pct == null;   // broken response — detectBlockClose refuses to judge it
+        const diagKey = `resetAt=${nowReset ?? 'null'} future=${nowFuture ? 'Y' : 'N'} ` +
+            `stopped=${skipped ? 'skip' : stopped ? 'Y' : 'N'}`;
         if (diagKey !== lastPollDiag) {
-            blockPrimer.appendDiag(`poll ${diagKey} session=${result.normalized.sessionPercent}%`);
+            blockPrimer.appendDiag(`poll ${diagKey} session=${pct == null ? 'null' : pct}%`);
             lastPollDiag = diagKey;
         }
         notifyUsage('ok', result.source);
@@ -3650,60 +3847,55 @@ async function refreshPlanUsage() {
     refreshAllSessions();
 }
 
-// Detect a block CLOSE — active session usage falling to 0%. That is the only reliable signal that
-// the 5-hour block ended and a fresh one can be opened. sessionResetAt is NOT usable: it stays in
-// the future even when the block is closed (it points at midnight/next-day when idle), which is why
-// the old reset-time detection never actually primed. On a >0% → 0% transition we send exactly one
-// Telegram alert and (when enabled) prime once, gated by an atomic per-event lock so that multiple
-// windows or a wake-from-sleep burst cannot duplicate either.
+// Detect the 5-hour timer STOPPING. Two fields have to agree, and the reason is measured, not
+// assumed — 455 readings carrying `sessionResetAt: null` in diag.log split three ways:
+//
+//   sessionPercent null   212×  the response itself is broken → judging it at all is wrong
+//   sessionPercent 1–12%    6×  only `resets_at` was missing → the timer is still running
+//   sessionPercent 0      237×  genuinely stopped
+//
+// So neither field decides alone. Usage at 0% cannot separate a stopped timer from a running one
+// nobody is using — that is what announced a reset on 2026-08-26 while 1h57m was still left on a
+// timer a server cron had started. And `resetAt === null` alone would have fired on those 6
+// field-dropout readings instead.
+//
+// Firing is edge-triggered on running → stopped. Staying stopped is not a new reset, which also
+// removes the old wake-from-sleep special case: globalState carries the previous verdict across a
+// sleep gap, so a timer that stopped while the machine slept is caught on the first wake poll
+// without a separate rule.
 async function detectBlockClose(n: NormalizedUsage) {
-    const now = Date.now();
-    // A long gap between successful polls means the machine slept and just woke. Use a floor of
-    // 5 min but scale with the configured poll interval so a slow interval isn't mistaken for sleep.
-    const gap = lastBlockPollAt ? now - lastBlockPollAt : 0;
-    const wokeGapMs = Math.max(WAKE_GAP_MS, creds.getRefreshIntervalSec() * 3 * 1000);
-    const wokeFromSleep = lastBlockPollAt !== 0 && gap > wokeGapMs;
-    lastBlockPollAt = now;
+    // A broken response reads as "no usage, no reset time" and is indistinguishable from a stopped
+    // timer on the fields alone. Skip entirely rather than guess.
+    if (n.sessionPercent == null) return;
 
-    const prevPct = creds.getLastSessionPercent();
-    const curPct = n.sessionPercent;
+    const stopped = n.sessionResetAt == null && n.sessionPercent === 0;
+    const wasStopped = creds.getClaudeTimerStopped();
+    await creds.setClaudeTimerStopped(stopped);
+    if (!stopped || wasStopped) return;
 
-    // (1) Block just closed: had usage (>0), now exactly 0. globalState carries prevPct across a
-    //     sleep gap, so a reset that happened while asleep is caught on the first wake poll.
-    // (2) Woke to a closed block: a long poll gap (sleep) AND currently 0% → open it regardless of
-    //     the pre-sleep state. This covers "went to sleep AFTER the block had already reset", where
-    //     there is no live >0%→0% transition to catch — the case that would otherwise miss on wake.
-    const justClosed = prevPct != null && prevPct > 0 && curPct === 0;
-    const wokeClosed = wokeFromSleep && curPct === 0;
+    // Coarse 10-minute bucket → every window/poll reacting to this same edge computes the same key,
+    // so the atomic lock lets exactly one through.
+    const eventKey = String(Math.floor(Date.now() / (10 * 60 * 1000)));
+    if (!blockPrimer.claimResetEvent(eventKey, log)) return;
 
-    if (justClosed || wokeClosed) {
-        // Coarse 10-minute bucket → every window/poll reacting to this same close computes the same
-        // key, so the atomic lock lets exactly one through. A genuine next reset (5h later) lands in
-        // a different bucket and is allowed to fire again.
-        const eventKey = String(Math.floor(now / (10 * 60 * 1000)));
-        if (blockPrimer.claimResetEvent(eventKey, log)) {
-            blockPrimer.appendDiag(`block-closed prevPct=${prevPct} curPct=${curPct} woke=${wokeFromSleep} event=${eventKey} autoStart=${creds.getAutoStartBlockOnReset()}`);
-            const token = await creds.getTelegramToken();
-            const chatId = await creds.getTelegramChatId();
-            if (creds.getTelegramNotifyOnReset() && token && chatId) {
-                const weekly = n.weeklyPercent != null ? String(n.weeklyPercent) : '?';
-                await telegram.sendMessage(token, chatId, planT('tg.resetMsg', weekly));
-            }
-            if (creds.getAutoStartBlockOnReset()) {
-                primeNewBlock();
-            }
-        }
+    blockPrimer.appendDiag(
+        `block-closed pct=${n.sessionPercent} resetAt=null event=${eventKey} ` +
+        `autoStart=${creds.getAutoStartBlockOnReset()}`);
+    const token = await creds.getTelegramToken();
+    const chatId = await creds.getTelegramChatId();
+    if (creds.getTelegramNotifyOnReset() && token && chatId) {
+        const weekly = n.weeklyPercent != null ? String(n.weeklyPercent) : '?';
+        await telegram.sendMessage(token, chatId,
+            planT('tg.resetMsg', weekly, weeklyResetPhrase(n.weeklyResetAt)));
     }
-
-    await creds.setLastSessionPercent(curPct);
+    if (creds.getAutoStartBlockOnReset()) {
+        primeNewBlock();
+    }
 }
 
 // Verification polling: the resetAt move takes ~1 min to land, so retry a few times.
 const PRIMER_VERIFY_INTERVAL_MS = 15000;
 const PRIMER_VERIFY_TRIES = 5;
-// A freshly opened 5-hour block puts sessionResetAt at ~now+5h. Anything within this bound counts
-// as "block open"; the weekly-reset fallback (days away) is well outside it.
-const BLOCK_OPEN_MAX_MS = 6 * 60 * 60 * 1000;
 
 // Open the new 5-hour block, once the caller has confirmed the block is closed and claimed the
 // event. Deliberately not awaited: the CLI takes a few seconds and the poll should not stall on it.
@@ -3729,18 +3921,19 @@ async function handlePrimerOutcome(outcome: blockPrimer.FireOutcome, detail: str
         return;
     }
 
-    // outcome === 'fired' — CLI exited 0. Confirm a block actually opened. The throwaway prompt is
-    // tiny, so session% stays 0 (that's why the old %-based check false-negatived); the real proof
-    // is sessionResetAt jumping to ~now+5h (away from the weekly-reset fallback). It takes ~1 min
-    // to land, so retry.
+    // outcome === 'fired' — CLI exited 0. Confirm a timer actually started. The throwaway prompt is
+    // tiny, so session% stays 0; the proof is sessionResetAt going from null back to a timestamp.
+    // We only ever fire when it was null, so any value here means a new timer is running. The old
+    // "is it within 6 hours" bound proved nothing — a weekly-reset fallback also lands inside it —
+    // and it passed on 2026-08-26 for a prime that had merely joined an already-running timer.
+    // It takes ~1 min to land, so retry.
     for (let i = 0; i < PRIMER_VERIFY_TRIES; i++) {
         await new Promise((r) => setTimeout(r, PRIMER_VERIFY_INTERVAL_MS));
         await refreshPlanUsage();
         const after = lastUsage?.sessionResetAt;
-        const afterMs = after ? new Date(after).getTime() : NaN;
-        if (Number.isFinite(afterMs) && afterMs > Date.now() && afterMs <= Date.now() + BLOCK_OPEN_MAX_MS) {
-            blockPrimer.appendDiag(`primer-verified resetAt=${after} (block open ~5h)`);
-            log(`[primer] verified — block open until ${after}`);
+        if (after) {
+            blockPrimer.appendDiag(`primer-verified resetAt=${after} (null → timer running)`);
+            log(`[primer] verified — timer running until ${after}`);
             return;
         }
     }

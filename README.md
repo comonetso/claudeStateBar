@@ -369,6 +369,8 @@ Open **`claudeStateBar: Open Settings Panel`** from the Command Palette for a si
 
 Add a Telegram Bot Token in settings, send your bot any message, click **"Link my Telegram"** (Chat ID auto‑detected), and you'll get a notification every time your Claude 5‑hour session window resets.
 
+The alert carries the weekly figure together with how long that weekly window still has to last — `Weekly usage: 42% (in 3d 9h)`. The calendar date is left out on purpose: on a phone notification the remaining time is what you act on, and the exact turnover timestamp is a tooltip away.
+
 ---
 
 ## 🚀 Auto‑start the next block once a reset is detected (optional, off by default)
@@ -390,6 +392,34 @@ The primer only makes sense while headless `claude -p` runs draw on your **subsc
 
 - **It refuses to fire** when `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` is set in the environment (that call would bill API credit, not your plan), and turns the setting off with a warning.
 - **It verifies** afterwards that a block actually opened by checking `sessionResetAt` moved to ~5 hours out — the tiny dummy prompt doesn't move session %, so resetAt is the real signal. With no API key there is no billing hazard, so a failed verification is logged but does **not** disable the feature.
+
+---
+
+## ⏱️ Codex 5‑hour resets
+
+Codex's **primary** window follows the same anchor model, so it has the same gap: when the window closes while you're away, nothing opens until you next run Codex. The extension already polls the Codex account limits for the status bar, and now watches that reading for the moment the window closes.
+
+**Only accounts that actually have a 5-hour limit get this.** Plus does; Pro is weekly-only today. The check reads whether a 5-hour window arrives in the account data rather than looking at the plan name — OpenAI has said Pro will get one eventually, and this way that day needs no code change. An account without the limit is excluded from reset alerts and auto-start entirely, and its status bar leads with the **weekly** figure instead of leaving a blank.
+
+Two things can happen at that moment, each with its own setting so that running only one of the two CLIs never forces the other's behaviour on you:
+
+- **`claudeState.codexTelegramNotifyOnReset`** (on by default) sends a Telegram alert titled *Codex session reset*, with the weekly figure and weekly turnover worded exactly as the Claude one.
+- **`claudeState.codexAutoStartBlockOnReset`** (off by default) fires a throwaway `codex exec` to anchor the next window to the reset.
+
+The Codex primer runs with `--ephemeral`, so it writes no session file at all and nothing from it can surface in the status bar. It runs read‑only, in its own temp directory, outside any git repo.
+
+How the close is detected differs from the Claude side, and it has to. Codex reports the window like this:
+
+- **open** — `resetsAt` is a fixed timestamp (open time + 5 hours), identical on every poll
+- **closed** — `resetsAt` is always "now + 5 hours", so it advances with the clock
+
+So the close signal is **`resetsAt` standing still after having moved**, not usage dropping to 0%. Usage can't be used for this: an open window you simply aren't using also reads 0%, so reading it that way announced a reset every time the machine woke from sleep. The alert now fires only on a genuine open → closed edge.
+
+### Billing safety
+
+`codex exec` draws on API credit rather than your 5‑hour window when Codex is signed in with an API key, and it would exit 0 either way. So the primer reads `auth.json` before firing and refuses unless it finds a ChatGPT‑plan login (`auth_mode: "chatgpt"`) and no `OPENAI_API_KEY` — neither in the file nor in the environment. An unreadable `auth.json` counts as a refusal; the check exists precisely so it never has to guess about spending money. When it refuses, the setting is turned off and you're told why.
+
+Afterwards it verifies a window actually opened by watching `resetsAt` come to a stop across two readings. Checking that it sits ~5 hours out would prove nothing — a closed window reports exactly that on every poll, so such a test passes whether or not anything happened. Once the plan login is confirmed there is no billing hazard, so a failed verification is logged and left alone rather than disabling the feature.
 
 ---
 

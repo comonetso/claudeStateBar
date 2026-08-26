@@ -102,6 +102,88 @@ weekly one (10,080). Confirmed against a live query.
 The numbers were always right — only the names lied. The status bar now says **Session**, matching
 the wording Claude sessions already use, and the tooltip reads **5-hour limit** and **Weekly limit**.
 
+### Codex 5-hour resets get what Claude's already had
+
+Claude's 5-hour block has had a reset alert and an auto-start primer for a while. Codex's primary
+window works the same way — it anchors to your first request rather than cycling on a fixed
+schedule — so it had the same hole: a window that closed while you were away stayed closed until you
+next ran Codex.
+
+It gets both now. `claudeState.codexTelegramNotifyOnReset` (on) sends a *Codex session reset* alert;
+`claudeState.codexAutoStartBlockOnReset` (off) fires a throwaway `codex exec` to anchor the next
+window to the reset. They are separate settings from the Claude pair on purpose — running only one
+of the two CLIs shouldn't drag the other's behaviour along with it.
+
+`--ephemeral` means the primer writes no session file at all, so nothing it does can reach the
+status bar; the Claude primer has to run in a marked temp directory and filter its sessions out
+afterwards.
+
+Detecting the close could not be copied from the Claude side, and the first attempt at copying it
+was wrong in a way worth writing down. Codex reports an **open** window as a fixed `resetsAt` — the
+same timestamp on every poll — and a **closed** one as "now + 5 hours", which advances with the
+clock. The close signal is therefore `resetsAt` coming to a stop after having moved. Usage percent
+cannot stand in for it: an open window nobody is using also reads 0%, so treating 0% as "closed"
+announced a reset on every wake-from-sleep, with `prevPct=0 curPct=0` in the log — nothing had
+changed at all. The alert now fires only on a real open → closed edge.
+
+The same measurement fixes the verification. "Did `resetsAt` move to ~5 hours out?" passes
+unconditionally, because a closed window reports exactly that forever; it would have called every
+failed prime a success. It now waits for the value to stand still across two readings.
+
+There is a trap in reading it that way, and a second opinion caught it before release. Account
+limits are served from a cache shared across VS Code windows, and its TTL and the poll interval are
+both 60 seconds — so clock jitter or a second window hands back the *same snapshot* twice. A
+repeated reading looks exactly like a timestamp holding still, which is the signal for "timer
+running", so a real close would go unnoticed for as long as the repeats lasted. Each reading now
+carries its own `observedAt`, and a repeat of one already seen is discarded before any comparison
+happens.
+
+Before firing, the primer reads `auth.json` and refuses unless it finds `auth_mode: "chatgpt"` and no
+`OPENAI_API_KEY`, in the file or in the environment. An API-key login would spend real credit and
+still exit 0, which would look exactly like success.
+
+### The Claude reset alert was firing on a timer that was still running
+
+A 5-hour timer starts when you send a request and does not cycle on its own, so the extension
+watches for it stopping. It decided that by usage falling to 0% — and a running timer nobody is
+using also reads 0%. On 2026-08-26 the machine woke from sleep, saw 0%, and announced a reset. The
+timer had been started by a server cron three hours earlier and had 1h57m left. A `claude -p` went
+out too, joining that timer instead of starting one, and the verification passed because "is
+`resetAt` within six hours" is true of almost anything.
+
+The fields needed to tell these apart were already in the response. 455 readings in the diagnostic
+log carried `sessionResetAt: null`, and they split three ways: 212 where `sessionPercent` was
+*also* null — a broken response, nothing to judge; 6 where usage was 1–12%, meaning only the
+`resets_at` field had dropped out while the timer ran on; and 237 with usage at exactly 0%, a
+genuine stop. So neither field decides alone. A stop is now `resetAt === null` **and** usage at 0%,
+and a null percentage skips the check entirely rather than guessing.
+
+That also removed the wake-from-sleep special case. The previous verdict is remembered across the
+sleep gap, so a timer that stopped while the machine was asleep is caught on the first poll after
+waking without a rule of its own — and one that was already restarted by another machine is not
+mistaken for a fresh stop. Verification is likewise exact now: firing only ever happens while the
+value is null, so the value coming back at all is the proof.
+
+### Codex accounts without a 5-hour limit show their weekly figure instead
+
+Codex plans differ: Plus has a 5-hour limit, Pro is weekly-only. The status bar led with the 5-hour
+figure unconditionally, so a weekly-only account got a blank space where a number should be — and
+would have received reset alerts for a limit it doesn't have.
+
+The branch reads whether a 5-hour window actually arrives, not which plan the account is on.
+OpenAI has said Pro will get one eventually; keying on the plan name would mean a code change that
+day, and there is no way to verify what string a Pro account reports from a Plus one. Asking the
+data answers the real question and follows the change by itself. Accounts without the limit lead
+with weekly usage and are excluded from reset alerts and auto-start entirely.
+
+### Reset alerts are shorter and say how long the weekly window has left
+
+The alert opened with "Your 5-hour window is fully available", which is a claim it is in no position
+to make — the window it announces may already be part-spent — and closed at `Weekly usage: 42%`,
+a number with no sense of scale. The line is gone and the figure now carries its remaining time:
+`Weekly usage: 42% (in 3d 9h)`. No calendar date; on a phone notification the remaining time is what
+you act on. The Codex alert carries the same line.
+
 ### Context tooltip
 
 The token breakdown put the total at the bottom of the table, under two rows that looked like

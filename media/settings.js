@@ -64,6 +64,8 @@
         setTelegramLinkedState(state.telegramChatId || null, state.telegramChatId || null);
         $('tg-notifyOnReset').checked = state.telegramNotifyOnReset !== false;
         $('st-autoStartBlock').checked = !!state.autoStartBlockOnReset;
+        $('tg-codexNotifyOnReset').checked = state.codexTelegramNotifyOnReset !== false;
+        $('st-codexAutoStartBlock').checked = !!state.codexAutoStartBlockOnReset;
         // claudeContextBar
         const cb = state.cb || {};
         $('cb-baseColor').value = cb.baseColor || 'White';
@@ -136,6 +138,8 @@
             refreshIntervalSec: intervalSec,
             telegramNotifyOnReset: $('tg-notifyOnReset').checked,
             autoStartBlockOnReset: $('st-autoStartBlock').checked,
+            codexTelegramNotifyOnReset: $('tg-codexNotifyOnReset').checked,
+            codexAutoStartBlockOnReset: $('st-codexAutoStartBlock').checked,
             cb: {
                 baseColor: $('cb-baseColor').value,
                 contextLimitDefault: parseInt($('cb-contextLimitDefault').value, 10) || 200000,

@@ -214,6 +214,18 @@
                     "order": 5,
                     "description": "Send a Telegram alert when the Claude 5-hour block resets (requires a linked bot token + chat). Fires at most once per reset. Toggle from the settings panel. Default on."
                 },
+                "claudeState.codexAutoStartBlockOnReset": {
+                    "type": "boolean",
+                    "default": false,
+                    "order": 6,
+                    "description": "When the Codex 5-hour block closes (primary usage drops to 0%), automatically run a throwaway `codex exec` prompt to open the next block — anchoring it to the reset instead of to whenever you next type. Runs with `--ephemeral` (no session file is written, so it never shows up in the status bar) in a read-only sandbox. Fires at most once per reset (atomic lock across windows). Requires the `codex` CLI on PATH and VS Code running. Safety: refuses to run unless `auth.json` shows a ChatGPT-plan login (an API-key login would bill credit instead of your 5-hour window). Toggle from the settings panel."
+                },
+                "claudeState.codexTelegramNotifyOnReset": {
+                    "type": "boolean",
+                    "default": true,
+                    "order": 7,
+                    "description": "Send a Telegram alert when the Codex 5-hour block resets (requires a linked bot token + chat). Fires at most once per reset. Toggle from the settings panel. Default on."
+                },
                 "claudeContextBar.baseColor": {
                     "type": "string",
                     "enum": [

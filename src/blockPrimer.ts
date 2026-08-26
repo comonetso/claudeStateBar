@@ -53,18 +53,24 @@ function apiKeyInEnv(): string | null {
 // block close; an exclusive create ('wx') is atomic, so exactly one wins and does the Telegram alert
 // + prime, the rest see EEXIST and stand down. `eventKey` is a coarse (10-min) time bucket, so
 // millisecond resetAt jitter and cross-window timing all collapse to the same key → one lock.
-export function claimResetEvent(eventKey: string, log: Logger): boolean {
+// `provider` namespaces the lock file so the Claude and Codex windows — which close on their own
+// independent schedules and can easily land in the same 10-minute bucket — never claim each
+// other's reset event.
+export function claimResetEvent(eventKey: string, log: Logger, provider = 'claude'): boolean {
     try {
         fs.mkdirSync(PRIMER_DIR, { recursive: true });
-        const lock = path.join(PRIMER_DIR, `event-${eventKey}.lock`);
+        // Sweep here, not only in firePrimer(): with auto-start off the primer never runs, so
+        // otherwise nothing would ever clear the day's claim files.
+        sweepStaleLocks();
+        const lock = path.join(PRIMER_DIR, `event-${provider}-${eventKey}.lock`);
         fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
         return true;
     } catch (e) {
         const code = (e as NodeJS.ErrnoException)?.code;
         if (code === 'EEXIST') {
-            log(`[primer] reset event ${eventKey} already handled by another window — standing down`);
+            log(`[primer] ${provider} reset event ${eventKey} already handled by another window — standing down`);
         } else {
-            log(`[primer] event lock failed (${code ?? e}) — skipping to stay safe`);
+            log(`[primer] ${provider} event lock failed (${code ?? e}) — skipping to stay safe`);
         }
         return false;
     }
@@ -116,5 +122,97 @@ export function firePrimer(
         }
     );
     // The CLI waits 3s for piped stdin before giving up. Close it so the primer fires at once.
+    child.stdin?.end();
+}
+
+// ---------------------------------------------------------------------------
+// Codex counterpart — same idea, two differences that matter:
+//
+//   1. `--ephemeral` keeps the run out of the sessions directory entirely, so no dummy rollout
+//      can ever reach the status bar. The Claude side has to filter on PRIMER_MARK instead
+//      because `claude -p` always writes a session log.
+//   2. The billing check reads auth.json rather than the environment. Codex records
+//      `auth_mode: "chatgpt"` when signed in with a plan; an API-key login spends real credit
+//      while still exiting 0, which would look exactly like success.
+// ---------------------------------------------------------------------------
+
+export const CODEX_PRIMER_MARK = 'claudeStateBar-codex-primer';
+export const CODEX_PRIMER_DIR = path.join(os.tmpdir(), CODEX_PRIMER_MARK);
+
+// `auth_mode` as written by a ChatGPT-plan login (verified against a live auth.json).
+const CODEX_PLAN_AUTH_MODE = 'chatgpt';
+
+export function defaultCodexHome(): string {
+    return (process.env.CODEX_HOME || '').trim() || path.join(os.homedir(), '.codex');
+}
+
+// Returns a reason string when firing would bill API credit instead of the 5-hour window, or
+// null when the plan login is confirmed. An unreadable auth.json is treated as a hazard: the
+// point of the check is to never guess about spending money.
+export function codexBillingHazard(codexHome: string): string | null {
+    if ((process.env.OPENAI_API_KEY || '').trim()) {
+        return 'OPENAI_API_KEY is set in the environment';
+    }
+    const authPath = path.join(codexHome, 'auth.json');
+    let parsed: any;
+    try {
+        parsed = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+    } catch (e) {
+        return `could not read ${authPath} (${(e as NodeJS.ErrnoException)?.code ?? e})`;
+    }
+    if (typeof parsed?.OPENAI_API_KEY === 'string' && parsed.OPENAI_API_KEY.trim()) {
+        return 'auth.json carries an OPENAI_API_KEY';
+    }
+    if (parsed?.auth_mode !== CODEX_PLAN_AUTH_MODE) {
+        return `auth.json auth_mode is ${JSON.stringify(parsed?.auth_mode)}, not "${CODEX_PLAN_AUTH_MODE}"`;
+    }
+    return null;
+}
+
+// Fire the Codex primer. As with firePrimer(), the caller owns the "should we fire" decision —
+// it must already have confirmed the window is closed and claimed the reset event.
+export function fireCodexPrimer(
+    codexHome: string,
+    log: Logger,
+    onDone: (outcome: FireOutcome, detail: string) => void
+): void {
+    const hazard = codexBillingHazard(codexHome);
+    if (hazard) {
+        log(`[codex-primer] refusing to fire — ${hazard}`);
+        onDone('api-key-present', hazard);
+        return;
+    }
+    sweepStaleLocks();
+
+    try { fs.mkdirSync(CODEX_PRIMER_DIR, { recursive: true }); } catch { /* exec reports it */ }
+
+    // --skip-git-repo-check: the temp dir is deliberately not a repo.
+    // --ephemeral: no session file, so nothing to filter out of the status bar later.
+    // -s read-only: the prompt asks for no work, so deny writes outright.
+    const cmd = `codex exec --skip-git-repo-check --ephemeral -s read-only `
+        + `-C "${CODEX_PRIMER_DIR}" "${PRIMER_PROMPT}"`;
+    log(`[codex-primer] firing \`codex exec\` in ${CODEX_PRIMER_DIR} to open the new block`);
+    const child = cp.exec(
+        cmd,
+        {
+            cwd: CODEX_PRIMER_DIR,
+            env: { ...process.env, CODEX_HOME: codexHome },
+            windowsHide: true,
+            timeout: EXEC_TIMEOUT_MS,
+            maxBuffer: 1024 * 1024
+        },
+        (err, stdout, stderr) => {
+            if (err) {
+                const msg = `${err.message}${stderr?.trim() ? ` — ${stderr.trim()}` : ''}`;
+                log(`[codex-primer] failed: ${msg}`);
+                onDone('exec-failed', msg);
+                return;
+            }
+            // Exit 0 only means the CLI ran — the caller still verifies against resetsAt.
+            const reply = (stdout || '').trim().slice(-80);
+            log(`[codex-primer] codex exec exited 0, tail: ${reply}`);
+            onDone('fired', `codex exec exited 0, tail: ${reply}`);
+        }
+    );
     child.stdin?.end();
 }
