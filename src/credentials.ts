@@ -21,6 +21,12 @@ const STATE_CODEX_WINDOW_OPEN = 'claudeState.codexWindowWasOpen';
 // second VS Code window makes the same snapshot come back twice. Without this the repeated value
 // reads as "resetsAt held still", i.e. a running timer, and a real close is missed entirely.
 const STATE_LAST_CODEX_OBSERVED_AT = 'claudeState.lastCodexObservedAt';
+// When the window was FIRST seen closed in the current stretch of being closed, or absent while it
+// is open. Auto-start fires on the open → closed edge, so a window left closed with no edge to
+// catch never reopens on its own: on 2026-08-26 the window sat closed from 01:36 to 05:55 because
+// the edge had already been consumed. This timestamp is what lets that stretch be noticed and
+// recovered from. Reset the moment the window reads open again.
+const STATE_CODEX_CLOSED_SINCE = 'claudeState.codexClosedSince';
 // Whether the Claude 5-hour timer was last seen STOPPED. Replaces the old percent-only tracking:
 // usage sitting at 0% cannot tell a stopped timer from a running one nobody is using, and that
 // ambiguity fired a false reset alert on 2026-08-26.
@@ -196,6 +202,17 @@ export function getLastCodexObservedAt(): number | null {
 export async function setLastCodexObservedAt(ms: number | null): Promise<void> {
     if (!ctx) return;
     await ctx.globalState.update(STATE_LAST_CODEX_OBSERVED_AT, typeof ms === 'number' ? ms : undefined);
+}
+
+export function getCodexClosedSince(): number | null {
+    if (!ctx) return null;
+    const v = ctx.globalState.get<number>(STATE_CODEX_CLOSED_SINCE);
+    return typeof v === 'number' ? v : null;
+}
+
+export async function setCodexClosedSince(ms: number | null): Promise<void> {
+    if (!ctx) return;
+    await ctx.globalState.update(STATE_CODEX_CLOSED_SINCE, typeof ms === 'number' ? ms : undefined);
 }
 
 export function getCodexWindowWasOpen(): boolean {

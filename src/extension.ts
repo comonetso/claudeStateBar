@@ -3373,6 +3373,23 @@ async function refreshCodexUsage(): Promise<void> {
 // window that simply isn't being used also reads 0%, which is what made 0% → 0% look like a
 // reset. Separate event-lock namespace from Claude, since the two close independently.
 //
+// "Moving" needs a tolerance, not an exact-inequality test. An open window's resetsAt jitters by
+// one second between polls — measured 2026-08-26, four false "Codex session reset" alerts in a
+// single day, every one of them `moved=1000ms` while usage was climbing 2% → 48% (i.e. the window
+// was plainly open and in use). CODEX_RESETS_AT_TOLERANCE_MS separates that jitter from real
+// movement with room on both sides:
+//
+//   jitter of an open window      1,000 ms   ← must read as OPEN
+//   tolerance                     5,000 ms
+//   slowest advance seen closed  65,000 ms   ← must read as CLOSED
+//   a real close             18,016,000 ms   ← must read as CLOSED
+const CODEX_RESETS_AT_TOLERANCE_MS = 5000;
+
+// How long the window must stay continuously closed before auto-start reopens it without an
+// edge to trigger on. User-chosen (2026-08-27) — see the recovery block in detectCodexBlockClose()
+// for what it does and what it deliberately does NOT do (no Telegram).
+const CODEX_CLOSED_RECOVERY_MS = 10 * 60 * 1000;
+//
 // Only the live app-server probe feeds this. The rollout fallback is a per-thread snapshot
 // that freezes while Codex is idle, and a frozen resetsAt would read as a fixed one.
 async function detectCodexBlockClose(snap: CodexUsageSnapshot) {
@@ -3408,27 +3425,69 @@ async function detectCodexBlockClose(snap: CodexUsageSnapshot) {
         return;
     }
 
-    const isOpen = cur === prev;
+    const moved = Math.abs(cur - prev);
+    const isOpen = moved <= CODEX_RESETS_AT_TOLERANCE_MS;
     const wasOpen = creds.getCodexWindowWasOpen();
     await creds.setCodexWindowWasOpen(isOpen);
+
+    // Track how long the window has been continuously closed, so a closed stretch with no edge
+    // left to catch can still be recovered from below.
+    const now = Date.now();
+    let closedSince = creds.getCodexClosedSince();
+    if (isOpen) {
+        if (closedSince != null) { await creds.setCodexClosedSince(null); closedSince = null; }
+    } else if (closedSince == null) {
+        closedSince = now;
+        await creds.setCodexClosedSince(now);
+    }
+
+    // Fire on the open → closed edge. Staying closed is NOT a reset — that is exactly what
+    // produced a "Codex session reset" alert on every wake-from-sleep. A window that has just
+    // opened also reads as "moved" for one poll before it settles, which is harmless here
+    // because wasOpen is false in that case.
+    const isCloseEdge = wasOpen && !isOpen;
+
+    // Recovery: the edge is a single moment, so anything that eats it — a window left closed
+    // overnight, a primer that failed, the edge consumed while auto-start was off — leaves the
+    // window closed with nothing left to trigger on. Measured 2026-08-26: closed 01:36 → 05:55,
+    // four and a half hours, and it would not have reopened on its own at all.
+    //
+    // User-chosen policy (2026-08-27), do not change these without asking:
+    //   - 10 minutes of continuous closure before recovering
+    //   - NO Telegram on recovery: this is not a reset, and a failing primer would otherwise
+    //     repeat the same alert every 10 minutes — the exact spam being fixed here
+    //   - retry every 10 minutes for as long as it stays closed, by re-stamping closedSince
+    const closedFor = !isOpen && closedSince != null ? now - closedSince : 0;
+    const isRecovery = !isOpen && !isCloseEdge && closedFor >= CODEX_CLOSED_RECOVERY_MS;
 
     // [diag 1.14.0] Every judged reading. This is what shows whether a close was seen at all —
     // without it the log only proves a fire happened, never why one didn't.
     blockPrimer.appendDiag(
         `codex-poll used=${codexUsedPercent(primary.usedPercent)}% resetsAt=${cur} prev=${prev} ` +
         `moved=${cur - prev}ms isOpen=${isOpen ? 'Y' : 'N'} wasOpen=${wasOpen ? 'Y' : 'N'}` +
-        `${!wasOpen || isOpen ? '' : '  ← CLOSE EDGE'}`);
+        `${!isOpen ? ` closedFor=${Math.round(closedFor / 60000)}m` : ''}` +
+        `${isCloseEdge ? '  ← CLOSE EDGE' : ''}${isRecovery ? '  ← RECOVERY' : ''}`);
 
-    // Fire only on the open → closed edge. Staying closed is NOT a reset — that is exactly what
-    // produced a "Codex session reset" alert on every wake-from-sleep. A window that has just
-    // opened also reads as "moved" for one poll before it settles, which is harmless here
-    // because wasOpen is false in that case.
-    if (!wasOpen || isOpen) return;
+    if (!isCloseEdge && !isRecovery) return;
 
     // Coarse wall-clock bucket, so several VS Code windows reacting to the same edge collapse
-    // into one claim.
-    const eventKey = String(Math.floor(Date.now() / (10 * 60 * 1000)));
-    if (!blockPrimer.claimResetEvent(eventKey, log, 'codex')) return;
+    // into one claim. Recovery gets its own lock namespace so it can never consume the claim a
+    // real reset in the same 10-minute bucket needs.
+    const eventKey = String(Math.floor(now / (10 * 60 * 1000)));
+    if (!blockPrimer.claimResetEvent(eventKey, log, isRecovery ? 'codex-recover' : 'codex')) return;
+
+    if (isRecovery) {
+        // Re-stamp so the next attempt is another CODEX_CLOSED_RECOVERY_MS away rather than on
+        // the very next poll. This is the retry interval.
+        await creds.setCodexClosedSince(now);
+        blockPrimer.appendDiag(
+            `codex-block-recover closedFor=${Math.round(closedFor / 60000)}m resetsAt=${cur} ` +
+            `event=${eventKey} autoStart=${creds.getCodexAutoStartBlockOnReset()}`);
+        if (creds.getCodexAutoStartBlockOnReset()) {
+            primeNewCodexBlock();
+        }
+        return;
+    }
 
     blockPrimer.appendDiag(
         `codex-block-closed prevResetsAt=${prev} curResetsAt=${cur} ` +
@@ -3450,18 +3509,25 @@ async function detectCodexBlockClose(snap: CodexUsageSnapshot) {
 // Open the new Codex 5-hour block. Same contract as primeNewBlock(): the caller has already
 // confirmed the window is closed and claimed the event. Deliberately not awaited.
 function primeNewCodexBlock() {
-    void (async () => {
-        const homeUri = await getCodexHomeUri();
-        const home = homeUri?.fsPath || blockPrimer.defaultCodexHome();
-        blockPrimer.fireCodexPrimer(home, log, (outcome, detail) => {
-            void handleCodexPrimerOutcome(outcome, detail);
-        });
-    })();
+    // No home is passed — fireCodexPrimer() resolves the LOCAL one itself. Never reintroduce
+    // getCodexHomeUri() here: it resolves against the *workspace*, so a Remote-SSH window hands
+    // back the server's home, and this extension is `extensionKind: ["ui"]` — it always runs
+    // locally. See the comment on fireCodexPrimer() for the day that cost.
+    blockPrimer.fireCodexPrimer(log, (outcome, detail) => {
+        void handleCodexPrimerOutcome(outcome, detail);
+    });
 }
 
 async function handleCodexPrimerOutcome(outcome: blockPrimer.FireOutcome, detail: string) {
     blockPrimer.appendDiag(`codex-primer-outcome=${outcome} detail=${detail}`);
 
+    if (outcome === 'auth-unreadable') {
+        // Could not tell whether the login is a plan login, so don't fire — but don't disable
+        // anything either. Skip this reset only and try again at the next one. Turning the
+        // setting off here is what silently killed auto-start for a whole day on 2026-08-26.
+        log(`[codex-primer] skipping this reset — ${detail}`);
+        return;
+    }
     if (outcome === 'api-key-present') {
         // Genuine billing hazard: without a ChatGPT-plan login the run spends API credit
         // rather than the 5-hour window. Stop and say so, exactly as the Claude side does.
@@ -3492,7 +3558,9 @@ async function handleCodexPrimerOutcome(outcome: blockPrimer.FireOutcome, detail
             codexLiveUsage = fresh.snapshot;
             refreshAllSessions();
         }
-        if (at != null && prevSeen != null && at === prevSeen) {
+        // Same one-second jitter as the close detector — an exact match would fail verification
+        // on a window that did open, then report the primer as broken. Use the same tolerance.
+        if (at != null && prevSeen != null && Math.abs(at - prevSeen) <= CODEX_RESETS_AT_TOLERANCE_MS) {
             const iso = new Date(at).toISOString();
             blockPrimer.appendDiag(`codex-primer-verified resetsAt=${iso} (fixed → window open)`);
             log(`[codex-primer] verified — window open until ${iso}`);

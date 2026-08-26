@@ -35,7 +35,12 @@ type Logger = (msg: string) => void;
 // 'fired' means the CLI exited 0 — it does NOT mean a subscription block opened. Anthropic has
 // floated billing `claude -p` to the API rather than to the subscription; if that ever lands,
 // the call still succeeds while opening no window. The caller must confirm against the usage API.
-export type FireOutcome = 'fired' | 'exec-failed' | 'api-key-present';
+// 'auth-unreadable' is deliberately separate from 'api-key-present': not being able to read
+// auth.json is an absence of evidence, not evidence of an API key. Conflating the two cost a
+// full day on 2026-08-26 — a Remote-SSH window handed the primer the server's `/root/.codex`,
+// the local read failed with ENOENT, and that turned auto-start off *permanently* in user
+// settings. Callers must skip this one reset and leave the setting alone.
+export type FireOutcome = 'fired' | 'exec-failed' | 'api-key-present' | 'auth-unreadable';
 
 // The primer is only ever meant to spend the *subscription* window. If the CLI is authenticated
 // with an API key instead, the same call bills real API credit and still exits 0 — it would look
@@ -146,40 +151,56 @@ export function defaultCodexHome(): string {
     return (process.env.CODEX_HOME || '').trim() || path.join(os.homedir(), '.codex');
 }
 
-// Returns a reason string when firing would bill API credit instead of the 5-hour window, or
-// null when the plan login is confirmed. An unreadable auth.json is treated as a hazard: the
-// point of the check is to never guess about spending money.
-export function codexBillingHazard(codexHome: string): string | null {
+// Returns null when the plan login is confirmed, otherwise why firing is unsafe.
+//
+// `kind` separates the two very different reasons for not firing:
+//   'hazard'     — the login really would bill API credit. Confirmed from a file we could read.
+//   'unreadable' — we could not tell either way. Still a reason not to fire (never guess about
+//                  spending money), but NOT grounds to disable auto-start: the file may simply
+//                  belong to another host, or Codex may not be installed here yet.
+export type CodexBillingBlock = { kind: 'hazard' | 'unreadable'; reason: string };
+
+export function codexBillingHazard(codexHome: string): CodexBillingBlock | null {
     if ((process.env.OPENAI_API_KEY || '').trim()) {
-        return 'OPENAI_API_KEY is set in the environment';
+        return { kind: 'hazard', reason: 'OPENAI_API_KEY is set in the environment' };
     }
     const authPath = path.join(codexHome, 'auth.json');
     let parsed: any;
     try {
         parsed = JSON.parse(fs.readFileSync(authPath, 'utf8'));
     } catch (e) {
-        return `could not read ${authPath} (${(e as NodeJS.ErrnoException)?.code ?? e})`;
+        const code = (e as NodeJS.ErrnoException)?.code ?? e;
+        return { kind: 'unreadable', reason: `could not read ${authPath} (${code})` };
     }
     if (typeof parsed?.OPENAI_API_KEY === 'string' && parsed.OPENAI_API_KEY.trim()) {
-        return 'auth.json carries an OPENAI_API_KEY';
+        return { kind: 'hazard', reason: 'auth.json carries an OPENAI_API_KEY' };
     }
     if (parsed?.auth_mode !== CODEX_PLAN_AUTH_MODE) {
-        return `auth.json auth_mode is ${JSON.stringify(parsed?.auth_mode)}, not "${CODEX_PLAN_AUTH_MODE}"`;
+        return {
+            kind: 'hazard',
+            reason: `auth.json auth_mode is ${JSON.stringify(parsed?.auth_mode)}, not "${CODEX_PLAN_AUTH_MODE}"`
+        };
     }
     return null;
 }
 
 // Fire the Codex primer. As with firePrimer(), the caller owns the "should we fire" decision —
 // it must already have confirmed the window is closed and claimed the reset event.
+//
+// 🔴 Takes NO home argument, deliberately — same shape as firePrimer(). It used to accept one,
+// and a Remote-SSH window passed in the server's `/root/.codex` on 2026-08-26: the local read
+// failed, was misread as a billing hazard, and auto-start stayed off for four and a half hours.
+// The primer is a local process spending the local login's window, so the home is never anyone
+// else's business to choose.
 export function fireCodexPrimer(
-    codexHome: string,
     log: Logger,
     onDone: (outcome: FireOutcome, detail: string) => void
 ): void {
-    const hazard = codexBillingHazard(codexHome);
-    if (hazard) {
-        log(`[codex-primer] refusing to fire — ${hazard}`);
-        onDone('api-key-present', hazard);
+    const codexHome = defaultCodexHome();
+    const block = codexBillingHazard(codexHome);
+    if (block) {
+        log(`[codex-primer] refusing to fire — ${block.reason}`);
+        onDone(block.kind === 'hazard' ? 'api-key-present' : 'auth-unreadable', block.reason);
         return;
     }
     sweepStaleLocks();
