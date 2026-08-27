@@ -1,321 +1,65 @@
 # Changelog
 
+## [1.14.1] - 2026-08-27
+
+Documentation only. The 1.14.0 notes had grown into a development diary — how each problem was
+found, what the measurements said, which function changed. None of that is what you need in order
+to use the extension, so the entry below has been rewritten around what actually changed for you.
+The READMEs got the same treatment.
+
 ## [1.14.0] - 2026-08-27
 
 > **You can cut in while Codex is still working.**
-> A consultation used to be a throw and a wait. You wrote the request, Codex went away for several
-> minutes, and if it started down the wrong path there was nothing to do but watch it finish and then
-> ask again from the top — paying for the whole detour twice.
-
-Codex's app-server protocol has a call for this, `turn/steer`, and it turns out to do exactly what
-the name suggests: a message sent mid-turn joins the work already in progress instead of restarting
-it. We measured it. A command that had 40 seconds left to run kept running, and the token thrown in
-at second 25 showed up in the final answer alongside the original one. Codex said so itself in the
-transcript — *"the command is not being restarted, I am still waiting on the same run."*
-
-The panel now shows those interruptions inline. They carry a **Claude** chip in the same orange the
-chat panel uses for Claude, plus a rail down the left edge of the row, so an interruption is not
-mistaken for the CLI advisories that share the row style. That confusion was real: the notices Codex
-prints at the start of every turn (`clamping SessionEnd hook timeout to 3s`) looked identical to a
-human cutting in.
-
-The bridge ships with the skill under `scripts/`. It is deliberately narrow — it owns the app-server
-connection and translates its notifications into the event format the panel already reads, and
-nothing else. Everything the skill does around a run (request validation, the lock, change detection,
-the edit gate, response recovery) stays in `send.sh` where it was proven.
-
-### Follow-up turns are legible now
-
-Asking Codex a second question reuses the same stamp and appends to the same event log, so both turns
-land in one card. That was the intent. What actually happened was worse than nobody noticed:
-
-`codex exec resume` numbers each turn's activities from `item_0` again, and the panel keyed
-activities by that id alone. Turn 2's `item_0` overwrote turn 1's. In a real two-turn run, twenty
-activities came out as twelve — and not the last twelve. Whichever ids happened to collide were
-replaced, so the loss was scattered through the list. One row had been a **file change** in turn 1
-and came back as a **command** in turn 2, keeping its old position: the activity had not disappeared,
-it had turned into a different activity.
-
-Activities are now namespaced per turn, and the card draws a header where one turn ends and the next
-begins. Single-turn runs are untouched — no header, identical markup, verified byte for byte against
-the previous build.
-
-The status badge was wrong too. `turn.completed` from turn 1 left the run marked as terminal, so the
-whole of turn 2 displayed as **Finalizing** while it was plainly still working. That flag now resets
-when a new turn opens.
-
-### What Codex is saying, per turn
-
-The narration block at the top of a card — the sentence where Codex explains what it is about to do —
-was the most useful thing on screen and the first thing to break in a multi-turn run. There was one
-block per card showing the most recent sentence, which meant turn 2's words sat above turn 1's
-activities and read as though they belonged to them.
-
-Each turn now has its own, and only the turn still running shows one. Interruptions count as speech
-here: if the last thing in a turn was Claude cutting in, that is what the block shows, with the border
-in Claude's orange.
-
-Keeping the block after a turn ended was the first version of this, and it was wrong in practice. The
-last thing a finished turn says is its entire answer document — frontmatter and all — so the block
-stopped being a sentence and became a wall. A two-turn card was mostly one enormous quotation of a file
-you can open. Single-turn runs had always dropped the block on completion for exactly this reason; that
-rule now applies per turn.
-
-### Each turn carries its own documents
-
-The card used to show one **Open result** / **Open request** pair at the top. On a multi-turn run that
-pair can only point at the whole thing, which is the wrong granularity: what you want is the question
-that opened turn 2 and the answer it produced.
-
-Both now sit on the turn header. Requests genuinely are separate files — turn 1 is the request document,
-turn 2 onward the rebuttal that opened it — and the link appears only when the file is on disk. The
-result is not separate: every turn appends to the one response document. So a turn's result link opens
-that document and scrolls to that turn's marker. The marker is searched at open time rather than stored
-as a line number, because the document grows with every turn and a number captured at discovery would
-already be pointing somewhere else.
-
-### Turn headers fold
-
-Fifty activities in one card is normal for a long consultation, and once a turn is read it is only
-scrolling. Clicking a turn header collapses it, clicking again brings it back, and the state survives
-the two-second refresh — the toggle flips what is drawn rather than re-rendering, so a poll landing
-between click and repaint cannot undo it. Turns start open, since opening the card is already the
-decision to read it.
-
-### Deleting a run now takes the whole run
-
-Follow-ups leave files the cleanup never knew about: the rebuttal documents
-(`<stamp>_followup2_<slug>.md`) and per-turn logs (`<stamp>_t2_stderr.log`). Both the delete and the
-trash path worked from a fixed list of five names, so those stayed on disk forever — you deleted a
-run and it was still there. The turn count is open-ended, so the fix scans the directory by pattern
-rather than adding names to a list.
-
-In-flight markers are deliberately still excluded. They are how the skill recovers from a run that
-died mid-write, and removing one would make the next run resume a broken session in silence.
-
-### Codex usage limits were labelled backwards
-
-The status bar read **Weekly** and showed a five-hour figure. The app-server reports two windows and
-we had them the wrong way round: `primary` is the 5-hour window (300 minutes) and `secondary` is the
-weekly one (10,080). Confirmed against a live query.
-
-The numbers were always right — only the names lied. The status bar now says **Session**, matching
-the wording Claude sessions already use, and the tooltip reads **5-hour limit** and **Weekly limit**.
-
-### Codex 5-hour resets get what Claude's already had
-
-Claude's 5-hour block has had a reset alert and an auto-start primer for a while. Codex's primary
-window works the same way — it anchors to your first request rather than cycling on a fixed
-schedule — so it had the same hole: a window that closed while you were away stayed closed until you
-next ran Codex.
-
-It gets both now. `claudeState.codexTelegramNotifyOnReset` (on) sends a *Codex session reset* alert;
-`claudeState.codexAutoStartBlockOnReset` (off) fires a throwaway `codex exec` to anchor the next
-window to the reset. They are separate settings from the Claude pair on purpose — running only one
-of the two CLIs shouldn't drag the other's behaviour along with it.
-
-`--ephemeral` means the primer writes no session file at all, so nothing it does can reach the
-status bar; the Claude primer has to run in a marked temp directory and filter its sessions out
-afterwards.
-
-Detecting the close could not be copied from the Claude side, and the first attempt at copying it
-was wrong in a way worth writing down. Codex reports an **open** window as a fixed `resetsAt` — the
-same timestamp on every poll — and a **closed** one as "now + 5 hours", which advances with the
-clock. The close signal is therefore `resetsAt` coming to a stop after having moved. Usage percent
-cannot stand in for it: an open window nobody is using also reads 0%, so treating 0% as "closed"
-announced a reset on every wake-from-sleep, with `prevPct=0 curPct=0` in the log — nothing had
-changed at all. The alert now fires only on a real open → closed edge.
-
-The same measurement fixes the verification. "Did `resetsAt` move to ~5 hours out?" passes
-unconditionally, because a closed window reports exactly that forever; it would have called every
-failed prime a success. It now waits for the value to stand still across two readings.
-
-There is a trap in reading it that way, and a second opinion caught it before release. Account
-limits are served from a cache shared across VS Code windows, and its TTL and the poll interval are
-both 60 seconds — so clock jitter or a second window hands back the *same snapshot* twice. A
-repeated reading looks exactly like a timestamp holding still, which is the signal for "timer
-running", so a real close would go unnoticed for as long as the repeats lasted. Each reading now
-carries its own `observedAt`, and a repeat of one already seen is discarded before any comparison
-happens.
-
-Before firing, the primer reads `auth.json` and refuses unless it finds `auth_mode: "chatgpt"` and no
-`OPENAI_API_KEY`, in the file or in the environment. An API-key login would spend real credit and
-still exit 0, which would look exactly like success.
-
-### The Claude reset alert was firing on a timer that was still running
-
-A 5-hour timer starts when you send a request and does not cycle on its own, so the extension
-watches for it stopping. It decided that by usage falling to 0% — and a running timer nobody is
-using also reads 0%. On 2026-08-26 the machine woke from sleep, saw 0%, and announced a reset. The
-timer had been started by a server cron three hours earlier and had 1h57m left. A `claude -p` went
-out too, joining that timer instead of starting one, and the verification passed because "is
-`resetAt` within six hours" is true of almost anything.
-
-The fields needed to tell these apart were already in the response. 455 readings in the diagnostic
-log carried `sessionResetAt: null`, and they split three ways: 212 where `sessionPercent` was
-*also* null — a broken response, nothing to judge; 6 where usage was 1–12%, meaning only the
-`resets_at` field had dropped out while the timer ran on; and 237 with usage at exactly 0%, a
-genuine stop. So neither field decides alone. A stop is now `resetAt === null` **and** usage at 0%,
-and a null percentage skips the check entirely rather than guessing.
-
-That also removed the wake-from-sleep special case. The previous verdict is remembered across the
-sleep gap, so a timer that stopped while the machine was asleep is caught on the first poll after
-waking without a rule of its own — and one that was already restarted by another machine is not
-mistaken for a fresh stop. Verification is likewise exact now: firing only ever happens while the
-value is null, so the value coming back at all is the proof.
-
-### The Codex reset check was reading a one-second wobble as a closed window
-
-Codex reports its window the opposite way round to Claude: while the window is open `resetsAt` holds
-still, and once it closes the value becomes "now plus five hours" and advances with the clock. So
-the check asked whether the value had moved. It compared for exact equality, and an open window does
-not sit perfectly still — it wobbles by a second between polls.
-
-On 2026-08-26 that sent four reset alerts that were not resets. All four moved by exactly 1000ms,
-and usage was climbing through them — 2%, then 10%, then 48% — which is to say the window was open
-and in active use each time. The two genuine closes in the same day moved by about five hours.
-
-The comparison now allows five seconds. The measured spread leaves room on both sides: an open
-window wobbles by one second, a closed one advances by at least sixty-five seconds between polls,
-and a real close jumps by five hours. The same exact-equality test was also being used to verify that a primer
-had opened a window, so a window that did open could fail its own verification; that one is fixed
-too.
-
-### A Remote-SSH window was handing the primer the server's home directory
-
-The primer that opens a new Codex window checks first that the login is a plan login rather than an
-API key, by reading `auth.json`. It asked the workspace where Codex's home was. This extension runs
-on the local machine — it is a UI extension, it always does — but in a Remote-SSH window the
-workspace answers with the *server's* home, so a local file read went looking for `\root\.codex` and
-came back with ENOENT.
-
-Not being able to read the file was treated the same as finding an API key in it, and finding an API
-key turns auto-start off permanently. So a path mistake silently disabled the feature and wrote that
-decision to settings, where it survived restarts. The alerts kept arriving, no window ever opened,
-and nothing said why.
-
-The primer no longer takes a home directory at all — it resolves the local one itself, the same
-shape the Claude primer has always had, so there is no longer anywhere for a remote path to enter.
-And an unreadable file is now its own outcome: it skips that one reset and leaves the setting alone.
-Only an actual API key still disables anything.
-
-### A window left closed had no way to reopen itself
-
-Auto-start fired on the moment a window closed. That moment happens once. If anything ate it — the
-setting switched off, or a primer that ran and failed — nothing came round again, because the thing
-that opens a window is the primer and the primer only ran on that edge. On 2026-08-27 a window
-closed at 01:36 and was still closed at 05:55.
-
-Sleep is not one of those cases, incidentally: the previous verdict is held in global state, so a
-window that was open going into sleep still produces an edge on the first reading after waking.
-
-The extension now tracks how long the window has been continuously closed and opens one after ten
-minutes without needing an edge. The recovery sends no Telegram message: it is not a reset, and a
-primer that keeps failing would otherwise repeat the same alert every ten minutes. It retries on the
-same ten-minute spacing for as long as the window stays shut.
-
-Verified against a live close on 2026-08-27: the wobble arrived twice in the four minutes before the
-window shut, at 10:53 and 10:55, and both were read as open. The genuine close two minutes later was
-caught, one alert went out, and the new window was open and confirmed within forty seconds.
-
-### Codex accounts without a 5-hour limit show their weekly figure instead
-
-Codex plans differ: Plus has a 5-hour limit, Pro is weekly-only. The status bar led with the 5-hour
-figure unconditionally, so a weekly-only account got a blank space where a number should be — and
-would have received reset alerts for a limit it doesn't have.
-
-The branch reads whether a 5-hour window actually arrives, not which plan the account is on.
-OpenAI has said Pro will get one eventually; keying on the plan name would mean a code change that
-day, and there is no way to verify what string a Pro account reports from a Plus one. Asking the
-data answers the real question and follows the change by itself. Accounts without the limit lead
-with weekly usage and are excluded from reset alerts and auto-start entirely.
-
-### Reset alerts are shorter and say how long the weekly window has left
-
-The alert opened with "Your 5-hour window is fully available", which is a claim it is in no position
-to make — the window it announces may already be part-spent — and closed at `Weekly usage: 42%`,
-a number with no sense of scale. The line is gone and the figure now carries its remaining time:
-`Weekly usage: 42% (in 3d 9h)`. No calendar date; on a phone notification the remaining time is what
-you act on. The Codex alert carries the same line.
-
-### Context tooltip
-
-The token breakdown put the total at the bottom of the table, under two rows that looked like
-competing answers to the same question: `Input 220K` and `Context total 221K`. Used and capacity are
-now the headline — **Context 221K / 828K (27%)** — and the table below it is just the breakdown.
-Applied to both providers.
-
-### A shell quoting bug was emptying part of the prompt
-
-`send.sh` assembled its prompts with unquoted heredocs, and an unquoted heredoc reads backticks in the
-body as command substitution. The consultation prompt used backticks the way prose does — to mark
-filenames — and one of those lines listed what Codex must never open:
-
-```
-Do not read credentials. SSH keys, `.env`, `credentials`, `auth.json`, tokens, passwords ...
-```
-
-Those three names were run as commands, failed, and disappeared. What reached Codex was the sentence
-with a hole in it, while `.env: command not found` went to a log nobody reads. Network access is open
-during a consultation, so the instruction that went missing was the one that mattered most.
-
-All three prompt heredocs are quoted literals now, with the two paths substituted in afterwards.
-Escaping the backticks would have fixed today's text and left the trap armed: the same heredoc already
-had one line escaped and another, sixteen lines away, not. The final prompts were diffed byte for byte
-before and after the change.
-
-The run report also claimed the wrong sandbox. Steered runs are read-only, but the report printed the
-value the old path would have used, so a consultation would say `workspace-write` while Codex was in
-fact being denied writes — which is why its answer arrived through the fallback instead of as a saved
-file. Two copies of one condition had drifted apart; there is one now.
-
-### Steering needs Node 20, and finding that out was the whole lesson
-
-The bridge uses Node's global `WebSocket` instead of bundling `ws`. That global arrived late: 22 and
-24 have it, 20 exposes it behind `--experimental-websocket`, and 18 has no such flag at all.
-
-This surfaced the worst way. The skill had been deployed to four servers, verified byte for byte, and
-reported as done — and three of those servers were on Node 20 or 18, where steering could not work at
-all. The check that mattered was never run. Files arriving is not the same as a feature working.
-
-Worse, steering being on by default meant those servers could not consult at all: the bridge failed,
-and a bridge failure is exit code 10, which is precisely the code that must not fall back
-automatically. A default that helps on one machine had broken the feature outright on three.
-
-`send.sh` now measures the capability instead of reading a version string — two `node -e` probes,
-first plain and then with the flag — and picks the invocation that works. If neither does, it runs
-the old `codex exec` path **and says why on stderr**. That message matters more than the fallback:
-without it you would only discover the limitation at the moment your interruption goes nowhere.
-
-Version strings were not an option here. Distributions backport, and a numeric comparison is quietly
-wrong at boundaries like 20.9 against 20.10. Asking the runtime costs a few dozen milliseconds.
-
-### Turning it on — the skill does this for you
-
-Live steering swaps the transport underneath a consultation, so it started life behind a flag:
-
-```bash
-CR_LIVE_STEER=1
-```
-
-The skill now sets it on every consultation. Leaving it to be asked for did not work, because nobody
-knows at the start of a run whether they will need to cut in, and `codex exec` cannot change transport
-once it is going. By the time you have something to say, the decision has already been made for you.
-Ask for the old path explicitly and the skill drops the flag.
-
-With it set, a **CONSULT first turn** runs through the app-server bridge and accepts interruptions.
-Everything else about the skill is untouched — request validation, the lock, change detection, the
-edit gate, response recovery and the follow-up path all stay exactly where they were. Follow-ups,
-reviews and edits keep their existing routes; each of those has its own proven plumbing, and moving
-them all at once would open the whole regression surface.
-
-The bridge ships with the skill under `scripts/`. Fetch it alongside `send.sh` — the install
-instructions in the guide now include it. Without it the flag refuses to start rather than silently
-falling back, so you always know which path you are on.
-
-The panel changes need nothing from you. Turn headers, per-turn narration and the Claude chip read
-the event log the skill already writes, and a run recorded by an older skill displays exactly as it
-did before. Same for the deletion fix, the limit labels and the tooltip.
+> A consultation used to be a throw and a wait: you sent the request, Codex went away for several
+> minutes, and if it started down the wrong path there was nothing to do but watch it finish.
+
+Say something while a consultation is running and it reaches Codex mid-task. Codex keeps what it
+was doing and folds your point in rather than starting over. The panel shows those interruptions
+inline, marked with a **Claude** chip so they are not mistaken for the notices the CLI prints on
+its own. Cutting in needs Node 20 or newer; the skill handles the setup, and if the runtime can't
+support it you are told before the run starts rather than after.
+
+### Follow-up turns are readable
+
+Asking Codex a second question keeps both turns in one card. Until now the second turn's activities
+quietly overwrote the first's — twenty activities came out as twelve, and a row that had been a
+file change could come back as a command. Each turn now keeps its own activities, with a header
+where one turn ends and the next begins. Click a header to fold that turn away.
+
+Each turn also carries its own documents: the request that opened it and the result it produced sit
+under that turn's header, so a three-turn consultation no longer leaves you guessing which result
+belongs to which question. Single-turn runs look exactly as they did before.
+
+### Codex 5-hour resets
+
+Codex's 5-hour window anchors to your first request rather than cycling on a schedule, so a window
+that closed while you were away used to stay closed until you next ran Codex. It now gets what the
+Claude side has had for a while, with a setting for each half so that running only one of the two
+CLIs never forces the other's behaviour on you:
+
+- `claudeState.codexTelegramNotifyOnReset` (on) — a Telegram alert when the window resets
+- `claudeState.codexAutoStartBlockOnReset` (off) — opens the next window for you
+
+Accounts without a 5-hour limit are left out of both, and their status bar leads with the weekly
+figure instead of leaving a blank. Before firing, the extension confirms the login is a plan login
+rather than an API key, so auto-start can never quietly spend API credit.
+
+### Fixes
+
+- Reset alerts no longer fire on a window that is still running. Usage sitting at 0% was being read
+  as "finished", but a window nobody is using also reads 0%.
+- Auto-start no longer switches itself off when it can't read the Codex login file. Only an actual
+  API key disables it now.
+- A window left closed with nothing to trigger on now reopens on its own after ten minutes, and
+  keeps trying while it stays shut. No alert is sent for that — it isn't a reset.
+- Deleting a run from the panel removes the whole run. Documents from other turns used to be left
+  behind.
+- The usage limits in the tooltip were labelled backwards: the 5-hour figure was shown as weekly
+  and the weekly one as 5-hour. The numbers were right, the names were swapped.
+- Reset alerts are shorter, and say how long the weekly window has left rather than giving a date.
+- The context tooltip reads more clearly.
+- A quoting bug was emptying part of the request sent to Codex, including the list of things it is
+  told never to include.
 
 ## [1.13.0] - 2026-08-23
 

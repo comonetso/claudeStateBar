@@ -68,19 +68,19 @@ The provider glyph is the identity cue: **Claude's `✳` is orange** and **Codex
 
 ### Codex account usage (rate limits)
 
-Read **live from the Codex app‑server**. The extension briefly spawns a `codex app-server` process and asks it for `account/rateLimits/read` over JSON‑RPC — a measured round trip of about **0.6–0.9 s**.
+Read **live from Codex itself**, not from log files, so the figure matches what Codex would tell you.
 
-The app-server reports a consumed `usedPercent`, and that consumed figure is what the status bar and tooltip show — the same direction as the Claude plan block right next to it, so a bigger number always means "closer to the limit". Note that the ChatGPT usage screen states the complementary amount still available: what it calls **42% remaining** appears here as **58%** used.
+Codex reports how much you have consumed, and that is what the status bar and tooltip show — the same direction as the Claude plan block right next to it, so a bigger number always means "closer to the limit". Note that the ChatGPT usage screen states the complementary amount still available: what it calls **42% remaining** appears here as **58%** used.
 
 The tooltip’s **Session processed total** comes from rollout `total_token_usage.total_tokens`. It is the cumulative token volume processed across model calls in this conversation (including cached input), not the current context size and not the account’s weekly-limit usage.
 
-This runs on its **own slow timer, separate from the 30‑second session refresh**. It shares the `claudeState.refreshIntervalSec` value but is clamped to a **minimum of 60 seconds**, so no process is spawned on every 30‑second poll. This is exactly symmetric with how Claude polls the claude.ai usage API.
+This is checked on a slower timer than the session refresh — at most once a minute — so it never runs on every poll.
 
 **Why live instead of the log?** Codex limits use a **7‑day rolling window**, so the real numbers go down on their own even when you aren't using Codex. Reading only a log snapshot would freeze the value whenever you don't touch Codex for a few days.
 
 **Fallback order:**
 
-1. Live app‑server query, coordinated through one cross-window shared cache
+1. A live query, shared across your VS Code windows
 2. If no live/shared value has ever succeeded, the newest `rate_limits` snapshot available from the visible rollout logs
 3. If a previous shared live value exists, keep it and mark it as a **stale value** when it ages out
 4. If there is nothing at all, usage is not shown
@@ -89,7 +89,7 @@ The tooltip shows the **source next to the observation time** — `live`, or `fr
 
 > The old "only refreshes while Codex is actually working" caveat now applies **only to the fallback** (step 2): a rollout snapshot is written while Codex works, so an idle session's snapshot goes stale.
 
-All VS Code windows in the same local profile use a small, non-secret file in the extension's `globalStorage`. An atomic `wx` lock elects one window to run `account/rateLimits/read`; the others consume the atomically replaced cache and watch it for changes. This avoids one app-server process per window and prevents a newer-but-stale rollout snapshot from overriding the account-authoritative live value.
+With several VS Code windows open, only one of them queries Codex and the rest read the result. So every window shows the same number, and you don't pay for the same lookup many times over.
 
 If the current window has no recorded Codex conversation UUID or its rollout is unavailable, account usage is still shown as a standalone **`⬢ Codex`** item. This is intentionally account-only: the extension does not attach another window's model or context figures by guesswork. Once a UUID is resolved, the standalone item is replaced by that conversation's normal session item.
 
@@ -113,7 +113,7 @@ Everything else is **shared between Claude and Codex** — warning/danger thresh
 - **No Codex question‑pause beep or stuck detection yet.**
 - **No deletion of Codex rollout/session logs.** (The Codex Runs panel does delete `codex_rescue` run records, but only when you ask it to — see that section.)
 - **Account usage is queried from your *local* `codex`, even in a Remote‑SSH window** — the live query runs the **local** `codex` executable, so the figures reflect your local account. With the same ChatGPT account the numbers are identical; with a different account they can differ. (Context monitoring is unaffected — it reads the remote files correctly.)
-- **If `codex` isn't available or the app‑server query fails, the context monitor keeps working normally** — only usage falls back to the log snapshot. The query has a **15‑second timeout**, and the helper process is cleaned up every time (verified in practice: no process leaks).
+- **If `codex` isn't available or the lookup fails, everything else keeps working** — only the usage figure falls back to the last value found in the logs.
 - **Sidebar selection uses an internal OpenAI log marker as a compatibility fallback.** Active Codex editor tabs use the stable VS Code tab URI. The newest `active=true` UUID is retained per window because `active=false` also means ordinary window focus loss. On Remote‑SSH, the local window is matched to its remote OpenAI extension-host log by process ID, with activation time as a bounded fallback. A future OpenAI log-format change can temporarily reduce a sidebar-only window to the account-only item. `scope: all` intentionally remains a recent-session list.
 
 ### Privacy
@@ -175,7 +175,7 @@ With the skill installed, open it from the status-bar menu or `claudeStateBar: S
 - **Commands, searches, file changes, MCP calls** — colour-coded by kind, commands with their exit code. Runs of consecutive successful commands or searches fold into one line you can expand; **failures never fold**, so they stay visible
 - **Clipped rows open in place** — a row too wide for the panel expands where it is, wrapped, when you click it. One row stays open at a time. What you get is what the panel kept: messages up to 4,000 characters, a command's wrapped form up to 600. Past that, read the raw event log
 - **Runs with documents but no log still show** — marked `documents only`, with no activity list but the request/response links intact. That covers a run whose raw logs you purged, and documents a teammate committed and you pulled in
-- **A title you can read** — the request's `subject` heads the card, not the English slug. Requires a `codex_rescue` build from 2026-08-19 or later; older runs show the slug
+- **A title you can read** — the request's subject heads the card, not the English slug. Runs recorded by an older skill show the slug instead
 - **Plan** — shown as `2/5`, but only when Codex actually produced one
 - **Elapsed time and activity count** — no percentage. Codex never declares how many tool calls remain, so a progress bar would be fiction
 - **Completion chime** — for runs the extension watched while they were live, using the same `claudeContextBar.workflowCompleteBeep` setting as workflow completion. A run that finished before the extension started appears silently
@@ -254,7 +254,7 @@ only colliding numbers were replaced. A row that had been a **file change** in t
 The first run creates `docs/codex_rescue/` inside your project. The panel reads only this directory — no network calls.
 
 - `<stamp>_request_*.md` · `<stamp>_response_*.md` — what was asked and what Codex answered. **These are meant to be committed**; the next session picks up the thread from them
-- `.log/` — raw run records. Full command output lands here, so size varies a lot by run (measured samples: 409 KB for one run, 394–750 KB for others); the skill drops its own `.gitignore` in this directory to **keep it out of git**
+- `.log/` — raw run records. Full command output lands here, so size varies a lot by run (a few hundred KB per run is typical); the skill drops its own `.gitignore` in this directory to **keep it out of git**
 
 Logs are never deleted by default. Manage them with the 🗑 button on a card (it takes the whole run, documents included, straight to the trash) or by enabling automatic cleanup — see [settings](#codex-run-logs-codex_rescue).
 
@@ -413,9 +413,9 @@ How the close is detected differs from the Claude side, and it has to. Codex rep
 - **open** — `resetsAt` is a fixed timestamp (open time + 5 hours), identical on every poll
 - **closed** — `resetsAt` is always "now + 5 hours", so it advances with the clock
 
-So the close signal is **`resetsAt` starting to move after having stood still**, not usage dropping to 0%. Usage can't be used for this: an open window you simply aren't using also reads 0%, so reading it that way announced a reset every time the machine woke from sleep. The alert now fires only on a genuine open → closed edge. An open window's timestamp jitters by about a second between polls, so "standing still" allows five seconds — measured against a closed window, which advances by at least sixty-five.
+Usage is not used to decide this. A window you simply aren't using also reads 0%, and reading it that way announced a reset every time the machine woke from sleep. The alert now fires only when the window genuinely goes from open to closed.
 
-A close is a single moment, and if it passes unused — the setting was off at the time, or a primer ran and failed — nothing brings it back on its own. So a window that has stayed closed for **ten minutes** gets one opened without waiting for an edge, and that repeats on the same ten‑minute spacing for as long as it stays shut. The recovery sends no Telegram message: it isn't a reset, and a primer that kept failing would otherwise repeat the same alert on a loop.
+If that moment passes without anything happening — the setting was off at the time, or the attempt failed — a window left closed for **ten minutes** gets opened anyway, and that repeats while it stays shut. No Telegram message is sent for those: it isn't a reset.
 
 ### Billing safety
 
@@ -497,8 +497,8 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 
 ### Codex run logs (codex_rescue)
 
-Run logs vary a lot in size — measured samples run from **409 KB to 750 KB per run**, and in one
-464 KB sample about 86% was captured command output. They are never deleted unless you opt in.
+Run logs hold the full output of everything Codex ran, so a few hundred KB per run is typical.
+They are never deleted unless you opt in.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -524,7 +524,15 @@ All other settings — thresholds, sounds, `compactMode`, `idleTimeout`, `hideAf
 
 ## How it works
 
-Context monitoring makes no network calls at all. The network paths that do exist are optional and separate: the claude.ai plan‑usage fetch, Telegram, and the Codex account‑usage probe described below. Context monitoring is pure disk reads of Claude Code's JSONL logs via `vscode.workspace.fs` (local or remote). Plan usage calls the claude.ai usage endpoint using Electron's Chromium network stack (to pass Cloudflare) with a plain‑`https` fallback. The workflow viewer reads `~/.claude/projects/<slug>/<uuid>/subagents/` directly from disk. Codex **context and spawned-agent completion** monitoring is likewise pure disk reads of `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` via `vscode.workspace.fs` (local or remote) — no network calls, and only structural fields are parsed. Codex **account usage** is read live from a short‑lived local `codex app-server` process over JSON‑RPC, on its own timer (≥ 60 s), falling back to the rollout log's `rate_limits` snapshot. When several VS Code windows are open, only **one** of them runs that probe — the result goes into a non‑secret cache in the extension's `globalStorage`, guarded by an atomic cross‑process lock, and every other window reads and watches that same value, so all windows always show the identical number.
+**Context monitoring makes no network calls at all.** It reads the log files Claude Code and Codex leave on disk, nothing more — local or remote. The workflow viewer is the same.
+
+Only three things touch the network, and all three are optional.
+
+- **claude.ai plan usage** — calls the usage endpoint and nothing else
+- **Telegram** — only when enabled, and only to send an alert
+- **Codex account usage** — asks your locally installed `codex`; falls back to the value left in the logs if that fails
+
+All three are lookups. No code and no conversation content leaves your machine.
 
 ---
 

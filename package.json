@@ -1,449 +1,454 @@
 {
-    "name": "claude-state-bar",
-    "displayName": "Claude Code & Codex Status Bar",
-    "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly usage read live from the Codex app-server and kept identical across every window. Includes a live Workflow/Agent viewer, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
-    "version": "1.14.0",
-    "extensionKind": ["ui"],
-    "publisher": "blueming",
-    "author": {
-        "name": "Blueming"
-    },
-    "contributors": [
-        {
-            "name": "Ed Zisk",
-            "url": "https://github.com/ezoosk"
-        }
-    ],
-    "license": "MIT",
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/comonetso/claudeStateBar"
-    },
-    "homepage": "https://github.com/comonetso/claudeStateBar#readme",
-    "bugs": {
-        "url": "https://github.com/comonetso/claudeStateBar/issues"
-    },
-    "icon": "images/icon.png",
-    "galleryBanner": {
-        "color": "#1a1a2e",
-        "theme": "dark"
-    },
-    "keywords": [
-        "claude token usage",
-        "claude context usage",
-        "claude usage monitor",
-        "claude code usage",
-        "claude code monitor",
-        "claude context window",
-        "codex token usage",
-        "codex context usage",
-        "codex usage monitor",
-        "codex cli usage",
-        "claude",
-        "claude code",
-        "claude ai",
-        "anthropic",
-        "codex",
-        "codex cli",
-        "openai",
-        "chatgpt",
-        "token usage",
-        "context usage",
-        "context window",
-        "token counter",
-        "usage monitor",
-        "status bar",
-        "rate limit",
-        "usage limit",
-        "클로드 토큰",
-        "코덱스 토큰",
-        "클로드 컨텍스트",
-        "코덱스 컨텍스트"
-    ],
-    "engines": {
-        "vscode": "^1.74.0"
-    },
-    "categories": [
-        "AI",
-        "Visualization",
-        "Other"
-    ],
-    "activationEvents": [
-        "onStartupFinished"
-    ],
-    "main": "./out/extension.js",
-    "contributes": {
-        "icons": {
-            "ccb-claude": {
-                "description": "Claude provider glyph",
-                "default": {
-                    "fontPath": "./images/provider-icons/provider-icons.woff",
-                    "fontCharacter": "\\F102"
-                }
-            },
-            "ccb-codex": {
-                "description": "Codex provider glyph",
-                "default": {
-                    "fontPath": "./images/provider-icons/provider-icons.woff",
-                    "fontCharacter": "\\F101"
-                }
-            }
-        },
-        "commands": [
-            {
-                "command": "claudeContextBar.showSessionMenu",
-                "title": "claudeStateBar: Session Menu"
-            },
-            {
-                "command": "claudeContextBar.hideSession",
-                "title": "claudeStateBar: Hide Session"
-            },
-            {
-                "command": "claudeContextBar.restoreAllHidden",
-                "title": "claudeStateBar: Restore All Hidden Sessions"
-            },
-            {
-                "command": "claudeContextBar.restoreHiddenSession",
-                "title": "claudeStateBar: Restore Hidden Session"
-            },
-            {
-                "command": "claudeContextBar.showDiagnostics",
-                "title": "claudeStateBar: Show Diagnostics"
-            },
-            {
-                "command": "claudeContextBar.openSettings",
-                "title": "claudeStateBar: Open Settings Panel"
-            },
-            {
-                "command": "claudeContextBar.refreshPlanUsage",
-                "title": "claudeStateBar: Refresh Plan Usage"
-            },
-            {
-                "command": "claudeContextBar.testBeep",
-                "title": "claudeStateBar: Test Beep Sound"
-            },
-            {
-                "command": "claudeContextBar.cleanupOldVersions",
-                "title": "claudeStateBar: Cleanup Old Extension Versions"
-            },
-            {
-                "command": "claudeContextBar.cleanupGhostItems",
-                "title": "claudeStateBar: Clean Up Ghost/Stale Status Bar Items"
-            },
-            {
-                "command": "claudeContextBar.showCodexChats",
-                "title": "claudeStateBar: Codex Chat Panel"
-            },
-            {
-                "command": "claudeContextBar.showCodexRuns",
-                "title": "claudeStateBar: Show Codex Runs"
-            },
-            {
-                "command": "claudeContextBar.setupCodexRescue",
-                "title": "claudeStateBar: Set Up Codex Progress Panel (codex_rescue)"
-            }
-        ],
-        "menus": {
-            "commandPalette": [
-                {
-                    "command": "claudeContextBar.showCodexRuns",
-                    "when": "claudeStateBar.hasCodexRescue"
-                },
-                {
-                    "command": "claudeContextBar.showCodexChats",
-                    "when": "claudeStateBar.hasCodexRescue"
-                },
-                {
-                    "command": "claudeContextBar.setupCodexRescue",
-                    "when": "!claudeStateBar.hasCodexRescue"
-                },
-                {
-                    "command": "claudeContextBar.showSessionMenu",
-                    "when": "false"
-                },
-                {
-                    "command": "claudeContextBar.hideSession",
-                    "when": "false"
-                },
-                {
-                    "command": "claudeContextBar.restoreHiddenSession",
-                    "when": "false"
-                }
-            ]
-        },
-        "configuration": {
-            "title": "claudeStateBar",
-            "properties": {
-                "claudeState.language": {
-                    "type": "string",
-                    "enum": [
-                        "en",
-                        "ko"
-                    ],
-                    "enumDescriptions": [
-                        "English",
-                        "한국어"
-                    ],
-                    "default": "en",
-                    "order": 0,
-                    "description": "Language for the settings panel UI."
-                },
-                "claudeState.orgId": {
-                    "type": "string",
-                    "default": "",
-                    "order": 2,
-                    "description": "Claude.ai Organization ID (UUID). Found in claude.ai Network tab under /api/organizations/{UUID}/... Set this together with the Session Key via 'claudeStateBar: Open Settings Panel'. When empty, the status bar shows a setup warning."
-                },
-                "claudeState.refreshIntervalSec": {
-                    "type": "number",
-                    "default": 300,
-                    "minimum": 10,
-                    "maximum": 3600,
-                    "order": 3,
-                    "description": "Plan usage refresh interval in seconds (10–3600). Default: 300 (5 min). Session Key and Telegram Bot Token are stored encrypted via the settings panel, not here."
-                },
-                "claudeState.autoStartBlockOnReset": {
-                    "type": "boolean",
-                    "default": false,
-                    "order": 4,
-                    "description": "When the 5-hour block closes (session usage drops to 0%), automatically run a throwaway `claude -p` prompt to open the next block — anchoring it to the reset instead of to whenever you next type. The window starts counting down immediately, even while you sleep. Fires at most once per reset (atomic lock across windows), and even catches a reset that happened while the machine was asleep (on the first wake poll). Requires the `claude` CLI on PATH and VS Code running. Safety: refuses to run when an API key is set in the environment (that would bill the API instead of your plan). Toggle from the settings panel."
-                },
-                "claudeState.telegramNotifyOnReset": {
-                    "type": "boolean",
-                    "default": true,
-                    "order": 5,
-                    "description": "Send a Telegram alert when the Claude 5-hour block resets (requires a linked bot token + chat). Fires at most once per reset. Toggle from the settings panel. Default on."
-                },
-                "claudeState.codexAutoStartBlockOnReset": {
-                    "type": "boolean",
-                    "default": false,
-                    "order": 6,
-                    "description": "When the Codex 5-hour block closes (primary usage drops to 0%), automatically run a throwaway `codex exec` prompt to open the next block — anchoring it to the reset instead of to whenever you next type. Runs with `--ephemeral` (no session file is written, so it never shows up in the status bar) in a read-only sandbox. Fires at most once per reset (atomic lock across windows). Requires the `codex` CLI on PATH and VS Code running. Safety: refuses to run unless `auth.json` shows a ChatGPT-plan login (an API-key login would bill credit instead of your 5-hour window). Toggle from the settings panel."
-                },
-                "claudeState.codexTelegramNotifyOnReset": {
-                    "type": "boolean",
-                    "default": true,
-                    "order": 7,
-                    "description": "Send a Telegram alert when the Codex 5-hour block resets (requires a linked bot token + chat). Fires at most once per reset. Toggle from the settings panel. Default on."
-                },
-                "claudeContextBar.baseColor": {
-                    "type": "string",
-                    "enum": [
-                        "White",
-                        "Blue",
-                        "Purple",
-                        "Cyan",
-                        "Green",
-                        "Yellow",
-                        "Orange",
-                        "Pink"
-                    ],
-                    "default": "White",
-                    "description": "Resting text colour for every session item. Colour otherwise carries one meaning only — the usage threshold (idle grey, warning yellow, danger red) — so all sessions share this one colour and are told apart by name, and providers by their icon colour."
-                },
-                "claudeContextBar.contextLimitDefault": {
-                    "type": "number",
-                    "default": 200000,
-                    "description": "Context window size (tokens) for standard 200K models — Sonnet, Haiku, etc."
-                },
-                "claudeContextBar.contextLimitOpus": {
-                    "type": "number",
-                    "default": 1000000,
-                    "description": "Context window size (tokens) for 1M-context models — Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+, and any model with '1m' in its id."
-                },
-                "claudeContextBar.warningThreshold": {
-                    "type": "number",
-                    "default": 50,
-                    "order": 11,
-                    "description": "Percentage at which to show warning color (yellow)"
-                },
-                "claudeContextBar.dangerThreshold": {
-                    "type": "number",
-                    "default": 75,
-                    "order": 12,
-                    "description": "Percentage at which to show danger color (red)"
-                },
-                "claudeContextBar.refreshInterval": {
-                    "type": "number",
-                    "default": 30,
-                    "description": "Refresh interval in seconds"
-                },
-                "claudeContextBar.idleTimeout": {
-                    "type": "number",
-                    "default": 180,
-                    "minimum": 10,
-                    "maximum": 7200,
-                    "description": "Seconds of inactivity before a session is dimmed (grayscale) to indicate idle state. Default: 180 (3 minutes). The session stays visible until 'hideAfter' elapses."
-                },
-                "claudeContextBar.hideAfter": {
-                    "type": "number",
-                    "default": 86400,
-                    "minimum": 60,
-                    "maximum": 604800,
-                    "description": "Seconds of inactivity before a session is fully hidden from the status bar. Default: 86400 (24 hours). Must be ≥ idleTimeout."
-                },
-                "claudeContextBar.scope": {
-                    "type": "string",
-                    "enum": ["workspace", "all"],
-                    "enumDescriptions": [
-                        "Show Claude sessions for the current workspace and only the Codex conversation displayed by this VS Code window.",
-                        "Show all recent Claude and Codex sessions regardless of which project or window displays them."
-                    ],
-                    "default": "workspace",
-                    "description": "Session display scope. 'workspace' (default) uses the open folders for Claude and this window's last selected conversation UUID for Codex; 'all' is the machine-wide recent-session view."
-                },
-                "claudeContextBar.showModel": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Show the model name (e.g., Sonnet 4.5) next to the percentage in the status bar. Takes extra space but tells you which model the session is using."
-                },
-                "claudeContextBar.autoCleanupOldVersions": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "On activate, silently delete older versions of any installed VS Code extension (keeping only the highest semver per publisher.name). Prevents stale extension folders piling up after repeated vsix installs. Set to false to disable."
-                },
-                "claudeContextBar.compactMode": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Shorten project names to save status bar space. Multi-word names become acronyms (my-cool-project → MCP), single words become abbreviated (typescript → Tscript). Names ≤5 chars stay unchanged."
-                },
-                "claudeContextBar.shortNames": {
-                    "type": "object",
-                    "default": {},
-                    "description": "Custom short names for projects. Keys are project names, values are the short versions (e.g. {\"my-cool-project\": \"MCP\", \"webapp\": \"WA\"})."
-                },
-                "claudeContextBar.soundWarning": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Path to the WAV file played once when context reaches the warning threshold. Leave empty to use the bundled default."
-                },
-                "claudeContextBar.soundDanger": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Path to the WAV file played twice when context reaches the danger threshold. Leave empty to use the bundled default."
-                },
-                "claudeContextBar.soundCompletion": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Path to the WAV file played when Claude finishes a response (stop_reason = end_turn). Leave empty to use the bundled default."
-                },
-                "claudeContextBar.soundWarningGain": {
-                    "type": "number",
-                    "default": 100,
-                    "minimum": 50,
-                    "maximum": 5000,
-                    "description": "Warning sound volume gain in percent (50–5000). 100 = original WAV volume. Values above 100 amplify samples in-memory above the Windows master volume; values below 100 attenuate. WARNING: gains above ~300 typically cause clipping/distortion — the sound becomes harsher rather than louder. MP3 files only support attenuation (gain ≤ 100)."
-                },
-                "claudeContextBar.soundDangerGain": {
-                    "type": "number",
-                    "default": 100,
-                    "minimum": 50,
-                    "maximum": 5000,
-                    "description": "Danger sound volume gain in percent (50–5000). See soundWarningGain for details."
-                },
-                "claudeContextBar.soundCompletionGain": {
-                    "type": "number",
-                    "default": 100,
-                    "minimum": 50,
-                    "maximum": 5000,
-                    "description": "Completion sound volume gain in percent (50–5000). Useful when watching videos: raise this to hear the completion beep above the video's audio without raising the system master volume. WARNING: gains above ~300 cause clipping."
-                },
-                "claudeContextBar.completionBeepSettleMs": {
-                    "type": "number",
-                    "default": 3000,
-                    "minimum": 100,
-                    "maximum": 5000,
-                    "description": "Settle window (ms) before firing the completion beep. After detecting end_turn, wait this long; if new activity appears (hook follow-up, auto-injected user message, or sub-agent continuation), suppress the beep. Default: 3000. Range: 100–5000."
-                },
-                "claudeContextBar.soundQuestion": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Path to the WAV/MP3 file played when Claude pauses to ask a question (AskUserQuestion or ExitPlanMode tool). Leave empty for the OS default (Speech On.wav on Windows)."
-                },
-                "claudeContextBar.soundQuestionGain": {
-                    "type": "number",
-                    "default": 100,
-                    "minimum": 50,
-                    "maximum": 5000,
-                    "description": "Question sound volume gain in percent (50–5000). See soundWarningGain for details."
-                },
-                "claudeContextBar.soundWorkflow": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Path to the WAV file played when all Claude workflow/task-agent or Codex spawned agents complete. Leave empty for the bundled default."
-                },
-                "claudeContextBar.soundWorkflowGain": {
-                    "type": "number",
-                    "default": 100,
-                    "minimum": 50,
-                    "maximum": 5000,
-                    "description": "Workflow complete sound volume gain in percent (50–5000). See soundWarningGain for details."
-                },
-                "claudeContextBar.workflowCompleteBeep": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Play the workflow sound when all Claude workflow/task-agent or Codex spawned agents complete."
-                },
-                "claudeContextBar.detectStuckToolUse": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Heuristic: if the latest assistant entry is a tool_use (e.g., Bash, Edit) and no new activity has appeared for stuckToolUseThresholdSec, treat it as a likely VS Code permission prompt and fire the question beep. WARNING: this is a guess — legitimate long-running tools (builds, large file edits) will also trigger false positives. Off by default."
-                },
-                "claudeContextBar.stuckToolUseThresholdSec": {
-                    "type": "number",
-                    "default": 90,
-                    "minimum": 30,
-                    "maximum": 600,
-                    "description": "Seconds of tool_use silence before the stuck-tool-use heuristic fires the question beep (only when detectStuckToolUse is on). Default: 90."
-                },
-                "claudeContextBar.codex.enabled": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Show OpenAI Codex sessions (⬢) alongside Claude sessions (✳), read from rollout logs. In the default workspace scope, Codex follows the conversation UUID last selected by this VS Code window; scope all lists recent sessions. Works in local and Remote-SSH windows and is harmless when Codex is not installed."
-                },
-                "claudeContextBar.codex.home": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Codex state directory. Leave empty to auto-detect: locally $CODEX_HOME then ~/.codex; on a Remote-SSH window, whichever of /root or /home/* contains .codex/sessions. Current-chat mode may also check the local UI host for the exact selected UUID when no explicit path is set. An explicit path is authoritative: if it does not exist, no Codex session is shown and the reason is logged."
-                },
-                "claudeContextBar.codex.scanDays": {
-                    "type": "number",
-                    "default": 3,
-                    "minimum": 1,
-                    "maximum": 60,
-                    "description": "How many recent day folders under ~/.codex/sessions/YYYY/MM/DD to scan when scope is all. Current-chat mode locates the selected UUID directly, including older reopened conversations. Codex history is never walked in full. Default: 3."
-                },
-                "claudeContextBar.codexRunAutoCleanup": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Automatically delete old codex_rescue run logs on startup. Off by default because it deletes files. Only finished runs are ever removed."
-                },
-                "claudeContextBar.codexRunRetentionDays": {
-                    "type": "number",
-                    "default": 7,
-                    "minimum": 1,
-                    "maximum": 3650,
-                    "description": "How many days of codex_rescue run logs to keep when auto-cleanup is enabled. Default: 7."
-                },
-                "claudeContextBar.codexRunDeleteDocs": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Also delete the request/response/review .md documents when cleaning up a run. Off by default: the raw logs under .log/ are disposable, but those documents are the record of what was asked and answered."
-                }
-            }
-        }
-    },
-    "scripts": {
-        "vscode:prepublish": "npm run compile",
-        "compile": "tsc -p ./",
-        "watch": "tsc -watch -p ./",
-        "lint": "eslint src --ext ts",
-        "package": "vsce package",
-        "publish": "vsce publish"
-    },
-    "devDependencies": {
-        "@types/node": "^18.0.0",
-        "@types/vscode": "^1.74.0",
-        "typescript": "^5.0.0"
+  "name": "claude-state-bar",
+  "displayName": "Claude Code & Codex Status Bar",
+  "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly usage read live from the Codex app-server and kept identical across every window. Includes a live Workflow/Agent viewer, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
+  "version": "1.14.1",
+  "extensionKind": [
+    "ui"
+  ],
+  "publisher": "blueming",
+  "author": {
+    "name": "Blueming"
+  },
+  "contributors": [
+    {
+      "name": "Ed Zisk",
+      "url": "https://github.com/ezoosk"
     }
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/comonetso/claudeStateBar"
+  },
+  "homepage": "https://github.com/comonetso/claudeStateBar#readme",
+  "bugs": {
+    "url": "https://github.com/comonetso/claudeStateBar/issues"
+  },
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  },
+  "keywords": [
+    "claude token usage",
+    "claude context usage",
+    "claude usage monitor",
+    "claude code usage",
+    "claude code monitor",
+    "claude context window",
+    "codex token usage",
+    "codex context usage",
+    "codex usage monitor",
+    "codex cli usage",
+    "claude",
+    "claude code",
+    "claude ai",
+    "anthropic",
+    "codex",
+    "codex cli",
+    "openai",
+    "chatgpt",
+    "token usage",
+    "context usage",
+    "context window",
+    "token counter",
+    "usage monitor",
+    "status bar",
+    "rate limit",
+    "usage limit",
+    "클로드 토큰",
+    "코덱스 토큰",
+    "클로드 컨텍스트",
+    "코덱스 컨텍스트"
+  ],
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "AI",
+    "Visualization",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "icons": {
+      "ccb-claude": {
+        "description": "Claude provider glyph",
+        "default": {
+          "fontPath": "./images/provider-icons/provider-icons.woff",
+          "fontCharacter": "\\F102"
+        }
+      },
+      "ccb-codex": {
+        "description": "Codex provider glyph",
+        "default": {
+          "fontPath": "./images/provider-icons/provider-icons.woff",
+          "fontCharacter": "\\F101"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "claudeContextBar.showSessionMenu",
+        "title": "claudeStateBar: Session Menu"
+      },
+      {
+        "command": "claudeContextBar.hideSession",
+        "title": "claudeStateBar: Hide Session"
+      },
+      {
+        "command": "claudeContextBar.restoreAllHidden",
+        "title": "claudeStateBar: Restore All Hidden Sessions"
+      },
+      {
+        "command": "claudeContextBar.restoreHiddenSession",
+        "title": "claudeStateBar: Restore Hidden Session"
+      },
+      {
+        "command": "claudeContextBar.showDiagnostics",
+        "title": "claudeStateBar: Show Diagnostics"
+      },
+      {
+        "command": "claudeContextBar.openSettings",
+        "title": "claudeStateBar: Open Settings Panel"
+      },
+      {
+        "command": "claudeContextBar.refreshPlanUsage",
+        "title": "claudeStateBar: Refresh Plan Usage"
+      },
+      {
+        "command": "claudeContextBar.testBeep",
+        "title": "claudeStateBar: Test Beep Sound"
+      },
+      {
+        "command": "claudeContextBar.cleanupOldVersions",
+        "title": "claudeStateBar: Cleanup Old Extension Versions"
+      },
+      {
+        "command": "claudeContextBar.cleanupGhostItems",
+        "title": "claudeStateBar: Clean Up Ghost/Stale Status Bar Items"
+      },
+      {
+        "command": "claudeContextBar.showCodexChats",
+        "title": "claudeStateBar: Codex Chat Panel"
+      },
+      {
+        "command": "claudeContextBar.showCodexRuns",
+        "title": "claudeStateBar: Show Codex Runs"
+      },
+      {
+        "command": "claudeContextBar.setupCodexRescue",
+        "title": "claudeStateBar: Set Up Codex Progress Panel (codex_rescue)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "claudeContextBar.showCodexRuns",
+          "when": "claudeStateBar.hasCodexRescue"
+        },
+        {
+          "command": "claudeContextBar.showCodexChats",
+          "when": "claudeStateBar.hasCodexRescue"
+        },
+        {
+          "command": "claudeContextBar.setupCodexRescue",
+          "when": "!claudeStateBar.hasCodexRescue"
+        },
+        {
+          "command": "claudeContextBar.showSessionMenu",
+          "when": "false"
+        },
+        {
+          "command": "claudeContextBar.hideSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeContextBar.restoreHiddenSession",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "claudeStateBar",
+      "properties": {
+        "claudeState.language": {
+          "type": "string",
+          "enum": [
+            "en",
+            "ko"
+          ],
+          "enumDescriptions": [
+            "English",
+            "한국어"
+          ],
+          "default": "en",
+          "order": 0,
+          "description": "Language for the settings panel UI."
+        },
+        "claudeState.orgId": {
+          "type": "string",
+          "default": "",
+          "order": 2,
+          "description": "Claude.ai Organization ID (UUID). Found in claude.ai Network tab under /api/organizations/{UUID}/... Set this together with the Session Key via 'claudeStateBar: Open Settings Panel'. When empty, the status bar shows a setup warning."
+        },
+        "claudeState.refreshIntervalSec": {
+          "type": "number",
+          "default": 300,
+          "minimum": 10,
+          "maximum": 3600,
+          "order": 3,
+          "description": "Plan usage refresh interval in seconds (10–3600). Default: 300 (5 min). Session Key and Telegram Bot Token are stored encrypted via the settings panel, not here."
+        },
+        "claudeState.autoStartBlockOnReset": {
+          "type": "boolean",
+          "default": false,
+          "order": 4,
+          "description": "When the 5-hour block closes (session usage drops to 0%), automatically run a throwaway `claude -p` prompt to open the next block — anchoring it to the reset instead of to whenever you next type. The window starts counting down immediately, even while you sleep. Fires at most once per reset (atomic lock across windows), and even catches a reset that happened while the machine was asleep (on the first wake poll). Requires the `claude` CLI on PATH and VS Code running. Safety: refuses to run when an API key is set in the environment (that would bill the API instead of your plan). Toggle from the settings panel."
+        },
+        "claudeState.telegramNotifyOnReset": {
+          "type": "boolean",
+          "default": true,
+          "order": 5,
+          "description": "Send a Telegram alert when the Claude 5-hour block resets (requires a linked bot token + chat). Fires at most once per reset. Toggle from the settings panel. Default on."
+        },
+        "claudeState.codexAutoStartBlockOnReset": {
+          "type": "boolean",
+          "default": false,
+          "order": 6,
+          "description": "When the Codex 5-hour block closes (primary usage drops to 0%), automatically run a throwaway `codex exec` prompt to open the next block — anchoring it to the reset instead of to whenever you next type. Runs with `--ephemeral` (no session file is written, so it never shows up in the status bar) in a read-only sandbox. Fires at most once per reset (atomic lock across windows). Requires the `codex` CLI on PATH and VS Code running. Safety: refuses to run unless `auth.json` shows a ChatGPT-plan login (an API-key login would bill credit instead of your 5-hour window). Toggle from the settings panel."
+        },
+        "claudeState.codexTelegramNotifyOnReset": {
+          "type": "boolean",
+          "default": true,
+          "order": 7,
+          "description": "Send a Telegram alert when the Codex 5-hour block resets (requires a linked bot token + chat). Fires at most once per reset. Toggle from the settings panel. Default on."
+        },
+        "claudeContextBar.baseColor": {
+          "type": "string",
+          "enum": [
+            "White",
+            "Blue",
+            "Purple",
+            "Cyan",
+            "Green",
+            "Yellow",
+            "Orange",
+            "Pink"
+          ],
+          "default": "White",
+          "description": "Resting text colour for every session item. Colour otherwise carries one meaning only — the usage threshold (idle grey, warning yellow, danger red) — so all sessions share this one colour and are told apart by name, and providers by their icon colour."
+        },
+        "claudeContextBar.contextLimitDefault": {
+          "type": "number",
+          "default": 200000,
+          "description": "Context window size (tokens) for standard 200K models — Sonnet, Haiku, etc."
+        },
+        "claudeContextBar.contextLimitOpus": {
+          "type": "number",
+          "default": 1000000,
+          "description": "Context window size (tokens) for 1M-context models — Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+, and any model with '1m' in its id."
+        },
+        "claudeContextBar.warningThreshold": {
+          "type": "number",
+          "default": 50,
+          "order": 11,
+          "description": "Percentage at which to show warning color (yellow)"
+        },
+        "claudeContextBar.dangerThreshold": {
+          "type": "number",
+          "default": 75,
+          "order": 12,
+          "description": "Percentage at which to show danger color (red)"
+        },
+        "claudeContextBar.refreshInterval": {
+          "type": "number",
+          "default": 30,
+          "description": "Refresh interval in seconds"
+        },
+        "claudeContextBar.idleTimeout": {
+          "type": "number",
+          "default": 180,
+          "minimum": 10,
+          "maximum": 7200,
+          "description": "Seconds of inactivity before a session is dimmed (grayscale) to indicate idle state. Default: 180 (3 minutes). The session stays visible until 'hideAfter' elapses."
+        },
+        "claudeContextBar.hideAfter": {
+          "type": "number",
+          "default": 86400,
+          "minimum": 60,
+          "maximum": 604800,
+          "description": "Seconds of inactivity before a session is fully hidden from the status bar. Default: 86400 (24 hours). Must be ≥ idleTimeout."
+        },
+        "claudeContextBar.scope": {
+          "type": "string",
+          "enum": [
+            "workspace",
+            "all"
+          ],
+          "enumDescriptions": [
+            "Show Claude sessions for the current workspace and only the Codex conversation displayed by this VS Code window.",
+            "Show all recent Claude and Codex sessions regardless of which project or window displays them."
+          ],
+          "default": "workspace",
+          "description": "Session display scope. 'workspace' (default) uses the open folders for Claude and this window's last selected conversation UUID for Codex; 'all' is the machine-wide recent-session view."
+        },
+        "claudeContextBar.showModel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the model name (e.g., Sonnet 4.5) next to the percentage in the status bar. Takes extra space but tells you which model the session is using."
+        },
+        "claudeContextBar.autoCleanupOldVersions": {
+          "type": "boolean",
+          "default": true,
+          "description": "On activate, silently delete older versions of any installed VS Code extension (keeping only the highest semver per publisher.name). Prevents stale extension folders piling up after repeated vsix installs. Set to false to disable."
+        },
+        "claudeContextBar.compactMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Shorten project names to save status bar space. Multi-word names become acronyms (my-cool-project → MCP), single words become abbreviated (typescript → Tscript). Names ≤5 chars stay unchanged."
+        },
+        "claudeContextBar.shortNames": {
+          "type": "object",
+          "default": {},
+          "description": "Custom short names for projects. Keys are project names, values are the short versions (e.g. {\"my-cool-project\": \"MCP\", \"webapp\": \"WA\"})."
+        },
+        "claudeContextBar.soundWarning": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the WAV file played once when context reaches the warning threshold. Leave empty to use the bundled default."
+        },
+        "claudeContextBar.soundDanger": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the WAV file played twice when context reaches the danger threshold. Leave empty to use the bundled default."
+        },
+        "claudeContextBar.soundCompletion": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the WAV file played when Claude finishes a response (stop_reason = end_turn). Leave empty to use the bundled default."
+        },
+        "claudeContextBar.soundWarningGain": {
+          "type": "number",
+          "default": 100,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "Warning sound volume gain in percent (50–5000). 100 = original WAV volume. Values above 100 amplify samples in-memory above the Windows master volume; values below 100 attenuate. WARNING: gains above ~300 typically cause clipping/distortion — the sound becomes harsher rather than louder. MP3 files only support attenuation (gain ≤ 100)."
+        },
+        "claudeContextBar.soundDangerGain": {
+          "type": "number",
+          "default": 100,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "Danger sound volume gain in percent (50–5000). See soundWarningGain for details."
+        },
+        "claudeContextBar.soundCompletionGain": {
+          "type": "number",
+          "default": 100,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "Completion sound volume gain in percent (50–5000). Useful when watching videos: raise this to hear the completion beep above the video's audio without raising the system master volume. WARNING: gains above ~300 cause clipping."
+        },
+        "claudeContextBar.completionBeepSettleMs": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 100,
+          "maximum": 5000,
+          "description": "Settle window (ms) before firing the completion beep. After detecting end_turn, wait this long; if new activity appears (hook follow-up, auto-injected user message, or sub-agent continuation), suppress the beep. Default: 3000. Range: 100–5000."
+        },
+        "claudeContextBar.soundQuestion": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the WAV/MP3 file played when Claude pauses to ask a question (AskUserQuestion or ExitPlanMode tool). Leave empty for the OS default (Speech On.wav on Windows)."
+        },
+        "claudeContextBar.soundQuestionGain": {
+          "type": "number",
+          "default": 100,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "Question sound volume gain in percent (50–5000). See soundWarningGain for details."
+        },
+        "claudeContextBar.soundWorkflow": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the WAV file played when all Claude workflow/task-agent or Codex spawned agents complete. Leave empty for the bundled default."
+        },
+        "claudeContextBar.soundWorkflowGain": {
+          "type": "number",
+          "default": 100,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "Workflow complete sound volume gain in percent (50–5000). See soundWarningGain for details."
+        },
+        "claudeContextBar.workflowCompleteBeep": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play the workflow sound when all Claude workflow/task-agent or Codex spawned agents complete."
+        },
+        "claudeContextBar.detectStuckToolUse": {
+          "type": "boolean",
+          "default": false,
+          "description": "Heuristic: if the latest assistant entry is a tool_use (e.g., Bash, Edit) and no new activity has appeared for stuckToolUseThresholdSec, treat it as a likely VS Code permission prompt and fire the question beep. WARNING: this is a guess — legitimate long-running tools (builds, large file edits) will also trigger false positives. Off by default."
+        },
+        "claudeContextBar.stuckToolUseThresholdSec": {
+          "type": "number",
+          "default": 90,
+          "minimum": 30,
+          "maximum": 600,
+          "description": "Seconds of tool_use silence before the stuck-tool-use heuristic fires the question beep (only when detectStuckToolUse is on). Default: 90."
+        },
+        "claudeContextBar.codex.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show OpenAI Codex sessions (⬢) alongside Claude sessions (✳), read from rollout logs. In the default workspace scope, Codex follows the conversation UUID last selected by this VS Code window; scope all lists recent sessions. Works in local and Remote-SSH windows and is harmless when Codex is not installed."
+        },
+        "claudeContextBar.codex.home": {
+          "type": "string",
+          "default": "",
+          "description": "Codex state directory. Leave empty to auto-detect: locally $CODEX_HOME then ~/.codex; on a Remote-SSH window, whichever of /root or /home/* contains .codex/sessions. Current-chat mode may also check the local UI host for the exact selected UUID when no explicit path is set. An explicit path is authoritative: if it does not exist, no Codex session is shown and the reason is logged."
+        },
+        "claudeContextBar.codex.scanDays": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 60,
+          "description": "How many recent day folders under ~/.codex/sessions/YYYY/MM/DD to scan when scope is all. Current-chat mode locates the selected UUID directly, including older reopened conversations. Codex history is never walked in full. Default: 3."
+        },
+        "claudeContextBar.codexRunAutoCleanup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically delete old codex_rescue run logs on startup. Off by default because it deletes files. Only finished runs are ever removed."
+        },
+        "claudeContextBar.codexRunRetentionDays": {
+          "type": "number",
+          "default": 7,
+          "minimum": 1,
+          "maximum": 3650,
+          "description": "How many days of codex_rescue run logs to keep when auto-cleanup is enabled. Default: 7."
+        },
+        "claudeContextBar.codexRunDeleteDocs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also delete the request/response/review .md documents when cleaning up a run. Off by default: the raw logs under .log/ are disposable, but those documents are the record of what was asked and answered."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.0.0"
+  }
 }
