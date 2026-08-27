@@ -367,7 +367,7 @@ Open **`claudeStateBar: Open Settings Panel`** from the Command Palette for a si
 
 ## 🔔 Telegram session‑reset alerts (optional)
 
-Add a Telegram Bot Token in settings, send your bot any message, click **"Link my Telegram"** (Chat ID auto‑detected), and you'll get a notification every time your Claude 5‑hour session window resets.
+Add a Telegram Bot Token in settings, send your bot any message, click **"Link my Telegram"** (Chat ID auto‑detected), and you'll get a notification every time your Claude 5‑hour session window resets. The switch is **`claudeState.telegramNotifyOnReset`**, on by default once a token and chat ID are in place.
 
 The alert carries the weekly figure together with how long that weekly window still has to last — `Weekly usage: 42% (in 3d 9h)`. The calendar date is left out on purpose: on a phone notification the remaining time is what you act on, and the exact turnover timestamp is a tooltip away.
 
@@ -413,11 +413,15 @@ How the close is detected differs from the Claude side, and it has to. Codex rep
 - **open** — `resetsAt` is a fixed timestamp (open time + 5 hours), identical on every poll
 - **closed** — `resetsAt` is always "now + 5 hours", so it advances with the clock
 
-So the close signal is **`resetsAt` standing still after having moved**, not usage dropping to 0%. Usage can't be used for this: an open window you simply aren't using also reads 0%, so reading it that way announced a reset every time the machine woke from sleep. The alert now fires only on a genuine open → closed edge.
+So the close signal is **`resetsAt` starting to move after having stood still**, not usage dropping to 0%. Usage can't be used for this: an open window you simply aren't using also reads 0%, so reading it that way announced a reset every time the machine woke from sleep. The alert now fires only on a genuine open → closed edge. An open window's timestamp jitters by about a second between polls, so "standing still" allows five seconds — measured against a closed window, which advances by at least sixty-five.
+
+A close is a single moment, and if it passes unused — the setting was off at the time, or a primer ran and failed — nothing brings it back on its own. So a window that has stayed closed for **ten minutes** gets one opened without waiting for an edge, and that repeats on the same ten‑minute spacing for as long as it stays shut. The recovery sends no Telegram message: it isn't a reset, and a primer that kept failing would otherwise repeat the same alert on a loop.
 
 ### Billing safety
 
-`codex exec` draws on API credit rather than your 5‑hour window when Codex is signed in with an API key, and it would exit 0 either way. So the primer reads `auth.json` before firing and refuses unless it finds a ChatGPT‑plan login (`auth_mode: "chatgpt"`) and no `OPENAI_API_KEY` — neither in the file nor in the environment. An unreadable `auth.json` counts as a refusal; the check exists precisely so it never has to guess about spending money. When it refuses, the setting is turned off and you're told why.
+`codex exec` draws on API credit rather than your 5‑hour window when Codex is signed in with an API key, and it would exit 0 either way. So the primer reads `auth.json` before firing and refuses unless it finds a ChatGPT‑plan login (`auth_mode: "chatgpt"`) and no `OPENAI_API_KEY` — neither in the file nor in the environment. The check exists precisely so it never has to guess about spending money.
+
+Two different refusals, and they are not treated the same. **An API key that is actually there** turns the setting off and tells you why — that one is a real billing hazard. **A file it could not read** only skips that one reset and leaves the setting alone; not being able to read a file is an absence of evidence, not evidence of a key. The primer always reads the *local* home directory, so a Remote‑SSH window can't send it looking at a server path.
 
 Afterwards it verifies a window actually opened by watching `resetsAt` come to a stop across two readings. Checking that it sits ~5 hours out would prove nothing — a closed window reports exactly that on every poll, so such a test passes whether or not anything happened. Once the plan login is confirmed there is no billing hazard, so a failed verification is logged and left alone rather than disabling the feature.
 

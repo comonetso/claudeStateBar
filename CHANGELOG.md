@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.14.0] - 2026-08-26
+## [1.14.0] - 2026-08-27
 
 > **You can cut in while Codex is still working.**
 > A consultation used to be a throw and a wait. You wrote the request, Codex went away for several
@@ -163,6 +163,60 @@ sleep gap, so a timer that stopped while the machine was asleep is caught on the
 waking without a rule of its own — and one that was already restarted by another machine is not
 mistaken for a fresh stop. Verification is likewise exact now: firing only ever happens while the
 value is null, so the value coming back at all is the proof.
+
+### The Codex reset check was reading a one-second wobble as a closed window
+
+Codex reports its window the opposite way round to Claude: while the window is open `resetsAt` holds
+still, and once it closes the value becomes "now plus five hours" and advances with the clock. So
+the check asked whether the value had moved. It compared for exact equality, and an open window does
+not sit perfectly still — it wobbles by a second between polls.
+
+On 2026-08-26 that sent four reset alerts that were not resets. All four moved by exactly 1000ms,
+and usage was climbing through them — 2%, then 10%, then 48% — which is to say the window was open
+and in active use each time. The two genuine closes in the same day moved by about five hours.
+
+The comparison now allows five seconds. The measured spread leaves room on both sides: an open
+window wobbles by one second, a closed one advances by at least sixty-five seconds between polls,
+and a real close jumps by five hours. The same exact-equality test was also being used to verify that a primer
+had opened a window, so a window that did open could fail its own verification; that one is fixed
+too.
+
+### A Remote-SSH window was handing the primer the server's home directory
+
+The primer that opens a new Codex window checks first that the login is a plan login rather than an
+API key, by reading `auth.json`. It asked the workspace where Codex's home was. This extension runs
+on the local machine — it is a UI extension, it always does — but in a Remote-SSH window the
+workspace answers with the *server's* home, so a local file read went looking for `\root\.codex` and
+came back with ENOENT.
+
+Not being able to read the file was treated the same as finding an API key in it, and finding an API
+key turns auto-start off permanently. So a path mistake silently disabled the feature and wrote that
+decision to settings, where it survived restarts. The alerts kept arriving, no window ever opened,
+and nothing said why.
+
+The primer no longer takes a home directory at all — it resolves the local one itself, the same
+shape the Claude primer has always had, so there is no longer anywhere for a remote path to enter.
+And an unreadable file is now its own outcome: it skips that one reset and leaves the setting alone.
+Only an actual API key still disables anything.
+
+### A window left closed had no way to reopen itself
+
+Auto-start fired on the moment a window closed. That moment happens once. If anything ate it — the
+setting switched off, or a primer that ran and failed — nothing came round again, because the thing
+that opens a window is the primer and the primer only ran on that edge. On 2026-08-27 a window
+closed at 01:36 and was still closed at 05:55.
+
+Sleep is not one of those cases, incidentally: the previous verdict is held in global state, so a
+window that was open going into sleep still produces an edge on the first reading after waking.
+
+The extension now tracks how long the window has been continuously closed and opens one after ten
+minutes without needing an edge. The recovery sends no Telegram message: it is not a reset, and a
+primer that keeps failing would otherwise repeat the same alert every ten minutes. It retries on the
+same ten-minute spacing for as long as the window stays shut.
+
+Verified against a live close on 2026-08-27: the wobble arrived twice in the four minutes before the
+window shut, at 10:53 and 10:55, and both were read as open. The genuine close two minutes later was
+caught, one alert went out, and the new window was open and confirmed within forty seconds.
 
 ### Codex accounts without a 5-hour limit show their weekly figure instead
 
