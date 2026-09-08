@@ -2,7 +2,7 @@
   "name": "claude-state-bar",
   "displayName": "Claude Code & Codex Status Bar",
   "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly usage read live from the Codex app-server and kept identical across every window. Includes a live Workflow/Agent viewer, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
-  "version": "1.14.1",
+  "version": "1.15.0",
   "extensionKind": [
     "ui"
   ],
@@ -115,6 +115,10 @@
       {
         "command": "claudeContextBar.openSettings",
         "title": "claudeStateBar: Open Settings Panel"
+      },
+      {
+        "command": "claudeContextBar.showClaudeStatus",
+        "title": "claudeStateBar: Claude Status (usage & stats)"
       },
       {
         "command": "claudeContextBar.refreshPlanUsage",
@@ -251,7 +255,7 @@
         "claudeContextBar.contextLimitOpus": {
           "type": "number",
           "default": 1000000,
-          "description": "Context window size (tokens) for 1M-context models — Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+, and any model with '1m' in its id."
+          "description": "Context window size (tokens) for 1M-context models — Opus 4+, Fable/Mythos, Sonnet 4.6+/5+, and any model with '1m' in its id."
         },
         "claudeContextBar.warningThreshold": {
           "type": "number",

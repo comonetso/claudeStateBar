@@ -11,6 +11,9 @@ export interface WorkflowAgentView {
     durationMs: number;
     name?: string;          // display label (Task agents); undefined → "에이전트 N"
     fullName?: string;      // untruncated role/task text — shown as a hover tooltip on the label
+    tokens?: number;        // tokens this agent used (Claude Code's own totalTokens definition)
+    model?: string;         // raw model id, e.g. claude-opus-5
+    phase?: string;         // phase recovered from the script; undefined → not grouped
 }
 
 export interface WorkflowView {
@@ -71,7 +74,7 @@ function workflowsSignature(workflows: WorkflowView[]): string {
         // panel — that's what the user watches mid-run (more important than mid-run expand).
         // A finished agent stops changing → its signature stabilises → no re-render → an
         // expanded report stays open. So running = live updates, done = stable & expandable.
-        a: wf.agents.map(a => [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name, a.fullName]),
+        a: wf.agents.map(a => [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name, a.fullName, a.tokens, a.model, a.phase]),
     })));
 }
 
@@ -120,7 +123,7 @@ export function createOrShowWorkflowPanel(
         // The webview signals 'ready' once its script loads; its DOM is empty until the first
         // render, so send the i18n dict first, then force that render through.
         if (msg?.type === 'ready') {
-            panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()) });
+            panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
             lastPushedSignature = null; pushWorkflows(workflows);
         }
         else if (msg?.type === 'delete' && typeof msg.wfId === 'string') callbacks?.onDelete(msg.wfId);
@@ -154,7 +157,7 @@ export function pushWorkflows(workflows: WorkflowView[]): void {
 // the language setting so the panel re-localises live without needing a reopen).
 export function pushLanguage(): void {
     if (!panel) return;
-    panel.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()) });
+    panel.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
 }
 
 function getHtml(webview: vscode.Webview): string {
@@ -192,6 +195,15 @@ function getHtml(webview: vscode.Webview): string {
   .wf-desc { color: var(--vscode-descriptionForeground); font-size: 0.88em; margin: 4px 0 8px 0; }
   .phases { font-size: 0.82em; color: var(--vscode-descriptionForeground); margin-bottom: 10px; }
   .phase-chip { display: inline-block; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius: 4px; padding: 1px 7px; margin-right: 4px; }
+  .wf-meta { color: var(--vscode-descriptionForeground); font-size: 0.85em; margin: 3px 0 6px 0; }
+  .phase-group { margin: 10px 0 0 0; }
+  .phase-head { display: flex; align-items: center; gap: 8px; padding-bottom: 3px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3)); }
+  .phase-title { font-weight: 700; font-size: 0.88em; }
+  .phase-spacer { flex: 1; }
+  .phase-count { color: var(--vscode-descriptionForeground); font-size: 0.82em; font-variant-numeric: tabular-nums; }
+  .agent-spacer { flex: 1; }
+  .a-model { color: var(--vscode-descriptionForeground); font-size: 0.82em; white-space: nowrap; }
+  .a-tok { color: var(--vscode-descriptionForeground); font-size: 0.82em; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .agents { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
   .agent { padding: 2px 0; font-size: 0.9em; }
   .agent-head { display: flex; align-items: center; gap: 8px; }
@@ -254,6 +266,7 @@ function getHtml(webview: vscode.Webview): string {
   // NOTE: this whole script lives inside a host template literal — the {0} substitution regex
   // MUST use doubled backslashes (\\{ \\d \\}) so the compiled webview JS gets a valid /\{(\d+)\}/g.
   let dict = {};
+  let lang = 'en';
   function t(key) {
     let v = dict[key];
     if (v == null) return key;
@@ -297,7 +310,7 @@ function getHtml(webview: vscode.Webview): string {
       return [wf.wfId, wf.name, wf.description, wf.phases, wf.startedAt || 0,
         // Mirror workflowsSignature: include summary/duration so a running agent's live
         // activity keeps refreshing. Done agents are stable, so their expanded report stays open.
-        wf.agents.map(function (a) { return [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name, a.fullName]; })];
+        wf.agents.map(function (a) { return [a.agentId, a.status, a.summary, a.fullSummary, a.durationMs, a.name, a.fullName, a.tokens, a.model, a.phase]; })];
     }));
   }
   function detailsKey(wfId, agentId) { return wfId + ' ' + agentId; }
@@ -307,10 +320,31 @@ function getHtml(webview: vscode.Webview): string {
   function fmtDur(ms) {
     if (!ms || ms <= 0) return '';
     const s = ms / 1000;
-    if (s < 60) return s.toFixed(1) + 's';
+    if (s < 60) return s.toFixed(1) + t('wf.unitSec');
     const m = Math.floor(s / 60);
     const rem = Math.round(s % 60);
-    return m + 'm ' + rem + 's';
+    return m + t('wf.unitMin') + ' ' + rem + t('wf.unitSec');
+  }
+
+  function trimZero(x) { const v = x.toFixed(1); return v.slice(-2) === '.0' ? v.slice(0, -2) : v; }
+
+  // Per-agent figure. Deliberately k/M in every language: that is what the remote-control
+  // view shows, and these sit in a narrow column where a localised unit would wrap.
+  function fmtTok(n) {
+    if (!n || n <= 0) return '';
+    if (n >= 1000000) return trimZero(n / 1000000) + 'M';
+    if (n >= 1000) return trimZero(n / 1000) + 'k';
+    return String(n);
+  }
+
+  // Workflow total. Korean groups by 10,000 (만), so 1,032,500 reads as 103만.
+  function fmtTokTotal(n) {
+    if (!n || n <= 0) return '';
+    if (lang === 'ko') {
+      if (n >= 10000) return Math.round(n / 10000).toLocaleString() + t('wf.unitMan');
+      return n.toLocaleString();
+    }
+    return fmtTok(n);
   }
 
   function pad2(n) { return String(n).padStart(2, '0'); }
@@ -388,43 +422,98 @@ function getHtml(webview: vscode.Webview): string {
         : stopped > 0
           ? '<span class="badge stopped">' + esc(t('wf.doneStopped', done, stopped)) + '</span>'
           : '<span class="badge done">' + done + '/' + total + ' ' + esc(t('wf.done')) + '</span>';
-      const phases = (wf.phases && wf.phases.length)
-        ? '<div class="phases">' + wf.phases.map(p => '<span class="phase-chip">' + esc(p) + '</span>').join('') + '</div>'
-        : '';
       // Count agents sharing each label so identical labels (e.g. role names that
       // truncate to the same 50 chars) get a number appended to stay distinguishable.
       const labelCounts = {};
       wf.agents.forEach(a => { const k = (a.name && a.name.trim()) || ''; if (k) labelCounts[k] = (labelCounts[k] || 0) + 1; });
-      const agents = wf.agents.length
-        ? '<div class="agents">' + wf.agents.map((a, i) => {
-            const dur = fmtDur(a.durationMs);
-            const durStr = dur ? ' <span class="dur">· ' + (a.status === 'running' ? esc(t('wf.elapsed')) : '') + dur + '</span>' : '';
-            // Killed agent → a "· stopped" tag next to the label so it reads as intentionally
-            // ended, not still working (the whole point of the stopped state).
-            const stoppedTag = a.status === 'stopped' ? ' <span class="stopped-tag">· ' + esc(t('wf.stopped')) + '</span>' : '';
-            const nm = (a.name && a.name.trim()) || '';
-            const labelText = nm ? (labelCounts[nm] > 1 ? nm + ' (' + (i + 1) + ')' : nm) : t('wf.agentN', i + 1);
-            // Hover tooltip on the (50-char-clipped) label so the full role/task is readable.
-            const labelTitle = (a.fullName && a.fullName.trim()) ? a.fullName : labelText;
-            // Full report expander: when fullSummary is meaningfully longer than the
-            // 160-char preview, wrap it in <details> so the user can read the whole thing.
-            let summaryHtml = '';
-            const full = a.fullSummary;
-            if (a.summary && full && full.length > a.summary.length) {
-              const dkey = detailsKey(wf.wfId, a.agentId);
-              const openAttr = openDetails[dkey] ? ' open' : '';
-              summaryHtml = '<details class="summary-wrap" data-dkey="' + esc(dkey) + '"' + openAttr + '><summary>' + esc(a.summary) +
-                '</summary><div class="full">' + esc(full) + '</div></details>';
-            } else if (a.summary) {
-              summaryHtml = '<div class="summary">' + esc(a.summary) + '</div>';
-            }
-            return '<div class="agent">' +
-              '<div class="agent-head"><span class="dot ' + a.status + '"></span>' +
-              '<span class="label" title="' + esc(labelTitle) + '">' + esc(labelText) + '</span>' + durStr + stoppedTag + '</div>' +
-              summaryHtml +
-            '</div>';
-          }).join('') + '</div>'
-        : '<div class="empty">' + esc(t('wf.noAgents')) + '</div>';
+
+      // Keep each agent's position in the whole workflow, so grouping does not renumber
+      // the "agent N" fallback labels.
+      const indexed = wf.agents.map((a, i) => ({ a: a, i: i }));
+      const placedCount = wf.agents.filter(a => a.phase).length;
+      // Group only when the script declared real phases AND we placed most of the agents.
+      // A box holding one agent above nine loose ones is worse than no boxes at all.
+      const useGroups = !!(wf.phases && wf.phases.length >= 2) && wf.agents.length > 0
+        && placedCount * 2 >= wf.agents.length;
+
+      const renderAgent = (a, i) => {
+        const dur = fmtDur(a.durationMs);
+        const durStr = dur ? '<span class="dur">' + (a.status === 'running' ? esc(t('wf.elapsed')) : '') + dur + '</span>' : '';
+        // Killed agent - a "stopped" tag next to the label so it reads as intentionally
+        // ended, not still working (the whole point of the stopped state).
+        const stoppedTag = a.status === 'stopped' ? '<span class="stopped-tag">' + esc(t('wf.stopped')) + '</span>' : '';
+        const nm = (a.name && a.name.trim()) || '';
+        const labelText = nm ? (labelCounts[nm] > 1 ? nm + ' (' + (i + 1) + ')' : nm) : t('wf.agentN', i + 1);
+        // Hover tooltip on the (50-char-clipped) label so the full role/task is readable.
+        const labelTitle = (a.fullName && a.fullName.trim()) ? a.fullName : labelText;
+        const modelStr = a.model ? '<span class="a-model">' + esc(a.model) + '</span>' : '';
+        const tokStr = a.tokens
+          ? '<span class="a-tok" title="' + esc(t('wf.tokensExact', a.tokens.toLocaleString())) + '">' + esc(fmtTok(a.tokens)) + '</span>'
+          : '';
+        // Full report expander: when fullSummary is meaningfully longer than the
+        // 160-char preview, wrap it in <details> so the user can read the whole thing.
+        let summaryHtml = '';
+        const full = a.fullSummary;
+        if (a.summary && full && full.length > a.summary.length) {
+          const dkey = detailsKey(wf.wfId, a.agentId);
+          const openAttr = openDetails[dkey] ? ' open' : '';
+          summaryHtml = '<details class="summary-wrap" data-dkey="' + esc(dkey) + '"' + openAttr + '><summary>' + esc(a.summary) +
+            '</summary><div class="full">' + esc(full) + '</div></details>';
+        } else if (a.summary) {
+          summaryHtml = '<div class="summary">' + esc(a.summary) + '</div>';
+        }
+        return '<div class="agent">' +
+          '<div class="agent-head"><span class="dot ' + a.status + '"></span>' +
+          '<span class="label" title="' + esc(labelTitle) + '">' + esc(labelText) + '</span>' + stoppedTag +
+          '<span class="agent-spacer"></span>' + modelStr + tokStr + durStr + '</div>' +
+          summaryHtml +
+        '</div>';
+      };
+
+      // The phase chips are the flat-layout stand-in for grouping; with real groups on
+      // screen they would just repeat the group headers.
+      const phases = (!useGroups && wf.phases && wf.phases.length)
+        ? '<div class="phases">' + wf.phases.map(p => '<span class="phase-chip">' + esc(p) + '</span>').join('') + '</div>'
+        : '';
+
+      let agents;
+      if (!wf.agents.length) {
+        agents = '<div class="empty">' + esc(t('wf.noAgents')) + '</div>';
+      } else if (!useGroups) {
+        agents = '<div class="agents">' + indexed.map(x => renderAgent(x.a, x.i)).join('') + '</div>';
+      } else {
+        const groups = [];
+        // Script order, not start order: the order the author declared is the one the
+        // user has in mind.
+        wf.phases.forEach(p => {
+          const mem = indexed.filter(x => x.a.phase === p);
+          if (mem.length) groups.push({ title: p, items: mem });
+        });
+        // Anything unplaced goes last, with no icon or warning colour - it is not the
+        // user's doing and there is nothing for them to act on.
+        const rest = indexed.filter(x => !x.a.phase || wf.phases.indexOf(x.a.phase) < 0);
+        if (rest.length) groups.push({ title: t('wf.phaseOther'), items: rest });
+        agents = groups.map(g => {
+          const doneN = g.items.filter(x => x.a.status === 'done').length;
+          // No status-dot strip on the header: every agent row below already carries its
+          // own dot, and the done/total counter says the same thing in less space.
+          return '<div class="phase-group">' +
+            '<div class="phase-head">' +
+              '<span class="phase-title">' + esc(g.title) + '</span>' +
+              '<span class="phase-spacer"></span>' +
+              '<span class="phase-count">' + doneN + '/' + g.items.length + '</span>' +
+            '</div>' +
+            '<div class="agents">' + g.items.map(x => renderAgent(x.a, x.i)).join('') + '</div>' +
+          '</div>';
+        }).join('');
+      }
+
+      // Head line: how many agents and how many tokens they have used between them.
+      const totalTok = wf.agents.reduce((acc, a) => acc + (a.tokens || 0), 0);
+      const metaLine = wf.agents.length
+        ? '<div class="wf-meta">' + esc(t('wf.headAgents', wf.agents.length)) +
+          (totalTok ? ' \u00b7 ' + esc(t('wf.headTokens', fmtTokTotal(totalTok))) : '') + '</div>'
+        : '';
       const expanded = isExpanded(wf.wfId, index);
       // Real workflows (wf_*) delete their whole dir; the Task pseudo-bundle ('tasks')
       // clears its COMPLETED agent logs (running ones are kept).
@@ -456,6 +545,7 @@ function getHtml(webview: vscode.Webview): string {
         '</div>' +
         '<div class="wf-body">' +
           (wf.wfId.indexOf('wf_') === 0 ? '<div class="wf-id">' + esc(wf.wfId) + '</div>' : '') +
+          metaLine +
           (wf.description ? '<div class="wf-desc">' + esc(wf.description) + '</div>' : '') +
           phases + agents +
         '</div>' +
@@ -534,7 +624,7 @@ function getHtml(webview: vscode.Webview): string {
 
   window.addEventListener('message', e => {
     const m = e.data;
-    if (m && m.type === 'i18n') { dict = m.dict || {}; applyI18n(); render(lastWorkflows, true); }
+    if (m && m.type === 'i18n') { dict = m.dict || {}; lang = m.lang || 'en'; applyI18n(); render(lastWorkflows, true); }
     else if (m && m.type === 'workflows') render(m.workflows);
     else if (m && m.type === 'trash') renderTrash(m.items || []);
   });

@@ -21,7 +21,7 @@ Claude Code & Codex Status Bar shows two complementary things, merged into a sin
 Reads Claude Code's local session logs (`~/.claude/projects/*.jsonl`) and shows, per active session:
 - **Live context usage %** (tokens used vs. the model's limit)
 - **Per‑session monitoring** — each Claude Code session gets its own status‑bar item
-- **Model‑aware limits** — Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+, or models with `1m` in their ID → 1,000,000 tokens; others (Sonnet ≤4.5, Haiku, etc.) → 200,000 (configurable)
+- **Model‑aware limits** — Opus 4+, Fable/Mythos, Sonnet 4.6+/5+, or models with `1m` in their ID → 1,000,000 tokens; others (Opus ≤3, Sonnet ≤4.5, Haiku, etc.) → 200,000 (configurable)
 - **Model + effort + speed** — e.g. `Opus 4.7 · xHigh⁺ · ⚡fast` (see [Effort display](#️-effort-level-display))
 - **Color‑coded warnings** — normal / warning (≥50%) / danger (≥75%) backgrounds
 - **Two‑tier idle** — sessions dim after `idleTimeout` (default 180s) and fully hide after `hideAfter`
@@ -152,8 +152,10 @@ Local and remote read paths were verified to produce identical parsed results �
 Open the **Workflow Viewer** from the session QuickPick menu to see a live WebView panel of every active Claude Code workflow and Task (Agent tool) sub‑agent:
 
 - **Workflow progress** — each workflow appears as a card with its phases, running/done agents, per‑agent summary, elapsed time, and live activity
+- **Agents grouped by phase** — when a workflow declares more than one phase, its agents are boxed under the phase they ran in, each box carrying a done/total counter. An agent's phase is not recorded anywhere on disk, so it is recovered from the workflow script; any agent that cannot be placed is simply listed as before, and if too few can be placed the card falls back to a flat list
+- **Model and tokens per agent** — every row shows which model ran it and how many tokens it used, and the card header carries the agent count and the workflow's total
 - **Full result expand** — long final reports fold into a `▶ summary` toggle so you can read the full output without clutter
-- **Role labels** — each agent's role is auto‑extracted from its prompt header, so you see "Lens A: Bug Detection" instead of "agent-1"
+- **Role labels** — each agent's role comes from the `label` its workflow script gave it, falling back to text extracted from the agent's prompt header, so you see "Lens A: Bug Detection" instead of "agent-1"
 - **Task (Agent tool) sub‑agents** — sub‑agents spawned via Claude Code's Agent tool are shown separately, grouped into **batches by start time** (5‑minute gap = new batch)
 - **Per‑batch 🗑 cleanup** — delete finished task‑agent logs for a specific batch while keeping any still‑running agents untouched
 - **Trash** — deleting a workflow moves it aside instead of destroying it, with no confirmation to click through. Open 🗑 at the top of the panel to restore it or delete it for good. Restoring is refused if a live workflow has since taken that id
@@ -355,6 +357,22 @@ Click for menu (hide / restore / settings)
 
 ---
 
+## 📈 Claude Status panel
+
+**`Claude Status`** sits in the session menu directly above Settings, and opens a panel with two tabs. It only ever reads.
+
+**Usage** opens with a card for each conversation currently on the status bar: how long it has been going, how much of that it spent working, how many lines of code it changed, how many API requests it made, and its token split. It is the summary the CLI prints when a session ends, except live. Where a session has already ended, Claude Code leaves its own record behind and the card shows that instead — real API time rather than an estimate.
+
+It also puts a price on it. **Cost (API rate)** converts the conversation's tokens at published Anthropic API rates — per 1M tokens in/out: Opus $5/$25, Sonnet $2/$10, Haiku $1/$5, Fable $10/$50, with cache writes at 1.25× the input rate and cache reads at 0.1× (Fable's cache reads are a flat $0.25) — so you can see what a session would have cost had it gone through the API. On a subscription none of it is billed, which is why Claude Code records `$0` for the same session; hovering the figure shows the rates and the per-model split. A model with no published rate is left out of the total and flagged rather than guessed at. The Stats tab carries the same conversion for your whole history.
+
+Each token figure carries its own share of that amount beside it, which is where the surprise usually is: in a long conversation **cache reads are most of the bill**. Every request re-reads the whole thread, so the cost of a session grows with the square of its length — the same reason the 24-hour breakdown further down flags long contexts.
+
+Under that is how much of the plan is left — the 5‑hour window, the weekly cap, and each per‑model weekly cap — each with the clock time it resets and how far off that is. Then what has actually been consuming the limit over the last 24 hours: the share of usage that happened in contexts above 150k tokens, and a breakdown by skill. Those figures are worked out from the session logs on this machine, so work done on other devices or on claude.ai is not in them.
+
+**Stats** reads the statistics file Claude Code keeps as you use it, and shows an activity heatmap, total tokens with the input / output / cache split, session count, longest session, active days, streaks, and each model's share. That file only runs to yesterday, so today is counted separately and added on.
+
+---
+
 ## ⚙️ Settings panel (webview, EN/KO)
 
 Open **`claudeStateBar: Open Settings Panel`** from the Command Palette for a single panel with a runtime **English / 한국어** toggle. It collects Org ID, Session Key, refresh interval, Telegram Bot Token (auto‑detects your Chat ID), sound settings (with preview), and context‑monitor options. Sensitive values go to encrypted SecretStorage; everything else syncs with VS Code settings.
@@ -446,7 +464,7 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 |---------|---------|-------------|
 | `claudeContextBar.baseColor` | `White` | Resting text colour, shared by every session. Colour otherwise means only the usage threshold |
 | `claudeContextBar.contextLimitDefault` | `200000` | Context limit for standard models |
-| `claudeContextBar.contextLimitOpus` | `1000000` | Context limit for 1M‑context models (Opus 4.x, Fable/Mythos, Sonnet 4.6+/5+) |
+| `claudeContextBar.contextLimitOpus` | `1000000` | Context limit for 1M‑context models (Opus 4+, Fable/Mythos, Sonnet 4.6+/5+) |
 | `claudeContextBar.warningThreshold` | `50` | % for yellow warning background |
 | `claudeContextBar.dangerThreshold` | `75` | % for red danger background |
 | `claudeContextBar.refreshInterval` | `30` | Refresh interval (seconds) |

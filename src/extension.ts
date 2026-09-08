@@ -9,6 +9,14 @@ import { fetchUsage, AuthExpiredError, CloudflareBlockedError, NormalizedUsage, 
 import * as telegram from './telegram';
 import * as blockPrimer from './blockPrimer';
 import { createOrShowSettingsPanel, notifyUsage } from './settingsPanel';
+import {
+    createOrShowStatusPanel,
+    pushStatus,
+    pushLanguage as pushStatusLanguage,
+    isStatusPanelOpen
+} from './statusPanel';
+import { collectClaudeStats, summarizeSession } from './claudeStats';
+import { parseWorkflowScript, placeAgents } from './workflowPhases';
 import { createOrShowWorkflowPanel, pushWorkflows, pushWorkflowTrash, getTrackedSessionFile, pushLanguage } from './workflowPanel';
 import { createOrShowCodexPanel, pushRuns, pushTrash, pushCodexLanguage, isCodexPanelOpen, CodexRunView, CodexTrashView } from './codexRescuePanel';
 import { createOrShowChatPanel, pushChats, pushChatTrash, pushChatLanguage, isChatPanelOpen, CodexChatView, ChatTrashView } from './codexChatPanel';
@@ -55,6 +63,9 @@ interface WorkflowAgentInfo {
     durationMs: number;  // first→last message span from the agent log; 0 if unknown
     name?: string;  // display label (Task agents: meta.json description); workflow agents leave undefined → "에이전트 N"
     fullName?: string;  // untruncated role/task text (name is capped at 50 chars) — panel shows it as a hover tooltip
+    tokens?: number;  // last usage record's in+cache_creation+cache_read+out — matches Claude Code's own totalTokens
+    model?: string;   // raw model id from the agent's own log (e.g. claude-opus-5)
+    phase?: string;   // phase recovered from the workflow script; undefined → no grouping for this agent
 }
 
 interface WorkflowInfo {
@@ -125,6 +136,10 @@ let planRefreshInterval: NodeJS.Timeout | null = null;
 let planTickInterval: NodeJS.Timeout | null = null;
 
 let lastUsage: NormalizedUsage | null = null;
+// Sessions from the most recent scan. The Claude Status panel reads this instead of
+// re-scanning: the panel repaint is synchronous, and this is exactly the list the
+// status bar is showing, which is what the per-session summaries should match.
+let lastScannedSessions: SessionInfo[] = [];
 // [diag 1.7.39] Last sessionResetAt state written to diag.log, so each poll only records on change.
 let lastPollDiag = '';
 // [diag 1.14.0] Last observedAt whose cache-repeat skip was recorded, so the log gets one line per
@@ -272,6 +287,20 @@ export function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(openSettingsCmd);
 
+    // Claude Status — read-only view of plan limits and lifetime stats.
+    const claudeStatusCmd = vscode.commands.registerCommand('claudeContextBar.showClaudeStatus', () => {
+        createOrShowStatusPanel(context, {
+            onRefreshRequested: () => {
+                // Repaint from what we already have, then ask claude.ai for a fresh
+                // reading. The disk scan is cheap (tens of ms) so it always re-runs;
+                // the network call is the slow half and lands via refreshStatusPanel().
+                pushStatus(buildStatusPayload(true));
+                refreshPlanUsage();
+            }
+        });
+    });
+    context.subscriptions.push(claudeStatusCmd);
+
     // Manual plan-usage refresh
     const refreshPlanCmd = vscode.commands.registerCommand('claudeContextBar.refreshPlanUsage', () => {
         refreshPlanUsage();
@@ -381,7 +410,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Status bar click → QuickPick menu (hide this / restore hidden / open settings)
     const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
-        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'codexChats' | 'cleanupGhosts'; sessionFile?: string };
+        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'codexChats' | 'cleanupGhosts' | 'claudeStatus'; sessionFile?: string };
         const items: Item[] = [];
 
         const clickedEntry = sessionFile ? statusBarItems.get(sessionFile) : undefined;
@@ -494,6 +523,14 @@ export function activate(context: vscode.ExtensionContext) {
             description: planT('menu.cleanupGhostsDesc'),
             action: 'cleanupGhosts'
         });
+        // Claude Status sits directly above Settings (2026-09-08 user decision): both are
+        // "about the tool itself" rather than about a session, and the panel is the place
+        // future read-only views get added, so it wants a fixed, findable slot.
+        items.push({
+            label: '$(dashboard) ' + planT('menu.claudeStatus'),
+            description: planT('menu.claudeStatusDesc'),
+            action: 'claudeStatus'
+        });
         items.push({
             label: '$(gear) ' + planT('menu.openSettings'),
             description: planT('menu.openSettingsDesc'),
@@ -522,6 +559,9 @@ export function activate(context: vscode.ExtensionContext) {
                     hiddenSessions.delete(picked.sessionFile);
                     refreshAllSessions();
                 }
+                break;
+            case 'claudeStatus':
+                vscode.commands.executeCommand('claudeContextBar.showClaudeStatus');
                 break;
             case 'settings':
                 vscode.commands.executeCommand('claudeContextBar.openSettings');
@@ -935,6 +975,7 @@ export function activate(context: vscode.ExtensionContext) {
             pushLanguage();
             pushCodexLanguage();
             pushChatLanguage();
+            pushStatusLanguage();
             refreshAllSessions();
         }
     });
@@ -1339,13 +1380,24 @@ function agentWasInterrupted(lines: string[]): boolean {
     return false;
 }
 
-async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; fullActivity: string; fullSteps: string; firstTs: number; lastTs: number; interrupted: boolean }> {
+async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; fullActivity: string; fullSteps: string; firstTs: number; lastTs: number; interrupted: boolean; tokens: number; model: string }> {
     let firstTs = 0;
     let lastTs = 0;
     let activity = planT('wf.working');
     let fullActivity = '';
     let fullSteps = '';
     let interrupted = false;
+    // Token total for the agent = the LAST usage record, not a sum of them.
+    //
+    // Verified 2026-09-08 against Claude Code's own bookkeeping: a Task result carries
+    // `totalTokens`, and input + cache_creation + cache_read + output of the final usage
+    // record reproduces it exactly (92,754 on the sample checked). Summing instead would
+    // double-count, because each request writes 2-4 streaming snapshots that all repeat
+    // the same cache figures — 36 assistant entries for 11 distinct requests in one log.
+    // The value grows monotonically, so the last record is also the largest.
+    let tokens = 0;
+    let tokensFound = false;
+    let model = '';
     try {
         const content = await readTextFile(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`));
         const lines = content.trim().split('\n');
@@ -1368,6 +1420,17 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
             try {
                 const e = JSON.parse(lines[i]);
                 if (e.timestamp && !lastTs) lastTs = new Date(e.timestamp).getTime();
+                if (!tokensFound && e.type === 'assistant' && e.message?.usage) {
+                    const u = e.message.usage;
+                    tokens = (u.input_tokens || 0)
+                        + (u.cache_creation_input_tokens || 0)
+                        + (u.cache_read_input_tokens || 0)
+                        + (u.output_tokens || 0);
+                    // `usage.iterations` is a duplicate of these same four fields (checked
+                    // across 30k records: 4,209 present, 0 that differed) — never add it.
+                    if (typeof e.message.model === 'string') model = e.message.model;
+                    tokensFound = true;
+                }
                 if (!foundActivity && e.type === 'assistant' && e.message?.content) {
                     const blocks = e.message.content;
                     if (Array.isArray(blocks)) {
@@ -1401,7 +1464,7 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
         }
     } catch { /* agent log not readable yet */ }
     const durationMs = (firstTs && lastTs && lastTs >= firstTs) ? lastTs - firstTs : 0;
-    return { durationMs, activity, fullActivity, fullSteps, firstTs, lastTs, interrupted };
+    return { durationMs, activity, fullActivity, fullSteps, firstTs, lastTs, interrupted, tokens, model };
 }
 
 // Parse a single Task-subagent log (subagents/agent-<id>.jsonl + its sibling
@@ -1468,11 +1531,25 @@ async function parseTaskAgent(
     let fullText = '';
     let activity = planT('wf.working');
     let fullActivity = '';
+    // Same token rule as workflow agents: the LAST usage record, never a sum of them.
+    let tokens = 0;
+    let tokensFound = false;
+    let model = '';
     for (let i = lines.length - 1; i >= 0; i--) {
         if (!lines[i].trim()) continue;
         let e: any;
         try { e = JSON.parse(lines[i]); } catch { continue; }
         if (e.type !== 'assistant' || !e.message) continue;
+
+        if (!tokensFound && e.message.usage) {
+            const u = e.message.usage;
+            tokens = (u.input_tokens || 0)
+                + (u.cache_creation_input_tokens || 0)
+                + (u.cache_read_input_tokens || 0)
+                + (u.output_tokens || 0);
+            if (typeof e.message.model === 'string') model = e.message.model;
+            tokensFound = true;
+        }
 
         const blocks = Array.isArray(e.message.content) ? e.message.content : [];
         const textBlock = blocks.find((b: any) => b?.type === 'text' && typeof b.text === 'string' && b.text.trim());
@@ -1527,6 +1604,8 @@ async function parseTaskAgent(
         fullSummary: status === 'running' ? fullActivity : (collectAgentSteps(lines) || fullText || fullActivity),
         durationMs,
         name: displayName || 'agent',
+        ...(tokens ? { tokens } : {}),
+        ...(model ? { model: getShortModelName(model, false) } : {}),
     };
     let mtime = 0;
     try {
@@ -1597,19 +1676,10 @@ async function findTaskAgentBundles(sessionDirUri: vscode.Uri): Promise<{ wf: Wo
     });
 }
 
-function parseWorkflowScriptMeta(js: string): { name: string; description: string; phases: string[] } {
-    let name = '';
-    let description = '';
-    const phases: string[] = [];
-    try {
-        const nameMatch = js.match(/name\s*:\s*['"]([^'"]+)['"]/);
-        if (nameMatch) name = nameMatch[1];
-        const descMatch = js.match(/description\s*:\s*['"]([^'"]+)['"]/);
-        if (descMatch) description = descMatch[1];
-        for (const m of js.matchAll(/title\s*:\s*['"]([^'"]+)['"]/g)) phases.push(m[1]);
-    } catch { /* fallback */ }
-    return { name, description, phases };
-}
+// (parseWorkflowScriptMeta was replaced by parseWorkflowScript in workflowPhases.ts.
+//  The old version ran its regexes over the whole file, so a JSON schema's `title`
+//  property — or a prompt quoting one — could inject a phantom phase. The new parser
+//  confines them to the meta block and additionally recovers per-agent placement.)
 
 async function findWorkflowsForSession(sessionFileUri: string): Promise<WorkflowInfo[]> {
     // Collect with each workflow's journal mtime so we can sort newest-activity-first.
@@ -1644,6 +1714,9 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
             const agents: WorkflowAgentInfo[] = [];
             let wfStartedAt = 0;  // earliest agent firstTs; endedAt = latest agent lastTs
             let wfEndedAt = 0;
+            // Declared out here so the script parser below can match agents to phases by
+            // their prompt text without reading every agent log a second time.
+            const promptTexts = new Map<string, string>();
             try {
                 const journalContent = await readTextFile(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'));
                 const startedIds = new Set<string>();
@@ -1661,7 +1734,6 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                 // Derive per-agent role labels from their first prompts (no label is stored
                 // on disk — see deriveAgentRoleLabels). Done once per workflow so unique vs.
                 // boilerplate headings can be told apart by cross-comparing the agents.
-                const promptTexts = new Map<string, string>();
                 for (const id of startedIds) {
                     promptTexts.set(id, await getAgentFirstPromptText(wfDirUri, id));
                 }
@@ -1687,7 +1759,16 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                     // Only surface fullName when it actually differs (i.e. the label was clipped),
                     // so unchanged labels don't carry a redundant tooltip.
                     const fullName = role && role.full !== role.label ? role.full : undefined;
-                    agents.push({ agentId: id, status, summary, fullSummary, durationMs: timing.durationMs, ...(name ? { name } : {}), ...(fullName ? { fullName } : {}) });
+                    agents.push({
+                        agentId: id, status, summary, fullSummary, durationMs: timing.durationMs,
+                        ...(name ? { name } : {}), ...(fullName ? { fullName } : {}),
+                        ...(timing.tokens ? { tokens: timing.tokens } : {}),
+                        // Displayed name, resolved here so the webview stays free of model
+                        // naming rules. No "1M" suffix: an agent log records the plain id
+                        // (claude-opus-5) and nothing on disk says which context variant
+                        // was in use, so claiming one would be a guess.
+                        ...(timing.model ? { model: getShortModelName(timing.model, false) } : {})
+                    });
                 }
             } catch { /* journal unreadable */ }
 
@@ -1698,10 +1779,24 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
             if (scriptEntry) {
                 try {
                     const js = await readTextFile(vscode.Uri.joinPath(scriptsDirUri, scriptEntry[0]));
-                    const parsed = parseWorkflowScriptMeta(js);
+                    const parsed = parseWorkflowScript(js);
                     name = parsed.name || wfId;
                     description = parsed.description;
                     phases = parsed.phases;
+
+                    // Recover which phase each agent ran in. Nothing on disk records it,
+                    // so this matches agents to the script's call sites by prompt text.
+                    // Whatever it cannot place simply keeps no phase, and the panel then
+                    // renders that agent exactly as it did before phases existed.
+                    const placement = placeAgents(parsed, promptTexts);
+                    for (const a of agents) {
+                        const p = placement.get(a.agentId);
+                        if (!p) continue;
+                        if (p.phase) a.phase = p.phase;
+                        // A label written by the script's author beats our heading
+                        // heuristic — it is the name they chose for that agent.
+                        if (p.label) { a.name = p.label; a.fullName = undefined; }
+                    }
                 } catch { /* fallback to wfId */ }
             }
 
@@ -2328,6 +2423,7 @@ async function refreshAllSessions() {
     // adopts a newer account snapshot written by another extension host.
     syncCodexUsageFromSharedCache();
     const sessions = await findAllSessions();
+    lastScannedSessions = sessions;
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const warningThreshold = config.get<number>('warningThreshold', 50);
     const dangerThreshold = config.get<number>('dangerThreshold', 75);
@@ -2935,6 +3031,14 @@ async function refreshAllSessions() {
     // awaited — the status bar must not wait on a remote filesystem round trip.
     void syncCodexRuns().catch(e => log(`[codex-rescue] sync error: ${e}`));
     void syncCodexChats().catch(e => log(`[codex-chat] sync error: ${e}`));
+
+    // Claude Status rides the same tick. Returns immediately when the panel is closed,
+    // and the disk scan behind it is rate-limited, so this costs nothing when unused.
+    try {
+        refreshStatusPanel();
+    } catch (e) {
+        log(`[status] refresh error: ${e}`);
+    }
 }
 
 // ============================================================================
@@ -3276,6 +3380,99 @@ function colorForPercent(percent: number | null): vscode.ThemeColor | undefined 
     if (p >= 90) return new vscode.ThemeColor('errorForeground');
     if (p >= 70) return new vscode.ThemeColor('editorWarning.foreground');
     return undefined;
+}
+
+// Wall-clock time plus countdown for the Claude Status panel: "7:59 PM · in 2h 41m".
+// The CLI's /usage prints the clock time only; the countdown is added because a reset
+// three days out ("Sep 12, 2:59pm") says very little on its own.
+function resetLabel(iso: string | null): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (!Number.isFinite(d.getTime())) return '';
+    const sameDay = d.toDateString() === new Date().toDateString();
+    const when = sameDay
+        ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+        : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return `${when} · ${untilHuman(iso)}`;
+}
+
+// Assemble everything the Claude Status webview renders. Plan limits come from the
+// snapshot the status bar already keeps; the rest is read off local disk.
+function buildStatusPayload(forceScan = false): unknown {
+    const { stats, local } = collectClaudeStats(forceScan);
+    const u = lastUsage;
+    return {
+        updatedText: new Date().toLocaleTimeString(),
+        usage: {
+            status: planStatus,
+            session: u && u.sessionPercent != null
+                ? { percent: u.sessionPercent, resetText: resetLabel(u.sessionResetAt) }
+                : null,
+            weekly: u && u.weeklyPercent != null
+                ? { percent: u.weeklyPercent, resetText: resetLabel(u.weeklyResetAt) }
+                : null,
+            // collectModels() only ever returns per-model weekly buckets, so these
+            // never duplicate the all-models figure above.
+            models: u
+                ? u.models.map(m => ({
+                    key: m.key,
+                    label: m.label,
+                    percent: m.percent,
+                    resetText: resetLabel(m.resetAt)
+                }))
+                : []
+        },
+        // Per-conversation summaries for the sessions the status bar is currently
+        // showing — the CLI prints this when a session ends; here it is live.
+        // Claude only: a Codex rollout has a different shape entirely.
+        // A session whose log cannot be read (a remote window's file, say) is dropped
+        // rather than shown with zeroes.
+        sessions: lastScannedSessions
+            .filter(s => s.provider === 'claude')
+            .map(s => {
+                let fsPath = '';
+                try {
+                    fsPath = vscode.Uri.parse(s.sessionFile).fsPath;
+                } catch {
+                    return null;
+                }
+                const sum = summarizeSession(fsPath);
+                if (!sum) return null;
+                return {
+                    label: s.projectName,
+                    isIdle: !!s.isIdle,
+                    model: getShortModelName(s.model, false),
+                    lastUpdated: s.lastUpdated ? s.lastUpdated.getTime() : 0,
+                    wallMs: sum.wallMs,
+                    activeMs: sum.activeMs,
+                    linesAdded: sum.linesAdded,
+                    linesRemoved: sum.linesRemoved,
+                    input: sum.input,
+                    output: sum.output,
+                    cacheRead: sum.cacheRead,
+                    cacheWrite: sum.cacheWrite,
+                    requests: sum.requests,
+                    costUSD: sum.costUSD,
+                    hasUnknownRate: sum.hasUnknownRate,
+                    byModel: sum.byModel,
+                    costParts: sum.costParts,
+                    // Present only for a session that ended cleanly; on a subscription
+                    // it is 0, so the panel shows it beside the conversion, not instead.
+                    recordedCostUSD: sum.recordedCostUSD,
+                    recordedApiMs: sum.recordedApiMs
+                };
+            })
+            .filter(x => x !== null)
+            .sort((a: any, b: any) => b.lastUpdated - a.lastUpdated),
+        local,
+        stats
+    };
+}
+
+/** Repaint the Claude Status panel, if it happens to be open. */
+function refreshStatusPanel(): void {
+    if (!isStatusPanelOpen()) return;
+    pushStatus(buildStatusPayload());
 }
 
 // Compact "4h 24m" countdown — language-neutral, no "후/later" suffix.

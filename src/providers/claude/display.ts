@@ -1,23 +1,38 @@
 // Claude-specific status-bar display helpers (model name + effort label).
 
-// Shorten a model id like "claude-sonnet-4-5-20250514" → "Sonnet 4.5" (or "S4.5" in compact mode).
+// Shorten a model id like "claude-sonnet-4-5-20250514" → "Sonnet 4.5".
 // 1M-context variants get a "1M" suffix. Unknown families fall back to the last token of the id.
+//
+// `compact` is accepted but does not shorten the model name. An abbreviated form ("S4.5")
+// was described in the comment here for a long time but never existed in the code — the
+// `abbrev` letters were assigned and then never read. Compact mode shortens project names
+// (getShortName), which is what the README documents; model names stay readable in both
+// modes. The parameter is kept so callers do not all have to change.
 export function getShortModelName(model: string, compact: boolean): string {
     if (!model) return '';
     const lower = model.toLowerCase();
+    // Placeholder ids such as "<synthetic>" are not model names. Passing one straight
+    // through put a literal "<synthetic>" in the status bar, which reads as a glitch.
+    if (lower.charAt(0) === '<') return '';
     let family = '';
-    let abbrev = '';
-    if (lower.includes('opus')) { family = 'Opus'; abbrev = 'O'; }
-    else if (lower.includes('sonnet')) { family = 'Sonnet'; abbrev = 'S'; }
-    else if (lower.includes('haiku')) { family = 'Haiku'; abbrev = 'H'; }
-    else if (lower.includes('fable')) { family = 'Fable'; abbrev = 'F'; }
+    if (lower.includes('opus')) family = 'Opus';
+    else if (lower.includes('sonnet')) family = 'Sonnet';
+    else if (lower.includes('haiku')) family = 'Haiku';
+    else if (lower.includes('fable')) family = 'Fable';
+    else if (lower.includes('mythos')) family = 'Mythos';
     else {
         const parts = model.split('-');
         return parts[parts.length - 1] || model;
     }
-    const verMatch = lower.match(/(\d+)-(\d+)/);
-    const singleVerMatch = verMatch ? null : lower.match(/[^\d](\d+)$/);
+    // Strip the parts of the id that are not the version before reading it:
+    //   - a bracketed variant suffix — "claude-opus-5[1m]" ends in "]", so the
+    //     ends-with-digits rule missed the 5 and it displayed as "Opus 1M"
+    //   - a trailing release date — "claude-3-opus-20240229" displayed as "Opus 20240229"
+    const base = lower.replace(/\[[^\]]*\]$/, '').replace(/-\d{6,}$/, '');
+    const verMatch = base.match(/(\d+)-(\d+)(?!\d)/);
+    const singleVerMatch = verMatch ? null : base.match(/[^\d](\d+)$/);
     const version = verMatch ? `${verMatch[1]}.${verMatch[2]}` : (singleVerMatch ? singleVerMatch[1] : '');
+    // Judged on the original id: the "1m" marker lives in the suffix we just removed.
     const onem = lower.includes('1m') ? '1M' : '';
     const versionPart = version ? ` ${version}` : '';
     const onemPart = onem ? ` ${onem}` : '';

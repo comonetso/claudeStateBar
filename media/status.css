@@ -1,0 +1,425 @@
+/* Claude Status panel — usage + stats tabs.
+   Kept deliberately close to settings.css in tone: same paddings, same border colour,
+   same VS Code theme variables, so the two panels read as one product. */
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    padding: 0;
+    color: var(--vscode-foreground);
+    font-family: var(--vscode-font-family);
+    font-size: 13px;
+}
+
+.container {
+    padding: 16px 20px 28px;
+    max-width: 680px;
+}
+
+h1 {
+    font-size: 17px;
+    margin: 0 0 14px;
+    font-weight: 600;
+}
+
+/* ── Tab strip ───────────────────────────────────────────────────────────── */
+
+.tabs {
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+    margin-bottom: 18px;
+}
+
+.tab {
+    appearance: none;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--vscode-descriptionForeground);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 14px 8px;
+    cursor: pointer;
+    margin-bottom: -1px;
+}
+
+.tab:hover { color: var(--vscode-foreground); }
+
+.tab.active {
+    color: var(--vscode-foreground);
+    border-bottom-color: var(--vscode-focusBorder, var(--vscode-textLink-foreground));
+}
+
+.pane[hidden] { display: none; }
+
+/* ── Section blocks ──────────────────────────────────────────────────────── */
+
+.section { margin-bottom: 22px; }
+
+.section-header {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    margin: 0 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+    color: var(--vscode-foreground);
+}
+
+.section-note {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    margin: -6px 0 12px;
+    line-height: 1.5;
+}
+
+/* ── Per-conversation summary cards ──────────────────────────────────────── */
+
+.sess {
+    border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+    border-radius: 5px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+}
+
+.sess.idle { opacity: 0.62; }
+
+.sess-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.sess-name {
+    font-weight: 600;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sess-spacer { flex: 1; }
+
+.sess-model,
+.sess-when {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    white-space: nowrap;
+}
+
+.sess-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 8px 16px;
+}
+
+.sess-item {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.sess-label {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+}
+
+.sess-value {
+    font-size: 13px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.sess-tokens {
+    margin-top: 9px;
+    padding-top: 8px;
+    border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.28));
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+}
+
+.sess-tokens b {
+    color: var(--vscode-foreground);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.sess-cost {
+    color: var(--vscode-charts-yellow, #cca700);
+    font-variant-numeric: tabular-nums;
+}
+
+.add { color: var(--vscode-charts-green, #89d185); }
+.del { color: var(--vscode-charts-red, #f14c4c); }
+
+/* ── Meters (5-hour window, weekly caps) ─────────────────────────────────── */
+
+.meter { margin-bottom: 15px; }
+
+.meter-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 5px;
+}
+
+.meter-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--vscode-foreground);
+}
+
+.meter-pct {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+}
+
+.meter-track {
+    height: 8px;
+    border-radius: 4px;
+    background: var(--vscode-progressBar-background, rgba(128,128,128,0.25));
+    opacity: 0.35;
+    overflow: hidden;
+}
+
+.meter-fill {
+    display: block;
+    height: 100%;
+    border-radius: 4px;
+    background: var(--vscode-charts-blue, #3794ff);
+    transition: width 240ms ease;
+}
+
+/* The track's own opacity would wash out the fill, so the fill sits in a wrapper
+   that is fully opaque and the track colour is faked with a background layer. */
+.meter-bar {
+    position: relative;
+    height: 8px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+    overflow: hidden;
+}
+
+.meter-fill.ok     { background: var(--vscode-charts-green,  #89d185); }
+.meter-fill.warn   { background: var(--vscode-charts-yellow, #cca700); }
+.meter-fill.danger { background: var(--vscode-charts-red,    #f14c4c); }
+
+.meter-sub {
+    margin-top: 5px;
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+}
+
+/* ── Labelled bar rows (skills, model share) ─────────────────────────────── */
+
+.bar-row {
+    display: grid;
+    grid-template-columns: minmax(96px, max-content) 1fr 44px;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 7px;
+}
+
+.bar-name {
+    font-size: 12px;
+    font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+    color: var(--vscode-foreground);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.bar-track {
+    height: 6px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+    overflow: hidden;
+}
+
+.bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--vscode-charts-blue, #3794ff);
+}
+
+.bar-val {
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--vscode-descriptionForeground);
+}
+
+/* ── Headline figure (the "73% of usage" line) ───────────────────────────── */
+
+.headline {
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 0 0 6px;
+}
+
+.headline strong {
+    font-size: 15px;
+    font-variant-numeric: tabular-nums;
+}
+
+.headline-hint {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    line-height: 1.55;
+    margin: 0 0 14px;
+}
+
+/* ── Stat grid (totals) ──────────────────────────────────────────────────── */
+
+.stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px 18px;
+    margin-bottom: 4px;
+}
+
+.stat {
+    border-left: 2px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+    padding-left: 10px;
+}
+
+.stat-label {
+    display: block;
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 2px;
+}
+
+.stat-value {
+    display: block;
+    font-size: 15px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.stat-sub {
+    display: block;
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    margin-top: 1px;
+}
+
+/* ── Contribution heatmap ────────────────────────────────────────────────── */
+
+.heat-wrap { overflow-x: auto; padding-bottom: 4px; }
+
+.heat {
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(7, 11px);
+    gap: 3px;
+    width: max-content;
+}
+
+.heat-cell {
+    width: 11px;
+    height: 11px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
+}
+
+.heat-cell.l1 { background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 28%, transparent); }
+.heat-cell.l2 { background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 50%, transparent); }
+.heat-cell.l3 { background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 74%, transparent); }
+.heat-cell.l4 { background: var(--vscode-charts-green, #89d185); }
+
+.heat-cell.empty { background: transparent; }
+
+.heat-months {
+    display: flex;
+    gap: 0;
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 4px;
+    width: max-content;
+}
+
+.heat-legend {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    margin-top: 8px;
+}
+
+.heat-legend .heat-cell { width: 9px; height: 9px; }
+
+/* ── Token breakdown row ─────────────────────────────────────────────────── */
+
+.token-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    margin-top: 10px;
+}
+
+.token-row span b {
+    color: var(--vscode-foreground);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+/* ── States ──────────────────────────────────────────────────────────────── */
+
+.empty-state {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    padding: 10px 0;
+    line-height: 1.6;
+}
+
+.error-state {
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 10px 12px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 35%, transparent);
+}
+
+.error-state a { color: var(--vscode-textLink-foreground); cursor: pointer; }
+
+.footer-note {
+    margin-top: 20px;
+    padding-top: 10px;
+    border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+button.linklike {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--vscode-textLink-foreground);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+}
+
+button.linklike:hover { text-decoration: underline; }

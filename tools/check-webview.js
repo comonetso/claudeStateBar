@@ -37,7 +37,11 @@ function check(file) {
     const nonce = 'NONCE';
     const wsRow = '  <div class="wspath">dummy</div>';
     const webview = { cspSource: 'vscode-webview:' };
-    void nonce; void wsRow; void webview;
+    // Panels that hoist their CSP / asset URIs into locals before the template.
+    const csp = "default-src 'none';";
+    const cssUri = 'vscode-webview://dummy/style.css';
+    const jsUri = 'vscode-webview://dummy/script.js';
+    void nonce; void wsRow; void webview; void csp; void cssUri; void jsUri;
 
     let html;
     try {
