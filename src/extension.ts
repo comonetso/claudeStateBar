@@ -39,6 +39,8 @@ import { alertedSessions, lastKnownEndTurnAt, pendingCompletion, lastKnownQuesti
 import { updateStageItem, startStageTicker, disposeStage, initStageIndicator } from './core/stageIndicator';
 import { SessionInfo, ProviderId, CodexUsageSnapshot, providerIcon, capabilitiesFor } from './core/sessionTypes';
 import { findCodexSessions, isCodexEnabled, getCodexHomeUri, resetCodexHome } from './providers/codex/sessionProvider';
+import { findRolloutBySessionId } from './providers/codex/discovery';
+import { readSession } from './providers/codex/tailReader';
 import { CODEX_USAGE_CACHE_FILENAME, fetchSharedCodexRateLimits, readCachedCodexRateLimits } from './providers/codex/usageProvider';
 import { getCodexModelName, getCodexEffortLabel } from './providers/codex/display';
 import { initialiseCurrentCodexThreadTracking } from './providers/codex/currentThread';
@@ -3149,10 +3151,36 @@ async function pushChatTrashNow(): Promise<void> {
     pushChatTrash(await collectChatTrash());
 }
 
+// A codex_rescue run's model and effort live only in the Codex rollout (turn_context):
+// status.json and the exec event log carry neither. Looked up by thread id and kept, so a
+// Remote-SSH window does not pull the whole rollout on every 2s poll. Re-read when the turn
+// count moves (a follow-up can switch model) or while a live run has not reported one yet;
+// a finished run that never resolved is not searched again.
+const codexRunModels = new Map<string, { turns: number; settled: boolean; model: string; effort: string }>();
+
+async function codexRunModel(threadId: string, turns: number, finished: boolean): Promise<{ model: string; effort: string }> {
+    const hit = codexRunModels.get(threadId);
+    if (hit && hit.turns === turns && (hit.model || hit.settled)) return hit;
+    let model = '';
+    let effort = '';
+    try {
+        const home = await getCodexHomeUri();
+        const file = home ? await findRolloutBySessionId(home, threadId) : null;
+        const acc = file ? await readSession(file) : null;
+        if (acc) { model = acc.model; effort = acc.effort; }
+    } catch (e) {
+        log(`[codex-rescue] model lookup failed for ${threadId}: ${e}`);
+    }
+    const entry = { turns, settled: finished, model, effort };
+    codexRunModels.set(threadId, entry);
+    return entry;
+}
+
 async function collectCodexRuns(): Promise<CodexRunView[]> {
     const now = Date.now();
     const out: CodexRunView[] = [];
     const keepKeys = new Set<string>();
+    const keepThreads = new Set<string>();
 
     for (const f of vscode.workspace.workspaceFolders || []) {
         const docsDir = await codexRescueDocsDir(f.uri);
@@ -3161,6 +3189,10 @@ async function collectCodexRuns(): Promise<CodexRunView[]> {
         for (const run of await discoverRuns(f.uri, now)) {
             keepKeys.add(runCacheKey(logDir, run.stamp));
             const usage = run.events.usage;
+            const threadId = run.events.threadId;
+            const turns = run.events.items.reduce((n, i) => Math.max(n, i.turn || 1), 1);
+            if (threadId) keepThreads.add(threadId);
+            const mdl = threadId ? await codexRunModel(threadId, turns, isTerminalPhase(run.phase)) : undefined;
             out.push({
                 stamp: run.stamp,
                 slug: run.slug,
@@ -3169,7 +3201,9 @@ async function collectCodexRuns(): Promise<CodexRunView[]> {
                 phase: run.phase,
                 startedAt: run.startedAtMs,
                 endedAt: run.endedAtMs,
-                threadId: run.events.threadId,
+                threadId,
+                model: mdl?.model || undefined,
+                effort: mdl?.effort || undefined,
                 todo: run.events.todo,
                 staleForMs: run.staleForMs,
                 docsOnly: run.docsOnly,
@@ -3198,6 +3232,9 @@ async function collectCodexRuns(): Promise<CodexRunView[]> {
     }
     out.sort((a, b) => b.stamp.localeCompare(a.stamp));
     pruneTailCache(keepKeys);
+    for (const id of [...codexRunModels.keys()]) {
+        if (!keepThreads.has(id)) codexRunModels.delete(id);
+    }
     return out;
 }
 

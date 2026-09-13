@@ -56,6 +56,43 @@ let trackedSessionFile: string | null = null;
 // or a workflow finishing) reaches the webview and triggers a re-render.
 let lastPushedSignature: string | null = null;
 
+// Phase groups the user has explicitly collapsed or expanded, keyed "<wfId> <phase title>"
+// (the same key the webview builds). This lives in globalState rather than the webview's own
+// setState because the panel has no serializer: setState dies with the panel, so closing the
+// tab — or restarting VS Code — would forget every collapse. Only user clicks land here;
+// the "finished groups start collapsed" default is recomputed by the webview each time it opens.
+const GROUP_STATE_KEY = 'claudeStateBar.wfGroupCollapsed';
+let ctxRef: vscode.ExtensionContext | null = null;
+// wfIds last shown in the trash drawer — see pushWorkflowTrash().
+let lastTrashIds: string[] = [];
+
+function readGroupState(): Record<string, boolean> {
+    const v = ctxRef?.globalState.get<Record<string, boolean>>(GROUP_STATE_KEY);
+    return (v && typeof v === 'object') ? v : {};
+}
+
+function setGroupState(key: string, collapsed: boolean): void {
+    const map = readGroupState();
+    map[key] = collapsed;
+    void ctxRef?.globalState.update(GROUP_STATE_KEY, map);
+}
+
+// Forget one workflow's collapse state when that workflow is deleted. Keyed off the wfId
+// prefix — no wfId contains a space, so everything before the first space is the owning
+// workflow. Deliberately NOT done by "prune anything not in the current list": the panel only
+// ever holds one session's workflows, so that sweep would wipe the state of every other
+// project's panel. Only user clicks are stored, so what remains stays small on its own.
+function forgetGroupState(wfId: string): void {
+    if (!wfId) return;
+    const prefix = wfId + ' ';
+    const map = readGroupState();
+    let changed = false;
+    for (const k of Object.keys(map)) {
+        if (k.indexOf(prefix) === 0) { delete map[k]; changed = true; }
+    }
+    if (changed) void ctxRef?.globalState.update(GROUP_STATE_KEY, map);
+}
+
 // Build a content signature that captures every field the webview renders. If two scans
 // produce the same signature the rendered DOM would be identical, so the push is skipped.
 // A still-running workflow's summary / duration keeps changing → its signature changes →
@@ -98,6 +135,7 @@ export function createOrShowWorkflowPanel(
 ): void {
     trackedSessionFile = sessionFile;
     callbacks = cb;
+    ctxRef = context;
 
     if (panel) {
         panel.reveal(vscode.ViewColumn.Active);
@@ -124,19 +162,29 @@ export function createOrShowWorkflowPanel(
         // render, so send the i18n dict first, then force that render through.
         if (msg?.type === 'ready') {
             panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
+            // Remembered group collapses must reach the webview before the first render,
+            // otherwise the opening frame shows every group at its computed default and then
+            // visibly snaps to the stored state.
+            panel?.webview.postMessage({ type: 'groupState', groups: readGroupState() });
             lastPushedSignature = null; pushWorkflows(workflows);
         }
+        else if (msg?.type === 'groupToggle' && typeof msg.key === 'string') setGroupState(msg.key, msg.collapsed === true);
         else if (msg?.type === 'delete' && typeof msg.wfId === 'string') callbacks?.onDelete(msg.wfId);
         else if (msg?.type === 'trashOpen') callbacks?.onTrashOpen();
         else if (msg?.type === 'restore' && typeof msg.wfId === 'string') callbacks?.onRestore(msg.wfId);
-        else if (msg?.type === 'purge' && typeof msg.wfId === 'string') callbacks?.onPurge(msg.wfId);
-        else if (msg?.type === 'emptyTrash') callbacks?.onEmptyTrash();
+        // Purge is the point of no return, so that's where the collapse state goes too —
+        // a workflow sitting in the trash can still be restored with its groups as they were.
+        else if (msg?.type === 'purge' && typeof msg.wfId === 'string') { forgetGroupState(msg.wfId); callbacks?.onPurge(msg.wfId); }
+        else if (msg?.type === 'emptyTrash') { lastTrashIds.forEach(forgetGroupState); callbacks?.onEmptyTrash(); }
     }, null, context.subscriptions);
 }
 
 /** Hand the trash drawer its contents. Unconditional: the drawer is only open on request. */
 export function pushWorkflowTrash(items: WorkflowTrashView[]): void {
     if (!panel) return;
+    // Remember what's in the drawer: "empty trash" names no ids, so this is the only way to
+    // know whose collapse state to forget when the user empties it.
+    lastTrashIds = (items || []).map(i => i.wfId).filter(Boolean);
     panel.webview.postMessage({ type: 'trash', items });
 }
 
@@ -197,7 +245,10 @@ function getHtml(webview: vscode.Webview): string {
   .phase-chip { display: inline-block; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius: 4px; padding: 1px 7px; margin-right: 4px; }
   .wf-meta { color: var(--vscode-descriptionForeground); font-size: 0.85em; margin: 3px 0 6px 0; }
   .phase-group { margin: 10px 0 0 0; }
-  .phase-head { display: flex; align-items: center; gap: 8px; padding-bottom: 3px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3)); }
+  .phase-head { display: flex; align-items: center; gap: 8px; padding-bottom: 3px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3)); cursor: pointer; user-select: none; }
+  .phase-arrow { flex-shrink: 0; width: 10px; font-size: 0.8em; color: var(--vscode-descriptionForeground); transition: transform 0.12s; }
+  .phase-group.collapsed .phase-arrow { transform: rotate(-90deg); }
+  .phase-group.collapsed .agents { display: none; }
   .phase-title { font-weight: 700; font-size: 0.88em; }
   .phase-spacer { flex: 1; }
   .phase-count { color: var(--vscode-descriptionForeground); font-size: 0.82em; font-variant-numeric: tabular-nums; }
@@ -302,6 +353,23 @@ function getHtml(webview: vscode.Webview): string {
   // lose native <details open> state, so we record which ones are open and reapply after each
   // render — otherwise auto-refresh would snap shut the report a user expanded to read.
   const openDetails = {};
+  // Phase-group collapse, in two layers — and the split is the entire point:
+  //  - groupToggled: groups the user clicked. Sent to the host, which persists them, and
+  //    handed back on the next open. An explicit click always wins.
+  //  - groupDefault: the "a finished group opens collapsed" verdict. Decided ONCE per group,
+  //    the first time this panel session draws it, then frozen. Recomputing it every render
+  //    would slam a group shut the moment its last agent finished, under the user's eyes.
+  let groupToggled = {};
+  const groupDefault = {};
+  function groupKey(wfId, title) { return wfId + ' ' + title; }
+  // Finished = nothing still running, matching how a workflow card decides it is done
+  // (stopped counts as finished there too, so a killed group collapses like a completed one).
+  function isGroupCollapsed(wfId, title, items) {
+    const k = groupKey(wfId, title);
+    if (k in groupToggled) return groupToggled[k];
+    if (!(k in groupDefault)) groupDefault[k] = !items.some(x => x.a.status === 'running');
+    return groupDefault[k];
+  }
   // Signature of the data the webview last actually rendered. A second guard behind the
   // extension-side dedup: if an identical payload still arrives, skip the DOM rebuild.
   let lastRenderedSig = null;
@@ -495,10 +563,12 @@ function getHtml(webview: vscode.Webview): string {
         if (rest.length) groups.push({ title: t('wf.phaseOther'), items: rest });
         agents = groups.map(g => {
           const doneN = g.items.filter(x => x.a.status === 'done').length;
+          const gcol = isGroupCollapsed(wf.wfId, g.title, g.items);
           // No status-dot strip on the header: every agent row below already carries its
           // own dot, and the done/total counter says the same thing in less space.
-          return '<div class="phase-group">' +
+          return '<div class="phase-group' + (gcol ? ' collapsed' : '') + '" data-gkey="' + esc(groupKey(wf.wfId, g.title)) + '">' +
             '<div class="phase-head">' +
+              '<span class="phase-arrow">▾</span>' +
               '<span class="phase-title">' + esc(g.title) + '</span>' +
               '<span class="phase-spacer"></span>' +
               '<span class="phase-count">' + doneN + '/' + g.items.length + '</span>' +
@@ -603,6 +673,18 @@ function getHtml(webview: vscode.Webview): string {
       vscodeApi.postMessage({ type: 'delete', wfId: del.getAttribute('data-del') });
       return;  // don't also toggle
     }
+    // Phase-group header. Flip what is actually on screen rather than recomputing from state,
+    // then tell the host so the choice outlives the panel.
+    const ph = e.target.closest('.phase-head');
+    if (ph) {
+      const grp = ph.closest('.phase-group');
+      const gk = grp.getAttribute('data-gkey');
+      const nowCollapsed = !grp.classList.contains('collapsed');
+      groupToggled[gk] = nowCollapsed;
+      vscodeApi.postMessage({ type: 'groupToggle', key: gk, collapsed: nowCollapsed });
+      render(lastWorkflows, true);  // data unchanged, toggle state changed → force
+      return;
+    }
     const head = e.target.closest('.wf-head');
     if (head) {
       const card = head.closest('.wf');
@@ -625,6 +707,9 @@ function getHtml(webview: vscode.Webview): string {
   window.addEventListener('message', e => {
     const m = e.data;
     if (m && m.type === 'i18n') { dict = m.dict || {}; lang = m.lang || 'en'; applyI18n(); render(lastWorkflows, true); }
+    // Arrives once, right after i18n and before the first workflow push, so the opening
+    // frame already has the user's remembered collapses in hand.
+    else if (m && m.type === 'groupState') groupToggled = m.groups || {};
     else if (m && m.type === 'workflows') render(m.workflows);
     else if (m && m.type === 'trash') renderTrash(m.items || []);
   });

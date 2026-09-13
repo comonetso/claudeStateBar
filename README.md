@@ -152,7 +152,7 @@ Local and remote read paths were verified to produce identical parsed results �
 Open the **Workflow Viewer** from the session QuickPick menu to see a live WebView panel of every active Claude Code workflow and Task (Agent tool) sub‑agent:
 
 - **Workflow progress** — each workflow appears as a card with its phases, running/done agents, per‑agent summary, elapsed time, and live activity
-- **Agents grouped by phase** — when a workflow declares more than one phase, its agents are boxed under the phase they ran in, each box carrying a done/total counter. An agent's phase is not recorded anywhere on disk, so it is recovered from the workflow script; any agent that cannot be placed is simply listed as before, and if too few can be placed the card falls back to a flat list
+- **Agents grouped by phase** — when a workflow declares more than one phase, its agents are boxed under the phase they ran in, each box carrying a done/total counter. Click a phase header to fold it; phases with no running agents start folded, and what you fold is remembered after the panel is closed
 - **Model and tokens per agent** — every row shows which model ran it and how many tokens it used, and the card header carries the agent count and the workflow's total
 - **Full result expand** — long final reports fold into a `▶ summary` toggle so you can read the full output without clutter
 - **Role labels** — each agent's role comes from the `label` its workflow script gave it, falling back to text extracted from the agent's prompt header, so you see "Lens A: Bug Detection" instead of "agent-1"
@@ -178,6 +178,7 @@ With the skill installed, open it from the status-bar menu or `claudeStateBar: S
 - **Clipped rows open in place** — a row too wide for the panel expands where it is, wrapped, when you click it. One row stays open at a time. What you get is what the panel kept: messages up to 4,000 characters, a command's wrapped form up to 600. Past that, read the raw event log
 - **Runs with documents but no log still show** — marked `documents only`, with no activity list but the request/response links intact. That covers a run whose raw logs you purged, and documents a teammate committed and you pulled in
 - **A title you can read** — the request's subject heads the card, not the English slug. Runs recorded by an older skill show the slug instead
+- **Model and effort** — the line with the stamp and thread id also shows the model and reasoning effort Codex actually ran with. After a follow-up, it shows the latest turn's. A review run may not record one, and then nothing is shown
 - **Plan** — shown as `2/5`, but only when Codex actually produced one
 - **Elapsed time and activity count** — no percentage. Codex never declares how many tool calls remain, so a progress bar would be fiction
 - **Completion chime** — for runs the extension watched while they were live, using the same `claudeContextBar.workflowCompleteBeep` setting as workflow completion. A run that finished before the extension started appears silently
@@ -363,9 +364,11 @@ Click for menu (hide / restore / settings)
 
 **Usage** opens with a card for each conversation currently on the status bar: how long it has been going, how much of that it spent working, how many lines of code it changed, how many API requests it made, and its token split. It is the summary the CLI prints when a session ends, except live. Where a session has already ended, Claude Code leaves its own record behind and the card shows that instead — real API time rather than an estimate.
 
-It also puts a price on it. **Cost (API rate)** converts the conversation's tokens at published Anthropic API rates — per 1M tokens in/out: Opus $5/$25, Sonnet $2/$10, Haiku $1/$5, Fable $10/$50, with cache writes at 1.25× the input rate and cache reads at 0.1× (Fable's cache reads are a flat $0.25) — so you can see what a session would have cost had it gone through the API. On a subscription none of it is billed, which is why Claude Code records `$0` for the same session; hovering the figure shows the rates and the per-model split. A model with no published rate is left out of the total and flagged rather than guessed at. The Stats tab carries the same conversion for your whole history.
+It also puts a price on it. **Cost (API rate)** shows what the conversation's tokens would have cost on the Anthropic API. It is an estimate, not your bill. Hover the figure for the rates and the per-model split. A model whose rate the extension doesn't know is left out of the total and flagged. The Stats tab carries the same conversion for your whole history.
 
-Each token figure carries its own share of that amount beside it, which is where the surprise usually is: in a long conversation **cache reads are most of the bill**. Every request re-reads the whole thread, so the cost of a session grows with the square of its length — the same reason the 24-hour breakdown further down flags long contexts.
+Rates used, per 1M tokens in/out: Opus $5/$25, Sonnet 5 $2/$10, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5, Fable $10/$50. Cache writes cost 1.25× the input rate and cache reads 0.1× (Fable's cache reads are a flat $0.25).
+
+Each token figure shows its share of the amount beside it.
 
 Under that is how much of the plan is left — the 5‑hour window, the weekly cap, and each per‑model weekly cap — each with the clock time it resets and how far off that is. Then what has actually been consuming the limit over the last 24 hours: the share of usage that happened in contexts above 150k tokens, and a breakdown by skill. Those figures are worked out from the session logs on this machine, so work done on other devices or on claude.ai is not in them.
 

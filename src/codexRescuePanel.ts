@@ -39,6 +39,9 @@ export interface CodexRunView {
     startedAt?: number;
     endedAt?: number;
     threadId?: string;
+    /** From the Codex rollout's turn_context — the latest turn's, so a follow-up that switched shows the switch. */
+    model?: string;
+    effort?: string;
     items: CodexItemView[];
     todo?: { text: string; done: boolean }[];
     /** Only known once the turn completes — exec JSONL has no live token counter. */
@@ -139,7 +142,7 @@ function signature(runs: CodexRunView[]): string {
     return JSON.stringify((runs || []).map(r => ({
         s: r.stamp, p: r.phase, e: r.endedAt || 0, t: r.totalTokens || 0,
         d: r.todo, k: r.staleForMs ? Math.floor(r.staleForMs / 5000) : 0,
-        r: !!r.resultUri,
+        r: !!r.resultUri, m: (r.model || '') + '/' + (r.effort || ''),
         i: r.items.map(i => [i.id, i.status, i.label, i.body, i.durationMs, i.turn || 1]),
     })));
 }
@@ -491,7 +494,7 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
   }
   function sigOf(runs) {
     return JSON.stringify((runs||[]).map(function (r) {
-      return [r.stamp, r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultUri,
+      return [r.stamp, r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultUri, (r.model||'') + '/' + (r.effort||''),
         r.items.map(function (i) { return [i.id,i.status,i.label,i.body,i.durationMs,i.turn||1]; })];
     }));
   }
@@ -768,7 +771,8 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
         '</div>' +
         '<div class="run-body">' +
           '<div class="meta">' + esc(run.stamp) +
-            (run.threadId ? ' · thread ' + esc(run.threadId.slice(0,8)) : '') + tokenLine +
+            (run.threadId ? ' · thread ' + esc(run.threadId.slice(0,8)) : '') +
+            (run.model ? ' · ' + esc(run.model) + (run.effort ? ' / ' + esc(run.effort) : '') : '') + tokenLine +
             (links.length ? '<br>' + links.join(' &nbsp; ') : '') +
           '</div>' +
           staleLine + nowBlock + plan + items +

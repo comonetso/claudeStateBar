@@ -3,15 +3,13 @@
 ## [1.15.0] - 2026-09-08
 
 > **What a session is costing you, while it is still running.**
-> Claude Code prints a summary when a session ends — time spent, lines changed, tokens used. That
-> was the only place to see it, and only once the session was over.
+> Time spent, lines changed, tokens used and what they would cost at API rates, in a panel beside
+> your code.
 
 `Claude Status`, in the session menu just above Settings, opens a panel with two tabs. **Usage**
 starts with a card for each live conversation: how long it has run, how much of that went into
-actual work, lines changed, requests made, and tokens used — with each token figure carrying what
-it would have cost at Anthropic's published API rates. A subscription is not billed for any of it,
-but the conversion answers what the raw counts cannot: in a long conversation most of the cost is
-re-reading, because every request reads the whole thread again.
+actual work, lines changed, requests made, and tokens used — with what those tokens would have cost
+at Anthropic's published API rates. It is an estimate, not your bill.
 
 Below that is the plan itself, the 5-hour window and the weekly caps with the time each one resets,
 and then what has been eating them over the last day: how much of your usage happened in long
@@ -23,14 +21,20 @@ count, longest session, active days and streaks, and each model's share.
 ### Workflows
 
 A workflow card used to be one flat list of agents. Agents are now grouped under the phase they ran
-in, each group counting how many of its agents have finished, and every row shows the model that ran
-it and the tokens it used. Where a workflow script named its agents, those names are used instead of
-a guess from the prompt. Elapsed times read in Korean when the panel is in Korean.
+in, each group counting how many of its agents have completed, and every row shows the model that ran
+it and the tokens it used. Click a phase to fold it; phases with no running agents start folded, and what
+you fold is remembered after the panel is closed. Where a workflow script named its agents, those
+names are used instead of a guess from the prompt. Elapsed times read in Korean when the panel is in Korean.
+
+### Codex runs
+
+Each run card now shows the model and reasoning effort Codex actually ran with, next to the stamp
+and thread id. After a follow-up, it shows the latest turn's.
 
 ### Fixes
 
-- Opus 5 sessions showed a context percentage up to five times too high. Every Opus past the 4
-  series was being held to the wrong limit, and so were some older models.
+- Opus 5 sessions could show a context percentage up to five times too high. Some older Sonnet
+  models were held to the wrong limit too.
 - Model names came out wrong in a few places: a version could go missing, a release date could
   appear in its place, and an internal placeholder id reached the status bar as-is.
 
