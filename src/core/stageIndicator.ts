@@ -73,8 +73,18 @@ export function tickStageItem() {
 }
 
 // Start the 1-second tick loop (owns the interval so lifecycle only calls start/dispose).
-export function startStageTicker(): void {
-    stageTickInterval = setInterval(() => { tickStageItem(); }, 1000);
+// onLag receives how much later than 1s each tick fired. The timer cannot fire while the
+// extension host is stuck in synchronous work, so a late tick is a direct reading of how long
+// the host was blocked — which is what makes a clicked status-bar menu slow to appear.
+let lastTickAt = 0;
+export function startStageTicker(onLag?: (lateMs: number) => void): void {
+    lastTickAt = Date.now();
+    stageTickInterval = setInterval(() => {
+        const now = Date.now();
+        onLag?.(now - lastTickAt - 1000);
+        lastTickAt = now;
+        tickStageItem();
+    }, 1000);
 }
 
 // Tear down the ticker and the status-bar item (single cleanup path). Mirrors the original

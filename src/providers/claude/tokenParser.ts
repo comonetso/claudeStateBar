@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { readTextFile } from '../../core/fs';
+import { readShared, recordParse } from '../../core/refreshPerf';
 
 export interface TokenUsage {
     inputTokens: number;
@@ -28,7 +28,11 @@ export async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUs
         }
 
         // Read the file (routed to the remote host by VS Code when running over Remote-SSH)
-        const content = await readTextFile(jsonlUri);
+        // Shared within one refresh pass: the workflow panel reads this same file for task
+        // notifications, and over Remote-SSH a second read is a second full transfer.
+        const content = await readShared(jsonlUri);
+        // Everything from here to the return is synchronous parsing of the whole file.
+        const parseStarted = Date.now();
         const lines = content.trim().split('\n');
 
             // Scan backwards to find the last /clear command AND check for user activity after it
@@ -206,6 +210,7 @@ export async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUs
                 } catch { /* malformed line — skip */ }
             }
 
+            recordParse(Date.now() - parseStarted);
             return {
                 inputTokens: finalUsage.inputTokens,
                 cacheReadTokens: finalUsage.cacheReadTokens,

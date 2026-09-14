@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.15.1] - 2026-09-14
+
+Workflows that had stopped — because the session ended while they ran, or because they were
+killed or failed — kept showing as running in the workflow panel, and so did an agent that
+failed. They now show as stopped, going by the notice Claude Code leaves in the conversation and
+the failure it records for the agent.
+
+Status-bar refreshes could pile up on top of each other; they now run one at a time. The session
+menu also no longer scans the disk for workflows and Codex runs before opening — it uses what the
+latest refresh found, so those counts can trail by one refresh.
+
+The output log no longer writes a line for every project folder and conversation file on each
+refresh; a window left open for a day could collect tens of megabytes of it. In its place is one
+line a minute with refresh timings, to help track down a slow session menu in Remote-SSH windows.
+
 ## [1.15.0] - 2026-09-08
 
 > **What a session is costing you, while it is still running.**

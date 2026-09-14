@@ -25,6 +25,8 @@ import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runC
          trashRun, listTrash, restoreTrashed, purgeTrashed, emptyTrash } from './providers/codexRescue/runDiscovery';
 import { getDict, Lang } from './i18n';
 import { readTextFile } from './core/fs';
+import { beginRefreshShare, endRefreshShare, readShared, recordPass, recordFolded, recordTickLag, recordMenu, takeRefreshSummary } from './core/refreshPerf';
+import { parseWorkflowNotices } from './workflowNotices';
 import { log, setLogChannel, getLogChannel } from './core/logger';
 import { getLatestTokenCount } from './providers/claude/tokenParser';
 import { summarizeResultFull } from './core/textFormat';
@@ -412,6 +414,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Status bar click → QuickPick menu (hide this / restore hidden / open settings)
     const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
+        const menuStarted = Date.now();
         type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'codexChats' | 'cleanupGhosts' | 'claudeStatus'; sessionFile?: string };
         const items: Item[] = [];
 
@@ -471,7 +474,7 @@ export function activate(context: vscode.ExtensionContext) {
         // path for Claude's subagents/ layout can only ever come back empty, and offering
         // a workflow entry there would promise a feature that provider does not have.
         if (sessionFile && capabilitiesFor(clickedEntry?.provider ?? 'claude').workflows) {
-            const workflows = await findWorkflowsForSession(sessionFile);
+            const workflows = lastWorkflowsBySession.get(sessionFile) ?? await findWorkflowsForSession(sessionFile);
             items.push({ label: planT('menu.sepWorkflows'), kind: vscode.QuickPickItemKind.Separator });
             if (workflows.length > 0) {
                 const runningWf = workflows.filter(w => w.agents.some(a => a.status === 'running')).length;
@@ -496,7 +499,7 @@ export function activate(context: vscode.ExtensionContext) {
         // 항목 자체가 없다. 실행 기록이 아직 없어도(0건) 항목은 보여준다: 패널을 열어
         // "여기서 볼 수 있다"는 걸 알 수 있어야 하기 때문이다.
         if (codexRescueSkillInstalled()) {
-            const cxRuns = await collectCodexRuns();
+            const cxRuns = lastCodexRuns ?? await collectCodexRuns();
             const cxLive = cxRuns.filter(r => !isTerminalPhase(r.phase)).length;
             items.push({ label: planT('menu.sepCodex'), kind: vscode.QuickPickItemKind.Separator });
             items.push({
@@ -506,7 +509,7 @@ export function activate(context: vscode.ExtensionContext) {
             });
             // 핑퐁 대화. 진행 상황 바로 아래에 둔다 (2026-08-22 사용자 지시) — 같은 스킬의
             // 두 얼굴이라 나란히 있어야 어느 쪽을 볼지 고르기 쉽다.
-            const cxChats = await collectCodexChats();
+            const cxChats = lastCodexChats ?? await collectCodexChats();
             const cxTalking = cxChats.filter(c => c.live).length;
             items.push({
                 label: (cxTalking > 0 ? '$(sync~spin) ' : '$(comment-discussion) ')
@@ -539,6 +542,7 @@ export function activate(context: vscode.ExtensionContext) {
             action: 'settings'
         });
 
+        recordMenu(Date.now() - menuStarted);
         const picked = await vscode.window.showQuickPick(items, {
             placeHolder: planT('menu.placeholder')
         });
@@ -1074,10 +1078,15 @@ export function activate(context: vscode.ExtensionContext) {
         codexUsageInterval = setInterval(refreshCodexUsage, codexUsageSec * 1000);
     }
     // Recompute the "resets in ..." countdown once a minute without re-fetching
-    planTickInterval = setInterval(() => { if (lastUsage) refreshAllSessions(); }, 60 * 1000);
+    planTickInterval = setInterval(() => {
+        // One line a minute with refresh timings, written every minute so a slow menu can be
+        // matched to what the extension host was doing. core/refreshPerf.ts says what each number is.
+        log(takeRefreshSummary());
+        if (lastUsage) refreshAllSessions();
+    }, 60 * 1000);
     // Tick the "is it alive?" elapsed counter every second (no disk reads — uses cached marker).
     initStageIndicator(() => planLang() === 'ko');
-    startStageTicker();
+    startStageTicker(recordTickLag);
 
     // Clean up on deactivation
     context.subscriptions.push({
@@ -1723,6 +1732,7 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                 const journalContent = await readTextFile(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'));
                 const startedIds = new Set<string>();
                 const doneSummary = new Map<string, { preview: string; full: string }>();
+                const failedIds = new Set<string>();
                 for (const line of journalContent.trim().split('\n')) {
                     if (!line.trim()) continue;
                     try {
@@ -1731,6 +1741,7 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                         else if (rec.type === 'result' && rec.agentId) {
                             doneSummary.set(rec.agentId, summarizeResultFull(rec.result));
                         }
+                        else if (rec.type === 'failed' && rec.agentId) failedIds.add(rec.agentId);
                     } catch { /* skip malformed line */ }
                 }
                 // Derive per-agent role labels from their first prompts (no label is stored
@@ -1745,9 +1756,11 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                     const timing = await getAgentTiming(wfDirUri, id);
                     if (timing.firstTs && (!wfStartedAt || timing.firstTs < wfStartedAt)) wfStartedAt = timing.firstTs;
                     if (timing.lastTs > wfEndedAt) wfEndedAt = timing.lastTs;
-                    // A journal `result` = completed; else a "[Request interrupted]" marker in the
-                    // agent log = killed (stopped); with neither it is genuinely still running.
-                    const status: 'running' | 'done' | 'stopped' = isDone ? 'done' : (timing.interrupted ? 'stopped' : 'running');
+                    // A journal `result` = completed; else a "[Request interrupted]" marker in the agent
+                    // log, or a journal `failed` record (e.g. the request was refused), = stopped. With
+                    // none of these it reads as running — findWorkflowsForSession then checks the
+                    // parent conversation's task notifications for runs that ended without leaving any.
+                    const status: 'running' | 'done' | 'stopped' = isDone ? 'done' : ((timing.interrupted || failedIds.has(id)) ? 'stopped' : 'running');
                     const res = doneSummary.get(id);
                     const summary = status === 'done' ? (res?.preview || '') : timing.activity;
                     // done/stopped → show the agent's full chronological steps (all tool calls +
@@ -1824,6 +1837,26 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
     } catch (e) {
         log(`[workflows] scan error: ${e}`);
     }
+    // A workflow whose session ended while it ran — or that was killed or failed — leaves no
+    // journal result and no interrupt marker in its agents' logs, so they read as running forever.
+    // What it does leave is a task notification in the parent conversation. Looked up only while
+    // some wf_* workflow still has a running agent. Inside a refresh pass the read is shared with
+    // the token parser, so over Remote-SSH the conversation is not transferred a second time.
+    const unsettled = wfList.filter(x => x.wf.wfId.startsWith('wf_') && x.wf.agents.some(a => a.status === 'running'));
+    if (unsettled.length > 0) {
+        try {
+            const notices = parseWorkflowNotices(await readShared(vscode.Uri.parse(sessionFileUri)));
+            for (const { wf } of unsettled) {
+                const notice = notices.get(wf.wfId);
+                if (notice !== 'stopped' && notice !== 'killed' && notice !== 'failed') continue;
+                for (const a of wf.agents) {
+                    if (a.status === 'running') a.status = 'stopped';
+                }
+            }
+        } catch (e) {
+            log(`[workflows] task-notification read failed: ${e}`);
+        }
+    }
     // Newest activity first — the workflow you just launched floats to the top.
     wfList.sort((a, b) => b.mtime - a.mtime);
     return wfList.map(x => x.wf);
@@ -1843,7 +1876,7 @@ async function getCompletedWorkflowIds(sessionFileUri: string): Promise<Set<stri
     const completed = new Set<string>();
     let content: string;
     try {
-        content = await readTextFile(vscode.Uri.parse(sessionFileUri));
+        content = await readShared(vscode.Uri.parse(sessionFileUri));
     } catch {
         return completed;  // session unreadable → treat as "nothing confirmed done"
     }
@@ -2102,7 +2135,6 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
             for (const f of workspaceFolders) {
                 const encoded = encodeWorkspacePath(f.uri.fsPath).toLowerCase();
                 workspaceNameMap.set(encoded, path.basename(f.uri.fsPath));
-                log(`Workspace: ${f.uri.fsPath} → encoded: ${encoded}`);
             }
         } else {
             log('scope=workspace but no workspaceFolders — will show all sessions');
@@ -2126,10 +2158,8 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
             if (workspaceDirs !== null && workspaceFolders) {
                 const matched = workspaceFolders.some(f => projectDirMatchesFolder(projectDir, f));
                 if (!matched) {
-                    log(`Skip (no workspace match): ${projectDir}`);
                     continue;
                 }
-                log(`Match: ${projectDir}`);
             } else if (workspaceDirs !== null) {
                 // No workspace folders open → skip all (scope=workspace with no folder = nothing to show)
                 continue;
@@ -2140,7 +2170,6 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
             const allJsonl = projEntries
                 .filter(([n, t]) => t === vscode.FileType.File && n.endsWith('.jsonl') && !n.startsWith('agent-'))
                 .map(([n]) => n);
-            log(`  JSONL files in ${projectDir}: ${allJsonl.length}`);
             const fileStats = await Promise.all(allJsonl.map(async (n) => {
                 const uri = vscode.Uri.joinPath(projectUri, n);
                 let mtime = new Date(0);
@@ -2158,17 +2187,15 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
             const files = fileStats
                 .filter(f => {
                     const ok = f.mtime.getTime() > hideThreshold;
-                    if (!ok) log(`  Skip (too old, ${Math.round((Date.now() - f.mtime.getTime()) / 60000)}m ago): ${f.name}`);
                     return ok;
                 })
                 .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
-            if (files.length === 0) { log(`  No recent JSONL files (hideAfter=${hideAfter}s)`); continue; }
+            if (files.length === 0) continue;
 
             // Get token count from EACH active session file (1 per Claude Code tab)
             for (const file of files) {
                 const usage = await getLatestTokenCount(file.uri);
-                log(`  ${file.name}: tokens=${usage.totalTokens}, wasCleared=${usage.wasCleared}`);
 
                 if (usage.totalTokens > 0) {
                     const { name, fullPath } = decodeProjectPath(projectDir);
@@ -2418,7 +2445,51 @@ async function getGlobalEffortLevel(): Promise<string> {
     }
 }
 
-async function refreshAllSessions() {
+// Refreshes are triggered from many places — a file watcher per Claude and Codex store, the
+// 30s timer, the 1-minute countdown tick, config changes — and every open window runs its own.
+// A conversation that is being written fires the watcher several times a second, so without a
+// gate new passes started on top of unfinished ones and piled up: a window left open for a day
+// logged up to 9 starts in one second (18 in a freshly opened one), the extension host stayed
+// busy, and the session menu opened late or not at all. Now one pass runs at a time. Calls
+// that land mid-pass are folded into a single follow-up pass, and each caller gets the promise
+// of the pass that will cover its change.
+// What the latest refresh found, kept so the session menu can open without scanning the disk
+// first. Empty until a scan has run, and the menu then scans for itself as it always did.
+// Codex chats are only polled while their panel is open, so that one is often empty.
+const lastWorkflowsBySession = new Map<string, WorkflowInfo[]>();
+let lastCodexRuns: CodexRunView[] | null = null;
+let lastCodexChats: CodexChatView[] | null = null;
+
+let refreshLoop: Promise<void> | null = null;
+let refreshAgain = false;
+
+function refreshAllSessions(): Promise<void> {
+    if (refreshLoop) {
+        refreshAgain = true;
+        recordFolded();
+        return refreshLoop;
+    }
+    refreshLoop = (async () => {
+        try {
+            do {
+                refreshAgain = false;
+                const passStarted = Date.now();
+                beginRefreshShare();
+                try {
+                    await refreshAllSessionsOnce();
+                } finally {
+                    endRefreshShare();
+                    recordPass(Date.now() - passStarted);
+                }
+            } while (refreshAgain);
+        } finally {
+            refreshLoop = null;
+        }
+    })();
+    return refreshLoop;
+}
+
+async function refreshAllSessionsOnce() {
     const suppressBeep = getFirstScan();
     setFirstScan(false);
     // File watchers are best effort (especially after sleep). The regular refresh also
@@ -2897,6 +2968,9 @@ async function refreshAllSessions() {
     const workflowCapableFiles = new Set(
         sessions.filter(s => capabilitiesFor(s.provider).workflows).map(s => s.sessionFile)
     );
+    for (const k of [...lastWorkflowsBySession.keys()]) {
+        if (!workflowCapableFiles.has(k)) lastWorkflowsBySession.delete(k);
+    }
     for (const sessionFile of seenPaths) {
         if (!workflowCapableFiles.has(sessionFile)) continue;
         let workflows: WorkflowInfo[];
@@ -2907,6 +2981,7 @@ async function refreshAllSessions() {
             continue;
         }
         if (sessionFile === trackedSessionFile) trackedWorkflowsCache = workflows;
+        lastWorkflowsBySession.set(sessionFile, workflows);
         // Lazily fetched once per session (only when a wf_* workflow reaches journal
         // all-done) — the set of workflows the parent session confirms have truly finished.
         let completedWfIds: Set<string> | null = null;
@@ -3138,9 +3213,12 @@ async function collectChatTrash(): Promise<ChatTrashView[]> {
 
 /** Refresh the chat panel if it is open. Cheap enough to ride the same poll as the runs. */
 async function syncCodexChats(): Promise<void> {
-    if (!isChatPanelOpen()) return;
+    // Closed panel: nothing refreshes this list, so drop it rather than let the menu show a
+    // count frozen at whenever the panel was last open. The menu scans for itself instead.
+    if (!isChatPanelOpen()) { lastCodexChats = null; return; }
     try {
-        pushChats(await collectCodexChats());
+        lastCodexChats = await collectCodexChats();
+        pushChats(lastCodexChats);
     } catch (e) {
         log(`[codex-chat] scan error: ${e}`);
     }
@@ -3278,11 +3356,12 @@ async function syncCodexRuns(): Promise<void> {
 
 async function syncCodexRunsInner(): Promise<void> {
     // Scanning only makes sense where run records actually exist.
-    if (!await workspaceUsesCodexRescue()) return;
+    if (!await workspaceUsesCodexRescue()) { lastCodexRuns = []; return; }
 
     let runs: CodexRunView[];
     try {
         runs = await collectCodexRuns();
+        lastCodexRuns = runs;
     } catch (e) {
         log(`[codex-rescue] scan error: ${e}`);
         return;
