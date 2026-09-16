@@ -608,12 +608,28 @@ async function followupExtras(docsDir: vscode.Uri, logDir: vscode.Uri, stamp: st
     const logRe = new RegExp(`^${st}_t\\d+_(?:stderr\\.log|last_message\\.md)$`);
     const logs = ((await listNames(logDir)) ?? []).filter(n => logRe.test(n)).sort();
 
+    // An EDIT follow-up (2026-09-15) records what its turn changed in `<stamp>_edit<N>_<slug>.md`,
+    // next to the rebuttal that opened the turn — same lifetime, same opt-in.
     let docs: string[] = [];
     if (includeDocs && slug && slug !== '(unknown)') {
-        const docRe = new RegExp(`^${st}_followup\\d+_${escapeRe(slug)}\\.md$`);
+        const docRe = new RegExp(`^${st}_(?:followup|edit)\\d+_${escapeRe(slug)}\\.md$`);
         docs = ((await listNames(docsDir)) ?? []).filter(n => docRe.test(n)).sort();
     }
     return { logs, docs };
+}
+
+/**
+ * Every fixed-name log a run can leave in `.log/`, plus the per-turn ones found by scan.
+ * `deleteRun` and `trashRun` share this so the two can never disagree about what a run owns.
+ *
+ * `_appserver.jsonl` and `_steers.jsonl` come from the steering route (the app-server bridge):
+ * the raw RPC transcript — the largest file a run writes, 0.3–3 MB in measured runs — and the
+ * messages Claude cut in with. Missing them here left megabytes behind on every delete.
+ */
+function runLogNames(stamp: string, perTurn: string[]): string[] {
+    return [`${stamp}_events.jsonl`, `${stamp}_status.json`, `${stamp}_stderr.log`,
+            `${stamp}_last_message.md`, `${stamp}_heartbeat`,
+            `${stamp}_appserver.jsonl`, `${stamp}_steers.jsonl`, ...perTurn];
 }
 
 async function unlinkCounting(uri: vscode.Uri, res: CleanupResult): Promise<void> {
@@ -646,8 +662,7 @@ export async function deleteRun(folderUri: vscode.Uri, stamp: string, slug: stri
     // as the fixed list they extend.
     const extras = await followupExtras(docsDir, logDir, stamp, slug, deleteDocs);
 
-    for (const name of [`${stamp}_events.jsonl`, `${stamp}_status.json`, `${stamp}_stderr.log`,
-                        `${stamp}_last_message.md`, `${stamp}_heartbeat`, ...extras.logs]) {
+    for (const name of runLogNames(stamp, extras.logs)) {
         await unlinkCounting(vscode.Uri.joinPath(logDir, name), res);
     }
 
@@ -814,8 +829,7 @@ export async function trashRun(folderUri: vscode.Uri, stamp: string, slug: strin
     // that restore needs — both kinds come back on their own.
     const extras = await followupExtras(docsDir, logDir, stamp, slug, includeDocs);
 
-    for (const name of [`${stamp}_events.jsonl`, `${stamp}_status.json`, `${stamp}_stderr.log`,
-                        `${stamp}_last_message.md`, `${stamp}_heartbeat`, ...extras.logs]) {
+    for (const name of runLogNames(stamp, extras.logs)) {
         await move(vscode.Uri.joinPath(logDir, name), name, '.log');
     }
     if (includeDocs && slug && slug !== '(unknown)') {

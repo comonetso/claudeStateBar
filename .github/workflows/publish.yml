@@ -21,8 +21,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # vsce is pinned to 3.x: 4.0.0 needs Node 22, and on this Node 20 runner an unpinned
+      # `npx @vscode/vsce` quietly resolved to 3.9.2 anyway. Pinning makes that explicit.
       - name: Package VSIX
-        run: npx @vscode/vsce package
+        run: npx @vscode/vsce@3 package
 
       # GitHub Release first — it only needs the auto-provided GITHUB_TOKEN, so it succeeds
       # even when the marketplace PATs are missing. Keeps "attach VSIX to a release" working
@@ -35,8 +37,27 @@ jobs:
 
       # Marketplace / Open VSX need secrets (VSCE_PAT / OVSX_PAT). continue-on-error so a
       # missing/expired token doesn't fail the whole run (and doesn't block the Release above).
+      # The Marketplace gallery can hang for exactly 180 s and fail with
+      # "Request timeout: /_apis/gallery" (a service-side outage in Sept 2026, microsoft/vscode#336278).
+      # vsce does not retry that call (microsoft/vscode-vsce#926), so retry here. --skip-duplicate
+      # keeps a retry safe when a timed-out attempt actually landed. The VSIX built above is
+      # published as is, so the Marketplace gets the same bytes as the GitHub Release.
       - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish -p ${{ secrets.VSCE_PAT }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          VSIX=$(ls *.vsix)
+          for attempt in 1 2 3; do
+            if npx @vscode/vsce@3 publish --packagePath "$VSIX" --skip-duplicate -p "$VSCE_PAT"; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            delay=$((attempt * 15))
+            echo "Marketplace publish attempt $attempt failed; retrying in ${delay}s"
+            sleep "$delay"
+          done
         continue-on-error: true
 
       - name: Publish to Open VSX

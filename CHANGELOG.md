@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.15.2] - 2026-09-16
+
+Deleting a Codex run, sending it to the trash, or letting automatic cleanup remove it now takes
+everything the run wrote. Three kinds of file used to stay behind: the app-server transcript and the
+list of messages Claude cut in with, both written by runs that accept interruptions, and the record
+of what each follow-up turn of a fix changed. The transcript is the largest file a run writes —
+between 0.3 and 3 MB in the runs measured — so each delete could leave megabytes on disk. None of
+these files showed in the panel, which is why the leftovers went unnoticed.
+
 ## [1.15.1] - 2026-09-16
 
 Workflows that had stopped — because the session ended while they ran, or because they were

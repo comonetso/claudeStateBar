@@ -496,7 +496,9 @@ Cards without a follow-up look exactly as before.
 
 Earlier versions let a later turn's activities overwrite the earlier turn's (twenty came out as
 twelve), and deleting a card left the rebuttals and per-turn records behind. Both were fixed in
-1.14.0. On an older version, the exact record is in `.log/<stamp>_events.jsonl`.
+1.14.0. Fix follow-up records (`_edit<N>_`) and the steering route's transcript and cut-in log
+(`_appserver.jsonl`, `_steers.jsonl` under `.log/`) were still left behind on delete or trash through
+1.15.1; 1.15.2 removes them too. On an older version, the exact record is in `.log/<stamp>_events.jsonl`.
 
 ---
 
