@@ -1,4 +1,7 @@
 **/.git
+# Private docs repository (git dir for docs/). Not covered by **/.git — without this line
+# the whole private history would be packed into the VSIX.
+.git-docs/**
 **/.svn
 **/.hg
 **/CVS

@@ -9,11 +9,18 @@ INTERNAL-DEV-NOTES.md
 CLAUDE.md
 whats-next.md
 
-# codex_rescue raw run logs — the request/response .md files ARE tracked (they're the
-# record), but the raw event stream is not: it holds full command output, MCP tool
-# arguments/results and agent messages (one run measured 409 KB across 105 lines), so it
-# is both a leak risk and repo bloat.
-docs/codex_rescue/.log/
+# docs/ is private: session logs, codex_rescue run records and design notes carry server
+# names and local paths. They are versioned in a separate private repository whose git
+# directory is .git-docs (work tree = docs/, see tools/docs-git.sh), so no .git appears
+# inside docs/ and this repo can keep tracking the two public guides below.
+#
+# The guides must stay at these exact paths: every installed copy of the extension opens
+# https://github.com/comonetso/claudeStateBar/blob/main/docs/codex-rescue-guide(.ko).md
+# (src/extension.ts, "setupCodexRescue"), and moving them would break that link for good.
+/docs/*
+!/docs/codex-rescue-guide.md
+!/docs/codex-rescue-guide.ko.md
+/.git-docs/
 
 # IDE
 .vscode/
