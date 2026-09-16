@@ -3,9 +3,10 @@
 //   node tools/sync-codex-skill.js            # copy, mask, check
 //   node tools/sync-codex-skill.js --dry-run  # report what would change, write nothing
 //
-// The skill that actually runs — and that `skill_cp_install deploy` pushes to the servers — is
-// `~/.claude/skills/codex_rescue`. `skills/codex_rescue/` here is the copy the public guide tells
-// people to download. The live files carry measurement notes with server names, the user's
+// The editing source is `~/.claude/_src/codex_rescue` (override with CODEX_SKILL_SRC). Since
+// 2026-09-17 every machine runs the marketplace plugin, which installs from `skills/codex_rescue/`
+// here, so this copy is what ships once pushed. The source sits outside `~/.claude/skills` so that
+// `skill_cp_install deploy` does not copy it back onto the servers. The source files carry measurement notes with server names, the user's
 // form of address and local paths, so the copy has to be masked on the way in. Doing that by
 // hand dropped a backslash on 2026-09-16; this script is the replacement.
 //
@@ -22,7 +23,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const DRY = process.argv.includes('--dry-run');
-const SRC = process.env.CODEX_SKILL_SRC || path.join(os.homedir(), '.claude', 'skills', 'codex_rescue');
+const SRC = process.env.CODEX_SKILL_SRC || path.join(os.homedir(), '.claude', '_src', 'codex_rescue');
 const DST = path.join(__dirname, '..', 'skills', 'codex_rescue');
 const MASK = process.env.CODEX_SKILL_MASK || path.join(os.homedir(), '.claude', '_private', 'codex_rescue_mask.tsv');
 
