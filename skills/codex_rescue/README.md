@@ -65,13 +65,11 @@ The short back-and-forth mode anchors to the project root; everything else is re
 
 ## Installing
 
-Deploy it from the local PC with `skill_cp_install`.
+Install it as a Claude Code plugin. Inside Claude Code, run `/plugin marketplace add comonetso/claudeStateBar`, then `/plugin install codex-rescue@comonetso`, and reopen Claude Code. Plugin updates come through `claude plugin update codex-rescue@comonetso`.
 
-```
-/skill_cp_install deploy
-```
+Copying this folder to `~/.claude/skills/codex_rescue/` still works, but that copy never updates by itself, so it is no longer recommended. If you have such a copy, install the plugin and then delete the folder; keeping both leaves two skills with the same name. Requirements (Codex CLI, Node version) and the manual file list are in the [installation guide](https://github.com/comonetso/claudeStateBar/blob/main/docs/codex-rescue-guide.md#0-installation).
 
-The bridge under `scripts/` comes along with `send.sh`. Without it, cutting in refuses to start rather than quietly falling back to the older path — so you always know which one you're on.
+`/skill_cp_install deploy` is a *different*, separate skill some setups use to push their local `~/.claude/skills/` and `~/.claude/commands/` to their own remote servers over SSH. It has nothing to do with getting `codex_rescue` in the first place, and most installs will never touch it.
 
 ## If writes fail on Windows
 

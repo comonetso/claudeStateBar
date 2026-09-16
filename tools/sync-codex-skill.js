@@ -29,6 +29,9 @@ const MASK = process.env.CODEX_SKILL_MASK || path.join(os.homedir(), '.claude', 
 // Only text the skill is known to consist of. Anything else stops the run rather than being
 // published unread.
 const TEXT_EXT = new Set(['.md', '.sh', '.mjs', '.js', '.json', '.txt']);
+// Marks the machines that edit the skill, so SKILL.md skips its "switch to the plugin" notice
+// there. Publishing it would silence that notice for everyone who copies the folder.
+const LOCAL_ONLY = new Set(['.no_plugin_notice']);
 const BS = String.fromCharCode(92);
 
 function fail(msg) {
@@ -103,7 +106,7 @@ function syntaxCheck(file) {
 function main() {
     if (!fs.existsSync(SRC)) fail(`원본 스킬 폴더가 없습니다: ${SRC}`);
     const rules = loadRules(MASK);
-    const srcFiles = listFiles(SRC);
+    const srcFiles = listFiles(SRC).filter(rel => !LOCAL_ONLY.has(path.basename(rel)));
 
     const plan = [];
     const problems = [];

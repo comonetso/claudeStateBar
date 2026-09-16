@@ -1,0 +1,12 @@
+{
+  "name": "comonetso",
+  "owner": { "name": "Blueming" },
+  "description": "Claude Code plugins from the Claude State Bar project.",
+  "plugins": [
+    {
+      "name": "codex-rescue",
+      "source": "./skills/codex_rescue",
+      "description": "Get a second opinion from the Codex CLI: consult, review, edit, or chat."
+    }
+  ]
+}

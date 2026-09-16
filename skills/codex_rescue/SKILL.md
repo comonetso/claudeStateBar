@@ -5,6 +5,26 @@ description: Codex CLI 를 직접 호출해 2차 시선을 받는다. 인자의 
 
 # codex_rescue — Codex 2차 시선 자동 왕복
 
+## 설치 방식 안내 — 옛 방식이면 대화마다 한 번 플러그인 전환을 권한다 (2026-09-16 사용자 결정)
+
+이 스킬 폴더는 `${CLAUDE_SKILL_DIR}` 이다. **둘 다** 맞으면 옛 방식(폴더 복사) 설치다.
+
+- 경로가 `/.claude/skills/codex_rescue` 로 끝난다 (플러그인 설치는 `/.claude/plugins/` 아래다)
+- `test -f "${CLAUDE_SKILL_DIR}/.no_plugin_notice"` 가 거짓이다 — 이 파일은 스킬 편집 원본 머신의 표식이다
+
+판정은 § 2-1 ① 조회 때 함께 한다. 옛 방식이면 **이 대화의 첫 실행에서만** § 2-1 ② 질문 메시지 맨 끝
+("버튼으로 띄울까요?" 바로 위)에 아래 내용을 사용자 언어로 붙인다. 같은 대화에서 다시 말하지 않는다.
+HELP 모드면 help 출력 끝에 붙인다. 플러그인 설치이거나 표식 파일이 있으면 아무 말도 하지 않는다.
+
+```
+⚠️ 이 스킬은 옛 방식(폴더 복사)으로 설치돼 있어 업데이트가 자동으로 오지 않습니다. 플러그인으로 바꾸기를 강하게 권합니다.
+   /plugin marketplace add comonetso/claudeStateBar
+   /plugin install codex-rescue@comonetso
+   설치 후에는 옛 사본이 필요 없으니 ~/.claude/skills/codex_rescue/ 폴더를 지우고 Claude Code 를 다시 여십시오 (같은 이름의 스킬이 두 벌 남으면 혼동됩니다).
+```
+
+🔴 **옛 폴더를 Claude 가 대신 지우지 마라.** 지금 실행 중인 스킬이 그 폴더다. 안내만 하고 사용자가 한다.
+
 ## 0. 의도 판정 — 다른 무엇보다 먼저 한다
 
 발동하면 인자를 **맥락으로 읽어** 아래 6갈래 중 하나로 간다.
@@ -228,7 +248,7 @@ Claude가 해결하지 못하는 문제가 가끔 생긴다. 그럴 때 **다른
 ```
 Claude  ─►  docs/codex_rescue/260726_014119_request_<slug>.md   저장
 Claude  ─►  Bash(run_in_background: true)
-              CR_CONFIRMED=1 bash ~/.claude/skills/codex_rescue/send.sh <request 경로>
+              CR_CONFIRMED=1 bash "${CLAUDE_SKILL_DIR}/send.sh" <request 경로>
 Codex   ─►  요청서를 읽고 분석  ─►  260726_014119_response_<slug>.md  직접 저장
 send.sh ─►  응답 회수 + 변경 실측  ─►  stdout 으로 Claude 에게 보고
 Claude  ─►  ★ codex 종료 시 자동 재호출됨  →  response 읽고 검토  →  적용 판단 보고
@@ -320,7 +340,7 @@ Codex 는 `-s workspace-write` 로 실행된다(응답 파일을 직접 저장�
 > 이제 `send.sh` 가 **기본 거부**한다. 승인을 받은 뒤에만 환경변수를 붙여 실행한다.
 >
 > ```bash
-> CR_CONFIRMED=1 CR_ALLOW_EDIT=1 bash ~/.claude/skills/codex_rescue/send.sh <요청서>
+> CR_CONFIRMED=1 CR_ALLOW_EDIT=1 bash "${CLAUDE_SKILL_DIR}/send.sh" <요청서>
 > ```
 >
 > 🔴 **승인 없이 이 환경변수를 붙이지 마라.** 그러면 게이트를 만든 의미가 없다.
@@ -434,15 +454,15 @@ Codex 가 지적한 혼동 지점이라 표로 고정한다.
    ```
    # 이번 스킬 호출의 첫 턴 — 항상 새 문서. 대화키는 send.sh 가 발급한다
    Bash(timeout: 180000):
-     CR_CONFIRMED=1 bash ~/.claude/skills/codex_rescue/send.sh --chat --start --slug <슬러그> [--subject "<한 줄>"] "<질문>"
+     CR_CONFIRMED=1 bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --start --slug <슬러그> [--subject "<한 줄>"] "<질문>"
 
    # 같은 호출의 다음 턴 — 직전 stdout 의 `대화키:` 값을 그대로 넘긴다
    Bash(timeout: 180000):
-     bash ~/.claude/skills/codex_rescue/send.sh --chat --resume-stamp <대화키> --slug <슬러그> "<질문>"
+     bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --resume-stamp <대화키> --slug <슬러그> "<질문>"
 
    # ★ 코드를 봐야 하는 질문 — 볼 것을 지목한다 (가장 흔한 형태가 될 것이다)
    Bash(timeout: 180000):
-     CR_CONFIRMED=1 bash ~/.claude/skills/codex_rescue/send.sh --chat --start --slug <슬러그> \
+     CR_CONFIRMED=1 bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --start --slug <슬러그> \
        --look src/main.js --look src/db.js:40-120 "<질문>"
    ```
 
@@ -553,7 +573,7 @@ Codex 가 지적한 혼동 지점이라 표로 고정한다.
 
    ```
    Bash(run_in_background: true):
-     CR_CONFIRMED=1 CR_LIVE_STEER=1 bash ~/.claude/skills/codex_rescue/send.sh --review --slug <슬러그> --subject "<한 줄 제목 20자 이내>" [--base X|--commit Y] [집중지시]
+     CR_CONFIRMED=1 CR_LIVE_STEER=1 bash "${CLAUDE_SKILL_DIR}/send.sh" --review --slug <슬러그> --subject "<한 줄 제목 20자 이내>" [--base X|--commit Y] [집중지시]
    ```
 
    - 🔴 **`CR_LIVE_STEER=1` 을 빼지 마라** (2026-09-15). 붙이면 `send.sh` 가 요청서
@@ -661,7 +681,7 @@ error: the argument '--uncommitted' cannot be used with '[PROMPT]'
 **① 조회한다** (동기, 수 초. 모델을 부르지 않아 토큰을 안 쓴다).
 
    ```
-   node ~/.claude/skills/codex_rescue/scripts/codex-status.mjs --cwd <프로젝트 루트>
+   node "${CLAUDE_SKILL_DIR}/scripts/codex-status.mjs" --cwd <프로젝트 루트>
    ```
 
    현재 모델·추론 수준, 5시간·주간 한도, 고를 수 있는 모델과 모델별 추론 수준,
@@ -688,6 +708,7 @@ error: the argument '--uncommitted' cannot be used with '[PROMPT]'
      여러 파일 교차 분석이 필요하면 무거운 쪽, 볼 파일을 몇 개로 지목할 수 있으면 가벼운 쪽이다.
    - 조회가 실패하면 예상 줄에 실패 사유를 적고 질문은 그대로 한다. 조회 실패로 발동을 막지 않는다.
    - § 되묻기 예외(사용자 감각 질문)가 함께 걸리면 **같은 메시지에 묶는다.** 두 번 왕복하지 않는다.
+   - 옛 방식 설치면 이 대화 첫 실행에 한해 플러그인 전환 안내를 붙인다(§ 설치 방식 안내).
 
 **③ 답을 받아 적용한다.**
 
@@ -739,7 +760,7 @@ error: the argument '--uncommitted' cannot be used with '[PROMPT]'
 
    ```
    Bash(run_in_background: true):
-     CR_CONFIRMED=1 CR_LIVE_STEER=1 bash ~/.claude/skills/codex_rescue/send.sh docs/codex_rescue/<스탬프>_request_<슬러그>.md
+     CR_CONFIRMED=1 CR_LIVE_STEER=1 bash "${CLAUDE_SKILL_DIR}/send.sh" docs/codex_rescue/<스탬프>_request_<슬러그>.md
    ```
 
    - § 2-1 에서 모델·추론 수준을 바꿨으면 앞에 붙인다 —
@@ -815,7 +836,7 @@ error: the argument '--uncommitted' cannot be used with '[PROMPT]'
 ```
 1. Write:  docs/codex_rescue/.log/<스탬프>_steer<N>.txt      ← 사용자 말을 그대로
 2. Bash:
-     node ~/.claude/skills/codex_rescue/scripts/live-consult.mjs steer \
+     node "${CLAUDE_SKILL_DIR}/scripts/live-consult.mjs" steer \
        --stamp <스탬프> \
        --input-file docs/codex_rescue/.log/<스탬프>_steer<N>.txt \
        --source user-via-claude
@@ -968,7 +989,7 @@ grep '"type":"item.started"' "$L" | grep -c '<파일명 또는 사례ID>'
 
     ```
     Bash(run_in_background: true):
-      CR_CONFIRMED=1 bash ~/.claude/skills/codex_rescue/send.sh --followup docs/codex_rescue/<스탬프>_followup<N>_<슬러그>.md
+      CR_CONFIRMED=1 bash "${CLAUDE_SKILL_DIR}/send.sh" --followup docs/codex_rescue/<스탬프>_followup<N>_<슬러그>.md
     ```
 
     - 던지기 전에 § 절차 2-1(실행 전 확인)을 한다. 모델·추론 수준을 바꿨으면 `CR_MODEL`·`CR_EFFORT` 를 앞에 붙인다
@@ -1591,7 +1612,7 @@ Codex 의 2차 검토(2026-08-17)에서 확인된 것이다. "응답 파일 외 
 ## 파일
 
 ```
-~/.claude/skills/codex_rescue/
+${CLAUDE_SKILL_DIR}/        (옛 설치: ~/.claude/skills/codex_rescue/ · 플러그인: ~/.claude/plugins/cache/comonetso/codex-rescue/<버전>/)
   SKILL.md    이 문서
   send.sh     codex 호출 + 응답 회수 + 변경 실측. Claude 가 백그라운드로 던진다
   scripts/live-consult.mjs   CONSULT 끼어들기 경로 실행기 (app-server)

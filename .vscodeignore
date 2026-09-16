@@ -22,6 +22,8 @@ src/**
 # write access, which is a very different thing from a status-bar viewer. Users install it
 # themselves after reading docs/codex-rescue-guide.md.
 skills/**
+# Claude Code plugin marketplace for that skill (`/plugin marketplace add comonetso/claudeStateBar`).
+.claude-plugin/**
 images/provider-icons-src/**
 images/provider-icons/*.json
 images/icon-src/**

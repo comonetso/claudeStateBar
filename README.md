@@ -171,6 +171,8 @@ When Claude Code hands a problem to Codex for a second opinion, Codex runs for m
 
 It needs the [`codex_rescue`](skills/codex_rescue/) skill for Claude Code, which is not bundled with this extension — the skill runs `codex exec` with write access to your workspace, and that shouldn't arrive as a side effect of installing a status-bar extension. Installation and usage are in [the guide](docs/codex-rescue-guide.md) ([한국어](docs/codex-rescue-guide.ko.md)).
 
+Since 1.16.0 the skill is also a Claude Code plugin, and that is the recommended way to install it: run `/plugin marketplace add comonetso/claudeStateBar`, then `/plugin install codex-rescue@comonetso` inside Claude Code. The extension finds either kind of install. If you copied the skill into `~/.claude/skills/codex_rescue/` earlier, that copy keeps working but no longer updates by itself, so each new window shows a notice recommending the switch until you pick "Don't show again". Once the plugin is installed, the same notice offers to move the old copy to the trash.
+
 With the skill installed, open it from the status-bar menu or `claudeStateBar: Show Codex Runs`. Each run is one card:
 
 - **What Codex just said** — its own narration of what it's about to do, far more useful than a spinner
@@ -218,8 +220,8 @@ Codex's official review rubric, because Codex's dedicated review command does no
 mid-turn. The result is therefore a `_response_` document, and you can ask follow-ups on it. Ask for
 the old way and the dedicated review command runs instead, without interruptions or follow-ups.
 
-The bridge ships with the skill under `scripts/`; fetch it alongside `send.sh` (the
-[install instructions](docs/codex-rescue-guide.md#0-installation) include it). Without it the flag
+The bridge ships with the skill under `scripts/`. The plugin includes it, and so does the manual
+file list in the [install instructions](docs/codex-rescue-guide.md#0-installation). Without it the flag
 refuses to start rather than falling back quietly, so you always know which path you are on.
 
 🔴 **Steering needs Node 20 or newer.** The bridge uses Node's global `WebSocket`: 22 and 24 have it,

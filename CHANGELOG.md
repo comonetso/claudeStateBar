@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.16.0] - 2026-09-16
+
+The `codex_rescue` skill can now be installed as a Claude Code plugin, and that is the recommended
+way from here on: run `/plugin marketplace add comonetso/claudeStateBar`, then
+`/plugin install codex-rescue@comonetso`. A plugin install can be updated with
+`claude plugin update`; a copy placed in `~/.claude/skills/codex_rescue/` never updates by itself.
+You still call the skill the same way, by asking in plain language or with `/codex_rescue`.
+
+The extension recognizes the plugin install. Before this version, the Codex panels and menu items
+appeared only when the skill sat in `~/.claude/skills/codex_rescue/`, so they would have stayed
+hidden for a plugin install.
+
+If only that old copy is there, each new window now shows a notice recommending the switch, until
+you choose "Don't show again". An old copy you leave in place keeps working. The skill gives the
+same recommendation in the chat, once per conversation.
+
+If the plugin is installed and the old copy is still there too, the copy is no longer needed, and
+the notice offers to delete it. The "Delete old copy" button moves the folder to the trash; restart
+Claude Code afterwards. The extension offers this only when the plugin is present, and it never
+installs the plugin for you.
+
+The setup message for people without the skill now gives the plugin commands, and the guide's
+install section leads with the plugin. The manual file list is still there, marked as not
+recommended, and now also fetches `.claude-plugin/plugin.json`.
+
 ## [1.15.2] - 2026-09-16
 
 Deleting a Codex run, sending it to the trash, or letting automatic cleanup remove it now takes

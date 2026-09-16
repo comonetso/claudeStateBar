@@ -907,14 +907,11 @@ export function activate(context: vscode.ExtensionContext) {
     const codexSetupCmd = vscode.commands.registerCommand('claudeContextBar.setupCodexRescue', async () => {
         const openBtn = planT('cx.setup.open');
         const answer = await vscode.window.showInformationMessage(planT('cx.setup.msg'), openBtn);
-        if (answer === openBtn) {
-            const doc = planLang() === 'ko' ? 'codex-rescue-guide.ko.md' : 'codex-rescue-guide.md';
-            vscode.env.openExternal(vscode.Uri.parse(
-                `https://github.com/comonetso/claudeStateBar/blob/main/docs/${doc}`));
-        }
+        if (answer === openBtn) openCodexGuide();
     });
     context.subscriptions.push(codexSetupCmd);
     updateCodexContext(codexRescueSkillInstalled());
+    maybeShowCodexPluginNotice(context);
 
     // Auto-cleanup on activate (silent, async — doesn't block startup)
     const autoCleanup = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('autoCleanupOldVersions', true);
@@ -3146,11 +3143,121 @@ const codexSeenLive = new Set<string>();
  * it spawns `codex exec` with workspace write access, which users must opt into knowingly.
  */
 function codexRescueSkillInstalled(): boolean {
+    return codexRescueLegacyInstalled() || codexRescuePluginInstalled();
+}
+
+/** Plugin id from the repo's `.claude-plugin/marketplace.json` (plugin `codex-rescue`, marketplace `comonetso`). */
+const CODEX_PLUGIN_ID = 'codex-rescue@comonetso';
+
+/** The manual-copy install. Still supported, but no longer updates itself — see maybeShowCodexPluginNotice. */
+function codexRescueLegacyDir(): string {
+    return path.join(os.homedir(), '.claude', 'skills', 'codex_rescue');
+}
+
+function codexRescueLegacyInstalled(): boolean {
     try {
-        return fs.existsSync(path.join(os.homedir(), '.claude', 'skills', 'codex_rescue', 'SKILL.md'));
+        return fs.existsSync(path.join(codexRescueLegacyDir(), 'SKILL.md'));
     } catch {
         return false;
     }
+}
+
+/**
+ * Plugin installs land in `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`, a path that
+ * changes with every version, so the only stable record is Claude Code's `installed_plugins.json`
+ * (`{ plugins: { "<plugin>@<marketplace>": [{ installPath, scope, ... }] } }`). Any scope counts:
+ * the panel is global, not per-project. A disabled plugin still counts — the panel only reads run
+ * records, it never calls the skill.
+ *
+ * This runs on the 2s Codex poll, so the file is re-parsed only when its mtime moves.
+ */
+let codexPluginCache: { mtimeMs: number; installed: boolean } | undefined;
+
+function codexRescuePluginInstalled(): boolean {
+    const file = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+    try {
+        const mtimeMs = fs.statSync(file).mtimeMs;
+        if (codexPluginCache && codexPluginCache.mtimeMs === mtimeMs) return codexPluginCache.installed;
+        const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const entries: unknown = data?.plugins?.[CODEX_PLUGIN_ID];
+        const installed = Array.isArray(entries) && entries.some((e: any) =>
+            typeof e?.installPath === 'string' && fs.existsSync(path.join(e.installPath, 'SKILL.md')));
+        codexPluginCache = { mtimeMs, installed };
+        return installed;
+    } catch {
+        codexPluginCache = undefined;
+        return false;
+    }
+}
+
+function openCodexGuide(): void {
+    const doc = planLang() === 'ko' ? 'codex-rescue-guide.ko.md' : 'codex-rescue-guide.md';
+    vscode.env.openExternal(vscode.Uri.parse(
+        `https://github.com/comonetso/claudeStateBar/blob/main/docs/${doc}`));
+}
+
+const CODEX_PLUGIN_NOTICE_KEY = 'claudeStateBar.codexPluginNoticeDismissed';
+
+/**
+ * Pushes manual-copy users toward the plugin (2026-09-16 user decision): shown on every window
+ * start while `~/.claude/skills/codex_rescue` exists, until "Don't show again".
+ *
+ * Skipped when that folder holds `.no_plugin_notice` — the marker for the machines that edit the
+ * skill itself and so have to keep the manual copy. SKILL.md reads the same marker for its own
+ * in-chat notice.
+ *
+ * If the plugin is already installed next to the old copy, the copy is no longer needed (measured
+ * 2026-09-16: with its plugin.json present, Claude Code refuses to load it because the plugin holds
+ * the name), so the notice offers to delete it. Only then — without the plugin, deleting the copy
+ * would remove the skill. The extension still never installs the plugin itself; see
+ * claudeContextBar.setupCodexRescue for why.
+ */
+function maybeShowCodexPluginNotice(context: vscode.ExtensionContext): void {
+    const noticeApplies = (): boolean => {
+        try {
+            return codexRescueLegacyInstalled()
+                && !fs.existsSync(path.join(codexRescueLegacyDir(), '.no_plugin_notice'))
+                && !context.globalState.get<boolean>(CODEX_PLUGIN_NOTICE_KEY);
+        } catch {
+            return false;
+        }
+    };
+    if (!noticeApplies()) return;
+
+    const dir = codexRescueLegacyDir();
+    const hasPlugin = codexRescuePluginInstalled();
+    const guideBtn = planT('cx.setup.open');
+    const neverBtn = planT('cx.plugin.never');
+    const deleteBtn = planT('cx.plugin.deleteOld');
+    const buttons = hasPlugin ? [deleteBtn, guideBtn, neverBtn] : [guideBtn, neverBtn];
+    const msg = hasPlugin ? planT('cx.plugin.removeOld', dir) : planT('cx.plugin.switch');
+    void vscode.window.showWarningMessage(msg, ...buttons).then(async answer => {
+        if (answer === guideBtn) openCodexGuide();
+        else if (answer === neverBtn) void context.globalState.update(CODEX_PLUGIN_NOTICE_KEY, true);
+        else if (answer === deleteBtn) await deleteLegacyCodexCopy(dir, noticeApplies);
+    });
+    log(`[codex-rescue] plugin switch notice shown (plugin=${hasPlugin})`);
+}
+
+/**
+ * Moves the old manual copy to the OS trash (user decision: trash, no second confirmation — the
+ * notice itself is the question). Everything is re-checked at click time, since the notice can sit
+ * open for a long while. A failed trash move is reported, never retried as a permanent delete.
+ */
+async function deleteLegacyCodexCopy(dir: string, stillApplies: () => boolean): Promise<void> {
+    if (!stillApplies() || !codexRescuePluginInstalled()) {
+        log('[codex-rescue] old copy delete skipped — conditions changed since the notice');
+        return;
+    }
+    try {
+        await vscode.workspace.fs.delete(vscode.Uri.file(dir), { recursive: true, useTrash: true });
+        log(`[codex-rescue] old copy moved to trash: ${dir}`);
+        void vscode.window.showInformationMessage(planT('cx.plugin.deleted'));
+    } catch (e) {
+        log(`[codex-rescue] old copy delete failed: ${e}`);
+        void vscode.window.showErrorMessage(planT('cx.plugin.deleteFailed', dir, String(e)));
+    }
+    updateCodexContext(codexRescueSkillInstalled());
 }
 
 /** True when any workspace folder has codex_rescue run records to display. */

@@ -44,28 +44,63 @@ node --experimental-websocket -e "console.log(typeof WebSocket)"   # function �
 서버에서 옛 Node 를 유지해야 한다면, 이건 셸 단위라는 점만 기억하시면 됩니다.
 `send.sh` 가 돌 때 `PATH` 앞에 있는 `node` 가 결정합니다.
 
-### 스킬 받기
+### 스킬 받기 — 플러그인으로 설치하십시오 (2026-09-16부터 권장)
 
-```bash
-mkdir -p ~/.claude/skills/codex_rescue/scripts/lib ~/.claude/skills/codex_rescue/prompts
-BASE=https://raw.githubusercontent.com/comonetso/claudeStateBar/main/skills/codex_rescue
-for f in SKILL.md send.sh prompts/review_rubric.md \
-         scripts/codex-status.mjs scripts/live-consult.mjs \
-         scripts/lib/appserver.mjs scripts/lib/bridge.mjs scripts/lib/runtime.mjs; do
-  curl -fsSL "$BASE/$f" -o ~/.claude/skills/codex_rescue/$f
-done
-chmod +x ~/.claude/skills/codex_rescue/send.sh
+Claude Code 안에서 두 줄이면 됩니다.
+
+```
+/plugin marketplace add comonetso/claudeStateBar
+/plugin install codex-rescue@comonetso
 ```
 
-전부 받으십시오. 예전에는 끼어들기용 파일을 빼도 됐지만, 지금은 빠지는 게 있으면 기능이 멈춥니다.
+Claude Code를 다시 열면 스킬이 잡힙니다. 확장의 진행 패널도 이때부터 나타납니다(확장 1.16.0 이상).
+
+부르는 법은 바뀌지 않습니다. "코덱스에 물어봐" 같은 말이나 `/codex_rescue` 로 부르면 됩니다.
+다른 스킬과 이름이 겹칠 때만 `/codex-rescue:codex_rescue` 로 부르십시오.
+
+새 버전은 터미널에서 이렇게 받고, Claude Code를 다시 엽니다.
+
+```bash
+claude plugin marketplace update comonetso
+claude plugin update codex-rescue@comonetso
+```
+
+#### 옛 방식(폴더 복사)으로 설치하셨다면 — 플러그인으로 바꾸십시오
+
+`~/.claude/skills/codex_rescue/` 에 직접 받은 사본은 **업데이트가 자동으로 오지 않습니다.**
+위 두 줄로 플러그인을 설치한 뒤 **그 폴더를 지우고** Claude Code를 다시 여십시오.
+
+- **플러그인을 설치했다면 옛 사본은 더 이상 필요 없습니다.** 같은 이름의 스킬이 두 벌 남아 혼동만 생기니 지우십시오.
+  확장이 플러그인과 옛 사본을 함께 발견하면 알림에 **[옛 사본 삭제]** 버튼을 띄우고, 누르면 그 폴더를 휴지통으로 옮깁니다.
+- 플러그인을 설치하기 전에는 폴더를 지우지 마십시오. 옛 사본은 지금까지처럼 동작합니다. 다만 수정과 새 기능이 들어오지 않습니다.
+- 옛 사본만 있는 동안 확장은 창을 열 때마다 전환을 권하는 알림을 띄웁니다("다시 보지 않기"로 끌 수 있습니다).
+  스킬도 대화마다 첫 실행 때 한 번 같은 안내를 덧붙입니다.
+
+#### 수동 설치 (비권장)
+
+플러그인을 쓸 수 없는 환경에서만 쓰십시오. 업데이트는 이 명령을 다시 돌려서 받아야 합니다.
+
+```bash
+D=~/.claude/skills/codex_rescue
+mkdir -p $D/scripts/lib $D/prompts $D/.claude-plugin
+BASE=https://raw.githubusercontent.com/comonetso/claudeStateBar/main/skills/codex_rescue
+for f in SKILL.md send.sh prompts/review_rubric.md .claude-plugin/plugin.json \
+         scripts/codex-status.mjs scripts/live-consult.mjs \
+         scripts/lib/appserver.mjs scripts/lib/bridge.mjs scripts/lib/runtime.mjs; do
+  curl -fsSL "$BASE/$f" -o $D/$f
+done
+chmod +x $D/send.sh
+```
+
+전부 받으십시오. 빠지는 게 있으면 기능이 멈춥니다.
 
 - `prompts/review_rubric.md` — 리뷰 판정 기준입니다. 없으면 **리뷰가 시작을 거부합니다**
 - `scripts/codex-status.mjs` — 실행 전에 한도와 모델을 조회합니다(§2-0)
 - `scripts/live-consult.mjs` 와 `lib/` — 실행 중 끼어들기(§2-3)
+- `.claude-plugin/plugin.json` — 이 폴더를 Claude Code가 플러그인으로도 인식하게 하는 설명 파일입니다
 
 레포를 통째로 받았다면 `skills/codex_rescue/` 를 `~/.claude/skills/` 로 복사해도 됩니다.
-
-Claude Code를 다시 열면 `/codex_rescue` 가 잡힙니다. 확장의 진행 패널도 이때부터 나타납니다.
+이렇게 설치해도 위의 전환 권유 알림은 뜹니다.
 
 ### 🔴 설치 전에 알아둘 것
 
@@ -572,9 +607,10 @@ claudeStateBar 확장을 쓰신다면 두 가지 방법이 있습니다.
 | **"이미 실행 중"이라고 거부된다** | 같은 걸 두 번 동시에 돌린 것입니다. 먼저 것이 끝나길 기다리십시오 (파일 덮어쓰기 방지) |
 | 패널에 아무것도 안 보인다 | 그 워크스페이스에서 아직 한 번도 실행하지 않은 것입니다. 한 번 돌리면 나타납니다 |
 | **원격 워크스페이스인데 비어 있다** | 확장이 1.9.2 미만이면 그게 원인입니다(그 전 버전은 원격 파일을 못 읽었습니다). 1.9.3인데도 비면 원격 쪽 `docs/codex_rescue/.log/`에 `*_events.jsonl`이 있는지, 읽을 권한이 있는지 확인하십시오 |
-| 진행이 실시간으로 안 보인다 | 스킬이 구버전일 수 있습니다. 실시간 기록은 나중에 추가된 기능이니 §0으로 다시 받으십시오 |
+| 진행이 실시간으로 안 보인다 | 스킬이 구버전일 수 있습니다. 실시간 기록은 나중에 추가된 기능이니 플러그인을 업데이트하거나 플러그인으로 바꾸십시오(§0) |
+| **플러그인을 설치했는데 메뉴에 Codex 항목이 없다** | 확장은 1.16.0부터 플러그인 설치를 알아봅니다. 확장을 업데이트하고 창을 다시 여십시오 |
 | `CR_TIMEOUT` 을 쓰니 거부당한다 | 제거된 변수입니다. Windows에서 동작하지 않는 것이 실측으로 확인돼 막아 두었습니다 |
-| **"리뷰 기준 파일이 없다"** | `prompts/review_rubric.md` 를 안 받은 것입니다. §0의 목록대로 다시 받으십시오 |
+| **"리뷰 기준 파일이 없다"** | `prompts/review_rubric.md` 를 안 받은 것입니다. 플러그인으로 설치하거나 §0의 목록대로 다시 받으십시오 |
 | **"실행 전 확인을 안 했다"** | 실행 전 확인(§2-0)을 거치지 않은 것입니다. Claude가 물어서 답을 받은 뒤에 붙입니다. 직접 `send.sh` 를 돌린다면 `CR_CONFIRMED=1` 을 붙이십시오 |
 | **도중에 한도로 끊겼다** | 응답 문서에 `status: partial` 이 붙어 있으면 중간본입니다(§4). 한도가 풀린 뒤 "다시 물어봐"로 이어갑니다 |
 | 하위 폴더에서 돌린 실행이 패널에 없다 | 패널은 작업 영역 폴더 바로 아래 `docs/codex_rescue/` 만 봅니다. 기록은 하위 폴더에 있습니다 |

@@ -65,13 +65,11 @@ Codex CLI가 설치돼 있고 로그인돼 있어야 합니다.
 
 ## 설치
 
-로컬 PC 에서 서버로 배포합니다.
+Claude Code 플러그인으로 설치하십시오. Claude Code 안에서 `/plugin marketplace add comonetso/claudeStateBar` 를 실행한 뒤 `/plugin install codex-rescue@comonetso` 를 실행하고 Claude Code를 다시 열면 됩니다. 업데이트는 `claude plugin update codex-rescue@comonetso` 로 받습니다.
 
-```
-/skill_cp_install deploy
-```
+이 폴더를 `~/.claude/skills/codex_rescue/` 로 복사하는 방법도 여전히 동작하지만, 그 사본은 업데이트가 자동으로 오지 않아 더는 권하지 않습니다. 그렇게 설치해 두셨다면 플러그인을 설치한 뒤 그 폴더를 지우십시오. 둘 다 두면 같은 이름의 스킬이 두 개가 됩니다. 필요한 것(Codex CLI · Node 버전)과 수동 설치 파일 목록은 [설치 가이드](https://github.com/comonetso/claudeStateBar/blob/main/docs/codex-rescue-guide.ko.md#0-설치)에 있습니다.
 
-`scripts/` 아래 브리지 파일이 `send.sh`와 함께 따라옵니다. 이게 없으면 끼어들기가 조용히 옛 방식으로 넘어가는 대신 아예 시작을 거부합니다 — 지금 어느 경로로 도는지 늘 알 수 있게 하기 위해서입니다.
+`/skill_cp_install deploy`는 **별개의 다른 스킬**입니다. 자신의 `~/.claude/skills/`·`~/.claude/commands/` 전체를 SSH로 자신의 원격 서버에 밀어 넣는 작업 환경에서 쓰는 것으로, `codex_rescue`를 받는 것과는 무관합니다. 대부분의 설치에서는 쓸 일이 없습니다.
 
 ## Windows에서 파일 쓰기가 실패하면
 

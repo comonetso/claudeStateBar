@@ -45,29 +45,67 @@ node --experimental-websocket -e "console.log(typeof WebSocket)"   # "function" 
 On a server where an older Node has to stay put, remember that this is per-shell: whichever
 `node` is first on `PATH` when `send.sh` runs is the one that decides.
 
-### Get the skill
+### Get the skill — install it as a plugin (recommended since 2026-09-16)
 
-```bash
-mkdir -p ~/.claude/skills/codex_rescue/scripts/lib ~/.claude/skills/codex_rescue/prompts
-BASE=https://raw.githubusercontent.com/comonetso/claudeStateBar/main/skills/codex_rescue
-for f in SKILL.md send.sh prompts/review_rubric.md \
-         scripts/codex-status.mjs scripts/live-consult.mjs \
-         scripts/lib/appserver.mjs scripts/lib/bridge.mjs scripts/lib/runtime.mjs; do
-  curl -fsSL "$BASE/$f" -o ~/.claude/skills/codex_rescue/$f
-done
-chmod +x ~/.claude/skills/codex_rescue/send.sh
+Two lines inside Claude Code:
+
+```
+/plugin marketplace add comonetso/claudeStateBar
+/plugin install codex-rescue@comonetso
 ```
 
-Fetch all of them. The steering files used to be optional; now a missing file stops a feature.
+Reopen Claude Code and the skill is available. The extension's progress panel appears from that
+point on (extension 1.16.0 or later).
+
+You call it the same way as before: ask in plain language ("ask Codex …") or type `/codex_rescue`.
+Only if another skill uses the same name, call it as `/codex-rescue:codex_rescue`.
+
+To get a new version, run this in a terminal and reopen Claude Code:
+
+```bash
+claude plugin marketplace update comonetso
+claude plugin update codex-rescue@comonetso
+```
+
+#### Installed the old way (a copied folder)? Switch to the plugin
+
+A copy you fetched into `~/.claude/skills/codex_rescue/` **does not update by itself.**
+Install the plugin with the two lines above, then **delete that folder** and reopen Claude Code.
+
+- **Once the plugin is installed, the old copy is no longer needed.** Two skills with the same name
+  only cause confusion, so delete it. When the extension finds both the plugin and the old copy, its
+  notice offers a **Delete old copy** button that moves the folder to the trash.
+- Don't delete the folder before the plugin is installed. Until then the old copy keeps working as it
+  does today; it just stops getting fixes and new features.
+- While only the old copy is there, the extension shows a notice recommending the switch every time a
+  window opens ("Don't show again" turns it off). The skill adds the same note once per conversation,
+  on its first run.
+
+#### Manual install (not recommended)
+
+Use this only where plugins aren't an option. To update, you have to run it again.
+
+```bash
+D=~/.claude/skills/codex_rescue
+mkdir -p $D/scripts/lib $D/prompts $D/.claude-plugin
+BASE=https://raw.githubusercontent.com/comonetso/claudeStateBar/main/skills/codex_rescue
+for f in SKILL.md send.sh prompts/review_rubric.md .claude-plugin/plugin.json \
+         scripts/codex-status.mjs scripts/live-consult.mjs \
+         scripts/lib/appserver.mjs scripts/lib/bridge.mjs scripts/lib/runtime.mjs; do
+  curl -fsSL "$BASE/$f" -o $D/$f
+done
+chmod +x $D/send.sh
+```
+
+Fetch all of them. A missing file stops a feature.
 
 - `prompts/review_rubric.md` — the review criteria. Without it **a review refuses to start**
 - `scripts/codex-status.mjs` — looks up limits and models before a run (§2-0)
 - `scripts/live-consult.mjs` and `lib/` — cutting in while Codex works (§2-3)
+- `.claude-plugin/plugin.json` — the manifest that lets Claude Code also recognize this folder as a plugin
 
 If you cloned the repo, copying `skills/codex_rescue/` into `~/.claude/skills/` works too.
-
-Reopen Claude Code and `/codex_rescue` becomes available. The extension's progress panel
-appears from that point on.
+The switch notice above still appears for an install made this way.
 
 ### 🔴 Read this before installing
 
@@ -620,9 +658,10 @@ recommended for everyday use.
 | **"already running"** | The same stamp was launched twice. Wait for the first to finish (this prevents overwriting files) |
 | Panel is empty | Nothing has run in this workspace yet. Run it once |
 | **Empty on a remote workspace** | If your extension predates 1.9.2, that's the cause — earlier versions couldn't read remote files. On 1.9.3 and still empty, check that the remote `docs/codex_rescue/.log/` holds `*_events.jsonl` and that you can read it |
-| No live updates | Your skill copy may predate the live-record feature. Reinstall from §0 |
+| No live updates | Your skill copy may predate the live-record feature. Update the plugin, or switch to it (§0) |
+| **Plugin installed, but no Codex item in the menu** | The extension recognizes the plugin from 1.16.0. Update the extension, then reopen the window |
 | `CR_TIMEOUT` is rejected | It was removed — measured not to work on Windows, so the script refuses it |
-| **Review criteria file missing** | `prompts/review_rubric.md` wasn't fetched. Reinstall with the full list in §0 |
+| **Review criteria file missing** | `prompts/review_rubric.md` wasn't fetched. Install the plugin, or re-fetch with the full list in §0 |
 | **Refused because the pre-run check wasn't done** | The run skipped the question in §2-0. Claude adds the mark after you answer; if you run `send.sh` yourself, add `CR_CONFIRMED=1` |
 | **Cut off by a usage limit** | If the response document says `status: partial`, it is a partial answer (§4). Say "ask again" once the limit resets |
 | A run started from a subfolder isn't in the panel | The panel only reads `docs/codex_rescue/` directly under the workspace folder. The record is in the subfolder |
