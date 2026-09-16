@@ -234,7 +234,7 @@ const CLI_FILES = {
 // 🔴 값을 받지 않는 플래그는 명시해 둔다. 안 그러면 `--dry-run run` 처럼 썼을 때
 //    `run` 이 --dry-run 의 "값"으로 먹혀 서브커맨드가 사라진다(도움말만 뜨고 끝난다).
 //    사람이 실제로 밟는 함정이라 목록으로 못 박는다.
-const BOOLEAN_FLAGS = new Set(['dry-run', 'json', 'help', 'h', 'version']);
+const BOOLEAN_FLAGS = new Set(['dry-run', 'json', 'help', 'h', 'version', 'network']);
 
 function parseArgs(argv) {
     const opts = {};
@@ -321,10 +321,11 @@ function buildConsultPrompt({ requestPathWin, scratchRel }) {
         '  지우지 않아도 된다. 남겨 두면 Claude 가 네 계산을 재현할 수 있어 오히려 낫다.',
         '- **네트워크를 써도 된다** — 문서·이슈·릴리스노트를 검색하고 직접 확인해라.',
         '  단 **조회 전용**이다. 어디에도 데이터를 올리지 마라(POST/PUT·git push·publish 금지).',
-        '  🔴 **자격증명을 읽지 마라.** SSH 키·`.env`·`credentials`·`auth.json`·토큰·비밀번호가 든 파일은',
-        '     조사에 필요하더라도 **내용을 열지 마라.** 존재 여부와 경로까지만 확인해라.',
-        '     네트워크가 열려 있으므로 **읽는 순간 나갈 수 있는 상태**가 된다 — 그래서 읽기 쪽을 막는다.',
-        '     그런 값이 원인 규명에 꼭 필요하면 **"무엇이 왜 필요한지"만 응답에 적어라.** Claude 가 판단한다.',
+        '  🔴 **자격증명은 조사에 필요하면 읽어도 된다. 단 값을 옮기지 마라.** (2026-09-16 사용자 결정)',
+        '     `.env` 등의 접속 정보로 DB 에 붙어 원본을 조회하는 것은 허용한다 — 요청서가 준 명령',
+        '     (`node -r dotenv/config` 처럼 값을 화면에 드러내지 않고 불러 쓰는 방식)을 우선해라.',
+        '     비밀번호·토큰·키 값을 **응답 문서·작업대·명령 출력에 남기지 마라.** 응답 문서는 git 으로 원격까지 올라간다.',
+        '     값을 화면에 찍는 명령(`cat .env`·`echo $DB_PASSWORD` 등)은 쓰지 말고, 불가피하면 마스킹해라.',
         '- Claude 의 가설은 참고 자료다. **틀렸으면 버려라.** 그걸 검증하는 데 시간을 다 쓰지 마라 —',
         '  가설이 통째로 무의미할 수 있다. 원본이 다른 곳을 가리키면 그쪽을 쫓아가라.',
         '- "기존 분석법이 실패했다"는 **"그 데이터를 다시 보지 마라"는 뜻이 아니다.**',
@@ -341,6 +342,12 @@ function buildConsultPrompt({ requestPathWin, scratchRel }) {
         '',
         '- 요청서에 응답을 저장할 경로와 파일명이 명시되어 있다. 그 경로에 그 이름 그대로 저장해라.',
         '- 저장이 실패하면 같은 내용을 최종 메시지로 그대로 출력해라. 자동으로 회수된다.',
+        '- 🔴 **응답 문서는 조사를 시작할 때 만들고, 조사하면서 채워라.** 이 실행은 사용량 한도로 도중에 끊길 수 있다.',
+        '  끝에 한 번만 쓰면 끊기는 순간 조사가 통째로 사라진다.',
+        '  ① 원본을 열기 전에 frontmatter 와 `## 0. 조사 계획`(무엇을 어떤 순서로 열지)을 먼저 저장한다',
+        '  ② 원본을 하나 열어 확인할 때마다 `## 1. 내가 직접 연 원본` 에 확인한 사실을 바로 덧붙인다',
+        '  ③ 나머지 섹션(원인·판정·수정 방법 등 결론)은 조사가 끝난 뒤 맨 마지막에 쓴다.',
+        '     확인한 사실보다 결론을 먼저 쓰지 마라 — 먼저 쓴 결론에 조사가 끌려간다.',
         '',
         '── 이 실행에만 해당하는 안내 ──────────────────────────────',
         '이 턴은 진행 중에 추가 지시가 들어올 수 있다(사용자가 곁에서 보고 있다).',
@@ -472,6 +479,18 @@ async function cmdRun(opts, lib) {
         fail(EXIT.USAGE, `--sandbox 는 read-only 또는 workspace-write 여야 한다: ${sandbox}`);
     }
 
+    // 실행 전 확인에서 사용자가 고른 모델·추론 수준 (2026-09-13). 없으면 codex 설정값을 쓴다.
+    // 허용값은 모델마다 달라(스키마: "모델이 알려주는 비어 있지 않은 문자열") 목록으로 막지 않고
+    // 인자에 섞이면 안 되는 문자만 거른다.
+    const strOpt = (key) => {
+        const v = opts[key];
+        if (v === undefined) return null;
+        if (v === true || !/^[A-Za-z0-9._-]+$/.test(String(v))) fail(EXIT.USAGE, `--${key} 값이 이상하다: ${v}`);
+        return String(v);
+    };
+    const model = strOpt('model');
+    const effort = strOpt('effort');
+
     const scratchRel = opts['scratch-rel'] === undefined || opts['scratch-rel'] === true
         ? 'docs/codex_rescue/.scratch' : String(opts['scratch-rel']);
     const steerPollMs = numOpt(opts, 'steer-poll-ms', PENDING_DECISION.steerPollMs);
@@ -503,7 +522,20 @@ async function cmdRun(opts, lib) {
     const reqSlug = fmField('slug');
     const reqSubject = fmField('subject');
 
-    const prompt = buildConsultPrompt({ requestPathWin: winPath(requestFile), scratchRel });
+    // 프롬프트는 send.sh 가 만들어 파일로 넘긴다 (2026-09-15). CONSULT·EDIT·REVIEW 가 모두 이 경로를 타면서
+    // 프롬프트를 한 곳(send.sh)에서만 관리하려는 것이다. 파일이 없을 때만 예전 CONSULT 프롬프트를 쓴다.
+    const promptFile = opts['prompt-file'] && opts['prompt-file'] !== true ? String(opts['prompt-file']) : null;
+    if (promptFile && !fs.existsSync(promptFile)) fail(EXIT.USAGE, `프롬프트 파일이 없다: ${promptFile}`);
+    const prompt = promptFile
+        ? fs.readFileSync(promptFile, 'utf8')
+        : buildConsultPrompt({ requestPathWin: winPath(requestFile), scratchRel });
+    if (!prompt.trim()) fail(EXIT.USAGE, '프롬프트가 비었다');
+
+    // 네트워크 해금 (2026-09-15). exec 경로의 `-c sandbox_workspace_write.network_access=true` 와 같은 효과를
+    // turn/start 의 sandboxPolicy 로 준다. workspaceWrite 정책은 cwd 를 항상 쓰기 루트에 넣는다(codex-rs protocol.rs).
+    // read-only 에는 붙이지 않는다 — send.sh 와 같은 이유로, 효력 없이 "허용" 인상만 남긴다.
+    const network = opts['network'] === true && sandbox === 'workspace-write';
+    if (opts['network'] === true && !network) fail(EXIT.USAGE, '--network 는 --sandbox workspace-write 에서만 쓴다');
 
     // ── dry-run: codex 를 부르지 않고 조립 결과만 보여준다 ──
     if (opts['dry-run']) {
@@ -516,7 +548,10 @@ async function cmdRun(opts, lib) {
         out(`요청서       : ${requestFile}`);
         out(`요청서(win)  : ${winPath(requestFile)}`);
         out(`작업 디렉토리: ${cwd}`);
-        out(`샌드박스     : ${sandbox}   (approvalPolicy=never 고정)`);
+        out(`샌드박스     : ${sandbox}${network ? ' +net (turn/start sandboxPolicy.networkAccess)' : ''}   (approvalPolicy=never 고정)`);
+        out(`프롬프트     : ${promptFile ? promptFile + '   (send.sh 가 만든 파일)' : '내장 CONSULT 프롬프트 (--prompt-file 미지정)'}`);
+        out(`모델         : ${model || '(codex 설정값)'}`);
+        out(`추론 수준    : ${effort || '(codex 설정값)'}`);
         out(`포트         : ${port}`);
         out('app-server   : codex app-server --listen ws://127.0.0.1:<port>' +
             (IS_WIN ? ' -c windows.sandbox=unelevated' : ''));
@@ -790,9 +825,14 @@ async function cmdRun(opts, lib) {
         //    알림(1213ms)을 기다릴 필요가 없다.
         let turnRes;
         try {
+            // 모델·추론 수준은 실행 전 확인에서 사용자가 바꾼 경우에만 넘어온다(2026-09-13).
+            // 안 넘어오면 필드를 아예 빼서 codex 설정값을 그대로 쓴다.
             turnRes = await conn.request('turn/start', {
                 threadId,
-                input: [{ type: 'text', text: prompt }]
+                input: [{ type: 'text', text: prompt }],
+                ...(model ? { model } : {}),
+                ...(effort ? { effort } : {}),
+                ...(network ? { sandboxPolicy: { type: 'workspaceWrite', networkAccess: true } } : {})
             });
         } catch (e) {
             // 요청 자체가 거부됐다 = 턴이 시작되지 않았다 → 아직 PRESTART 다.
@@ -1344,6 +1384,9 @@ function printHelp() {
         '  --stamp <스탬프>              (필수)',
         '  --cwd <작업 디렉토리>          (필수)',
         '  --sandbox read-only|workspace-write   기본 read-only',
+        '  --prompt-file <경로>          프롬프트 본문. send.sh 가 모드별로 만들어 넘긴다',
+        '                                (생략하면 내장 CONSULT 프롬프트 — 예전 호출 호환)',
+        '  --network                     네트워크 허용 (turn/start sandboxPolicy). workspace-write 에서만',
         '  --port <포트>                 생략하면 빈 포트를 자동으로 잡는다 (고정 포트는 충돌한다)',
         '  --scratch-rel <경로>          Codex 작업대. 기본 docs/codex_rescue/.scratch',
         '  --log-dir <경로>              UI 미러를 쓸 .log 디렉토리 (<stamp>_live.json)',
@@ -1351,6 +1394,8 @@ function printHelp() {
         '  --request-timeout-ms <ms>     RPC 왕복 상한. 기본 ' + PENDING_DECISION.requestTimeoutMs + '   🔴 결정 필요',
         '                                (턴 길이와 무관 — turn/completed 는 알림으로 온다)',
         '  --turn-timeout-ms <ms>        턴 상한. 기본 0 = 무제한 (기존 CONSULT 동작 보존)',
+        '  --model <모델>                이번 턴의 모델. 생략하면 codex 설정값',
+        '  --effort <수준>               이번 턴의 추론 수준(low·medium·high 등). 생략하면 codex 설정값',
         '',
         '  stdout 으로 LIVE_CONSULT_RESULT 블록을 낸다 (send.sh 가 읽는다):',
         '    thread_id · turn_id · status · steer_delivered · steer_rejected',

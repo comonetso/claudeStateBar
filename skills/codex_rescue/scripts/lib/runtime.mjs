@@ -47,7 +47,7 @@
 //   3. 동시 도착 — 단일 큐에서 seq 순 직렬 처리. 같은 nonce 재전송은 O_EXCL 로 차단.
 //   4. 크래시 — phase 를 failed 로. 수락 여부가 불명확하면 outcome 을 'unknown' 으로.
 //
-// 검증 근거(2026-08-25 실측): `C:\Users\bluec\AppData\Local\Temp\codex-steer-fixture\
+// 검증 근거(2026-08-25 실측): `C:\Users\<user>\AppData\Local\Temp\codex-steer-fixture\
 // 2026-08-25T12-11-27-190Z\rpc.jsonl` — steer 수락은 `{result:{turnId}}`,
 // 턴 종료 후 재시도는 `{error:{code:-32600,message:"no active turn to steer"}}`.
 //

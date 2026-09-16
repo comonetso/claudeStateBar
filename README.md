@@ -178,7 +178,7 @@ With the skill installed, open it from the status-bar menu or `claudeStateBar: S
 - **Clipped rows open in place** — a row too wide for the panel expands where it is, wrapped, when you click it. One row stays open at a time. What you get is what the panel kept: messages up to 4,000 characters, a command's wrapped form up to 600. Past that, read the raw event log
 - **Runs with documents but no log still show** — marked `documents only`, with no activity list but the request/response links intact. That covers a run whose raw logs you purged, and documents a teammate committed and you pulled in
 - **A title you can read** — the request's subject heads the card, not the English slug. Runs recorded by an older skill show the slug instead
-- **Model and effort** — the line with the stamp and thread id also shows the model and reasoning effort Codex actually ran with. After a follow-up, it shows the latest turn's. A review run may not record one, and then nothing is shown
+- **Model and effort** — the line with the stamp and thread id also shows the model and reasoning effort Codex actually ran with. After a follow-up, it shows the latest turn's. A review run the old way (Codex's dedicated review command) may not record one, and then nothing is shown
 - **Plan** — shown as `2/5`, but only when Codex actually produced one
 - **Elapsed time and activity count** — no percentage. Codex never declares how many tool calls remain, so a progress bar would be fiction
 - **Completion chime** — for runs the extension watched while they were live, using the same `claudeContextBar.workflowCompleteBeep` setting as workflow completion. A run that finished before the extension started appears silently
@@ -207,10 +207,16 @@ start of a run whether they will need to cut in, and `codex exec` cannot change 
 going, so by the time you have something to say the choice is already behind you. Ask for the old path
 explicitly and the skill drops the flag.
 
-With it set, a **CONSULT first turn** runs through the app-server bridge and accepts interruptions.
-Everything else is untouched — request validation, the lock, change detection, the edit gate, response
-recovery and the follow-up path all stay where they were. Follow-ups, reviews and edits keep their
-existing routes; moving them all at once would open the whole regression surface.
+With it set, the **first turn of a consultation, an edit or a review** runs through the app-server
+bridge and accepts interruptions. It started with consultations only; the skill has since extended it
+to edits and reviews. Request validation, the lock, change detection, the edit gate and response
+recovery all stay where they were. Follow-ups and the short back-and-forth mode resume an existing
+conversation and still cannot be interrupted.
+
+On this path a review gets a request written for it by the skill and runs as an ordinary turn against
+Codex's official review rubric, because Codex's dedicated review command does not accept anything
+mid-turn. The result is therefore a `_response_` document, and you can ask follow-ups on it. Ask for
+the old way and the dedicated review command runs instead, without interruptions or follow-ups.
 
 The bridge ships with the skill under `scripts/`; fetch it alongside `send.sh` (the
 [install instructions](docs/codex-rescue-guide.md#0-installation) include it). Without it the flag

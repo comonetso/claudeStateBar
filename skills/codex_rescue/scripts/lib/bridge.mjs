@@ -27,7 +27,7 @@
 // 순수 함수 위주다. 파일 I/O 는 하지 않는다 — 어디에 어떻게 쓸지는 호출자(live-consult.mjs)가 정한다.
 //
 // 근거: 2026-08-25 Phase 0 실측 원문
-//   C:\Users\bluec\AppData\Local\Temp\codex-steer-fixture\2026-08-25T12-11-27-190Z\rpc.jsonl
+//   C:\Users\<user>\AppData\Local\Temp\codex-steer-fixture\2026-08-25T12-11-27-190Z\rpc.jsonl
 // 대조: docs/codex_rescue/.log/*_events.jsonl (실제 codex exec --json 출력)
 
 'use strict';

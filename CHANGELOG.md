@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.15.1] - 2026-09-14
+## [1.15.1] - 2026-09-16
 
 Workflows that had stopped — because the session ended while they ran, or because they were
 killed or failed — kept showing as running in the workflow panel, and so did an agent that
@@ -14,6 +14,14 @@ latest refresh found, so those counts can trail by one refresh.
 The output log no longer writes a line for every project folder and conversation file on each
 refresh; a window left open for a day could collect tens of megabytes of it. In its place is one
 line a minute with refresh timings, to help track down a slow session menu in Remote-SSH windows.
+
+The copy of the `codex_rescue` skill in this repository, and its guide, caught up with the skill.
+Reviews and fixes can now be interrupted while they run, not only consultations; a review is written
+up as a request and can be followed up; the skill asks once before each run, showing the Codex model,
+reasoning effort and remaining limit; and a run cut off partway keeps what it had written, marked as
+partial. The install instructions now fetch two more files, and a review refuses to start without
+one of them. The guide also no longer describes the follow-up display problems fixed in 1.14.0 as
+open. The extension itself needed no change for any of this.
 
 ## [1.15.0] - 2026-09-08
 
