@@ -9,6 +9,11 @@
 > 별은 "이걸 실제로 쓰는 사람이 있다"는 걸 알 수 있는 **유일한 신호**이고, 계속 만들지 말지를 정하는 기준이기도 합니다.
 > 2초면 됩니다: **[github.com/comonetso/claudeStateBar](https://github.com/comonetso/claudeStateBar)**
 
+> ### Windows 데스크톱 위젯: claudeState
+> VS Code를 닫아 둔 동안에도 한도만 보고 싶다면, **claudeState**가 작업표시줄 옆 작은 위젯으로 Claude 5시간·주간 사용률을 보여 줍니다. Codex CLI가 설치돼 있으면 Codex 사용률도 함께 나옵니다. 마우스를 올리면 리셋 시각이 보입니다. 한도 표시만 하는 앱이라 세션·워크플로우·Codex 패널은 이 확장에만 있습니다.
+> Windows x64 전용이고, 설치 뒤 설정 창에 claude.ai 세션 쿠키와 조직 ID를 넣어야 합니다.
+> **[Windows(x64)용 내려받기](https://github.com/comonetso/claudeState/releases/latest/download/claudeState-Setup-x64.exe)** · [릴리즈 노트](https://github.com/comonetso/claudeState/releases/latest)
+
 🇬🇧 English: [README.md](README.md)
 
 ---

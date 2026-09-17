@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.16.2] - 2026-09-17
+
+The README now points to claudeState, a small Windows widget that shows your Claude and Codex limits
+next to the taskbar, even with VS Code closed. It only shows limits; everything else stays in this
+extension.
+
+1.16.1 never reached the Marketplace or Open VSX: both services failed during publishing (a
+timeout and a 503). This release carries its changes, listed below.
+
 ## [1.16.1] - 2026-09-17
 
 Codex usage now tells its limits apart by how long each window is, not by where it sits in the

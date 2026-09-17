@@ -9,6 +9,11 @@
 > A star is the only signal that tells me anyone actually uses this thing — and it's what decides whether I keep building it.
 > It takes two seconds: **[github.com/comonetso/claudeStateBar](https://github.com/comonetso/claudeStateBar)**
 
+> ### Windows desktop widget: claudeState
+> Just want to see your limits, even with VS Code closed? **claudeState** is a small widget next to the Windows taskbar that shows your Claude 5‑hour and weekly usage, plus Codex usage when the Codex CLI is installed. Hover it for reset times. It only shows limits — the session, workflow and Codex panels live in this extension.
+> Windows x64 only. After installing, enter your claude.ai session cookie and organization ID in its settings window.
+> **[Download for Windows (x64)](https://github.com/comonetso/claudeState/releases/latest/download/claudeState-Setup-x64.exe)** · [Release notes](https://github.com/comonetso/claudeState/releases/latest)
+
 🇰🇷 한국어 문서: [README.ko.md](README.ko.md)
 
 ---
