@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.16.3] - 2026-09-17
+
+The session menu has a **Refresh now** item, directly below Settings. It re-reads Claude and Codex
+usage at once. The settings panel's Refresh now button used to re-read Claude only, and now does the
+same as the menu item. Codex normally reuses a reading another VS Code window has taken within the
+refresh interval, so pressing Refresh left the Codex figure unchanged. A manual refresh now asks
+Codex directly. With a fresh number one click away, a long refresh interval no longer costs you
+anything.
+
+The `codex_rescue` skill no longer mistakes a Pro Lite account's weekly limit for a 5-hour one.
+Before each run the skill checks the account's limits, and that check read them by position, the
+same mistake 1.16.1 fixed in the extension. On Pro Lite it reported the weekly usage as
+"5-hour limit 1%" and showed no weekly figure. It now tells the limits apart by length. For an account
+with no 5-hour window it says that no 5-hour cap applies, and its past usage per run is then measured against
+the weekly window, counting only runs made on the same plan. The plugin version moves to 1.16.3.
+
 ## [1.16.2] - 2026-09-17
 
 The README now points to claudeState, a small Windows widget that shows your Claude and Codex limits

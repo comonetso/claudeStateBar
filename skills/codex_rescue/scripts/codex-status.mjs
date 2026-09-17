@@ -30,6 +30,12 @@ const DEFAULT_DAYS = 21;
 // 요청서 기반 실행을 낸 실행기. REVIEW·CHAT 은 요청서가 없어 아래 판정에서 자연히 빠진다.
 const REQUEST_ORIGINATORS = new Set(['claude-state-bar-live-consult', 'codex_exec']);
 
+// 🔴 2026-09-17: 한도 창은 자리(primary/secondary)가 아니라 길이로 가른다.
+//    Plus 는 primary=300분·secondary=10080분인데 Pro Lite 는 primary=10080분·secondary=null 이다.
+//    자리로 읽으면 Pro Lite 의 주간 1% 가 "5시간 한도 1%"로 나왔다. claudeState 위젯 src/codex.js 와 같은 기준.
+const FIVE_HOUR_MINS = 300;
+const WEEKLY_MINS = 10080;
+
 function parseArgs(argv) {
     const o = { cwd: process.cwd(), days: DEFAULT_DAYS, json: false, history: true };
     for (let i = 0; i < argv.length; i++) {
@@ -180,7 +186,7 @@ function listRollouts(root, sinceMs) {
 async function summarizeRollout(file) {
     const s = {
         file, originator: null, isRequest: false, startedAt: null,
-        model: null, effort: null, first: null, last: null, userSeen: 0
+        model: null, effort: null, planType: null, windows: {}, userSeen: 0
     };
     const rl = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
     for await (const line of rl) {
@@ -200,32 +206,48 @@ async function summarizeRollout(file) {
             s.userSeen++;
             const text = JSON.stringify(p.content || '');
             if (text.includes('요청서') && text.includes('_request_')) s.isRequest = true;
-        } else if (j.type === 'event_msg' && p.type === 'token_count' && p.rate_limits && p.rate_limits.primary) {
-            const w = p.rate_limits.primary;
-            const snap = { used: Number(w.used_percent), resetsAt: w.resets_at, windowMin: w.window_minutes };
-            if (!Number.isFinite(snap.used)) continue;
-            if (!s.first) s.first = snap;
-            s.last = snap;
+        } else if (j.type === 'event_msg' && p.type === 'token_count' && p.rate_limits) {
+            const rl = p.rate_limits;
+            if (rl.plan_type) s.planType = rl.plan_type;
+            for (const w of [rl.primary, rl.secondary]) {
+                if (!w) continue;
+                const mins = Number(w.window_minutes);
+                if (mins !== FIVE_HOUR_MINS && mins !== WEEKLY_MINS) continue;
+                const snap = { used: Number(w.used_percent), resetsAt: w.resets_at };
+                if (!Number.isFinite(snap.used)) continue;
+                const t = s.windows[mins] || (s.windows[mins] = { first: null, last: null });
+                if (!t.first) t.first = snap;
+                t.last = snap;
+            }
         }
     }
     return s;
 }
 
-async function collectHistory(days) {
+// 요청서 기반 실행의 rollout 요약만 모은다. 창별 집계는 현재 플랜을 안 뒤(tally)에 한다.
+async function collectRequestRuns(days) {
     const root = path.join(codexHome(), 'sessions');
     const files = listRollouts(root, Date.now() - days * 86400_000);
-    const runs = [];
-    let requestRuns = 0, skippedReset = 0, skippedNoData = 0;
+    const sums = [];
     for (const f of files) {
         const s = await summarizeRollout(f);
-        if (!REQUEST_ORIGINATORS.has(s.originator) || !s.isRequest) continue;
-        requestRuns++;
-        if (!s.first || !s.last || s.first === s.last) { skippedNoData++; continue; }
-        // 실행 중에 5시간 창이 리셋되면 증가폭이 음수·왜곡이 된다. 그런 건은 뺀다.
-        if (s.first.resetsAt !== s.last.resetsAt) { skippedReset++; continue; }
+        if (REQUEST_ORIGINATORS.has(s.originator) && s.isRequest) sums.push(s);
+    }
+    return sums;
+}
+
+// 한 창(길이 mins)의 실행 1건당 증가폭을 센다.
+function tally(sums, mins) {
+    const runs = [];
+    let skippedReset = 0, skippedNoData = 0;
+    for (const s of sums) {
+        const w = s.windows[mins];
+        if (!w || !w.first || w.first === w.last) { skippedNoData++; continue; }
+        // 실행 중에 창이 리셋되면 증가폭이 음수·왜곡이 된다. 그런 건은 뺀다.
+        if (w.first.resetsAt !== w.last.resetsAt) { skippedReset++; continue; }
         runs.push({
             startedAt: s.startedAt, model: s.model, effort: s.effort,
-            from: s.first.used, to: s.last.used, delta: +(s.last.used - s.first.used).toFixed(1)
+            from: w.first.used, to: w.last.used, delta: +(w.last.used - w.first.used).toFixed(1)
         });
     }
     runs.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
@@ -234,10 +256,20 @@ async function collectHistory(days) {
         ? (deltas.length % 2 ? deltas[(deltas.length - 1) / 2] : (deltas[deltas.length / 2 - 1] + deltas[deltas.length / 2]) / 2)
         : null;
     return {
-        days, requestRuns, counted: runs.length, skippedReset, skippedNoData,
+        windowMins: mins, counted: runs.length, skippedReset, skippedNoData,
         median, max: deltas.length ? deltas[deltas.length - 1] : null, min: deltas.length ? deltas[0] : null,
         runs
     };
+}
+
+// 5시간 창이 있는 플랜(또는 한도 조회 실패)이면 기존대로 5시간 창을 센다.
+// 5시간 창이 없는 플랜이면 주간 창을 세되, 같은 플랜 기록만 쓴다 — 플랜마다 주간 한도 크기가 달라 섞으면 틀어진다.
+function buildHistory(days, sums, snap) {
+    const hasFive = !snap || !!pickWindow(snap, FIVE_HOUR_MINS) || !pickWindow(snap, WEEKLY_MINS);
+    if (hasFive) return { days, requestRuns: sums.length, ...tally(sums, FIVE_HOUR_MINS) };
+    const plan = snap.planType || null;
+    const same = sums.filter((s) => s.planType === plan);
+    return { days, requestRuns: sums.length, plan, skippedPlan: sums.length - same.length, ...tally(same, WEEKLY_MINS) };
 }
 
 // ── 출력 ───────────────────────────────────────────────────────────────
@@ -264,6 +296,12 @@ function pickSnapshot(rateLimits) {
     return rateLimits.rateLimits || null;
 }
 
+// 스냅샷에서 길이가 mins 인 창을 고른다. 없으면 null.
+function pickWindow(snap, mins) {
+    if (!snap) return null;
+    return [snap.primary, snap.secondary].find((w) => w && Number(w.windowDurationMins) === mins) || null;
+}
+
 function render(o, st, hist) {
     const L = [];
     L.push('── Codex 현재 상태 ──');
@@ -283,8 +321,10 @@ function render(o, st, hist) {
     } else if (!snap) {
         L.push('한도: 응답에 한도 정보가 없다');
     } else {
-        L.push(fmtWindow('5시간 한도', snap.primary));
-        L.push(fmtWindow('주간 한도 ', snap.secondary));
+        const five = pickWindow(snap, FIVE_HOUR_MINS);
+        const weekly = pickWindow(snap, WEEKLY_MINS);
+        L.push(!five && weekly ? '5시간 한도: 5시간 제한 미적용' : fmtWindow('5시간 한도', five));
+        L.push(fmtWindow('주간 한도 ', weekly));
         if (snap.planType) L.push(`플랜: ${snap.planType}`);
         if (snap.rateLimitReachedType) L.push(`🔴 한도 도달 상태: ${snap.rateLimitReachedType}`);
     }
@@ -303,11 +343,20 @@ function render(o, st, hist) {
     if (hist) {
         if (hist.error) {
             L.push(`과거 1회 소모: 계산 실패 — ${hist.error}`);
-        } else if (!hist.counted) {
-            L.push(`과거 1회 소모: 최근 ${hist.days}일 요청서 기반 실행 ${hist.requestRuns}건 — 집계할 수 있는 건이 없다`);
         } else {
-            L.push(`과거 1회 소모: 최근 ${hist.days}일 요청서 기반 실행 ${hist.counted}건 기준 5시간 창 ` +
-                `중간값 +${hist.median}% · 최대 +${hist.max}% · 최소 +${hist.min}%   (되묻기 턴 포함)`);
+            const weeklyMode = hist.windowMins === WEEKLY_MINS;
+            const win = weeklyMode ? '주간 창' : '5시간 창';
+            const scope = weeklyMode ? `${hist.plan || '?'} 플랜 ` : '';
+            const other = weeklyMode && hist.skippedPlan ? ` (다른 플랜 기록 ${hist.skippedPlan}건 제외)` : '';
+            if (!hist.counted) {
+                L.push(`과거 1회 소모(${win}): 최근 ${hist.days}일 요청서 기반 실행 ${hist.requestRuns}건 — ` +
+                    `${weeklyMode ? `${hist.plan || '?'} 플랜으로 ` : ''}집계할 수 있는 건이 없다${other}`);
+            } else {
+                L.push(`과거 1회 소모: 최근 ${hist.days}일 ${scope}요청서 기반 실행 ${hist.counted}건 기준 ${win} ` +
+                    `중간값 +${hist.median}% · 최대 +${hist.max}% · 최소 +${hist.min}%   (되묻기 턴 포함)${other}`);
+            }
+        }
+        if (!hist.error && hist.counted) {
             if (hist.skippedReset || hist.skippedNoData) {
                 L.push(`  (제외: 실행 중 창 리셋 ${hist.skippedReset}건 · 사용률 기록 부족 ${hist.skippedNoData}건)`);
             }
@@ -330,10 +379,12 @@ async function main() {
         return 0;
     }
 
-    const [st, hist] = await Promise.all([
+    const [st, sums] = await Promise.all([
         queryAppServer(o.cwd),
-        o.history ? collectHistory(o.days).catch((e) => ({ error: msg(e) })) : Promise.resolve(null)
+        o.history ? collectRequestRuns(o.days).catch((e) => ({ error: msg(e) })) : Promise.resolve(null)
     ]);
+    // 어느 창을 셀지는 현재 플랜의 한도 모양에 달려 있어 조회가 끝난 뒤 집계한다.
+    const hist = !sums ? null : sums.error ? sums : buildHistory(o.days, sums, pickSnapshot(st.rateLimits));
 
     if (o.json) {
         // 계정 식별자는 내보내지 않는다.

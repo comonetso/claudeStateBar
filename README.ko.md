@@ -358,6 +358,8 @@ Click for menu (hide / restore / settings)
 
 명령 팔레트에서 **`claudeStateBar: Open Settings Panel`**를 열면, 런타임 **English / 한국어** 토글이 있는 단일 패널이 뜹니다. Org ID, Session Key, 새로고침 간격, 텔레그램 Bot Token(Chat ID 자동 감지), 사운드 설정(미리듣기 포함), 컨텍스트 모니터 옵션을 한 곳에서 입력합니다. 민감 값은 암호화 SecretStorage로, 나머지는 표준 VS Code 설정과 동기화됩니다.
 
+**지금 새로고침**은 세션 메뉴의 설정 바로 아래에 있고, 설정 패널에도 같은 버튼이 있습니다. 둘 다 Claude와 Codex 사용량을 함께 다시 읽습니다. Codex는 평소 다른 VS Code 창이 방금 받아 둔 값을 같이 쓰지만, 직접 새로고침하면 Codex에 새로 묻습니다. 필요할 때 한 번 눌러 최신 값을 볼 수 있으니 새로고침 간격은 길게 둬도 됩니다.
+
 ### 자격증명 얻는 법
 - **Org ID** — claude.ai → 개발자도구 → Network → `/api/organizations/{UUID}/…` 요청
 - **Session Key** — claude.ai → 개발자도구 → Application → Cookies → `sessionKey`

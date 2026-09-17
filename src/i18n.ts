@@ -304,6 +304,8 @@ const EN: Dict = {
     'menu.cleanupGhostsDesc': 'grayed-out leftovers — reloads the window',
     'menu.openSettings': 'Open settings…',
     'menu.openSettingsDesc': 'claudeState + claudeContextBar',
+    'menu.refreshNow': 'Refresh now',
+    'menu.refreshNowDesc': 'Claude + Codex usage',
     'menu.placeholder': 'claudeStateBar — choose action',
     'menu.staleItem': 'This is a stale item. Reload the window to clean it up?',
 
@@ -734,6 +736,8 @@ const KO: Dict = {
     'menu.cleanupGhostsDesc': '회색으로 남은 항목 제거 — 창을 다시 로드합니다',
     'menu.openSettings': '설정 열기…',
     'menu.openSettingsDesc': 'claudeState + claudeContextBar',
+    'menu.refreshNow': '지금 새로고침',
+    'menu.refreshNowDesc': 'Claude + Codex 사용량',
     'menu.placeholder': 'claudeStateBar — 동작 선택',
     'menu.staleItem': '오래된 항목입니다. 창을 다시 로드해 정리할까요?',
 

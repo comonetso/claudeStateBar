@@ -286,7 +286,7 @@ export function activate(context: vscode.ExtensionContext) {
     const openSettingsCmd = vscode.commands.registerCommand('claudeContextBar.openSettings', () => {
         createOrShowSettingsPanel(context, {
             onPlanSettingsChanged: () => { restartPlanPolling(); refreshPlanUsage(); },
-            onRefreshRequested: () => { refreshPlanUsage(); }
+            onRefreshRequested: () => { refreshAllUsageNow(); }
         });
     });
     context.subscriptions.push(openSettingsCmd);
@@ -415,7 +415,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Status bar click → QuickPick menu (hide this / restore hidden / open settings)
     const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
         const menuStarted = Date.now();
-        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'codexChats' | 'cleanupGhosts' | 'claudeStatus'; sessionFile?: string };
+        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'codexChats' | 'cleanupGhosts' | 'claudeStatus' | 'refreshNow'; sessionFile?: string };
         const items: Item[] = [];
 
         const clickedEntry = sessionFile ? statusBarItems.get(sessionFile) : undefined;
@@ -541,6 +541,13 @@ export function activate(context: vscode.ExtensionContext) {
             description: planT('menu.openSettingsDesc'),
             action: 'settings'
         });
+        // Directly below Settings (2026-09-17 user decision). The settings-page button only
+        // refreshed Claude; this one refreshes both providers.
+        items.push({
+            label: '$(refresh) ' + planT('menu.refreshNow'),
+            description: planT('menu.refreshNowDesc'),
+            action: 'refreshNow'
+        });
 
         recordMenu(Date.now() - menuStarted);
         const picked = await vscode.window.showQuickPick(items, {
@@ -571,6 +578,9 @@ export function activate(context: vscode.ExtensionContext) {
                 break;
             case 'settings':
                 vscode.commands.executeCommand('claudeContextBar.openSettings');
+                break;
+            case 'refreshNow':
+                refreshAllUsageNow();
                 break;
             case 'codexRuns':
                 vscode.commands.executeCommand('claudeContextBar.showCodexRuns');
@@ -3758,13 +3768,21 @@ function syncCodexUsageFromSharedCache(): boolean {
     return true;
 }
 
-async function refreshCodexUsage(): Promise<void> {
+/** Manual "Refresh now" — menu item and settings-page button. */
+function refreshAllUsageNow(): void {
+    refreshPlanUsage();
+    void refreshCodexUsage(true);
+}
+
+// force: a manual refresh skips the shared cache, which otherwise answers for a whole
+// refresh interval and made "Refresh now" a no-op for Codex.
+async function refreshCodexUsage(force = false): Promise<void> {
     if (!isCodexEnabled() || codexUsageInFlight) return;
     // No point probing when Codex isn't installed on this machine.
     if (!(await getCodexHomeUri())) return;
     codexUsageInFlight = true;
     try {
-        const result = await fetchSharedCodexRateLimits(codexUsageCacheDir, codexUsageCacheMaxAgeMs);
+        const result = await fetchSharedCodexRateLimits(codexUsageCacheDir, force ? 0 : codexUsageCacheMaxAgeMs);
         if (result) {
             codexLiveUsage = result.snapshot;
             log(`[codex-usage] ${result.source}: primary=${result.snapshot.primary?.usedPercent ?? '--'}%/${result.snapshot.primary?.windowMinutes ?? '--'}m secondary=${result.snapshot.secondary?.usedPercent ?? '--'}%/${result.snapshot.secondary?.windowMinutes ?? '--'}m plan=${result.snapshot.planType ?? '?'}`);

@@ -394,6 +394,8 @@ Under that is how much of the plan is left — the 5‑hour window, the weekly c
 
 Open **`claudeStateBar: Open Settings Panel`** from the Command Palette for a single panel with a runtime **English / 한국어** toggle. It collects Org ID, Session Key, refresh interval, Telegram Bot Token (auto‑detects your Chat ID), sound settings (with preview), and context‑monitor options. Sensitive values go to encrypted SecretStorage; everything else syncs with VS Code settings.
 
+**Refresh now** is in the session menu directly below Settings, and the settings panel has the same button. Both re-read Claude and Codex usage at once. Codex normally reuses a reading another VS Code window has just taken; a manual refresh asks Codex directly instead. Since a fresh number is one click away, the refresh interval can stay long.
+
 ### How to get your credentials
 - **Org ID** — claude.ai → DevTools → Network → any `/api/organizations/{UUID}/…` request
 - **Session Key** — claude.ai → DevTools → Application → Cookies → `sessionKey`
