@@ -69,6 +69,7 @@ claude plugin update codex-rescue@comonetso
 `/plugin` → **Marketplaces** → `comonetso` → **Enable auto-update** 로 한 번 켜시거나,
 `~/.claude/settings.json` 의 `extraKnownMarketplaces` 아래 `comonetso` 항목에 `"autoUpdate": true` 를 넣으십시오.
 그러면 Claude Code를 켤 때마다 백그라운드에서 확인하고, 새 버전은 `/reload-plugins` 나 다음 실행부터 적용됩니다.
+확장 1.16.5 이상이면 직접 고칠 필요가 없습니다. 창이 가리키는 곳(이 PC, 또는 Remote-SSH 창의 서버)에서 꺼져 있으면 알림이 켜기를 제안합니다.
 
 #### 옛 방식(폴더 복사)으로 설치하셨다면 — 플러그인으로 바꾸십시오
 

@@ -25,6 +25,7 @@ import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runC
          trashRun, listTrash, restoreTrashed, purgeTrashed, emptyTrash } from './providers/codexRescue/runDiscovery';
 import { getDict, Lang } from './i18n';
 import { readTextFile } from './core/fs';
+import { readAutoUpdateState, enableAutoUpdate, AutoUpdateState } from './providers/codex/pluginAutoUpdate';
 import { beginRefreshShare, endRefreshShare, readShared, recordPass, recordFolded, recordTickLag, recordMenu, takeRefreshSummary } from './core/refreshPerf';
 import { parseWorkflowNotices } from './workflowNotices';
 import { log, setLogChannel, getLogChannel } from './core/logger';
@@ -415,7 +416,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Status bar click → QuickPick menu (hide this / restore hidden / open settings)
     const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
         const menuStarted = Date.now();
-        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'codexChats' | 'cleanupGhosts' | 'claudeStatus' | 'refreshNow'; sessionFile?: string };
+        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'codexChats' | 'cleanupGhosts' | 'claudeStatus' | 'refreshNow' | 'codexAutoUpdate'; sessionFile?: string };
         const items: Item[] = [];
 
         const clickedEntry = sessionFile ? statusBarItems.get(sessionFile) : undefined;
@@ -518,6 +519,20 @@ export function activate(context: vscode.ExtensionContext) {
                 action: 'codexChats'
             });
         }
+        // Always-available way in for the auto-update switch, shown only while it is off on this
+        // window's host. The state comes from the startup check (the notice may have been closed),
+        // so the menu doesn't wait on a remote read. The Codex section above only checks the local
+        // install, so over Remote-SSH it may be missing — add the separator then.
+        if (codexAutoUpdateState === 'off') {
+            if (!codexRescueSkillInstalled()) {
+                items.push({ label: planT('menu.sepCodex'), kind: vscode.QuickPickItemKind.Separator });
+            }
+            items.push({
+                label: '$(cloud-download) ' + planT('menu.codexAutoUpdate'),
+                description: planT('menu.codexAutoUpdateDesc'),
+                action: 'codexAutoUpdate'
+            });
+        }
 
         items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
         // 좀비(죽은 인스턴스가 남긴) 상태바 항목 정리. 좀비 아이템 자체는 죽은 command라
@@ -581,6 +596,9 @@ export function activate(context: vscode.ExtensionContext) {
                 break;
             case 'refreshNow':
                 refreshAllUsageNow();
+                break;
+            case 'codexAutoUpdate':
+                await turnOnCodexAutoUpdate();
                 break;
             case 'codexRuns':
                 vscode.commands.executeCommand('claudeContextBar.showCodexRuns');
@@ -922,6 +940,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(codexSetupCmd);
     updateCodexContext(codexRescueSkillInstalled());
     maybeShowCodexPluginNotice(context);
+    void maybeShowCodexAutoUpdateNotice(context);
 
     // Auto-cleanup on activate (silent, async — doesn't block startup)
     const autoCleanup = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('autoCleanupOldVersions', true);
@@ -995,7 +1014,9 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(configWatcher);
 
     // Re-filter when workspace folders change (e.g., user opens/closes a folder)
-    const wsWatcher = vscode.workspace.onDidChangeWorkspaceFolders(() => { resetClaudeBaseUri(); resetCodexHome(); refreshAllSessions(); });
+    const wsWatcher = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        resetClaudeBaseUri(); resetCodexHome(); codexAutoUpdateState = null; refreshAllSessions();
+    });
     context.subscriptions.push(wsWatcher);
 
     // Initial scan
@@ -3247,6 +3268,81 @@ function maybeShowCodexPluginNotice(context: vscode.ExtensionContext): void {
         else if (answer === deleteBtn) await deleteLegacyCodexCopy(dir, noticeApplies);
     });
     log(`[codex-rescue] plugin switch notice shown (plugin=${hasPlugin})`);
+}
+
+// --- codex_rescue plugin auto-update (2026-09-17 user decisions) ---
+//
+// The window's host decides which ~/.claude is checked: the local PC for a local window, the server
+// for a Remote-SSH window (getClaudeBaseUri routes through vscode.workspace.fs). The notice returns
+// on every window start until the user turns auto-update on or picks "Don't show again here";
+// that choice is remembered per host. The button itself is the consent — no second prompt — and
+// the settings file is backed up before the one-line change. A missing marketplace entry is created.
+
+const CODEX_AUTOUPDATE_DISMISSED_KEY = 'claudeStateBar.codexAutoUpdateNoticeDismissed';
+/** Last check for this window's host; null = not checked yet. Drives the session-menu entry. */
+let codexAutoUpdateState: AutoUpdateState | null = null;
+
+function codexHostKey(base: vscode.Uri): string {
+    return base.scheme === 'file' ? 'local' : `${base.scheme}://${base.authority}`;
+}
+
+/** "this PC", or "server <host>" decoded from a Remote-SSH authority (`ssh-remote+<host>` or hex JSON). */
+function codexHostLabel(base: vscode.Uri): string {
+    if (base.scheme === 'file') return planT('cx.autoupdate.local');
+    let host = base.authority.replace(/^[^+]*\+/, '');
+    if (/^[0-9a-f]+$/i.test(host) && host.length % 2 === 0) {
+        try { host = JSON.parse(Buffer.from(host, 'hex').toString('utf-8')).hostName ?? host; } catch { /* keep raw */ }
+    }
+    return planT('cx.autoupdate.remote', host);
+}
+
+async function refreshCodexAutoUpdateState(): Promise<vscode.Uri | null> {
+    const base = await getClaudeBaseUri();
+    if (!base) { codexAutoUpdateState = 'unknown'; return null; }
+    codexAutoUpdateState = await readAutoUpdateState(base);
+    return base;
+}
+
+async function maybeShowCodexAutoUpdateNotice(context: vscode.ExtensionContext): Promise<void> {
+    let base: vscode.Uri | null;
+    try { base = await refreshCodexAutoUpdateState(); } catch (e) {
+        log(`[codex-rescue] auto-update check failed: ${e}`);
+        return;
+    }
+    log(`[codex-rescue] auto-update state: ${codexAutoUpdateState}`);
+    if (!base || codexAutoUpdateState !== 'off') return;
+    const hostKey = codexHostKey(base);
+    const dismissed = context.globalState.get<Record<string, boolean>>(CODEX_AUTOUPDATE_DISMISSED_KEY) ?? {};
+    if (dismissed[hostKey]) return;
+
+    const label = codexHostLabel(base);
+    const enableBtn = planT('cx.autoupdate.enable');
+    const laterBtn = planT('cx.autoupdate.later');
+    const neverBtn = planT('cx.autoupdate.never');
+    const answer = await vscode.window.showInformationMessage(
+        planT('cx.autoupdate.notice', label), enableBtn, laterBtn, neverBtn);
+    if (answer === enableBtn) await turnOnCodexAutoUpdate();
+    else if (answer === neverBtn) {
+        await context.globalState.update(CODEX_AUTOUPDATE_DISMISSED_KEY, { ...dismissed, [hostKey]: true });
+        log(`[codex-rescue] auto-update notice dismissed for ${hostKey}`);
+    }
+}
+
+async function turnOnCodexAutoUpdate(): Promise<void> {
+    const base = await refreshCodexAutoUpdateState();
+    if (!base || codexAutoUpdateState !== 'off') return; // changed since the notice/menu was shown
+    const label = codexHostLabel(base);
+    const result = await enableAutoUpdate(base);
+    if (result.ok) {
+        codexAutoUpdateState = 'on';
+        log(`[codex-rescue] auto-update turned on (${codexHostKey(base)}; created=${result.created}; backup=${result.backup?.path ?? 'none'})`);
+        void vscode.window.showInformationMessage(planT('cx.autoupdate.done', label));
+    } else {
+        log(`[codex-rescue] auto-update enable failed (${codexHostKey(base)}): ${result.reason}`);
+        const guideBtn = planT('cx.setup.open');
+        const answer = await vscode.window.showWarningMessage(planT('cx.autoupdate.failed', label, result.reason), guideBtn);
+        if (answer === guideBtn) openCodexGuide();
+    }
 }
 
 /**

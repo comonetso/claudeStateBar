@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.16.5] - 2026-09-17
+
+The extension can now turn on auto-update for the `codex_rescue` plugin. Claude Code leaves
+auto-update off for marketplaces outside Anthropic's own, so the plugin never updated unless you
+changed a setting yourself. When a window opens, the extension checks the machine it points at:
+this PC in a local window, the server in a Remote-SSH window. If the plugin is installed there and
+auto-update is off, a notice offers **Turn on**. It backs up that machine's
+`~/.claude/settings.json`, adds `"autoUpdate": true` to the `comonetso` marketplace entry (creating
+the entry if it is missing), and reads the file back; if that check fails, the backup is put back.
+A settings file that isn't plain JSON is left alone. **Don't show again here** is remembered per
+machine, and while auto-update stays off the session menu's Codex section has an entry that does
+the same thing. The change takes effect when Claude Code restarts.
+
 ## [1.16.4] - 2026-09-17
 
 Codex conversations started by the `codex_rescue` skill now have names. Every run used to open with

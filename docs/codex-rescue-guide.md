@@ -71,7 +71,9 @@ claude plugin update codex-rescue@comonetso
 on once in `/plugin` → **Marketplaces** → `comonetso` → **Enable auto-update**, or add
 `"autoUpdate": true` to the `comonetso` entry under `extraKnownMarketplaces` in `~/.claude/settings.json`.
 Claude Code then checks in the background after each start, and a new version takes effect after
-`/reload-plugins` or the next launch.
+`/reload-plugins` or the next launch. With extension 1.16.5 or later you don't have to edit anything:
+when auto-update is off on the machine a window points at (this PC, or the server of a Remote-SSH
+window), a notice offers to turn it on.
 
 #### Installed the old way (a copied folder)? Switch to the plugin
 
