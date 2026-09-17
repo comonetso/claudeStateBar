@@ -176,7 +176,7 @@ Claude Code가 막힌 문제를 Codex에 넘겨 2차 의견을 받는 동안, Co
 
 동작하려면 Claude Code용 [`codex_rescue`](skills/codex_rescue/) 스킬이 필요합니다. 확장에는 포함돼 있지 않습니다 — 워크스페이스에 쓰기 권한을 가진 `codex exec`를 실행하는 도구라, 상태바 확장을 깔았다고 따라와서는 안 되는 물건입니다. 설치 방법과 사용법은 [가이드](docs/codex-rescue-guide.ko.md)([English](docs/codex-rescue-guide.md))에 있습니다.
 
-1.16.0부터 이 스킬은 Claude Code 플러그인으로도 설치할 수 있고, 이 방법을 권합니다. Claude Code 안에서 `/plugin marketplace add comonetso/claudeStateBar` 를 실행한 뒤 `/plugin install codex-rescue@comonetso` 를 실행하면 됩니다. 확장은 두 설치 방식을 모두 알아봅니다. 예전에 `~/.claude/skills/codex_rescue/` 로 복사해 두셨다면 그 사본은 계속 동작하지만 업데이트가 자동으로 오지 않습니다. 그래서 창을 열 때마다 플러그인 전환을 권하는 알림이 뜨며, "다시 보지 않기"를 누르면 멈춥니다. 플러그인을 설치하고 나면 같은 알림에서 옛 사본을 휴지통으로 옮길 수 있습니다.
+1.16.0부터 이 스킬은 Claude Code 플러그인으로도 설치할 수 있고, 이 방법을 권합니다. Claude Code 안에서 `/plugin marketplace add comonetso/claudeStateBar` 를 실행한 뒤 `/plugin install codex-rescue@comonetso` 를 실행하면 됩니다. 확장은 두 설치 방식을 모두 알아봅니다. 예전에 `~/.claude/skills/codex_rescue/` 로 복사해 두셨다면 그 사본은 계속 동작하지만 업데이트가 자동으로 오지 않습니다. 그래서 창을 열 때마다 플러그인 전환을 권하는 알림이 뜨며, "다시 보지 않기"를 누르면 멈춥니다. 플러그인을 설치하고 나면 같은 알림에서 옛 사본을 휴지통으로 옮길 수 있습니다. Anthropic 공식 마켓이 아닌 마켓은 자동 업데이트가 기본으로 꺼져 있으니, `/plugin` → **Marketplaces** 에서 `comonetso` 의 자동 업데이트를 켜 두시면 `claude plugin update` 없이 새 버전을 받습니다.
 
 스킬이 설치돼 있으면 상태바 메뉴와 `claudeStateBar: Show Codex Runs`로 열립니다. 실행 한 건이 카드 하나입니다:
 

@@ -65,6 +65,11 @@ claude plugin marketplace update comonetso
 claude plugin update codex-rescue@comonetso
 ```
 
+**자동으로 받게 할 수도 있습니다.** Anthropic 공식 마켓이 아닌 마켓은 자동 업데이트가 기본으로 꺼져 있습니다.
+`/plugin` → **Marketplaces** → `comonetso` → **Enable auto-update** 로 한 번 켜시거나,
+`~/.claude/settings.json` 의 `extraKnownMarketplaces` 아래 `comonetso` 항목에 `"autoUpdate": true` 를 넣으십시오.
+그러면 Claude Code를 켤 때마다 백그라운드에서 확인하고, 새 버전은 `/reload-plugins` 나 다음 실행부터 적용됩니다.
+
 #### 옛 방식(폴더 복사)으로 설치하셨다면 — 플러그인으로 바꾸십시오
 
 `~/.claude/skills/codex_rescue/` 에 직접 받은 사본은 **업데이트가 자동으로 오지 않습니다.**

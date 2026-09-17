@@ -65,7 +65,9 @@ The short back-and-forth mode anchors to the project root; everything else is re
 
 ## Installing
 
-Install it as a Claude Code plugin. Inside Claude Code, run `/plugin marketplace add comonetso/claudeStateBar`, then `/plugin install codex-rescue@comonetso`, and reopen Claude Code. Plugin updates come through `claude plugin update codex-rescue@comonetso`.
+Install it as a Claude Code plugin. Inside Claude Code, run `/plugin marketplace add comonetso/claudeStateBar`, then `/plugin install codex-rescue@comonetso`, and reopen Claude Code. Plugin updates come through `claude plugin update codex-rescue@comonetso`, or automatically once you turn on auto-update for the `comonetso` marketplace (off by default for marketplaces outside Anthropic's own; see the [installation guide](https://github.com/comonetso/claudeStateBar/blob/main/docs/codex-rescue-guide.md#0-installation)).
+
+Every Codex conversation the skill opens is named `rescue · <mode> · <subject>`, so the Codex app and `codex resume` list them by topic instead of by the identical first prompt.
 
 Copying this folder to `~/.claude/skills/codex_rescue/` still works, but that copy never updates by itself, so it is no longer recommended. If you have such a copy, install the plugin and then delete the folder; keeping both leaves two skills with the same name. Requirements (Codex CLI, Node version) and the manual file list are in the [installation guide](https://github.com/comonetso/claudeStateBar/blob/main/docs/codex-rescue-guide.md#0-installation).
 

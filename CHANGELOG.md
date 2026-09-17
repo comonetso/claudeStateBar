@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.16.4] - 2026-09-17
+
+Codex conversations started by the `codex_rescue` skill now have names. Every run used to open with
+the same prompt ("read the request file below…"), and the Codex app and `codex resume` show an
+unnamed conversation by its first prompt, so the list filled with identical lines. Each new
+conversation is now named `rescue · <mode> · <subject>`, where the mode is 분석 (consult), 수정 (edit),
+리뷰 (review) or 핑퐁 (chat) and the subject comes from the request. Follow-up turns keep the name
+of their first turn, and conversations from earlier runs are left as they are. If naming fails,
+the run goes on and the reason is logged.
+
+The installation guide and READMEs now explain how to let the plugin update itself: marketplaces
+outside Anthropic's own have auto-update off by default, and you can turn it on for `comonetso`
+once. The plugin version moves to 1.16.4.
+
 ## [1.16.3] - 2026-09-17
 
 The session menu has a **Refresh now** item, directly below Settings. It re-reads Claude and Codex

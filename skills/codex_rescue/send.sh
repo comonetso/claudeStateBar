@@ -732,9 +732,11 @@ EOF
   # 🔴 공백을 허용하는 패턴을 쓴다 (2026-08-22, Codex 지적). 예전에는 `"thread_id":"..."` 라는
   #    **공백 없는 정확한 모양**만 인정해서, CLI 가 JSON 서식을 바꾸기만 해도 이어받기가
   #    조용히 끊길 수 있었다.
+  CH_NEW_THREAD=""
   if [ -z "$CH_THREAD" ]; then
     CH_THREAD=$(grep -o '"thread_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$CH_EV" 2>/dev/null \
                 | head -1 | sed 's/.*"\([^"]*\)"[[:space:]]*$/\1/')
+    CH_NEW_THREAD="$CH_THREAD"
   fi
 
   # 🔴 실패 판정은 **종료 코드와 응답 유무를 함께** 본다 (2026-08-22, Codex 지적).
@@ -862,6 +864,13 @@ EOF
   #    이 줄이 in-flight 복구의 마지막 조각이다. 여기 도달하지 못하고 죽으면 마커가 남고,
   #    다음 실행이 그걸 보고 스레드를 폐기한다.
   rm -f -- "$CH_INFLIGHT" 2>/dev/null
+
+  # 이번 실행이 새 대화를 열었으면 이름을 붙인다 (2026-09-17). 이어받은 턴은 첫 턴의 이름을 그대로 둔다.
+  # 부가 기능이라 결과를 보지 않는다 — 실패 사유는 set-thread-name.mjs 가 stderr 에 남긴다.
+  if [ -n "$CH_NEW_THREAD" ] && command -v node >/dev/null 2>&1; then
+    node "$SELF_DIR/scripts/set-thread-name.mjs" --thread "$CH_NEW_THREAD" --mode chat \
+      --subject "${CH_SUBJECT:-}" --slug "$CH_SLUG" || true
+  fi
 
   echo "── codex_rescue CHAT ──────────────────────────────────"
   echo "슬러그: $CH_SLUG   ·   ${CH_TURN}턴   ·   codex exit: $CH_RC"
@@ -2219,6 +2228,13 @@ elif [ "$KIND" = review ]; then
       cat "$LASTMSG"
     } > "$RESP_REL" || die "리뷰 결과 저장 실패: $RESP_REL"
   fi
+  # 옛 리뷰가 연 대화에도 이름을 붙인다 (2026-09-17). 요청서가 없어 --subject/슬러그로 만든다.
+  REVIEW_THREAD=$(grep -o '"thread_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$EVENTS" 2>/dev/null \
+                  | head -1 | sed 's/.*"\([^"]*\)"[[:space:]]*$/\1/')
+  if [ -n "$REVIEW_THREAD" ] && command -v node >/dev/null 2>&1; then
+    node "$SELF_DIR/scripts/set-thread-name.mjs" --thread "$REVIEW_THREAD" --mode review \
+      --subject "${SUBJECT:-}" --slug "$SLUG" || true
+  fi
 elif [ -n "$RESP_HASH_AFTER" ]; then
   if [ "$RESP_EXISTED" = 0 ] || [ "$RESP_HASH_AFTER" != "$RESP_HASH_BEFORE" ]; then
     # 파일이 바뀌었어도 codex 가 비정상 종료했으면 완성본이 아니다 (2026-09-13).
@@ -2307,6 +2323,12 @@ if [ "$KIND" = doc ] && { [ "$AUTHOR" = codex ] || [ "$AUTHOR" = codex-via-stdou
     THREAD_SAVED="$NEW_THREAD"
   else
     THREAD_WHY="frontmatter 에 쓰지 못했다(권한·디스크를 확인해라)"
+  fi
+
+  # 옛 경로가 연 대화에 이름을 붙인다 (2026-09-17). 끼어들기 경로는 live-consult.mjs 가 대화를 만들 때
+  # 이미 붙였다. 부가 기능이라 결과를 보지 않는다.
+  if [ -n "$NEW_THREAD" ] && [ "${LIVE_STEER_ON:-0}" != 1 ] && [ -n "$REQ_W" ] && command -v node >/dev/null 2>&1; then
+    node "$SELF_DIR/scripts/set-thread-name.mjs" --thread "$NEW_THREAD" --request-file "$REQ_W" || true
   fi
 fi
 

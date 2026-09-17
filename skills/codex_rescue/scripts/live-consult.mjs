@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import cp from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { threadNameFromRequest } from './lib/thread-name.mjs';
 
 const IS_WIN = process.platform === 'win32';
 const CLI_NAME = 'live-consult';
@@ -868,6 +869,21 @@ async function cmdRun(opts, lib) {
         }
         ctx.threadId = threadId;
         await runtime.patchState(stamp, { threadId });
+
+        // 새 대화에 이름을 붙인다 (2026-09-17). 이름이 없으면 Codex 앱·CLI 목록이 첫 메시지
+        // "아래 요청서 파일을 읽고…"로만 보여 구분이 안 된다. 되묻기는 1턴의 이름을 그대로 둔다.
+        // 부가 기능이라 실패해도 턴은 시작한다.
+        if (!resumeThread) {
+            const threadName = threadNameFromRequest(winPath(requestFile));
+            if (threadName) {
+                try {
+                    await conn.request('thread/name/set', { threadId, name: threadName });
+                    err(`→ 대화 이름: ${threadName}`);
+                } catch (e) {
+                    err(`⚠️ 대화 이름을 못 붙였다 (실행은 계속): ${e && e.message}`);
+                }
+            }
+        }
 
         // 🔴 이어받기면 앞 실행이 남긴 끼어들기 요청을 이번 턴에 넣지 않는다.
         //    정상 종료한 실행은 턴이 끝날 때 큐를 비우므로(아래 9) 잔여 처리) 여기 남는 것은

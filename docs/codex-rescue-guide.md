@@ -67,6 +67,12 @@ claude plugin marketplace update comonetso
 claude plugin update codex-rescue@comonetso
 ```
 
+**Or let it update itself.** Marketplaces outside Anthropic's own have auto-update off by default. Turn it
+on once in `/plugin` → **Marketplaces** → `comonetso` → **Enable auto-update**, or add
+`"autoUpdate": true` to the `comonetso` entry under `extraKnownMarketplaces` in `~/.claude/settings.json`.
+Claude Code then checks in the background after each start, and a new version takes effect after
+`/reload-plugins` or the next launch.
+
 #### Installed the old way (a copied folder)? Switch to the plugin
 
 A copy you fetched into `~/.claude/skills/codex_rescue/` **does not update by itself.**

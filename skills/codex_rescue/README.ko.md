@@ -65,7 +65,9 @@ Codex CLI가 설치돼 있고 로그인돼 있어야 합니다.
 
 ## 설치
 
-Claude Code 플러그인으로 설치하십시오. Claude Code 안에서 `/plugin marketplace add comonetso/claudeStateBar` 를 실행한 뒤 `/plugin install codex-rescue@comonetso` 를 실행하고 Claude Code를 다시 열면 됩니다. 업데이트는 `claude plugin update codex-rescue@comonetso` 로 받습니다.
+Claude Code 플러그인으로 설치하십시오. Claude Code 안에서 `/plugin marketplace add comonetso/claudeStateBar` 를 실행한 뒤 `/plugin install codex-rescue@comonetso` 를 실행하고 Claude Code를 다시 열면 됩니다. 업데이트는 `claude plugin update codex-rescue@comonetso` 로 받거나, `comonetso` 마켓의 자동 업데이트를 켜 두면 저절로 받습니다(Anthropic 공식 마켓이 아니면 기본으로 꺼져 있습니다. [설치 가이드](https://github.com/comonetso/claudeStateBar/blob/main/docs/codex-rescue-guide.ko.md#0-설치) 참고).
+
+스킬이 여는 Codex 대화에는 `rescue · <모드> · <주제>` 이름이 붙습니다. 그래서 Codex 앱과 `codex resume` 목록에서 똑같은 첫 문장 대신 주제로 구분됩니다.
 
 이 폴더를 `~/.claude/skills/codex_rescue/` 로 복사하는 방법도 여전히 동작하지만, 그 사본은 업데이트가 자동으로 오지 않아 더는 권하지 않습니다. 그렇게 설치해 두셨다면 플러그인을 설치한 뒤 그 폴더를 지우십시오. 둘 다 두면 같은 이름의 스킬이 두 개가 됩니다. 필요한 것(Codex CLI · Node 버전)과 수동 설치 파일 목록은 [설치 가이드](https://github.com/comonetso/claudeStateBar/blob/main/docs/codex-rescue-guide.ko.md#0-설치)에 있습니다.
 
