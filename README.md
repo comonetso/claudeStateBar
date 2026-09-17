@@ -212,8 +212,9 @@ explicitly and the skill drops the flag.
 With it set, the **first turn of a consultation, an edit or a review** runs through the app-server
 bridge and accepts interruptions. It started with consultations only; the skill has since extended it
 to edits and reviews. Request validation, the lock, change detection, the edit gate and response
-recovery all stay where they were. Follow-ups and the short back-and-forth mode resume an existing
-conversation and still cannot be interrupted.
+recovery all stay where they were. Since the skill's 1.16.1 copy, follow-ups take this path too: the
+bridge resumes the existing conversation and opens a new turn in it. The short back-and-forth mode
+still cannot be interrupted.
 
 On this path a review gets a request written for it by the skill and runs as an ordinary turn against
 Codex's official review rubric, because Codex's dedicated review command does not accept anything
@@ -426,9 +427,9 @@ The primer only makes sense while headless `claude -p` runs draw on your **subsc
 
 ## ⏱️ Codex 5‑hour resets
 
-Codex's **primary** window follows the same anchor model, so it has the same gap: when the window closes while you're away, nothing opens until you next run Codex. The extension already polls the Codex account limits for the status bar, and now watches that reading for the moment the window closes.
+Codex's **5-hour** window follows the same anchor model, so it has the same gap: when the window closes while you're away, nothing opens until you next run Codex. The extension already polls the Codex account limits for the status bar, and now watches that reading for the moment the window closes.
 
-**Only accounts that actually have a 5-hour limit get this.** Plus does; Pro is weekly-only today. The check reads whether a 5-hour window arrives in the account data rather than looking at the plan name — OpenAI has said Pro will get one eventually, and this way that day needs no code change. An account without the limit is excluded from reset alerts and auto-start entirely, and its status bar leads with the **weekly** figure instead of leaving a blank.
+**Only accounts that actually have a 5-hour limit get this.** Plus does; Pro is weekly-only today. The check reads whether a 300-minute window arrives in the account data rather than looking at the plan name or at which slot a window comes in (a Pro Lite account sends its weekly window in the slot Plus uses for the 5-hour one) — OpenAI has said Pro will get one eventually, and this way that day needs no code change. An account without the limit is excluded from reset alerts and auto-start entirely, and its status bar leads with the **weekly** figure instead of leaving a blank.
 
 Two things can happen at that moment, each with its own setting so that running only one of the two CLIs never forces the other's behaviour on you:
 

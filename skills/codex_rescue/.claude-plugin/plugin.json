@@ -1,6 +1,6 @@
 {
   "name": "codex-rescue",
-  "version": "1.16.0",
+  "version": "1.16.1",
   "description": "Get a second opinion from the Codex CLI inside Claude Code: consult on a stuck problem, review changed code, let Codex edit, or chat back and forth. Runs fully automatically and reports every file change it measures.",
   "author": { "name": "Blueming" },
   "homepage": "https://github.com/comonetso/claudeStateBar/blob/main/docs/codex-rescue-guide.md",

@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.16.1] - 2026-09-17
+
+Codex usage now tells its limits apart by how long each window is, not by where it sits in the
+account data. A Plus account sends the 5-hour window first and the weekly one second, but a Pro Lite
+account sends only the weekly window, in the first place. The extension took that for a 5-hour
+limit: the tooltip called the weekly figure "5-hour limit", the Telegram message showed the weekly
+usage as `?`, and switching plans set off a false "Codex session reset" alert and an auto-start run.
+A 300-minute window is now the 5-hour limit and a 10080-minute one the weekly limit. An account
+with no 300-minute window shows only the weekly figure and gets no Codex reset alert or auto-start.
+
+The `codex_rescue` skill copy in this repository caught up with the skill: follow-up questions now
+accept interruptions as well, by resuming the same conversation in a new turn. Ping-pong still does
+not. The plugin version moves to 1.16.1 with the extension, so `claude plugin update` picks this up.
+
 ## [1.16.0] - 2026-09-16
 
 The `codex_rescue` skill can now be installed as a Claude Code plugin, and that is the recommended

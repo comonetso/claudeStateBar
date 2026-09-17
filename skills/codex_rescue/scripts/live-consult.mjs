@@ -491,6 +491,23 @@ async function cmdRun(opts, lib) {
     const model = strOpt('model');
     const effort = strOpt('effort');
 
+    // 되묻기(FOLLOWUP) 이어받기 (2026-09-17). 주면 thread/start 대신 thread/resume 으로 기존 대화를 잇는다.
+    // 옛 되묻기는 `codex exec resume`(배치)이라 도중에 끼어들 수 없었다.
+    // turn-seq 는 진행 패널의 항목 id 접두사 판정용이다(bridge.mjs itemIdFor — 2 이상이면 turnId 접두사).
+    const resumeThread = strOpt('resume-thread');
+    const turnSeqRaw = opts['turn-seq'];
+    let turnSeq = 1;
+    if (turnSeqRaw !== undefined) {
+        if (turnSeqRaw === true || !/^[0-9]+$/.test(String(turnSeqRaw)) || Number(turnSeqRaw) < 1) {
+            fail(EXIT.USAGE, `--turn-seq 는 1 이상의 정수여야 한다: ${turnSeqRaw}`);
+        }
+        turnSeq = Number(turnSeqRaw);
+    }
+    // 🔴 짝을 강제한다. 이어받는데 turn-seq 가 1 이면 되묻기 턴 항목이 1턴 항목과 같은 id 가 되고,
+    //    반대로 새 대화인데 2 이상이면 없는 턴 접두사가 붙는다. 둘 다 조용히 패널을 망가뜨린다.
+    if (resumeThread && turnSeq < 2) fail(EXIT.USAGE, '--resume-thread 에는 --turn-seq 2 이상이 함께 와야 한다');
+    if (!resumeThread && turnSeqRaw !== undefined) fail(EXIT.USAGE, '--turn-seq 는 --resume-thread 와 함께만 쓴다');
+
     const scratchRel = opts['scratch-rel'] === undefined || opts['scratch-rel'] === true
         ? 'docs/codex_rescue/.scratch' : String(opts['scratch-rel']);
     const steerPollMs = numOpt(opts, 'steer-poll-ms', PENDING_DECISION.steerPollMs);
@@ -548,6 +565,7 @@ async function cmdRun(opts, lib) {
         out(`요청서       : ${requestFile}`);
         out(`요청서(win)  : ${winPath(requestFile)}`);
         out(`작업 디렉토리: ${cwd}`);
+        out(`대화         : ${resumeThread ? `이어받기 thread/resume ${resumeThread} (${turnSeq}턴)` : '새 대화 thread/start'}`);
         out(`샌드박스     : ${sandbox}${network ? ' +net (turn/start sandboxPolicy.networkAccess)' : ''}   (approvalPolicy=never 고정)`);
         out(`프롬프트     : ${promptFile ? promptFile + '   (send.sh 가 만든 파일)' : '내장 CONSULT 프롬프트 (--prompt-file 미지정)'}`);
         out(`모델         : ${model || '(codex 설정값)'}`);
@@ -704,7 +722,15 @@ async function cmdRun(opts, lib) {
     // 🔴 bridge 의 ctx 는 **실행 내내 같은 객체**여야 한다. 매 호출 새로 만들면 토큰 사용량이
     //    turn.completed 에 실리지 않아 패널의 토큰 표시가 통째로 사라지고, 대기 상태 안내가
     //    중복으로 쌓인다. (bridge.mjs 가 명시적으로 경고하는 함정이다)
-    const ctx = { threadId: null, turnId: null, turnSeq: 1 };
+    const ctx = { threadId: null, turnId: null, turnSeq };
+
+    // 이어받기면 같은 스탬프에 앞 턴의 개입 기록이 남아 있다. 이번 실행 요약에는 이번 턴 것만 보인다 —
+    // 안 그러면 1턴에서 이미 보고된 미전달이 "이번에 말이 안 들어갔다"로 다시 찍힌다.
+    const priorSteerNonces = new Set();
+    const listUndeliveredThisRun = async () => {
+        const all = await runtime.listUndeliveredSteer(stamp).catch(() => []);
+        return all.filter((it) => !priorSteerNonces.has(it.nonce));
+    };
 
     const finish = async (phase, error) => {
         try {
@@ -802,18 +828,68 @@ async function cmdRun(opts, lib) {
         });
         conn.notify('initialized', {});
 
-        // ── 6) thread/start ── (여기까지 실패 = PRESTART)
-        const th = await conn.request('thread/start', {
-            cwd,
-            sandbox,
-            // 🔴 기존 CONSULT 의 동작을 보존한다. exec 에서는 never 로 고정돼 있었고,
-            //    여기서 완화하면 "승인을 누를 사람이 없는데 승인을 기다리는" 상태가 생긴다.
-            approvalPolicy: 'never'
-        });
+        // ── 6) thread/start 또는 thread/resume ── (여기까지 실패 = PRESTART)
+        let th;
+        if (resumeThread) {
+            // 되묻기 (2026-09-17). 🔴 sandbox·approvalPolicy 를 **반드시 명시한다.**
+            //    `codex exec resume` 은 첫 턴의 샌드박스를 상속하지 않았다(2026-08-22 CHAT 실측 — 쓰기가 뚫렸다).
+            //    resume 도 값을 안 주면 각 머신 config.toml 기본값으로 떨어질 수 있다고 보고 막는다.
+            // excludeTurns — 지난 턴 기록을 응답에 싣지 않는다. 우리는 그 기록을 쓰지 않고, 긴 대화면 응답만 커진다.
+            th = await conn.request('thread/resume', {
+                threadId: resumeThread,
+                cwd,
+                sandbox,
+                approvalPolicy: 'never',
+                excludeTurns: true
+            });
+        } else {
+            th = await conn.request('thread/start', {
+                cwd,
+                sandbox,
+                // 🔴 기존 CONSULT 의 동작을 보존한다. exec 에서는 never 로 고정돼 있었고,
+                //    여기서 완화하면 "승인을 누를 사람이 없는데 승인을 기다리는" 상태가 생긴다.
+                approvalPolicy: 'never'
+            });
+        }
         threadId = (th && th.thread && th.thread.id) || null;
-        if (!threadId) fail(EXIT.PRESTART_FAILED, 'thread/start 응답에 threadId 가 없다');
+        if (!threadId) fail(EXIT.PRESTART_FAILED, `${resumeThread ? 'thread/resume' : 'thread/start'} 응답에 threadId 가 없다`);
+        // 🔴 다른 대화가 돌아오면 턴을 시작하지 않는다. 맥락 없는 답이 "되묻기 답"으로 문서에 붙는다.
+        if (resumeThread && threadId !== resumeThread) {
+            fail(EXIT.PRESTART_FAILED, `thread/resume 이 다른 대화를 돌려줬다 (요청 ${resumeThread} · 응답 ${threadId})`);
+        }
+        if (resumeThread) {
+            // 서버가 실제로 적용한 값을 남긴다 — 샌드박스가 요청대로 됐는지 사후에 대조하는 근거다.
+            const applied = {
+                sandbox: th.sandbox ?? null, approvalPolicy: th.approvalPolicy ?? null,
+                model: th.model ?? null, reasoningEffort: th.reasoningEffort ?? null, cwd: th.cwd ?? null
+            };
+            appendJson(appserverLog, { at: nowIso(), ms: Date.now() - t0, kind: 'resume-applied', threadId, ...applied });
+            err(`→ 대화 이어받음 (thread=${threadId} · ${turnSeq}턴) 서버 적용값: ${JSON.stringify(applied)}`);
+        }
         ctx.threadId = threadId;
         await runtime.patchState(stamp, { threadId });
+
+        // 🔴 이어받기면 앞 실행이 남긴 끼어들기 요청을 이번 턴에 넣지 않는다.
+        //    정상 종료한 실행은 턴이 끝날 때 큐를 비우므로(아래 9) 잔여 처리) 여기 남는 것은
+        //    앞 턴이 강제 종료됐을 때뿐이다. 그 말은 앞 턴을 향한 것이라 새 턴에 들어가면 엉뚱한 지시가 된다.
+        if (resumeThread) {
+            for (const it of await runtime.listUndeliveredSteer(stamp).catch(() => [])) priorSteerNonces.add(it.nonce);
+            try {
+                const stale = await runtime.drainSteer(stamp);
+                for (const item of (stale || [])) {
+                    const message = '앞 턴을 향한 개입이라 이번 턴에 넣지 않았다';
+                    appendJson(steersLog, {
+                        at: nowIso(), seq: item.seq, nonce: item.nonce,
+                        source: item.source || 'unknown', text: item.text, accepted: false, error: message
+                    });
+                    await runtime.recordSteerOutcome(stamp, {
+                        seq: item.seq, nonce: item.nonce, outcome: 'rejected',
+                        text: item.text, error: { message }
+                    }).catch(() => { });
+                    err(`⚠ ${message}: #${item.seq}`);
+                }
+            } catch { /* 잔여 정리 실패가 턴 시작을 막지는 않는다 */ }
+        }
 
         // exec 호환 스트림의 첫 줄. 응답이 알림보다 먼저 오므로(실측 760ms) 여기서 내야
         // 순서가 exec 와 같아진다. 알림으로 한 번 더 와도 무해하다(thread_id 덮어쓰기).
@@ -1017,7 +1093,7 @@ async function cmdRun(opts, lib) {
         }
 
         // 전달하지 못한 개입이 있으면 조용히 삼키지 않는다 — 사용자가 한 말이 사라진 것이다.
-        const undelivered = await runtime.listUndeliveredSteer(stamp).catch(() => []);
+        const undelivered = await listUndeliveredThisRun();
 
         if (fatalPost) {
             await finish('failed', { message: fatalPost });
@@ -1049,7 +1125,7 @@ async function cmdRun(opts, lib) {
         //    이미 받았다면 Codex 는 돌기 시작한 것이고, 그러면 재실행은 이중 실행이다.
         if (started) {
             await finish('failed', { message: msg });
-            const undelivered = await runtime.listUndeliveredSteer(stamp).catch(() => []);
+            const undelivered = await listUndeliveredThisRun();
             printRunSummary({
                 threadId, turnId, status: 'error', steerDelivered, steerRejected,
                 undelivered, lastMessageFile, eventsFile, runtimeDir,
@@ -1396,6 +1472,8 @@ function printHelp() {
         '  --turn-timeout-ms <ms>        턴 상한. 기본 0 = 무제한 (기존 CONSULT 동작 보존)',
         '  --model <모델>                이번 턴의 모델. 생략하면 codex 설정값',
         '  --effort <수준>               이번 턴의 추론 수준(low·medium·high 등). 생략하면 codex 설정값',
+        '  --resume-thread <id>          되묻기: 새 대화 대신 이 대화를 thread/resume 으로 이어받는다',
+        '  --turn-seq <N>                되묻기 턴 번호(2 이상). --resume-thread 와 반드시 함께 준다',
         '',
         '  stdout 으로 LIVE_CONSULT_RESULT 블록을 낸다 (send.sh 가 읽는다):',
         '    thread_id · turn_id · status · steer_delivered · steer_rejected',

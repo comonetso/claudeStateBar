@@ -37,7 +37,7 @@ Say something while the analysis is in progress and it goes straight to Codex. C
 → passed through as-is → Codex keeps investigating with that in mind
 ```
 
-You don't need to turn it on beforehand — **analysis, code review and edit** always have it on. It can't be used on work that has already finished; that's what "다시 물어봐" (ask again) is for. Interrupting an edit doesn't undo files already changed; the new instruction applies from that point on. Follow-ups and the short back-and-forth mode don't have it.
+You don't need to turn it on beforehand — **analysis, code review, edit and follow-ups** always have it on. It can't be used on work that has already finished; that's what "다시 물어봐" (ask again) is for. Interrupting an edit doesn't undo files already changed; the new instruction applies from that point on. Only the short back-and-forth mode doesn't have it.
 
 Code review writes its own request file and runs on Codex's official review guidelines. If it stops at a usage limit, the findings written so far are kept, and you can ask follow-up questions about the result. Saying "예전 방식으로" (the old way) runs Codex's dedicated reviewer instead, which has no interrupting, partial saving or follow-ups.
 

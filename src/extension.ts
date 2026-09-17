@@ -3767,7 +3767,7 @@ async function refreshCodexUsage(): Promise<void> {
         const result = await fetchSharedCodexRateLimits(codexUsageCacheDir, codexUsageCacheMaxAgeMs);
         if (result) {
             codexLiveUsage = result.snapshot;
-            log(`[codex-usage] ${result.source}: primary=${result.snapshot.primary?.usedPercent ?? '--'}% plan=${result.snapshot.planType ?? '?'}`);
+            log(`[codex-usage] ${result.source}: primary=${result.snapshot.primary?.usedPercent ?? '--'}%/${result.snapshot.primary?.windowMinutes ?? '--'}m secondary=${result.snapshot.secondary?.usedPercent ?? '--'}%/${result.snapshot.secondary?.windowMinutes ?? '--'}m plan=${result.snapshot.planType ?? '?'}`);
             await detectCodexBlockClose(result.snapshot);
             refreshAllSessions();
         }
@@ -3814,11 +3814,21 @@ const CODEX_CLOSED_RECOVERY_MS = 10 * 60 * 1000;
 // that freezes while Codex is idle, and a frozen resetsAt would read as a fixed one.
 async function detectCodexBlockClose(snap: CodexUsageSnapshot) {
     // No 5-hour limit on this account → nothing to reset, so no alert and no primer. Weekly-only
-    // accounts must never get either. See codexHasFiveHourLimit() for why this is not plan-name based.
-    if (!codexHasFiveHourLimit(snap)) return;
-
-    const primary = snap.primary;
-    if (!primary || primary.resetsAt == null) return;
+    // accounts must never get either. See codexWindowOfLength() for why this is length based.
+    const primary = codexFiveHourWindow(snap);
+    if (!primary) {
+        // Forget the stored 5-hour state. Otherwise it keeps whatever the last judged window was
+        // — on a plan switch that is a weekly resetsAt — and the first 5-hour reading after a
+        // 5-hour window (re)appears would compare against it and fire a false close edge.
+        if (creds.getLastCodexResetsAt() != null) {
+            await creds.setLastCodexResetsAt(null);
+            await creds.setCodexWindowWasOpen(false);
+            await creds.setCodexClosedSince(null);
+            blockPrimer.appendDiag('codex-poll no 5-hour window — stored state cleared');
+        }
+        return;
+    }
+    if (primary.resetsAt == null) return;
 
     // 🔴 Drop repeats of the SAME reading before comparing anything. fetchSharedCodexRateLimits()
     // returns the cached snapshot whenever it is younger than the TTL, and TTL and poll interval
@@ -3916,9 +3926,10 @@ async function detectCodexBlockClose(snap: CodexUsageSnapshot) {
     const token = await creds.getTelegramToken();
     const chatId = await creds.getTelegramChatId();
     if (creds.getCodexTelegramNotifyOnReset() && token && chatId) {
-        // `secondary` is the weekly window — the Codex counterpart to Claude's weekly %.
-        const weekly = snap.secondary ? String(codexUsedPercent(snap.secondary.usedPercent)) : '?';
-        const weeklyWhen = weeklyResetPhrase(isoFromEpoch(snap.secondary?.resetsAt ?? null));
+        // The weekly window — the Codex counterpart to Claude's weekly %. Found by length, not slot.
+        const weeklyWin = codexWeeklyWindow(snap);
+        const weekly = weeklyWin ? String(codexUsedPercent(weeklyWin.usedPercent)) : '?';
+        const weeklyWhen = weeklyResetPhrase(isoFromEpoch(weeklyWin?.resetsAt ?? null));
         await telegram.sendMessage(token, chatId, planT('tg.codexResetMsg', weekly, weeklyWhen));
     }
     if (creds.getCodexAutoStartBlockOnReset()) {
@@ -3973,7 +3984,7 @@ async function handleCodexPrimerOutcome(outcome: blockPrimer.FireOutcome, detail
         // maxAge 0 bypasses the shared cache, which would otherwise keep handing back the
         // pre-primer snapshot for the rest of the poll interval and never verify.
         const fresh = await fetchSharedCodexRateLimits(codexUsageCacheDir, 0);
-        const at = fresh?.snapshot.primary?.resetsAt ?? null;
+        const at = codexFiveHourWindow(fresh?.snapshot ?? null)?.resetsAt ?? null;
         if (fresh) {
             codexLiveUsage = fresh.snapshot;
             refreshAllSessions();
@@ -4048,25 +4059,47 @@ function codexUsedPercent(usedPercent: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// 🔴 Does this account have a 5-hour limit at all?
+// 🔴 Which window is which — decided by LENGTH, never by slot or plan name.
 //
-// Today only Plus does; Pro is weekly-only. But OpenAI has said Pro will get one, so keying this
-// on the plan NAME would need a code change on the day it lands — and there is no way to verify
-// what string a Pro account even reports (this machine is Plus). Asking "does a primary window
-// actually arrive?" answers the real question and follows the change on its own.
+// The slot is not stable. A Plus account sends primary=300 min (5-hour) and secondary=10080
+// (weekly). A Pro Lite account (planType "prolite", measured 2026-09-17) sends primary=10080 and
+// secondary=null — the weekly window sits in the primary slot. Reading "primary exists" as
+// "has a 5-hour limit" labelled the weekly window "5-hour", ran reset detection against it, and
+// fired a false "Codex session reset" alert plus a primer at the moment the plan changed.
 //
-// Everything that branches on this — the status bar text, the account item, the reset detection —
-// calls this one function. If the rule ever changes, this is the only place to touch.
+// The plan name is not used either: OpenAI has said Pro will get a 5-hour limit, and a 300-min
+// window arriving follows that on its own (user decision, 2026-08-26 and 2026-09-17).
+// A window of any other length is not shown and not judged.
+//
+// Everything that branches on this — the status bar text, the tooltip, the reset detection, the
+// primer verification — goes through these functions. If the rule changes, change it here.
 // ---------------------------------------------------------------------------
+const CODEX_FIVE_HOUR_WINDOW_MINS = 300;
+const CODEX_WEEKLY_WINDOW_MINS = 10080;
+
+function codexWindowOfLength(u: CodexUsageSnapshot | null, minutes: number) {
+    if (!u) return null;
+    if (u.primary?.windowMinutes === minutes) return u.primary;
+    if (u.secondary?.windowMinutes === minutes) return u.secondary;
+    return null;
+}
+
+function codexFiveHourWindow(u: CodexUsageSnapshot | null) {
+    return codexWindowOfLength(u, CODEX_FIVE_HOUR_WINDOW_MINS);
+}
+
+function codexWeeklyWindow(u: CodexUsageSnapshot | null) {
+    return codexWindowOfLength(u, CODEX_WEEKLY_WINDOW_MINS);
+}
+
 function codexHasFiveHourLimit(u: CodexUsageSnapshot | null): boolean {
-    return !!u?.primary;
+    return !!codexFiveHourWindow(u);
 }
 
 // The window the status bar should lead with: the 5-hour one when the account has it, otherwise
 // the weekly one. Never showing nothing — a weekly-only account still has a number worth seeing.
 function codexHeadlineWindow(u: CodexUsageSnapshot | null) {
-    if (!u) return null;
-    return codexHasFiveHourLimit(u) ? u.primary : u.secondary;
+    return codexFiveHourWindow(u) ?? codexWeeklyWindow(u);
 }
 
 // Label matching whichever window codexHeadlineWindow() picked.
@@ -4090,19 +4123,21 @@ function codexUsageTextSuffix(compact: boolean): string {
 // Markdown block describing Codex account usage; inserted into Codex session tooltips.
 function codexUsageTooltipBlock(): string {
     const u = accountCodexUsage();
-    if (!u || (!u.primary && !u.secondary)) return '';
+    const fiveHour = codexFiveHourWindow(u);
+    const weekly = codexWeeklyWindow(u);
+    if (!u || (!fiveHour && !weekly)) return '';
     const isLive = u === codexLiveUsage;
     let s = '';
 
-    if (u.primary) {
-        const iso = isoFromEpoch(u.primary.resetsAt);
-        s += `📊 **${planT('sb.codexPrimary')}**: ${codexUsedPercent(u.primary.usedPercent)}%` +
+    if (fiveHour) {
+        const iso = isoFromEpoch(fiveHour.resetsAt);
+        s += `📊 **${planT('sb.codexPrimary')}**: ${codexUsedPercent(fiveHour.usedPercent)}%` +
             (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') + `\n\n`;
     }
-    // Only rendered when Codex actually reports a second window — it is often null.
-    if (u.secondary) {
-        const iso = isoFromEpoch(u.secondary.resetsAt);
-        s += `📅 **${planT('sb.codexSecondary')}**: ${codexUsedPercent(u.secondary.usedPercent)}%` +
+    // Weekly-only accounts (Pro Lite) have no 5-hour line at all, only this one.
+    if (weekly) {
+        const iso = isoFromEpoch(weekly.resetsAt);
+        s += `📅 **${planT('sb.codexSecondary')}**: ${codexUsedPercent(weekly.usedPercent)}%` +
             (iso ? ` — ${resetAtLabel(iso)} (${untilHuman(iso)})` : '') + `\n\n`;
     }
     if (u.planType) {

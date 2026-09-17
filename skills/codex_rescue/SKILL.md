@@ -79,13 +79,16 @@ CONSULT 는 `CR_LIVE_STEER=1` 로 실행한다(§ 절차 8). 모드가 아니라
 🔴 **끼어들 계획이 없어 보여도 끄지 마라.** 켜 두는 비용은 없고, 꺼 두면 도중에 사용자가
 말을 걸었을 때 **전달할 방법이 사라진다.** 판단하지 말고 켜라.
 
-🔴 **`CR_LIVE_STEER=1` 은 CONSULT · EDIT · REVIEW 1턴에서 산다** (2026-09-15 확장, 사용자 결정).
-`send.sh` 는 요청서 기반 1턴(`mode: readonly | edit | review`)에서 끼어들기 경로로 분기한다.
+🔴 **`CR_LIVE_STEER=1` 은 CONSULT · EDIT · REVIEW 1턴과 되묻기(FOLLOWUP)에서 산다** (2026-09-15 확장, 사용자 결정 · 2026-09-17 되묻기 추가).
+`send.sh` 는 요청서 기반 1턴(`mode: readonly | edit | review`)과 `--followup` 에서 끼어들기 경로로 분기한다.
 
 - **REVIEW** 는 `--review` 한 줄 호출에 `CR_LIVE_STEER=1` 을 붙이면 `send.sh` 가 **요청서를 자동으로 만들어**
   요청서 경로로 돌린다(`mode: review`). 전용 리뷰(`codex exec review`)는 서버가 steer 를 원리적으로 막기 때문이다.
   판정 기준은 Codex 공식 rubric(`prompts/review_rubric.md`)이다. **안 붙이면 옛 전용 리뷰로 돈다** — "예전 방식으로"일 때만 뺀다.
-- **FOLLOWUP·CHAT 은 여전히 끼어들 수 없다.** `codex exec resume` 경로라 붙여도 무시된다. 그 모드에서 끼어들기를 약속하지 마라.
+- **되묻기(FOLLOWUP)** 도 `CR_LIVE_STEER=1` 을 붙이면 끼어들 수 있다 (2026-09-17). 중계기가 응답 문서의
+  `thread_id` 를 `thread/resume` 으로 이어받아 같은 대화에서 새 턴을 연다. 무거운 모델로 되묻다 한도에
+  걸릴 것 같으면 "지금까지 확인한 걸로 마무리해라"를 넣는 용도다. 안 붙이면 옛 `codex exec resume` 으로 돈다.
+- **CHAT 은 여전히 끼어들 수 없다.** `codex exec resume` 경로라 붙여도 무시된다. 그 모드에서 끼어들기를 약속하지 마라.
 - 끼어들기 경로도 **네트워크가 열린다**(`workspace-write` 일 때, 옛 경로와 같은 규칙 · `CR_NETWORK=false` 로 끈다).
   09-15 이전에는 이 경로에서만 네트워크가 꺼진 채 프롬프트는 "써도 된다"고 말하고 있었다.
 
@@ -211,7 +214,7 @@ codex_rescue — Claude가 막혔을 때 Codex에게 2차 시선을 받는 스�
 [환경변수]  CR_MODEL=<모델>     Codex 모델 지정      CR_EFFORT=<수준>   추론 수준 지정
             CR_SANDBOX=<모드>   권한 수준
             CR_ALLOW_EDIT=1     EDIT 해금(승인 후)   CR_DRYRUN=1        실행 안 하고 확인만
-            CR_LIVE_STEER=1     끼어들기 경로 (분석·리뷰·수정의 기본값. 빼면 예전 방식)
+            CR_LIVE_STEER=1     끼어들기 경로 (분석·리뷰·수정·되묻기의 기본값. 빼면 예전 방식)
             CR_CONFIRMED=1      실행 전 확인을 받았다는 표시 (없으면 실행을 거부합니다)
 ```
 
@@ -831,6 +834,10 @@ error: the argument '--uncommitted' cannot be used with '[PROMPT]'
 버리지 않고** 다음 모델 경계에서 반영한다(2026-08-25 실측 3회, `turns` 는 늘지 않는다).
 `codex exec` 로는 원리적으로 불가능한 동작이라, 이 절차는 `CR_LIVE_STEER=1` 로 돌 때만 성립한다.
 
+**되묻기(절차 11) 도는 중에도 똑같이 던진다** (2026-09-17). `--stamp` 는 **원 건의 스탬프 그대로**다 —
+되묻기는 새 스탬프를 만들지 않는다. 앞 턴이 강제 종료돼 큐에 남아 있던 개입은 앞 턴을 향한 말이라
+새 턴에 넣지 않고 `전달 못 함`으로 처리한다.
+
 #### 던지는 법 — 본문은 반드시 파일로 넘긴다
 
 ```
@@ -989,8 +996,11 @@ grep '"type":"item.started"' "$L" | grep -c '<파일명 또는 사례ID>'
 
     ```
     Bash(run_in_background: true):
-      CR_CONFIRMED=1 bash "${CLAUDE_SKILL_DIR}/send.sh" --followup docs/codex_rescue/<스탬프>_followup<N>_<슬러그>.md
+      CR_CONFIRMED=1 CR_LIVE_STEER=1 bash "${CLAUDE_SKILL_DIR}/send.sh" --followup docs/codex_rescue/<스탬프>_followup<N>_<슬러그>.md
     ```
+
+    - 🔴 **`CR_LIVE_STEER=1` 을 빼지 마라** (2026-09-17). 1턴과 같은 이유다 — 빼면 옛 `codex exec resume` 으로 돌고,
+      그 턴에는 도중에 말을 넣을 수 없다. "예전 방식으로"라고 했을 때만 뺀다
 
     - 던지기 전에 § 절차 2-1(실행 전 확인)을 한다. 모델·추론 수준을 바꿨으면 `CR_MODEL`·`CR_EFFORT` 를 앞에 붙인다
     - 반박서를 먼저 Write 한다 (§ 템플릿 — followup). `turn:` 은 응답 문서의 `turns` + 1 이다
@@ -1000,13 +1010,13 @@ grep '"type":"item.started"' "$L" | grep -c '<파일명 또는 사례ID>'
     - **예외 — EDIT 건의 추가 수정** (2026-09-15 사용자 결정). 원 요청서가 `mode: edit` 이고 반박서
       frontmatter 에 **`edit: yes`** 를 적었을 때만 Codex 가 같은 대화를 이어 코드를 고친다.
       - 🔴 **턴마다 EDIT 게이트다.** 1턴 승인은 이어지지 않는다 — 사용자에게 다시 확인받고
-        `CR_CONFIRMED=1 CR_ALLOW_EDIT=1 bash … --followup <반박서>` 로 던진다. 없으면 `send.sh` 가 거부한다
+        `CR_CONFIRMED=1 CR_ALLOW_EDIT=1 CR_LIVE_STEER=1 bash … --followup <반박서>` 로 던진다. `CR_ALLOW_EDIT` 가 없으면 `send.sh` 가 거부한다
       - 반박서 본문의 "이번 턴에 묻는 것" 자리에 **무엇을 고칠지**를 적는다 (대상 파일·기대 동작)
       - 중간 저장은 턴별 수정 기록 `docs/codex_rescue/<스탬프>_edit<N>_<슬러그>.md` 로 받는다 —
         응답 문서는 여전히 `send.sh` 가 이어 붙이고, 끝나면 수정 기록도 그 턴 아래에 옮겨 담는다
       - 끝나면 **git diff 로 실제 변경을 직접 확인**한 뒤 검토한다 (1턴 EDIT 와 같다)
       - CONSULT·REVIEW 건에 `edit: yes` 를 쓰면 거부된다. 그 결과로 고치게 하려면 새 EDIT 요청서를 쓴다
-      - 이 턴도 `exec resume` 경로라 **끼어들 수 없다**
+      - 이 턴도 `CR_LIVE_STEER=1` 이면 **끼어들 수 있다** (2026-09-17). 이미 고친 파일은 되돌려지지 않는다 — 1턴 EDIT 와 같다
     - 앞 턴의 `## Claude 검토` 를 **Codex 가 직접 읽는다** — 그래서 검토를 성실히 써야
       되묻기의 품질이 나온다. **검토가 곧 다음 턴의 입력이다**
     - 답이 오면 § 절차 9 와 같이 검토하고, 게이트를 다시 채점해 10 으로 돌아간다

@@ -327,7 +327,7 @@ started on, so this is detected automatically.
 
 ---
 
-## 2-3. Cutting in while it works (new 2026-08-26, extended 2026-09-15)
+## 2-3. Cutting in while it works (new 2026-08-26, extended 2026-09-15, follow-ups 2026-09-17)
 
 Say something while Codex is running and **it reaches Codex as is.** Codex keeps the work it has
 done and folds your point in as it continues.
@@ -337,11 +337,13 @@ done and folds your point in as it continues.
 → passed along → Codex carries on with that in mind
 ```
 
-- **There is nothing to turn on.** The first turn of a consultation, a fix or a review always runs
-  this way. Nobody knows at the start whether they will need to cut in, and the route cannot change
-  once a run is going
-- **Follow-ups and ping-pong don't have it.** Nor can you add to a run that has finished — that is
-  what "ask again" is for
+- **There is nothing to turn on.** The first turn of a consultation, a fix or a review, and every
+  follow-up, always runs this way. Nobody knows at the start whether they will need to cut in, and
+  the route cannot change once a run is going
+- A follow-up picks up the same conversation and opens a new turn in it (2026-09-17). If a follow-up
+  on a heavy model looks like it will hit the limit, you can cut in with "wrap up with what you have"
+- **Ping-pong doesn't have it.** Nor can you add to a run that has finished — that is what
+  "ask again" is for
 - Cutting into a fix **does not undo files already changed.** Your point applies from then on
 - Claude decides whether what you said is a task for Claude or a message for Codex, and asks in one
   line when it can't tell
@@ -629,7 +631,8 @@ recommended for everyday use.
 | Fix mode (Codex editing directly) | ✅ measured — a few **small bug fixes**, including a check that files outside the target were left alone; multi-file changes untested |
 | Progress panel · completion chime · live updates | ✅ measured |
 | Running on a Linux server | ✅ measured — but on **one server only**: one review, one analysis (2026-08-21). Steering during fixes and reviews has not been run on a server yet |
-| **Steering — consultations, fixes, reviews (2026-09-15)** | ✅ measured — in all three, the message was delivered and reflected in the result. Follow-ups never had it |
+| **Steering — consultations, fixes, reviews (2026-09-15)** | ✅ measured — in all three, the message was delivered and reflected in the result |
+| **Steering — follow-ups (2026-09-17)** | ❌ no real run on record — the scripts only passed a syntax check |
 | **Request-based review** | ✅ measured — the same three findings as the old way on the same change, and a follow-up on the review through turn 2.<br>❌ review quality on heavier models and higher reasoning effort is unverified |
 | **Follow-up fixes** | ✅ measured — a further fix in turn 2 of the same conversation, every requested check matching |
 | **Pre-run question** | ✅ measured — lookup works locally and on a Node 20 server; a run without the confirmation mark is refused |

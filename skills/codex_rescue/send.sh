@@ -1876,9 +1876,12 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 # 끼어들기 경로에 태우는 모드 (2026-09-15 확장: CONSULT 만 → CONSULT · EDIT · REVIEW).
-# FOLLOWUP·CHAT 은 `codex exec resume` 경로라 여기 들어오지 않는다.
+# 2026-09-17: FOLLOWUP(되묻기)도 탄다 — 중계기가 `thread/resume` 으로 같은 대화를 잇는다.
+#   무거운 모델로 되묻다 한도에 걸리기 전에 "지금까지로 마무리해라"를 넣을 길이 없었다.
+# CHAT 은 여전히 `codex exec resume` 경로라 여기 들어오지 않는다.
 LIVE_MODE_OK=0
 [ "$KIND" = doc ] && case "$MODE" in readonly|edit|review) LIVE_MODE_OK=1 ;; esac
+[ "$KIND" = followup ] && LIVE_MODE_OK=1
 
 LIVE_STEER_ON=0
 if [ "${CR_LIVE_STEER:-}" = "1" ] && [ "$LIVE_MODE_OK" = 1 ] && [ "$NODE_WS_OK" = 1 ]; then
@@ -1929,6 +1932,7 @@ if [ -n "${CR_DRYRUN:-}" ]; then
   if [ "$LIVE_STEER_ON" = 1 ]; then
     echo "경로     : 끼어들기(app-server) — 중계기에 --prompt-file 로 아래 프롬프트를 넘긴다"
     echo "중계기   : --sandbox ${SANDBOX_RAW:-read-only}$([ "$LIVE_NET" = 1 ] && printf ' --network')${CR_MODEL:+ --model $CR_MODEL}${CR_EFFORT:+ --effort $CR_EFFORT}"
+    [ "$KIND" = followup ] && echo "이어받기 : --resume-thread $THREAD --turn-seq $FUP_TURN   (원 요청서: $PARENT_REQ)"
     printf '(옛 경로였다면): '; printf '%q ' "$@"; echo
   else
     echo "경로     : codex exec"
@@ -1995,7 +1999,9 @@ else
   LAST_DEST="$LOGD/${STAMP}_last_message.md"
 fi
 
-# ── 🔴 실행 중 끼어들기 경로 (CR_LIVE_STEER=1, CONSULT 1턴 전용) ────────
+# ── 🔴 실행 중 끼어들기 경로 (CR_LIVE_STEER=1 — CONSULT·EDIT·REVIEW 1턴 + FOLLOWUP) ────────
+#
+# (범위 변천: 08-25 CONSULT 1턴 → 09-15 EDIT·REVIEW → 09-17 FOLLOWUP. 아래 첫 문단은 처음 좁힌 이유다.)
 #
 # `codex exec` 에는 도는 중인 턴에 말을 넣을 방법이 없다. `codex app-server` 의 `turn/steer`
 # 가 그것을 하며, 하던 작업을 버리지 않고 다음 모델 경계에서 반영한다(2026-08-25 실측 3회).
@@ -2032,11 +2038,21 @@ if [ -n "$LIVE_BRIDGE" ]; then
   # RUN_DIR 은 workspace 밖이라 Codex 가 고칠 수 없다. 긴 한글을 argv 로 넘기지 않는 이유는 중계기 steer 와 같다.
   LIVE_PROMPT="$RUN_DIR/prompt.txt"
   printf '%s\n\n%s\n' "$PROMPT" "$LIVE_NOTE" > "$LIVE_PROMPT" || die "프롬프트 파일을 쓰지 못했다: $LIVE_PROMPT"
+  # 되묻기(2026-09-17) — 새 대화 대신 응답 문서의 thread_id 를 잇는다. 턴 번호는 진행 패널 항목 id 용이다.
+  # 되묻기에는 요청서가 없다(`$REQ_ABS` 가 비어 있다). 중계기는 요청서에서 카드 제목(subject·slug)만 읽으므로
+  # 원 요청서를 준다 — 위 검증에서 존재를 확인했다.
+  LIVE_EXTRA=()
+  LIVE_REQ="${REQ_ABS:-}"   # set -u — 되묻기에서는 정의되지 않는다
+  if [ "$KIND" = followup ]; then
+    LIVE_EXTRA=(--resume-thread "$THREAD" --turn-seq "$FUP_TURN")
+    LIVE_REQ="$ROOT/$PARENT_REQ"
+  fi
   # shellcheck disable=SC2086
   node $NODE_WS_FLAG "$LIVE_BRIDGE" run \
     --prompt-file "$LIVE_PROMPT" \
     $([ "$LIVE_NET" = 1 ] && printf -- '--network') \
-    --request-file "$REQ_ABS" \
+    "${LIVE_EXTRA[@]}" \
+    --request-file "$LIVE_REQ" \
     --events-file "$LIVE_EVENTS" \
     --last-message-file "$LASTMSG" \
     --appserver-log "$LOGD/${STAMP}_appserver.jsonl" \

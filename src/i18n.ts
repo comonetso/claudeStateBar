@@ -342,6 +342,8 @@ const EN: Dict = {
     // windowDurationMins=300 (the 5-hour window) and `secondary` with 10080 (the weekly one),
     // but the strings said the opposite — so the status bar showed a 5-hour figure under a
     // "Weekly" label. Verified against a live `account/rateLimits/read`.
+    // That slot layout is Plus only — Pro Lite sends the weekly window as `primary` (2026-09-17),
+    // so the code picks windows by length. See codexWindowOfLength() in extension.ts.
     // The status bar wording matches Claude's (`sb.sessionLabel`) so one glance reads the same
     // for both providers.
     'sb.codexLimit': 'Session',
@@ -769,6 +771,8 @@ const KO: Dict = {
     // 🔴 2026-08-26 정정. app-server 의 `primary` 는 5시간 창(windowDurationMins=300),
     // `secondary` 가 주간 창(10080)인데 문구가 서로 뒤바뀌어 있었다 — 상태바가 5시간 수치를
     // "주간한도" 라는 이름으로 보여주고 있었다. 실제 `account/rateLimits/read` 로 확인했다.
+    // 이 자리 배치는 Plus 기준이다 — Pro Lite 는 주간 창을 `primary` 로 보낸다(2026-09-17).
+    // 그래서 코드는 창을 길이로 고른다. extension.ts 의 codexWindowOfLength() 참고.
     // 상태바 문구는 Claude 쪽(`sb.sessionLabel`)과 맞춘다 — 한눈에 같은 뜻으로 읽히게.
     'sb.codexLimit': '세션한도',
     'sb.codexPrimary': '5시간 한도',
