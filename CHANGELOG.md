@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.16.6] - 2026-09-19
+
+The repository's plugin marketplace (`comonetso`) has a second plugin, `peer_req`. It lets open
+Claude Code sessions ask and notify each other directly — two repositories on the same PC, a PC and
+a server, or two servers — with a request ID, an acknowledgement and a record on both sides. It
+needs Remote Control on in every session involved. Like codex_rescue it is a separate install, not
+part of the extension; setup is in `skills/peer_req/README.md`.
+
+The auto-update notice from 1.16.5 now covers it. It used to appear only when codex_rescue was
+installed; it now appears when either plugin is, and names the ones it found. The switch is per
+marketplace, so turning it on keeps both plugins current.
+
 ## [1.16.5] - 2026-09-17
 
 The extension can now turn on auto-update for the `codex_rescue` plugin. Claude Code leaves

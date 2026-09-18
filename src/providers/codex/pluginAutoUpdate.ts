@@ -1,56 +1,78 @@
 import * as vscode from 'vscode';
 import { readTextFile } from '../../core/fs';
 
-// Auto-update for the codex_rescue plugin (2026-09-17 user decision).
+// Auto-update for the plugins in this repo's `comonetso` marketplace — codex_rescue (2026-09-17
+// user decision) and peer_req (2026-09-19: "a user who installed the plugin should get updates,
+// the same way as codex_rescue").
 //
 // Claude Code leaves background auto-update off for marketplaces outside Anthropic's own, so a
 // `comonetso` install never updates unless `extraKnownMarketplaces.comonetso.autoUpdate` is true in
-// ~/.claude/settings.json. Every function here takes the ~/.claude base URI of the host the window
-// points at (a file:// URI locally, vscode-remote:// over Remote-SSH), so one code path covers the
-// local PC and each server.
+// ~/.claude/settings.json. The switch is per marketplace, so turning it on covers every plugin from
+// it. Every function here takes the ~/.claude base URI of the host the window points at (a file://
+// URI locally, vscode-remote:// over Remote-SSH), so one code path covers the local PC and each server.
 
 export const CODEX_PLUGIN_ID = 'codex-rescue@comonetso';
 const MARKETPLACE = 'comonetso';
 const MARKETPLACE_SOURCE = { source: 'github', repo: 'comonetso/claudeStateBar' };
+/** Plugins from the marketplace, with the name users know them by. */
+const MARKETPLACE_PLUGINS: { id: string; label: string }[] = [
+    { id: CODEX_PLUGIN_ID, label: 'codex_rescue' },
+    { id: 'peer-req@comonetso', label: 'peer_req' },
+];
 
 /**
- * off     — plugin installed, auto-update not on (entry missing or flag not true)
+ * off     — a marketplace plugin is installed, auto-update not on (entry missing or flag not true)
  * on      — already on
- * absent  — plugin not installed on this host; nothing to offer
+ * absent  — none of its plugins is installed on this host; nothing to offer
  * unknown — settings.json unreadable as JSON; we never write in that case
  */
 export type AutoUpdateState = 'off' | 'on' | 'absent' | 'unknown';
+
+/** Labels of the marketplace plugins found by the last readAutoUpdateState call. */
+let lastInstalled: string[] = [];
+export function installedPluginLabels(): string[] {
+    return lastInstalled.slice();
+}
 
 function settingsUri(base: vscode.Uri): vscode.Uri {
     return vscode.Uri.joinPath(base, 'settings.json');
 }
 
-/** installed_plugins.json names the plugin and its installPath still holds SKILL.md. */
-async function pluginInstalled(base: vscode.Uri): Promise<boolean> {
+/**
+ * Which marketplace plugins installed_plugins.json names with an installPath that still exists.
+ * Checks `.claude-plugin/plugin.json`, which every plugin has — SKILL.md sits at the root only for
+ * codex_rescue (peer_req keeps it under skills/).
+ */
+async function installedPlugins(base: vscode.Uri): Promise<string[]> {
     let data: any;
     try {
         data = JSON.parse(await readTextFile(vscode.Uri.joinPath(base, 'plugins', 'installed_plugins.json')));
     } catch {
-        return false;
+        return [];
     }
-    const entries: unknown = data?.plugins?.[CODEX_PLUGIN_ID];
-    if (!Array.isArray(entries)) return false;
-    for (const e of entries) {
-        if (typeof e?.installPath !== 'string') continue;
-        // The recorded path belongs to the host that wrote it: a Windows path locally, a POSIX path
-        // on a server. Resolve it against the same scheme/authority as base.
-        const p = e.installPath.replace(/\\/g, '/');
-        const dir = base.scheme === 'file' ? vscode.Uri.file(e.installPath) : base.with({ path: p });
-        try {
-            await vscode.workspace.fs.stat(vscode.Uri.joinPath(dir, 'SKILL.md'));
-            return true;
-        } catch { /* try the next entry */ }
+    const found: string[] = [];
+    for (const plugin of MARKETPLACE_PLUGINS) {
+        const entries: unknown = data?.plugins?.[plugin.id];
+        if (!Array.isArray(entries)) continue;
+        for (const e of entries) {
+            if (typeof e?.installPath !== 'string') continue;
+            // The recorded path belongs to the host that wrote it: a Windows path locally, a POSIX path
+            // on a server. Resolve it against the same scheme/authority as base.
+            const p = e.installPath.replace(/\\/g, '/');
+            const dir = base.scheme === 'file' ? vscode.Uri.file(e.installPath) : base.with({ path: p });
+            try {
+                await vscode.workspace.fs.stat(vscode.Uri.joinPath(dir, '.claude-plugin', 'plugin.json'));
+                found.push(plugin.label);
+                break;
+            } catch { /* try the next entry */ }
+        }
     }
-    return false;
+    return found;
 }
 
 export async function readAutoUpdateState(base: vscode.Uri): Promise<AutoUpdateState> {
-    if (!(await pluginInstalled(base))) return 'absent';
+    lastInstalled = await installedPlugins(base);
+    if (lastInstalled.length === 0) return 'absent';
     let raw: string;
     try {
         raw = await readTextFile(settingsUri(base));

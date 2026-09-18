@@ -7,6 +7,11 @@
       "name": "codex-rescue",
       "source": "./skills/codex_rescue",
       "description": "Get a second opinion from the Codex CLI: consult, review, edit, or chat."
+    },
+    {
+      "name": "peer-req",
+      "source": "./skills/peer_req",
+      "description": "Let open Claude Code sessions ask and notify each other across repositories and machines over Remote Control, with IDs, acknowledgements and records."
     }
   ]
 }

@@ -1,0 +1,151 @@
+# peer_req
+
+열려 있는 Claude Code 세션끼리 서로 직접 묻고 알리게 해 주는 플러그인입니다. 같은 PC 안의 두 저장소든, PC와 서버든, 서버와 서버든 됩니다. 머신끼리 SSH 키를 나눠 가질 필요도 없습니다.
+
+[English](README.md)
+
+> [!IMPORTANT]
+> **짝을 맺을 모든 세션에서 Remote Control(리모트 컨트롤)이 켜져 있어야 합니다. 꺼져 있으면 이 플러그인은 동작하지 않습니다.**
+> 다른 머신의 세션은 Remote Control 로만 닿습니다. 쓰시는 모든 머신 — PC와 서버 전부 — 에서 **자동 켜기**를 설정하십시오. 방법은 바로 아래 [Remote Control 부터 켜기](#remote-control-부터-켜기)에 있습니다. 이 단계만은 건너뛸 수 없습니다.
+
+## 무엇을 하나
+
+한 세션에서 일하다가 다른 세션의 도움이 필요할 때가 있습니다. API를 가진 서버 세션, 그 API를 쓰는 앱 세션, 같은 PC의 다른 저장소 같은 경우입니다. 이렇게 말하면 됩니다.
+
+```
+/peer-req:peer_req api 로그인 API 응답 형식이 어떻게 돼 있어?
+```
+
+질문은 이미 열려 있는 API 서버 세션으로 갑니다. 그 세션이 읽고, 물어본 것만 조사해서, 답을 지금 대화로 돌려보냅니다. 창 사이에 복사해 붙일 것도 없고, 상대 세션에 "메시지 왔어" 라고 알려 줄 사람도 필요 없습니다.
+
+Claude Code 에 들어 있는 세션 간 메시지 기능(`ListAgents`·`SendMessage`) 위에 만들었습니다. 이 플러그인이 더하는 것은 실무에서 믿고 쓸 수 있게 하는 부분입니다.
+
+- **짝은 한 번만 적어 둡니다.** 보내는 저장소의 주소록(`.peer_req.json`)에 짝이 누구고 어디 있는지 적습니다. 여러 짝을 묶어 한 번에 보낼 수도 있습니다.
+- **모든 요청에 번호·접수 확인·기록이 붙습니다.** 받는 세션은 요청을 기록하고 "받았다" 를 먼저 돌려준 뒤 일을 시작하고, 결과는 같은 번호로 돌아옵니다. "보냈다" 와 "읽었다" 를 섞지 않습니다.
+- **두 번 실행하지 않습니다.** 같은 요청이 다시 오면 알아보고 기존 기록으로 답합니다. 같은 번호인데 본문이 다르면 거부합니다.
+- **받는 쪽은 선을 넘지 않습니다.** 질문에는 답하고, 통보는 영향만 확인하고, 수정 요청은 기록해 두었다가 그쪽 사용자가 지시할 때 작업합니다. 다른 세션 대신 코드를 고치지 않습니다.
+- **양쪽 모두 기록을 남깁니다.** `docs/_msg/peer_req/<요청 번호>/` 에 남고, 기본으로 Git 에 커밋됩니다.
+- **세션이 시작되면** 플러그인이 로드됐다는 것, 이 저장소의 짝이 몇 곳인지, 자리를 비운 사이 도착했거나 끝난 것이 있는지를 알려 줍니다.
+
+## Remote Control 부터 켜기
+
+**모든** 머신에서 하십시오. PC와 서버 하나하나 전부입니다.
+
+**쉬운 방법.** Claude Code 안에서 `/config` 를 열어 **Enable Remote Control for all sessions** 를 `true` 로 둡니다. VS Code 확장에서는 명령 메뉴의 Settings 구역에 같은 스위치가 있습니다.
+
+**명시하는 방법 (권장).** `~/.claude/settings.json` 에 넣습니다.
+
+```json
+{
+  "remoteControlAtStartup": true
+}
+```
+
+굳이 적어 두는 이유가 있습니다. 이 키가 없으면 Claude Code 는 Anthropic 의 현재 기본값을 따르는데, 그 기본값은 바뀔 수 있습니다. 실제로 기본값이 바뀌면서 모든 머신의 자동 켜기가 한꺼번에 꺼진 일이 있었습니다. 키를 적어 두면 켜진 채로 유지됩니다. 이미 열려 있는 세션도 바로 반영되므로 다시 열 필요는 없습니다.
+
+프로젝트의 `.claude/settings.json` 에 넣은 `true` 는 일부러 무시됩니다(저장소가 여는 사람 모두의 Remote Control 을 켤 수는 없게 막아 둔 것입니다). 그래서 반드시 사용자 설정에 넣어야 합니다.
+
+**Linux 서버에서 흔히 막히는 세 가지**
+
+1. **장기 토큰.** 셸 설정(`.bashrc` 등)에서 `CLAUDE_CODE_OAUTH_TOKEN` 을 내보내고 있으면 지우거나 주석 처리하십시오. `claude setup-token` 으로 받은 토큰은 모델 요청만 할 수 있고 Remote Control 세션은 열지 못합니다.
+2. **VS Code 서버가 옛 환경을 붙들고 있음.** 서버를 VS Code Remote-SSH 로 쓰신다면 **Remote-SSH: Kill VS Code Server on Host** 를 실행하고 다시 접속하십시오. 떠 있는 서버 프로세스는 시작할 때의 환경(토큰 포함)을 그대로 들고 있습니다. 가장 많이 걸리는 함정입니다.
+3. 그 서버에서 `claude auth login` 으로 **다시 로그인**합니다.
+
+**확인하는 법.** 다른 기기에서 claude.ai/code 나 Claude 앱을 열어 세션 목록에 보이는지 봅니다. 사양이 낮은 서버는 목록에 뜨기까지 시간이 걸립니다. 바로 안 보여도 잠시 기다려 보십시오.
+
+**쓸 수 있는 조건.** Remote Control 은 Pro·Max·Team·Enterprise 요금제에서 됩니다. Team·Enterprise 는 조직 Owner 가 Claude Code 관리 설정에서 먼저 켜야 합니다. API 키 인증, Amazon Bedrock·Google Cloud·Microsoft Foundry, 사용자 지정 `ANTHROPIC_BASE_URL` 에서는 되지 않고, `DISABLE_TELEMETRY`·`DO_NOT_TRACK`·`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`·`DISABLE_GROWTHBOOK` 중 하나라도 설정돼 있어도 되지 않습니다.
+
+## 설치
+
+```
+/plugin marketplace add comonetso/claudeStateBar
+/plugin install peer-req@comonetso
+```
+
+**자동 업데이트를 켜 두십시오.** Claude Code 는 Anthropic 밖의 마켓플레이스에 대해 자동 업데이트를 꺼 둡니다. 그대로 두면 설치한 버전에 머뭅니다. 머신마다 `~/.claude/settings.json` 에 넣습니다.
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "comonetso": { "source": { "source": "github", "repo": "comonetso/claudeStateBar" }, "autoUpdate": true }
+  }
+}
+```
+
+Claude State Bar 확장을 쓰시면 확장이 알림의 **켜기** 버튼 하나로 대신 해 줍니다 — 로컬 창이면 이 PC, Remote-SSH 창이면 그 서버에. 새 버전은 Claude Code 를 시작할 때 받습니다. 이 설정은 이 마켓의 플러그인 전체에 걸리므로 codex_rescue 도 함께 최신으로 유지됩니다.
+
+짝으로 쓸 세션이 도는 모든 머신에 설치하고 새 세션을 여십시오. 플러그인 스크립트가 Node.js 로 돌기 때문에 `node` 가 PATH 에 있어야 합니다. 버전은 가리지 않습니다 — 새 문법을 쓰지 않도록 만들었고, Node 10 부터 22 까지 실제로 돌려 확인했습니다.
+
+## 주소록
+
+보내는 저장소의 루트에 `.peer_req.json` 을 둡니다.
+
+```json
+{
+  "schema_version": 1,
+  "self": { "endpoint_id": "pc.admin", "machine_id": "my-pc", "root": "C:/work/admin" },
+  "peers": {
+    "api": {
+      "endpoint_id": "srv.api", "machine_id": "api-server",
+      "location": { "os": "linux", "root": "/srv/api", "host_alias": "api-server" },
+      "session_selector": { "rc_title": "API server", "accept_numeric_suffix": true }
+    },
+    "app": {
+      "endpoint_id": "pc.app", "machine_id": "my-pc",
+      "location": { "os": "windows", "root": "C:/work/app" }
+    }
+  },
+  "groups": { "everyone": ["api", "app"] },
+  "records": { "commit": true },
+  "unattended": { "permission": "read_only" }
+}
+```
+
+`machine_id` 는 직접 정하는 이름표입니다. `self` 와 `machine_id` 가 같은 짝은 같은 머신에 있는 것으로 보고, 그 짝의 작업 폴더로 세션을 찾습니다. 다른 머신의 짝은 Remote Control 제목(`rc_title`)으로 찾으며, 그런 짝에는 이 값이 꼭 있어야 합니다. 제목은 정확히 같거나 끝에 " · 2", " · 3" 이 붙은 것만 인정하고, 맞는 세션이 여럿이면 어느 것인지 여쭙니다. `self.root` 는 이 파일이 있는 폴더여야 합니다 — 다른 저장소에서 복사해 온 주소록을 잡아내기 위해서입니다.
+
+**참여하는 모든 저장소에 이 파일이 있어야 합니다. 받기만 하는 저장소도 마찬가지입니다.** 받는 저장소는 `peers` 를 비워도 되지만 `self` 는 꼭 있어야 합니다 — 그걸로 "내 앞으로 온 메시지가 맞나" 를 확인하기 때문입니다. `self` 가 없거나 깨져 있으면 짐작하지 않고 모든 요청을 "대상 아님" 으로 돌려보냅니다.
+
+## 쓰는 법
+
+```
+/peer-req:peer_req api 로그인 API 응답 형식이 어떻게 돼 있어?     질문
+/peer-req:peer_req app user_id 필드 이름 바꿨다고 알려줘         통보
+/peer-req:peer_req api /orders 에 페이징 넣어 달라고 남겨        수정 요청
+/peer-req:peer_req everyone ...                                  그룹 전체
+```
+
+명령이 `/peer-req:peer_req` 인 것은 Claude Code 가 플러그인 스킬 앞에 플러그인 이름을 붙이기 때문입니다. 입력창에 `/peer` 까지만 쳐도 자동완성되고, "api 서버에 로그인 응답 형식 물어봐" 처럼 말로 해도 됩니다.
+
+질문인지 통보인지 수정 요청인지는 Claude 가 말뜻으로 판단하고, 보내기 전에 어느 쪽으로 보내는지 밝힙니다. 받는 쪽이 하는 일은 이렇게 다릅니다.
+
+- **질문** — 물어본 것만 조사해서, 근거(파일:줄)와 확인하지 못한 점을 붙여 답합니다.
+- **통보** — 그 변경이 자기 코드에 미치는 영향을 확인해 알려 줍니다. 고치지는 않습니다.
+- **수정 요청** — 받았다고 알리고 기록한 뒤, 그쪽 사용자에게 전합니다. 작업은 그 사용자가 지시할 때만 합니다.
+
+그 밖의 명령(모두 `/peer-req:peer_req` 뒤에 붙입니다) — `here` 는 지금 대화를 이 저장소의 세션으로 지정합니다(같은 폴더에 창이 여러 개 떠 있을 때 유용합니다). `status` 는 최근 요청 목록, `inbox` 는 도착했거나 끝났는데 아직 안 알린 것, `doctor` 는 아무것도 보내지 않고 주소록과 설정을 점검합니다.
+
+**같은 머신에서 알맞은 세션을 찾는 방식.** 짝 폴더에 열린 세션이 딱 하나면 거기로 보내고 그 세션을 기억해 둡니다. 없거나 여럿이면 어느 것인지 여쭙고, 고르신 것을 기억합니다. 기억은 대화에 붙어 있어서 VS Code 를 다시 로드해도 유지됩니다. 그 대화를 닫으면 다음에 보낼 때 같은 방식으로 다시 찾습니다.
+
+## 상대 세션이 열려 있지 않을 때
+
+기본은 열린 세션끼리 주고받는 것입니다. 짝 세션이 열려 있지 않으면 Claude 가 **무인으로 보낼지** 여쭙니다. 무인 전송은 이 요청 하나만을 위해 짝 저장소에서 새 Claude Code 를 잠깐 띄워 답을 받고 끝내는 방식입니다. 같은 머신이면 짝 폴더에서 띄우고, 다른 머신이면 `~/.ssh/config` 의 이름(`location.host_alias`)으로 SSH 접속해 거기서 띄웁니다. SSH 가 닿는 방향으로만 됩니다 — 보통 PC 에서 서버로는 되고, 서버에서 다른 서버로는 안 됩니다.
+
+무인 실행은 기본으로 읽기 도구(Read·Grep·Glob)만 받습니다. 볼 수는 있어도 바꿀 수는 없습니다. `"unattended": { "permission": "bypass" }` 로 두면 권한 확인 없이 돌기 때문에 셸 명령이나 DB 조회를 할 수 있지만, 무언가를 바꿀 수도 있게 됩니다. 그 머신 `~/.claude/settings.json` 의 deny 규칙은 그대로 살아 있지만, 같은 일을 하는 모든 방법을 막아 주지는 못합니다. 그래도 괜찮은 머신에서만 켜십시오. 수정 요청은 무인으로 작업하지 않고 기록만 남깁니다. 나중에 상대 사용자가 작업을 끝내면, 같은 요청으로 무인 전송을 한 번 더 하면 저장된 결과를 가져옵니다 — 상대 쪽은 같은 요청임을 알아보고 아무것도 다시 실행하지 않습니다. 상대 세션이 보류·거부했거나 승인 창이 만료된 메시지는 이 방식으로 다시 보내지 않고, 재시도는 처음 보낸 대상에게만 갑니다.
+
+## 한계
+
+- 권한 모드가 다른 세션끼리는 메시지가 승인 대기로 잡힐 수 있습니다. 권한 확인을 건너뛰는 세션은 그렇지 않은 세션에서 온 메시지를 잡아 두고, 반대도 마찬가지입니다. 승인 창에 답하지 않으면 5분 뒤 메시지가 버려집니다. 같은 머신이면 보낸 쪽이 그 사실을 통보받지만 다른 머신끼리는 아무 소식이 없습니다 — 그래서 이 플러그인은 "보냈다" 를 믿지 않고 접수 확인을 기다립니다.
+- 같은 머신에서는 메시지 한 통이 약 100만 자로 제한됩니다.
+- 세션 주소는 재시작하면 바뀝니다. 답을 전하지 못하면 받는 쪽이 같은 폴더에서 보낸 쪽의 지금 세션을 찾아 다시 보냅니다. 보낸 쪽이 닫혀 있으면 결과는 받는 쪽 기록에 남습니다. 같은 머신이면 보낸 쪽이 다음에 상태를 보거나 세션을 열 때 거기서 가져가고, 다른 머신이면 받는 쪽에만 남습니다.
+- 같은 머신의 세션을 찾으려고 Claude Code 의 로컬 세션 등록 파일을 읽고, 고른 세션의 번호를 메시지에 실어 받는 쪽이 "내 앞으로 온 게 맞나" 를 확인하게 합니다. 이 파일은 공개된 인터페이스가 아닙니다. Claude Code 업데이트로 형식이 바뀌면 짐작하지 않고 같은 머신 전송을 멈춥니다 — 다른 머신과의 통신에는 영향이 없습니다.
+
+## 파일
+
+```
+.claude-plugin/plugin.json
+hooks/hooks.json              세션 시작 알림
+skills/peer_req/SKILL.md      Claude 가 따르는 절차
+scripts/peer.cjs              주소록·봉투·해시·기록·상태
+scripts/session-start.cjs
+test/peer.test.mjs            node --test skills/peer_req/test/peer.test.mjs  (테스트만 Node 18 이상 — 플러그인은 버전 무관)
+```

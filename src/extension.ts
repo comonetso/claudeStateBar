@@ -25,7 +25,7 @@ import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runC
          trashRun, listTrash, restoreTrashed, purgeTrashed, emptyTrash } from './providers/codexRescue/runDiscovery';
 import { getDict, Lang } from './i18n';
 import { readTextFile } from './core/fs';
-import { readAutoUpdateState, enableAutoUpdate, AutoUpdateState } from './providers/codex/pluginAutoUpdate';
+import { readAutoUpdateState, enableAutoUpdate, AutoUpdateState, installedPluginLabels } from './providers/codex/pluginAutoUpdate';
 import { beginRefreshShare, endRefreshShare, readShared, recordPass, recordFolded, recordTickLag, recordMenu, takeRefreshSummary } from './core/refreshPerf';
 import { parseWorkflowNotices } from './workflowNotices';
 import { log, setLogChannel, getLogChannel } from './core/logger';
@@ -528,7 +528,7 @@ export function activate(context: vscode.ExtensionContext) {
                 items.push({ label: planT('menu.sepCodex'), kind: vscode.QuickPickItemKind.Separator });
             }
             items.push({
-                label: '$(cloud-download) ' + planT('menu.codexAutoUpdate'),
+                label: '$(cloud-download) ' + planT('menu.codexAutoUpdate', marketplacePluginNames()),
                 description: planT('menu.codexAutoUpdateDesc'),
                 action: 'codexAutoUpdate'
             });
@@ -3270,8 +3270,10 @@ function maybeShowCodexPluginNotice(context: vscode.ExtensionContext): void {
     log(`[codex-rescue] plugin switch notice shown (plugin=${hasPlugin})`);
 }
 
-// --- codex_rescue plugin auto-update (2026-09-17 user decisions) ---
+// --- comonetso plugin auto-update: codex_rescue (2026-09-17) and peer_req (2026-09-19) ---
 //
+// The switch is per marketplace, so one notice covers whichever of the two plugins is installed;
+// the text names the ones found. (Before 1.16.6 only a codex_rescue install triggered it.)
 // The window's host decides which ~/.claude is checked: the local PC for a local window, the server
 // for a Remote-SSH window (getClaudeBaseUri routes through vscode.workspace.fs). The notice returns
 // on every window start until the user turns auto-update on or picks "Don't show again here";
@@ -3281,6 +3283,12 @@ function maybeShowCodexPluginNotice(context: vscode.ExtensionContext): void {
 const CODEX_AUTOUPDATE_DISMISSED_KEY = 'claudeStateBar.codexAutoUpdateNoticeDismissed';
 /** Last check for this window's host; null = not checked yet. Drives the session-menu entry. */
 let codexAutoUpdateState: AutoUpdateState | null = null;
+
+/** "codex_rescue · peer_req" — the marketplace plugins found on this host by the last check. */
+function marketplacePluginNames(): string {
+    const names = installedPluginLabels();
+    return names.length ? names.join(' · ') : 'codex_rescue';
+}
 
 function codexHostKey(base: vscode.Uri): string {
     return base.scheme === 'file' ? 'local' : `${base.scheme}://${base.authority}`;
@@ -3320,7 +3328,7 @@ async function maybeShowCodexAutoUpdateNotice(context: vscode.ExtensionContext):
     const laterBtn = planT('cx.autoupdate.later');
     const neverBtn = planT('cx.autoupdate.never');
     const answer = await vscode.window.showInformationMessage(
-        planT('cx.autoupdate.notice', label), enableBtn, laterBtn, neverBtn);
+        planT('cx.autoupdate.notice', label, marketplacePluginNames()), enableBtn, laterBtn, neverBtn);
     if (answer === enableBtn) await turnOnCodexAutoUpdate();
     else if (answer === neverBtn) {
         await context.globalState.update(CODEX_AUTOUPDATE_DISMISSED_KEY, { ...dismissed, [hostKey]: true });
@@ -3336,7 +3344,7 @@ async function turnOnCodexAutoUpdate(): Promise<void> {
     if (result.ok) {
         codexAutoUpdateState = 'on';
         log(`[codex-rescue] auto-update turned on (${codexHostKey(base)}; created=${result.created}; backup=${result.backup?.path ?? 'none'})`);
-        void vscode.window.showInformationMessage(planT('cx.autoupdate.done', label));
+        void vscode.window.showInformationMessage(planT('cx.autoupdate.done', label, marketplacePluginNames()));
     } else {
         log(`[codex-rescue] auto-update enable failed (${codexHostKey(base)}): ${result.reason}`);
         const guideBtn = planT('cx.setup.open');

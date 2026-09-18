@@ -1,0 +1,16 @@
+{
+  "description": "peer_req: announce the plugin, check Remote Control auto-connect, and report unreported peer requests when a session starts",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.cjs\""
+          }
+        ]
+      }
+    ]
+  }
+}
