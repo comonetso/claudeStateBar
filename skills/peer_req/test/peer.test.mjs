@@ -55,15 +55,18 @@ test('I2 정상 주소록은 통과한다', () => {
   assert.equal(r.ok, true);
 });
 
-test('I2 필수 필드가 빠지면 잡는다', () => {
+test('I2 필수 필드가 빠지면 잡는다 · 다른 머신 rc_title 은 선택이지만 적었으면 비면 안 된다(D27)', () => {
   const dir = tmp('book');
   const b = goodBook(fwd(dir));
   delete b.self.machine_id;
-  delete b.peers.srv.session_selector;
+  b.peers.srv.session_selector.rc_title = ' ';
   const r = validateBook(JSON.stringify(b), path.join(dir, '.peer_req.json'));
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.includes('self.machine_id')));
   assert.ok(r.errors.some((e) => e.includes('rc_title')));
+  const b2 = goodBook(fwd(dir));
+  delete b2.peers.srv.session_selector;
+  assert.deepEqual(validateBook(JSON.stringify(b2), path.join(dir, '.peer_req.json')).errors, []);
 });
 
 test('I2 중복 별칭을 잡는다 (JSON.parse 가 삼키는 것)', () => {
@@ -392,6 +395,136 @@ test('다른 머신 짝: 제목 후보가 둘이면 묻고, --pick 으로 고른
   assert.equal(p2.targets[0].status, 'ready');
   assert.equal(p2.targets[0].send_to, 'SRV · API · 2');
   assert.equal(p2.request_id, p.request_id);
+});
+
+// ───────────── D27 다른 머신 — 고른 세션 기억 (2026-09-19 사용자 결정) ─────────────
+
+// rc_title 없는 짝(srv) + 제목을 적어 둔 다른 짝(ops)
+function remoteRepo(srvSelector) {
+  const A = tmp('repoA');
+  const srv = { endpoint_id: 'srv.api', machine_id: 'srv', location: { root: '/home/api' } };
+  if (srvSelector) srv.session_selector = srvSelector;
+  const ops = { endpoint_id: 'srv.ops', machine_id: 'ops', location: { root: '/home/ops' }, session_selector: { rc_title: 'Admin · ops' } };
+  fs.writeFileSync(path.join(A, '.peer_req.json'), JSON.stringify({ schema_version: 1, self: { endpoint_id: 'pc.a', machine_id: 'm1', root: fwd(A) }, peers: { srv, ops } }));
+  const bodyFile = path.join(A, 'body.txt');
+  fs.writeFileSync(bodyFile, 'q');
+  const list = (lines) => {
+    const f = path.join(A, 'agents-' + Math.random().toString(36).slice(2) + '.txt');
+    fs.writeFileSync(f, 'This session is a [1]\n  local-1 [000002]  ·  interactive  ·  idle\n' + lines.map((l) => '  ' + l + '  ·  Remote Control  ·  idle\n').join(''));
+    return f;
+  };
+  const state = tmp('state');
+  const prep = (agents, extra) => cli(['prepare', '--to', 'srv', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agents].concat(extra || []), { cwd: A, env: { PEER_REQ_STATE: state } });
+  const remembered = () => {
+    const f = path.join(state, 'remote_titles', 'srv.api.json');
+    return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null;
+  };
+  return { A, state, list, prep, remembered };
+}
+
+test('D27 rc_title 이 없어도, 다른 짝 몫을 빼고 원격 세션이 하나뿐이면 거기로 보내고 기억한다', () => {
+  const t = remoteRepo();
+  const p = t.prep(t.list(['Admin · ops [0000aa]', 'host-lively-otter [0000bb]']));
+  assert.equal(p.targets[0].status, 'ready');
+  assert.equal(p.targets[0].via, 'only_candidate');
+  assert.equal(p.targets[0].send_to, 'host-lively-otter');
+  assert.equal(t.remembered().title, 'host-lively-otter');
+  assert.equal(t.remembered().ref, '0000bb');
+});
+
+test('D27 여럿이면 묻고, 고른 것을 기억해 다음 요청부터 묻지 않는다', () => {
+  const t = remoteRepo();
+  const agents = t.list(['Admin · ops [0000aa]', 'host-lively-otter [0000bb]', 'host-calm-river [0000cc]']);
+  const p = t.prep(agents);
+  assert.equal(p.targets[0].status, 'ask');
+  assert.deepEqual(p.targets[0].candidates.map((c) => c.name).sort(), ['host-calm-river', 'host-lively-otter']); // 다른 짝(ops) 몫은 빠진다
+  const p2 = cli(['prepare', '--request-id', p.request_id, '--to', 'srv', '--agents-file', agents, '--pick', 'host-calm-river'], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
+  assert.equal(p2.targets[0].status, 'ready');
+  assert.equal(p2.targets[0].remembered, true);
+  assert.equal(t.remembered().source, 'user');
+  const p3 = t.prep(agents); // 새 요청
+  assert.equal(p3.targets[0].status, 'ready');
+  assert.equal(p3.targets[0].via, 'remembered');
+  assert.equal(p3.targets[0].send_to, 'host-calm-river');
+});
+
+test('D27 이름을 붙여 제목이 바뀌어도 참조 번호로 같은 세션을 찾아가고 기억을 고친다', () => {
+  const t = remoteRepo();
+  t.prep(t.list(['host-lively-otter [0000bb]']));
+  const p = t.prep(t.list(['Admin · ops [0000aa]', 'Srv · API DEV [0000bb]', 'host-calm-river [0000cc]']));
+  assert.equal(p.targets[0].status, 'ready');
+  assert.equal(p.targets[0].via, 'remembered_ref');
+  assert.equal(p.targets[0].send_to, 'Srv · API DEV');
+  assert.equal(t.remembered().title, 'Srv · API DEV');
+});
+
+test('D27 기억한 세션이 목록에서 사라지면(새 대화) 다시 묻는다', () => {
+  const t = remoteRepo();
+  t.prep(t.list(['host-lively-otter [0000bb]']));
+  const p = t.prep(t.list(['host-calm-river [0000cc]', 'host-quiet-lake [0000dd]']));
+  assert.equal(p.targets[0].status, 'ask');
+  assert.ok(p.targets[0].note.includes('host-lively-otter'));
+});
+
+test('D27 주소록 rc_title 이 있는데 목록에 없으면 남은 하나로 자동 전송하지 않고 묻는다', () => {
+  const t = remoteRepo({ rc_title: 'SRV · API' });
+  const p = t.prep(t.list(['host-lively-otter [0000bb]']));
+  assert.equal(p.targets[0].status, 'ask');
+  assert.ok(p.targets[0].reason.includes('SRV · API'));
+  assert.equal(t.remembered(), null);
+});
+
+test('D27 다른 짝에 기억해 둔 제목은 후보에서 뺀다', () => {
+  const t = remoteRepo();
+  fs.mkdirSync(path.join(t.state, 'remote_titles'), { recursive: true });
+  fs.writeFileSync(path.join(t.state, 'remote_titles', 'srv.db.json'), JSON.stringify({ title: 'host-calm-river', ref: '0000cc', source: 'user', not: [] }));
+  const p = t.prep(t.list(['host-lively-otter [0000bb]', 'host-calm-river [0000cc]']));
+  assert.equal(p.targets[0].status, 'ready');
+  assert.equal(p.targets[0].send_to, 'host-lively-otter');
+});
+
+test('D27 받는 쪽이 "대상 아님" 으로 돌려보내면 기억을 지우고 그 제목을 후보에서 뺀다', () => {
+  const t = remoteRepo();
+  const p = t.prep(t.list(['host-lively-otter [0000bb]', 'host-calm-river [0000cc]']), []);
+  const agents = t.list(['host-lively-otter [0000bb]', 'host-calm-river [0000cc]']);
+  const picked = cli(['prepare', '--request-id', p.request_id, '--to', 'srv', '--agents-file', agents, '--pick', 'host-calm-river'], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
+  const N = tmp('nobook'); // 엉뚱한 세션이 받았다
+  const msg = path.join(N, 'in.txt');
+  fs.copyFileSync(picked.targets[0].message_file, msg);
+  const w = cli(['receive', '--message-file', msg], { cwd: N, env: { PEER_REQ_STATE: tmp('state') } });
+  assert.equal(w.verdict, 'wrong_target');
+  const ing = cli(['ingest', '--message-file', w.reply_file], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
+  assert.equal(ing.wrong_title.title, 'host-calm-river');
+  assert.equal(ing.wrong_title.forgot, true);
+  assert.equal(t.remembered().title, null);
+  assert.deepEqual(t.remembered().not, ['host-calm-river']);
+  const again = t.prep(agents); // 남은 후보는 하나 → 그리로
+  assert.equal(again.targets[0].status, 'ready');
+  assert.equal(again.targets[0].send_to, 'host-lively-otter');
+});
+
+test('D27 주소록 rc_title 로 보낸 것은 "대상 아님" 이 와도 기억을 건드리지 않는다', () => {
+  const t = remoteRepo({ rc_title: 'SRV · API' });
+  const p = t.prep(t.list(['SRV · API [0000bb]']));
+  assert.equal(p.targets[0].via, 'rc_title');
+  const N = tmp('nobook');
+  const msg = path.join(N, 'in.txt');
+  fs.copyFileSync(p.targets[0].message_file, msg);
+  const w = cli(['receive', '--message-file', msg], { cwd: N, env: { PEER_REQ_STATE: tmp('state') } });
+  const ing = cli(['ingest', '--message-file', w.reply_file], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
+  assert.equal(ing.wrong_title, null);
+  assert.equal(t.remembered(), null);
+});
+
+test('D27 forget 은 다른 머신 짝의 기억도 지운다 · doctor 가 보여 준다', () => {
+  const t = remoteRepo();
+  t.prep(t.list(['host-lively-otter [0000bb]']));
+  const d = cli(['doctor'], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
+  assert.equal(d.peers.filter((x) => x.alias === 'srv')[0].remembered.title, 'host-lively-otter');
+  assert.equal(d.peers.filter((x) => x.alias === 'srv')[0].rc_title, null);
+  const f = cli(['forget', '--to', 'srv'], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
+  assert.equal(f.removed, true);
+  assert.equal(t.remembered(), null);
 });
 
 test('주소록이 깨져 있으면 prepare 가 멈춘다(exit 3)', () => {

@@ -101,7 +101,7 @@ Put `.peer_req.json` at the root of the repository you send from.
 }
 ```
 
-`machine_id` is a label you choose. A peer with the same `machine_id` as `self` is on the same machine; the plugin finds its session by the working folder. A peer on another machine is found by its Remote Control title (`rc_title`), which is required for those peers. The title matches exactly, or with a trailing " · 2", " · 3"; if more than one session matches, you are asked which one. `self.root` must be the folder the file sits in, which catches address books copied over from another repository.
+`machine_id` is a label you choose. A peer with the same `machine_id` as `self` is on the same machine; the plugin finds its session by the working folder. A peer on another machine is found by its Remote Control title. If you always give that peer's session the same title, put it in `rc_title`. The title matches exactly, or with a trailing " · 2", " · 3"; if more than one session matches, you are asked which one. You can leave it out — you then pick the session once, the first time you send (see "Finding the right session on another machine" below). `self.root` must be the folder the file sits in, which catches address books copied over from another repository.
 
 **Every repository that takes part needs this file, including one that only receives.** A receiving repository can leave out `peers`, but it must have `self` — that is how it checks that a message was meant for it. Without a valid `self` it turns every request away as the wrong target rather than guessing.
 
@@ -122,9 +122,11 @@ Claude works out from your wording whether it is a question, a notice or a chang
 - **Notice** — it checks what the change affects in its own code and reports back. It doesn't fix anything.
 - **Change request** — it acknowledges and records it, then tells its own user. The work happens only when that user says so.
 
-Other commands, each after `/peer-req:peer_req`: `here` marks the current conversation as this repository's session (useful when several windows are open on the same folder), `status` lists recent requests, `inbox` shows what arrived or finished that you haven't been told about yet, and `doctor` checks the address book and settings without sending anything.
+Other commands, each after `/peer-req:peer_req`: `here` marks the current conversation as this repository's session (useful when several windows are open on the same folder), `status` lists recent requests, `inbox` shows what arrived or finished that you haven't been told about yet, and `doctor` checks the address book and settings without sending anything. `forget <peer>` clears the session remembered for a peer, so the next send looks it up again.
 
 **Finding the right session on the same machine.** If exactly one session is open in the peer's folder, the message goes there and that session is remembered. If there are none or several, you are asked to pick, and your choice is remembered. The memory follows the conversation, so it survives a VS Code reload. When that conversation is closed, the next send looks the folder up again the same way.
+
+**Finding the right session on another machine.** The Remote Control list shows only each session's title, not which machine or folder it runs in. So if the address book has an `rc_title`, that title is used; if not, you pick the session from the list once. If, after leaving out sessions already used by other peers, only one session from another machine is listed, the message goes there without asking. Your pick is remembered on this PC and you aren't asked again. A Remote Control title stays the same for the same conversation, across a VS Code reload and when you leave the conversation and come back. If you rename the session, it is still recognised as long as its reference in the list (such as `[87f895]`) is unchanged. A new conversation gets a new title, so you pick once more then. If a message does reach the wrong session, the receiving side checks its address book, sees the message isn't for it, and sends it back as "not the target"; that session is then forgotten and left out of the choices from then on.
 
 ## When the other session isn't open
 

@@ -127,6 +127,7 @@ function cmdDoctor(args, cwd) {
   const settings = util.readJson(path.join(util.claudeHome(), 'settings.json'), {});
   const reg = sessions.readRegistry();
   const declared = sessions.readDeclared().endpoints;
+  const titles = sessions.readTitles().endpoints;
   const report = {
     repo_root: ctx.root,
     addressbook: b.found ? { file: b.file, ok: b.ok, errors: b.errors, warnings: b.warnings } : null,
@@ -151,7 +152,8 @@ function cmdDoctor(args, cwd) {
         row.declared_alive = !!(dec && reg.sessions.some((s) => s.sessionId === dec.session_id));
         row.sessions_in_root = reg.sessions.filter((s) => util.isUnder(s.cwd, p.location.root)).map((s) => ({ name: s.name, session_id: s.sessionId, status: s.status }));
       } else {
-        row.rc_title = p.session_selector.rc_title;
+        row.rc_title = (p.session_selector && p.session_selector.rc_title) || null;
+        row.remembered = titles[p.endpoint_id] || null;
         row.host_alias = p.location.host_alias || null;
       }
       report.peers.push(row);
@@ -175,7 +177,11 @@ function resolvePicked(o) {
   if (rows.length !== 1) return Object.assign(base, { status: 'ask', reason: '--pick "' + o.pick + '" 가 목록에서 하나로 특정되지 않는다(' + rows.length + '개)', candidates: [] });
   const row = rows[0];
   const sendTo = sessions.addressFor(o.agents.rows, row);
-  if (!same) return Object.assign(base, { status: 'ready', via: 'user_pick', send_to: sendTo, row: row });
+  // 다른 머신은 고른 세션(제목·참조 번호)을 적어 둔다 — 다음부터 묻지 않는다(D27)
+  if (!same) {
+    if (row.where !== 'remote') return Object.assign(base, { status: 'ask', reason: '"' + row.name + '" 는 다른 머신(Remote Control) 세션이 아니다', candidates: [] });
+    return Object.assign(base, { status: 'ready', via: 'user_pick', send_to: sendTo, row: row, remember: true });
+  }
   // 같은 머신은 세션 번호가 있어야 받는 쪽이 "내 앞으로 온 게 맞나" 를 확인할 수 있다 — 모르면 보내지 않는다(2차 리뷰 P2 · 사용자 결정)
   const hits = o.registry.readable ? o.registry.sessions.filter((s) => s.name === row.name) : [];
   if (hits.length === 1) return Object.assign(base, { status: 'ready', via: 'user_pick', send_to: sendTo, row: row, session_id: hits[0].sessionId, bind: true });
@@ -261,9 +267,13 @@ function cmdPrepare(args, cwd) {
         body: body,
       });
       const file = store.writeText(dir, 'outbox', alias + '.txt', envl.renderMessage(env));
-      store.appendEvent(dir, { type: 'prepared', recipient: alias, attempt_id: env.attempt_id, detail: 'via=' + r.via + ' to=' + r.send_to });
+      // remote_title: 적어 둔 세션으로 보낸 시도만 남긴다 — WRONG_TARGET 이 오면 ingest 가 그 제목을 지운다.
+      // 주소록 rc_title 로 보낸 것은 사용자가 정한 값이라 자동으로 지우지 않는다.
+      const learned = !r.same_machine && r.via !== 'rc_title' && r.row ? r.row.name : null;
+      store.appendEvent(dir, { type: 'prepared', recipient: alias, attempt_id: env.attempt_id, detail: 'via=' + r.via + ' to=' + r.send_to, remote_title: learned });
       if (r.bind) sessions.declare(peer.endpoint_id, { sessionId: r.session_id, root: peer.location.root, name: r.send_to, source: r.via === 'user_pick' ? 'user' : 'auto' });
-      return { alias: alias, status: 'ready', send_to: r.send_to, via: r.via, message_file: file, attempt_id: env.attempt_id, same_machine: r.same_machine, note: r.note || null };
+      if (r.remember) sessions.rememberTitle(peer.endpoint_id, { title: r.row.name, ref: r.row.ref, source: r.via === 'user_pick' ? 'user' : r.via === 'remembered_ref' ? 'ref' : 'auto' });
+      return { alias: alias, status: 'ready', send_to: r.send_to, via: r.via, message_file: file, attempt_id: env.attempt_id, same_machine: r.same_machine, remembered: !!r.remember, note: r.note || null };
     }
     if (r.status === 'unreachable') store.appendEvent(dir, { type: 'unreachable', recipient: alias, detail: r.reason });
     return { alias: alias, status: r.status, reason: r.reason, note: r.note || null, candidates: r.candidates || [], same_machine: r.same_machine };
@@ -314,11 +324,14 @@ function cmdBind(args, cwd) {
   print({ ok: true, alias: alias, declared: sessions.declare(peer.endpoint_id, { sessionId: sid, root: peer.location.root, name: s ? s.name : null, source: 'user' }), alive: !!s });
 }
 
+// 같은 머신은 기록한 세션 번호, 다른 머신은 적어 둔 세션(제목·참조 번호·"이 짝 아님" 목록)을 지운다
 function cmdForget(args, cwd) {
   const book = requireBook(repoContext(cwd).b);
   const alias = need(args, 'to');
-  const peer = sameMachinePeer(book, alias);
-  print({ ok: true, alias: alias, removed: sessions.forget(peer.endpoint_id) });
+  const peer = ab.peersOf(book)[alias];
+  if (!peer) throw new UsageError('주소록에 짝 "' + alias + '" 가 없다');
+  const same = peer.machine_id === book.self.machine_id;
+  print({ ok: true, alias: alias, same_machine: same, removed: same ? sessions.forget(peer.endpoint_id) : sessions.forgetTitle(peer.endpoint_id) });
 }
 
 function cmdHere(args, cwd) {

@@ -16,6 +16,7 @@ const envl = require('./envelope.cjs');
 const store = require('./store.cjs');
 const state = require('./state.cjs');
 const ab = require('./addressbook.cjs');
+const sessions = require('./sessions.cjs');
 
 // 응답이 어느 받는 쪽의 것인가.
 //   보통은 응답자 endpoint 로 찾는다. 단 WRONG_TARGET 은 **엉뚱한 곳이 받았다는 뜻**이라 응답자가
@@ -55,6 +56,12 @@ function ingestEnvelope(root, env, from) {
   const accepted = !!after && after.state === env.status && after.changedAt === added.event.at;
   let resultFile = null;
   if (env.type === 'result' && accepted) resultFile = store.writeText(dir, 'result', alias + '.md', env.body + '\n');
+  // 적어 둔 다른 머신 세션으로 보냈는데 "대상 아님" 이 돌아왔으면 그 제목을 잊고, 다음부터 후보에서 뺀다(D27)
+  let wrongTitle = null;
+  if (env.type === 'ack' && env.status === 'wrong_target') {
+    const sent = store.listEvents(dir).filter((e) => e.type === 'prepared' && e.attempt_id === env.attempt_id && e.recipient === alias && e.remote_title)[0];
+    if (sent) wrongTitle = Object.assign({ title: sent.remote_title }, sessions.markWrongTitle(rec.targets[alias].endpoint_id, sent.remote_title));
+  }
   return {
     ok: true,
     request_id: env.request_id,
@@ -65,6 +72,7 @@ function ingestEnvelope(root, env, from) {
     accepted: accepted,
     body: env.body,
     result_file: resultFile,
+    wrong_title: wrongTitle,
     state: after,
   };
 }

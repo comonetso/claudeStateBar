@@ -14,7 +14,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/peer.cjs" <서브커맨드> --state-dir "${C
 ```
 
 - **Bash 든 PowerShell 이든 이 모양 그대로 쓴다.** `VAR=값 node …` 나 줄 끝 `\` 는 PowerShell 에서 안 되므로 쓰지 않는다.
-- `--state-dir` 는 **빠뜨리지 않는다.** 같은 머신 짝을 기억해 둔 자리다.
+- `--state-dir` 는 **빠뜨리지 않는다.** 짝 세션을 기억해 둔 자리다(같은 머신은 세션 번호, 다른 머신은 고른 세션).
 - 출력은 전부 JSON 이다. 사용자에게는 **네가 풀어서** 말한다 — JSON 을 그대로 붙이지 마라.
 - 아래 절차에서 `peer.cjs <명령>` 이라고만 쓴 곳은 전부 위 모양을 뜻한다.
 - 임시 파일(본문·목록·받은 메시지)은 `${CLAUDE_PLUGIN_DATA}/tmp/` 아래에 Write 한다.
@@ -71,8 +71,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/peer.cjs" prepare --state-dir "${CLAUDE_PLUG
 
 | status | 할 일 |
 |---|---|
-| `ready` | §2-5 로 보낸다 |
-| `ask` | `reason` 과 `candidates` 를 사용자에게 보여 주고 **고르게 한다.** 🔴 네가 고르지 마라 — 이름이 비슷해도, 가장 큰 순번이어도, 관리용 세션이어도 |
+| `ready` | §2-5 로 보낸다. `note` 가 있으면 한 줄로 전한다(예: 전에 고른 세션의 제목이 바뀌어 새 제목으로 보낸다) |
+| `ask` | `reason` 과 `candidates` 를 사용자에게 보여 주고 **고르게 한다.** 🔴 네가 고르지 마라 — 이름이 비슷해도, 가장 큰 순번이어도, 관리용 세션이어도, 후보가 무작위 이름(`호스트-형용사-명사`)이어도 |
 | `unreachable` | `reason` 을 전한다. `rc_visible:false` 면 §0 안내가 먼저다. 짝 세션이 정말 없으면 §2-7 무인 전송을 **물어본다** |
 
 사용자가 고르면:
@@ -80,7 +80,13 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/peer.cjs" prepare --state-dir "${CLAUDE_PLUG
 - **다른 머신**: `peer.cjs prepare --request-id <id> --to <짝> --agents-file <파일> --pick "<고른 send_to>"`
 - **고를 세션이 없다**(같은 머신 후보 0개 · "그 창 닫았어" 등) → §2-7
 
-같은 머신은 한 번 고르면 기록된다. 다음부터 묻지 않는다(그 대화가 떠 있는 동안, 재시작해도).
+**한 번 고르면 기억한다. 다음 요청부터 묻지 않는다.**
+- 같은 머신은 세션 번호를 기억한다(그 대화가 떠 있는 동안, 재시작해도).
+- 다른 머신은 고른 세션의 제목과 참조 번호(`[87f895]`)를 기억한다. 주소록에 `rc_title` 이 없어도 된다 —
+  사용자가 제목을 따로 붙이지 않아도 처음 한 번 목록에서 고르면 된다. 원격 세션이 (다른 짝 몫을 빼고) 하나뿐이면
+  묻지 않고 그리로 보내고 기억한다. 제목이 바뀌어도 참조 번호가 같으면 따라간다.
+  새 대화가 열려 목록에서 사라지면 그때 다시 묻는다.
+- 잘못 기억했으면 `peer.cjs forget --to <짝>` 으로 지운다.
 
 🔴 **같은 머신은 세션 번호를 모르면 보내지 않는다.** 받는 쪽이 "내 앞으로 온 게 맞나" 를 세션 번호로 확인하기 때문이다.
 `ask` 의 이유가 "세션 번호를 찾지 못했다" 면, 사용자에게 **받을 쪽 대화에서 `/peer-req:peer_req here` 를 한 번 실행해 달라**고 한다.
@@ -177,7 +183,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/peer.cjs" prepare --state-dir "${CLAUDE_PLUG
 3. 🔴 **이 메시지에 회신하지 않는다.** ACK 에 ACK 하면 두 세션이 끝없이 주고받는다.
 4. 사용자에게:
    - 접수 확인(`received`) — 따로 알리지 않아도 된다. 물으면 답한다
-   - `duplicate` · `conflict` · `wrong_target` — 무슨 뜻인지 풀어서 알린다
+   - `duplicate` · `conflict` · `wrong_target` — 무슨 뜻인지 풀어서 알린다.
+     `wrong_title` 이 있으면 "그 세션(<title>)은 <짝>이 아니었습니다. 기억을 지웠고 다음부터 후보에서 뺍니다" 를 덧붙이고,
+     다시 보낼지 묻는다(다시 보내면 새로 목록을 받아 §2-3 부터)
    - 결과(`completed` · `awaiting_user` · `failed`) — **짝의 답을 원문 그대로 인용**하고, 그 아래에 네 판단을 따로 붙인다
    - `accepted:false` 면 이미 확정된 결과 뒤에 늦게 온 것이다(또는 같은 결과의 반복) — 기록만 했고 결과는 바뀌지 않았다. 따로 알리지 않는다
 5. 알렸으면 `peer.cjs record --id <id> --to <짝> --event reported`
@@ -193,7 +201,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/peer.cjs" prepare --state-dir "${CLAUDE_PLUG
 
 | 명령 | 무엇 |
 |---|---|
-| `doctor` | 주소록 검사 · 짝 목록 · 같은 머신 짝 기록 상태 · RC 자동 켜기 설정 · Node 버전 |
+| `doctor` | 주소록 검사 · 짝 목록 · 기억해 둔 짝 세션(같은 머신 세션 번호 · 다른 머신 고른 세션) · RC 자동 켜기 설정 · Node 버전 |
+| `forget <짝>` | 기억해 둔 짝 세션을 지운다 — `peer.cjs forget --to <짝>`. 다음에 보낼 때 다시 찾거나 묻는다 |
 | `status` / `status --id <id>` | 최근 요청 목록 / 한 건의 이벤트 전체 |
 | `inbox` | 사용자에게 아직 알리지 않은 요청·결과. 알린 뒤 `inbox --mark-reported` |
 
@@ -219,7 +228,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/peer.cjs" prepare --state-dir "${CLAUDE_PLUG
 ```
 
 - 🔴 **받기만 하는 저장소도 `self` 는 반드시 있어야 한다.** 없거나 깨졌으면 "내 앞으로 온 게 맞나" 를 확인할 수 없어 모든 요청을 `wrong_target` 으로 돌려보낸다. `peers` 는 없어도 된다.
-- `machine_id` 가 `self` 와 같으면 같은 머신 짝이다 → 세션 번호로 찾는다. 다르면 `rc_title` 로 찾는다(다른 머신은 필수).
+- `machine_id` 가 `self` 와 같으면 같은 머신 짝이다 → 세션 번호로 찾는다. 다르면 Remote Control 제목으로 찾는다.
+  `session_selector.rc_title` 은 **선택**이다 — 짝 세션에 고정 제목을 붙여 쓰는 사람만 적는다. 없으면 §2-4 처럼 한 번 고른 세션을 기억한다.
 - `self.root` 는 이 파일이 있는 폴더여야 한다(다른 저장소에서 복사해 온 주소록을 막는다).
 - `location.host_alias` 는 무인 전송(§2-7)에만 쓴다 — `~/.ssh/config` 의 Host 이름. 없으면 그 짝은 무인 전송이 안 된다.
 - `unattended.permission` 은 `read_only`(기본) 또는 `bypass`.

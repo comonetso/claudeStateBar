@@ -155,9 +155,14 @@ function validateBook(text, file) {
         errors.push(at + '.location.host_alias 는 ~/.ssh/config 의 Host 이름이어야 한다(영문·숫자·. _ @ -, 첫 글자 - 금지): ' + JSON.stringify(loc.host_alias));
       }
       const sameMachine = isObject(self) && p.machine_id === self.machine_id;
-      const sel = isObject(p.session_selector) ? p.session_selector : {};
-      if (!sameMachine && !(typeof sel.rc_title === 'string' && sel.rc_title.trim())) {
-        errors.push(at + ': 다른 머신 짝은 session_selector.rc_title 이 필요하다 (Remote Control 목록에서 찾을 제목)');
+      // rc_title 은 선택이다(D27) — 없으면 목록에서 한 번 고른 세션을 이 PC 가 기억한다. 적었다면 빈 값이면 안 된다.
+      if (p.session_selector !== undefined && !isObject(p.session_selector)) {
+        errors.push(at + '.session_selector 는 객체여야 한다');
+      } else if (isObject(p.session_selector)) {
+        const sel = p.session_selector;
+        if (sel.rc_title !== undefined && !(typeof sel.rc_title === 'string' && sel.rc_title.trim())) {
+          errors.push(at + '.session_selector.rc_title 은 비어 있지 않은 문자열이어야 한다 (Remote Control 목록에서 찾을 제목. 모르면 빼라 — 처음 보낼 때 목록에서 고르면 기억한다)');
+        }
       }
       if (sameMachine && util.isAbsolutePath(loc.root) && util.samePath(loc.root, self.root)) {
         errors.push(at + ': 같은 머신의 같은 root 다 — 자기 자신을 짝으로 적었다');
