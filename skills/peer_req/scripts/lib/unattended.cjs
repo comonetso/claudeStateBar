@@ -66,18 +66,43 @@ function permArgs(mode) {
   return mode === 'bypass' ? ['--dangerously-skip-permissions'] : ['--tools', 'Read,Grep,Glob'];
 }
 
+// 원격 셸·claude 가 JSON 뒤에 줄을 덧붙이는 일이 있다(2026-09-19 실측: 서버의 claude -p 가 도구를 쓴 답 뒤에
+// 한 줄을 더 냈다). 그래서 통째로 읽히지 않으면 JSON 부분만 골라 읽는다.
 function parseJsonOut(stdout) {
+  const s = String(stdout || '');
   try {
-    return JSON.parse(stdout);
+    return JSON.parse(s);
   } catch (e) {
-    return null;
+    // 아래로
   }
+  const lines = s.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const t = lines[i].trim();
+    if (t.charAt(0) !== '{') continue;
+    try {
+      return JSON.parse(t);
+    } catch (e) {
+      // 다음 줄
+    }
+  }
+  const a = s.indexOf('{');
+  const b = s.lastIndexOf('}');
+  if (a !== -1 && b > a) {
+    try {
+      return JSON.parse(s.slice(a, b + 1));
+    } catch (e) {
+      // 못 읽는다
+    }
+  }
+  return null;
 }
 
 function claudeResult(proc) {
   const j = parseJsonOut(proc.stdout || '');
   if (proc.error) return { ok: false, error: 'claude 를 실행하지 못했다: ' + (proc.error.code || proc.error.message) };
-  if (proc.status !== 0 || !j) return { ok: false, error: 'claude -p 실패 (exit ' + proc.status + '): ' + String(proc.stderr || proc.stdout || '').slice(0, 400) };
+  if (proc.status !== 0 || !j) {
+    return { ok: false, error: 'claude -p 실패 (exit ' + proc.status + ') · stdout: ' + String(proc.stdout || '').slice(0, 300) + ' · stderr: ' + String(proc.stderr || '').slice(-300) };
+  }
   if (j.is_error) return { ok: false, error: 'claude -p 가 오류로 끝났다: ' + String(j.result || j.subtype).slice(0, 400) };
   return { ok: true, text: String(j.result || '').trim() };
 }
@@ -137,13 +162,14 @@ function runLocal(o) {
 // 파일은 scp 로 올리고, 원격 명령은 인자로만 준다.
 // host 앞에 '--' 를 둬서 별칭이 옵션으로 읽히지 않게 한다(주소록 검증과 이중 방어 · 1차 리뷰 P1).
 
+// LogLevel=ERROR — 접속 경고문(예: post-quantum 안내)이 오류 메시지를 덮지 않게 한다
 function ssh(host, cmd) {
-  return util.runExe('ssh', ['-o', 'BatchMode=yes', '--', host, 'bash -lc ' + shq(cmd)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+  return util.runExe('ssh', ['-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR', '--', host, 'bash -lc ' + shq(cmd)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
 }
 
 // 로컬 경로는 파일 이름만 넘긴다(cwd 로 그 폴더에 서서). Windows 의 'C:\…' 를 scp 가 원격 호스트 'C' 로 읽지 않게 한다.
 function scpUp(host, local, remote) {
-  return util.runExe('scp', ['-q', '-o', 'BatchMode=yes', '--', path.basename(local), host + ':' + remote], { cwd: path.dirname(local), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  return util.runExe('scp', ['-q', '-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR', '--', path.basename(local), host + ':' + remote], { cwd: path.dirname(local), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 // 원격에서 **실제로 설치된** peer-req 의 스크립트 경로(installed_plugins.json). 캐시에 남은 옛 버전이나
@@ -282,4 +308,4 @@ function runUnattended(o) {
   return Object.assign({}, ing, { perm: perm, refresh: refresh, via: same ? 'unattended-local' : 'unattended-ssh:' + host });
 }
 
-module.exports = { runUnattended, BLOCKED };
+module.exports = { runUnattended, BLOCKED, parseJsonOut };

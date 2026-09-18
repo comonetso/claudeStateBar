@@ -528,6 +528,18 @@ test('리뷰 P2 --state-dir 인자로 상태 폴더를 받는다(PowerShell 에�
   assert.equal(fwd(d.state_dir), fwd(st));
 });
 
+// ───────────── 배포 후 실측에서 나온 것 ─────────────
+
+test('원격 claude -p 가 JSON 뒤에 줄을 덧붙여도 결과를 읽는다(2026-09-19 서버 실측)', () => {
+  const { parseJsonOut } = require('../scripts/lib/unattended.cjs');
+  const j = '{"result":"4455","is_error":false}';
+  assert.equal(parseJsonOut(j + '\n').result, '4455');
+  assert.equal(parseJsonOut(j + '\nlogout\n').result, '4455');
+  assert.equal(parseJsonOut('motd 안내\n' + j + '\n').result, '4455');
+  assert.equal(parseJsonOut(JSON.stringify({ ok: true, a: 1 }, null, 2) + '\n덧붙은 줄').ok, true); // 여러 줄 JSON + 잡음
+  assert.equal(parseJsonOut('JSON 이 아니다'), null);
+});
+
 // ───────────── 배포 규칙 ─────────────
 
 // 플러그인은 plugin.json 의 version 이 바뀔 때만 사용자에게 업데이트된다(공식 문서: 버전을 적어 두면
