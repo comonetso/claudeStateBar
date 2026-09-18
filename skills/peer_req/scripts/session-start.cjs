@@ -67,6 +67,9 @@ function pendingItems(root) {
 
 function main() {
   if (process.env.PEER_REQ_UNATTENDED === '1') return; // 무인 실행 — 답에 알림이 섞이면 안 된다
+  // 비대화형(claude -p·SDK) 세션 — 스크립트가 받는 답에 "로드됨" 이 섞였다(2026-09-19 서버 실측).
+  // 그 세션의 진입점은 sdk-cli 다(대화형 cli · VS Code claude-vscode).
+  if (/^sdk-/.test(process.env.CLAUDE_CODE_ENTRYPOINT || '')) return;
   const input = readStdin();
   const source = input.source || 'startup';
   if (source !== 'startup' && source !== 'resume') return; // /clear·compact 때는 조용히

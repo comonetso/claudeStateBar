@@ -540,6 +540,15 @@ test('원격 claude -p 가 JSON 뒤에 줄을 덧붙여도 결과를 읽는다(2
   assert.equal(parseJsonOut('JSON 이 아니다'), null);
 });
 
+test('비대화형(claude -p) 세션에서는 시작 훅이 아무것도 내지 않는다 — 스크립트 답에 섞이지 않게', () => {
+  const B = receiverRepo();
+  const hook = path.join(HERE, '..', 'scripts', 'session-start.cjs');
+  const run = (ep) => execFileSync(process.execPath, [hook], { input: JSON.stringify({ source: 'startup', cwd: B }), env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: ep, PEER_REQ_UNATTENDED: '' }, encoding: 'utf8' });
+  assert.equal(run('sdk-cli'), '');
+  assert.ok(run('cli').includes('systemMessage'));
+  assert.ok(run('claude-vscode').includes('systemMessage'));
+});
+
 // ───────────── 배포 규칙 ─────────────
 
 // 플러그인은 plugin.json 의 version 이 바뀔 때만 사용자에게 업데이트된다(공식 문서: 버전을 적어 두면
