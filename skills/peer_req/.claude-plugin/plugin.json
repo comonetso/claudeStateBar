@@ -1,6 +1,6 @@
 {
   "name": "peer-req",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Let your open Claude Code sessions ask and notify each other directly, on the same machine or across machines, over Remote Control. Every request is recorded with an ID, acknowledged, and deduplicated.",
   "author": { "name": "Blueming" },
   "repository": "https://github.com/comonetso/claudeStateBar",

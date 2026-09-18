@@ -9,6 +9,9 @@ INTERNAL-DEV-NOTES.md
 CLAUDE.md
 whats-next.md
 
+# peer_req address book for this repo: it names servers and their paths, so it stays local
+.peer_req.json
+
 # docs/ is private: session logs, codex_rescue run records and design notes carry server
 # names and local paths. They are versioned in a separate private repository whose git
 # directory is .git-docs (work tree = docs/, see tools/docs-git.sh), so no .git appears

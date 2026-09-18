@@ -99,7 +99,10 @@ function main() {
     bookProblem = b.errors[0];
   }
 
-  const parts = [ko ? 'peer_req 로드됨' : 'peer_req loaded'];
+  // 버전을 알림에 싣는다 — 자동 업데이트가 실제로 왔는지 화면에서 바로 보이게
+  const ver = util.readJson(path.join(__dirname, '..', '.claude-plugin', 'plugin.json'), {}).version;
+  const vtag = ver ? ' ' + ver : '';
+  const parts = [ko ? 'peer_req' + vtag + ' 로드됨' : 'peer_req' + vtag + ' loaded'];
   if (peersLine) parts.push(peersLine);
   if (items.length) parts.push(ko ? '알리지 않은 요청·결과 ' + items.length + '건' : items.length + ' unreported request(s)/result(s)');
   if (!rcOn) parts.push(ko ? '⚠️ Remote Control 자동 켜기 꺼짐' : '⚠️ Remote Control auto-connect is off');
