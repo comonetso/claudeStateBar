@@ -214,11 +214,6 @@ const EN: Dict = {
     'cx.trash.emptyAsk': 'Empty the trash — {0} run(s).\n\nRaw logs only, or the request/response documents as well?\n\nKeeping the documents leaves them in the trash on their own.',
     'cx.trash.emptyConfirm': 'Empty the trash?\n\n{0} run(s) will be deleted permanently.',
     'cx.trash.emptied': 'Emptied {0} run(s).',
-    // Settings panel — codex_rescue log retention
-    'cb.codexRunAutoCleanup.label': 'Auto-delete old Codex run logs on startup',
-    'cb.codexRunRetentionDays.label': 'Keep run logs for (days)',
-    'cb.codexRunDeleteDocs.label': 'Auto-delete also removes request/response documents',
-    'cb.codexRunDeleteDocs.hint': 'Applies to automatic cleanup only — manual deletion always asks. Off by default: the raw logs are disposable, but the documents are the record of what was asked and answered.',
     'cx.empty': 'No codex_rescue runs in this workspace yet.',
 
     // Codex chat panel (핑퐁). Separate surface from the progress panel above.
@@ -658,11 +653,6 @@ const KO: Dict = {
     'cx.trash.emptyAsk': '휴지통을 비웁니다 — {0}건.\n\n원시 기록만 지울까요, 요청서·응답 문서까지 함께 지울까요?\n\n문서를 남기면 그 문서만 휴지통에 남습니다.',
     'cx.trash.emptyConfirm': '휴지통을 비울까요?\n\n{0}건이 완전히 삭제됩니다.',
     'cx.trash.emptied': '{0}건을 비웠습니다.',
-    // 설정 패널 — codex_rescue 로그 보관
-    'cb.codexRunAutoCleanup.label': '시작할 때 오래된 Codex 실행 기록 자동 삭제',
-    'cb.codexRunRetentionDays.label': '실행 기록 보관 기간 (일)',
-    'cb.codexRunDeleteDocs.label': '자동 삭제 시 요청서·응답 문서도 함께 삭제',
-    'cb.codexRunDeleteDocs.hint': '자동 삭제에만 적용됩니다 — 수동 삭제는 매번 물어봅니다. 기본은 꺼짐입니다: 원시 기록은 지워도 되지만 문서는 무엇을 묻고 답했는지의 기록입니다.',
     'cx.empty': '이 워크스페이스에 아직 codex_rescue 실행 기록이 없습니다.',
 
     // Codex 채팅 패널 (핑퐁). 위 진행 상황 패널과는 별개의 화면이다.

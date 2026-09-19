@@ -348,9 +348,10 @@ export async function discoverChats(folderUri: vscode.Uri, limit = 50): Promise<
 // but keeping them apart means neither panel can ever surface or destroy the other's items —
 // and a CHAT document and a CONSULT run can legitimately carry the same stamp.
 //
-// There is deliberately NO automatic cleanup here. The progress panel auto-deletes old run
+// There is deliberately NO automatic cleanup here. The codex_rescue plugin deletes old run
 // logs because those are bulk telemetry; a conversation is the record itself, and age is no
-// reason to destroy it (user's call, same date).
+// reason to destroy it (user's call, same date). The plugin's cleanup never touches chat
+// documents or `.chat_trash/` either.
 // ---------------------------------------------------------------------------
 
 const TRASH_DIR = '.chat_trash';

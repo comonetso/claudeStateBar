@@ -467,18 +467,20 @@ partial, so check `status` in the document header.
 How much a run adds **varies a lot with what it did.** The measurements on record: one run came
 to 105 lines / 409 KB, other samples had event files of 394–750 KB, and in one 464 KB sample 86%
 was captured command output. Read those as **samples, not an average.**
-**Nothing is deleted automatically by default.**
+**Old records are cleaned up automatically** (1.16.7). Each time the skill runs, it removes from
+that project the app-server transcript of runs that finished successfully — the largest file a
+run writes, often several MB — and anything in `.log/` and `.scratch/` last touched more than
+`CR_KEEP_DAYS` days ago (default 7; `0` turns it off). Request/response documents, the trash and
+a run still holding its lock are never touched. It happens inside the skill, so it works without
+VS Code. To set `CR_KEEP_DAYS` for every session, put it in the `env` block of
+`~/.claude/settings.json`.
 
-With the claudeStateBar extension you have two options:
+With the claudeStateBar extension you can also delete by hand:
 
 - **Manual** — the 🗑 button on a run card. It takes the **whole run, documents included, to the
   trash** without asking; the 🗑 at the top of the panel is where you get it back. Only appears
   on finished runs. Whether the documents go too is decided **when you delete for good from the
   trash** — keep them and the run stays visible as a `documents only` card
-- **Automatic** — enable `claudeContextBar.codexRunAutoCleanup` and the extension cleans up once
-  per activation. Retention is `claudeContextBar.codexRunRetentionDays` (default 7) and whether
-  documents go too is `claudeContextBar.codexRunDeleteDocs` (default off). Live or still-locked
-  runs are never touched
 
 ---
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.16.7] - 2026-09-19
+
+The `codex_rescue` plugin now cleans up its own old records. Nothing did this unless you had turned
+on the extension's automatic cleanup, which was off by default and only ran while VS Code was open,
+so records piled up — one project on a server had reached 211 MB. Each time the skill runs, it now
+removes from that project the app-server transcript of runs that finished successfully (the largest
+file a run writes, often several MB, and read only when the run finishes) and anything in `.log/`
+and `.scratch/` last touched more than 7 days ago. Request/response documents, the trash and a run
+still holding its lock are left alone. `CR_KEEP_DAYS` changes the 7 days, and `0` turns cleanup
+off. The plugin version moves to 1.16.7.
+
+The same pass catches files nothing could remove before. Deleting a run from the panel before
+1.15.2 left its app-server transcript behind in `.log/`, and because the extension finds runs by
+their event file, those leftovers never showed up anywhere again.
+
+The extension's `codexRunAutoCleanup`, `codexRunRetentionDays` and `codexRunDeleteDocs` settings
+are removed, along with their rows in the settings panel, so cleanup lives in one place and does
+not depend on VS Code. The 🗑 button and the trash are unchanged.
+
 ## [1.16.6] - 2026-09-19
 
 The repository's plugin marketplace (`comonetso`) has a second plugin, `peer_req`. It lets open

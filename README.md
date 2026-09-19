@@ -271,9 +271,10 @@ only colliding numbers were replaced. A row that had been a **file change** in t
 The first run creates `docs/codex_rescue/` inside your project. The panel reads only this directory — no network calls.
 
 - `<stamp>_request_*.md` · `<stamp>_response_*.md` — what was asked and what Codex answered. **These are meant to be committed**; the next session picks up the thread from them
-- `.log/` — raw run records. Full command output lands here, so size varies a lot by run (a few hundred KB per run is typical); the skill drops its own `.gitignore` in this directory to **keep it out of git**
+- `.log/` — raw run records. Full command output lands here, so size varies a lot by run (a few hundred KB per run is typical, and a run that allows cutting in also keeps its full app-server transcript, often several MB); the skill drops its own `.gitignore` in this directory to **keep it out of git**
+- `.scratch/` — Codex's workbench: scripts, dumps and intermediate data it made while investigating. Responses often point at files here as evidence. Also kept out of git
 
-Logs are never deleted by default. Manage them with the 🗑 button on a card (it takes the whole run, documents included, straight to the trash) or by enabling automatic cleanup — see [settings](#codex-run-logs-codex_rescue).
+The plugin cleans up after itself. Each time codex_rescue runs, it removes from that project the app-server transcript of runs that finished successfully, and anything in `.log/` and `.scratch/` last touched more than 7 days ago. The request/response documents, the trash, and a run that is still running are never touched. Set `CR_KEEP_DAYS` to change the 7 days, or `0` to turn cleanup off; to apply it to every session, put it in the `env` block of `~/.claude/settings.json`. This happens in the plugin, not the extension, so it works the same without VS Code. For anything sooner, the 🗑 button on a card takes the whole run, documents included, straight to the trash.
 
 ### Trash
 
@@ -283,7 +284,7 @@ The choice comes at the far end. **Delete for good** asks whether to take the ra
 
 Three more things worth knowing:
 
-- **Automatic cleanup skips the trash entirely.** It exists to reclaim disk, and a trash filling as fast as cleanup empties would defeat that.
+- **The plugin's cleanup never touches the trash.** It exists to reclaim disk, and a trash filling as fast as cleanup empties would defeat that.
 - **Restoring never overwrites.** codex_rescue re-runs a dead request under the same stamp, so a name a trashed file wants can belong to newer work. Those files stay in the trash and are reported.
 - **A run still holding its lock is refused** — `send.sh` may be mid-write, and moving a file out from under it would corrupt the record rather than preserve it.
 
@@ -540,19 +541,15 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 
 ### Codex run logs (codex_rescue)
 
-Run logs hold the full output of everything Codex ran, so a few hundred KB per run is typical.
-They are never deleted unless you opt in.
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `claudeContextBar.codexRunAutoCleanup` | `false` | Delete old run logs once per activation. Off by default because it deletes files. Runs that are still live, or still holding a lock, are never touched. |
-| `claudeContextBar.codexRunRetentionDays` | `7` | How many days to keep, when auto-cleanup is on |
-| `claudeContextBar.codexRunDeleteDocs` | `false` | Whether **automatic** cleanup also deletes the request/response/review `.md` documents. Off by default: those are the record of what was asked and answered, and are normally committed. Manual deletion ignores this — it always takes the documents, but only as far as the trash. |
+There are no extension settings for these any more. Since 1.16.7 the codex_rescue plugin
+removes old records itself each time it runs (see [What it creates in your project](#what-it-creates-in-your-project)),
+and its retention period is the `CR_KEEP_DAYS` environment variable — default 7 days, `0` turns
+it off. The `codexRunAutoCleanup`, `codexRunRetentionDays` and `codexRunDeleteDocs` settings were
+removed; if you had set them, VS Code will show them as unknown and they can be deleted.
 
 Deleting a run from the panel (🗑) takes the whole run — documents included — to the trash
 without asking, and the button only appears on finished runs. The prompts sit at the
-irreversible end instead: purging one run, or emptying the trash. Automatic cleanup is the
-only path that deletes outright, and that is what the setting above governs.
+irreversible end instead: purging one run, or emptying the trash.
 
 All other settings — thresholds, sounds, `compactMode`, `idleTimeout`, `hideAfter`, `scope` — are shared by Claude and Codex.
 

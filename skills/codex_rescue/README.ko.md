@@ -63,6 +63,8 @@ Codex CLI가 설치돼 있고 로그인돼 있어야 합니다.
 
 핑퐁만 프로젝트 루트 기준이고 나머지는 현재 폴더 기준입니다.
 
+지난 기록은 알아서 정리됩니다. 스킬이 실행될 때마다 그 프로젝트에서, 성공으로 끝난 실행의 app-server 통신 원문(한 건에 몇 MB가 되기도 합니다)과, `.log/`·`.scratch/`에서 마지막 수정이 7일보다 오래된 것을 지웁니다. 요청서·응답 문서, 휴지통, 아직 도는 실행은 건드리지 않습니다. 7일을 바꾸려면 `CR_KEEP_DAYS`를, 끄려면 `0`을 주면 됩니다. 모든 세션에 적용하려면 `~/.claude/settings.json`의 `env` 항목에 넣으세요.
+
 ## 설치
 
 Claude Code 플러그인으로 설치하십시오. Claude Code 안에서 `/plugin marketplace add comonetso/claudeStateBar` 를 실행한 뒤 `/plugin install codex-rescue@comonetso` 를 실행하고 Claude Code를 다시 열면 됩니다. 업데이트는 `claude plugin update codex-rescue@comonetso` 로 받거나, `comonetso` 마켓의 자동 업데이트를 켜 두면 저절로 받습니다(Anthropic 공식 마켓이 아니면 기본으로 꺼져 있습니다. [설치 가이드](https://github.com/comonetso/claudeStateBar/blob/main/docs/codex-rescue-guide.ko.md#0-설치) 참고).

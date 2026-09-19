@@ -21,7 +21,7 @@ import { createOrShowWorkflowPanel, pushWorkflows, pushWorkflowTrash, getTracked
 import { createOrShowCodexPanel, pushRuns, pushTrash, pushCodexLanguage, isCodexPanelOpen, CodexRunView, CodexTrashView } from './codexRescuePanel';
 import { createOrShowChatPanel, pushChats, pushChatTrash, pushChatLanguage, isChatPanelOpen, CodexChatView, ChatTrashView } from './codexChatPanel';
 import { discoverChats, trashChat, listChatTrash, restoreChat, purgeChat, emptyChatTrash } from './providers/codexRescue/chatDiscovery';
-import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runCacheKey, deleteRun, cleanupOldRuns, CleanupResult, RunPhase,
+import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runCacheKey, RunPhase,
          trashRun, listTrash, restoreTrashed, purgeTrashed, emptyTrash } from './providers/codexRescue/runDiscovery';
 import { getDict, Lang } from './i18n';
 import { readTextFile } from './core/fs';
@@ -966,28 +966,8 @@ export function activate(context: vscode.ExtensionContext) {
         }, 2000);
     }
 
-    // codex_rescue log retention. Runs once per activation — VS Code gets restarted often
-    // enough that a timer would add nothing but a way to delete files unexpectedly mid-session.
-    // Off by default; only finished, unlocked runs past the retention window are removed.
-    setTimeout(async () => {
-        const cfg = vscode.workspace.getConfiguration('claudeContextBar');
-        if (!cfg.get<boolean>('codexRunAutoCleanup', false)) return;
-        const opts = {
-            retentionDays: cfg.get<number>('codexRunRetentionDays', 7),
-            deleteDocs: cfg.get<boolean>('codexRunDeleteDocs', false),
-        };
-        for (const f of vscode.workspace.workspaceFolders || []) {
-            try {
-                const r = await cleanupOldRuns(f.uri, opts, Date.now());
-                if (r.removedRuns) {
-                    log(`[codex-rescue] auto-cleanup: ${r.removedRuns} run(s), ${r.removedFiles} file(s), `
-                        + `${Math.round(r.freedBytes / 1024)}KB freed (older than ${opts.retentionDays}d, docs=${opts.deleteDocs})`);
-                }
-            } catch (e) {
-                log(`[codex-rescue] auto-cleanup error: ${e}`);
-            }
-        }
-    }, 4000);
+    // Old codex_rescue run logs are cleaned up by the plugin itself each time it runs
+    // (scripts/cleanup-logs.mjs, since 1.16.7), so nothing here depends on VS Code being open.
 
     // Listen for configuration changes and refresh immediately
     const configWatcher = vscode.workspace.onDidChangeConfiguration(e => {

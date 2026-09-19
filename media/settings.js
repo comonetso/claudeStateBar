@@ -82,10 +82,6 @@
         $('cb-codexEnabled').checked = cb.codexEnabled !== false;
         $('cb-codexHome').value = cb.codexHome || '';
         $('cb-codexScanDays').value = cb.codexScanDays ?? 3;
-        $('cb-codexRunAutoCleanup').checked = !!cb.codexRunAutoCleanup;
-        $('cb-codexRunRetentionDays').value = cb.codexRunRetentionDays ?? 7;
-        $('cb-codexRunDeleteDocs').checked = !!cb.codexRunDeleteDocs;
-        syncCodexRetentionRow();
         $('sound-warning').value = cb.soundWarning || '';
         $('sound-danger').value = cb.soundDanger || '';
         $('sound-completion').value = cb.soundCompletion || '';
@@ -102,19 +98,7 @@
         $('cb-stuckToolUseThresholdSec').value = cb.stuckToolUseThresholdSec ?? 90;
     }
 
-    // Retention controls only make sense while auto-cleanup is on. Leaving a live-looking
-    // "7 days" field visible when nothing deletes reads as if cleanup were already running.
-    function syncCodexRetentionRow() {
-        const box = $('cb-codexRunAutoCleanup');
-        const row = $('codexRetentionRow');
-        if (row) row.style.display = (box && box.checked) ? '' : 'none';
-    }
-
     // --- Outgoing actions ---
-
-    if ($('cb-codexRunAutoCleanup')) {
-        $('cb-codexRunAutoCleanup').addEventListener('change', syncCodexRetentionRow);
-    }
 
     $('language').addEventListener('change', () => {
         const lang = $('language').value === 'ko' ? 'ko' : 'en';
@@ -155,9 +139,6 @@
                 codexEnabled: $('cb-codexEnabled').checked,
                 codexHome: $('cb-codexHome').value.trim(),
                 codexScanDays: parseInt($('cb-codexScanDays').value, 10) || 3,
-                codexRunAutoCleanup: $('cb-codexRunAutoCleanup').checked,
-                codexRunRetentionDays: parseInt($('cb-codexRunRetentionDays').value, 10) || 7,
-                codexRunDeleteDocs: $('cb-codexRunDeleteDocs').checked,
                 soundWarning: $('sound-warning').value.trim(),
                 soundDanger: $('sound-danger').value.trim(),
                 soundCompletion: $('sound-completion').value.trim(),

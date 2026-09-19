@@ -325,23 +325,12 @@ async function listNames(dir: vscode.Uri): Promise<string[] | null> {
     }
 }
 
-export interface DiscoverOptions {
-    /**
-     * Skip transferring `events.jsonl` bodies. Cleanup only needs each run's phase and
-     * timestamps, and a legacy run (no status sidecar) is *always* terminal regardless of
-     * what the stream says, so the verdict cleanup acts on is unchanged — but scanning
-     * every run ever recorded without this would drag megabytes across SSH.
-     */
-    skipEventBodies?: boolean;
-}
-
 /**
  * Scan one workspace folder for codex_rescue runs, newest first.
  * Returns [] when the project doesn't use the skill — which is how the whole feature
  * stays invisible to ordinary users of this extension.
  */
-export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit = 20,
-                                   opts: DiscoverOptions = {}): Promise<CodexRun[]> {
+export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit = 20): Promise<CodexRun[]> {
     const docsDir = await codexRescueDocsDir(folderUri);
     if (!docsDir) return [];
     const logDir = vscode.Uri.joinPath(docsDir, '.log');
@@ -443,7 +432,7 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
             heartbeatMs = st?.mtime;
         }
 
-        const events = (opts.skipEventBodies || !eventsStat)
+        const events = !eventsStat
             ? (tails.get(cacheKey)?.state ?? createRunState())
             : await tailEvents(eventsUri, eventsStat.size, nowMs);
 
@@ -513,10 +502,9 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
             turnDocs,
         };
 
-        // Freeze finished runs so the next poll costs nothing. Only when the bodies were
-        // actually read — a cleanup scan must never poison the cache with empty streams —
-        // and only with a snapshot to check it against, since a stamp can be re-run.
-        if (!opts.skipEventBodies && isTerminalPhase(phase) && eventsStat) {
+        // Freeze finished runs so the next poll costs nothing — only with a snapshot to check
+        // it against, since a stamp can be re-run.
+        if (isTerminalPhase(phase) && eventsStat) {
             settled.set(cacheKey, { run, size: eventsStat.size, mtime: eventsStat.mtime });
         }
 
@@ -546,35 +534,24 @@ export function isTerminalPhase(p: RunPhase): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup
+// What a run owns on disk
 //
-// Two rules govern everything below, because this deletes files:
-//   1. A run that is not in a terminal phase is NEVER touched, and neither is one whose
-//      lock file still exists — the lock is send.sh's "I am running" marker.
+// Two rules govern everything below, because it moves and deletes files:
+//   1. A run whose lock file still exists is NEVER touched — the lock is send.sh's
+//      "I am running" marker.
 //   2. The raw logs under .log/ are disposable; the request/response/review .md documents
-//      are the actual record of what was asked and answered, so they are only removed when
-//      the user explicitly opts in.
+//      are the actual record of what was asked and answered, so they only go when the user
+//      explicitly includes them.
+//
+// Age-based cleanup is not here. Since 1.16.7 the codex_rescue plugin does it itself every time
+// it runs (scripts/cleanup-logs.mjs), so it works without VS Code; the extension's
+// codexRunAutoCleanup setting went away with it.
 // ---------------------------------------------------------------------------
-
-export interface CleanupOptions {
-    /** Delete runs older than this. 0 or less disables age-based cleanup entirely. */
-    retentionDays: number;
-    /** Also delete the request/response/review .md documents. */
-    deleteDocs: boolean;
-}
-
-export interface CleanupResult {
-    removedRuns: number;
-    removedFiles: number;
-    freedBytes: number;
-    /** Stamps skipped because the run was still live or locked. */
-    skippedLive: number;
-}
 
 /**
  * Escape a string for literal use inside a `RegExp`.
  *
- * `deleteRun`/`trashRun` receive the slug from their caller. send.sh only ever mints
+ * `trashRun` receives the slug from its caller. send.sh only ever mints
  * `[a-z0-9-]` slugs, but the panel also recovers slugs by parsing filenames off disk, so the
  * value is not guaranteed to have come from send.sh. An unescaped `.` or `*` in one would
  * silently widen the pattern and let a run's cleanup reach another run's files.
@@ -620,7 +597,7 @@ async function followupExtras(docsDir: vscode.Uri, logDir: vscode.Uri, stamp: st
 
 /**
  * Every fixed-name log a run can leave in `.log/`, plus the per-turn ones found by scan.
- * `deleteRun` and `trashRun` share this so the two can never disagree about what a run owns.
+ * `trashRun` moves exactly this list, so it is the one place that says what a run owns.
  *
  * `_appserver.jsonl` and `_steers.jsonl` come from the steering route (the app-server bridge):
  * the raw RPC transcript — the largest file a run writes, 0.3–3 MB in measured runs — and the
@@ -632,81 +609,6 @@ function runLogNames(stamp: string, perTurn: string[]): string[] {
             `${stamp}_appserver.jsonl`, `${stamp}_steers.jsonl`, ...perTurn];
 }
 
-async function unlinkCounting(uri: vscode.Uri, res: CleanupResult): Promise<void> {
-    const st = await statOf(uri);
-    if (!st) return;
-    try {
-        await vscode.workspace.fs.delete(uri, { useTrash: false });
-        res.removedFiles++;
-        res.freedBytes += st.size;
-    } catch {
-        /* already gone, locked by AV, or permission — never fatal */
-    }
-}
-
-/**
- * Delete one run's files. Returns false without touching anything when the run still holds
- * a lock (i.e. send.sh may still be writing).
- */
-export async function deleteRun(folderUri: vscode.Uri, stamp: string, slug: string, deleteDocs: boolean,
-                                res: CleanupResult): Promise<boolean> {
-    if (!/^\d{6}_\d{6}$/.test(stamp)) return false;   // never accept a stamp we didn't parse ourselves
-    const docsDir = await codexRescueDocsDir(folderUri);
-    if (!docsDir) return false;
-    const logDir = vscode.Uri.joinPath(docsDir, '.log');
-
-    // The lock is send.sh's liveness marker; its presence means a run may be mid-write.
-    if (await statOf(vscode.Uri.joinPath(logDir, `.${stamp}.lock`))) { res.skippedLive++; return false; }
-
-    // Per-turn logs are logs, not records, so they go regardless of `deleteDocs` — same rule
-    // as the fixed list they extend.
-    const extras = await followupExtras(docsDir, logDir, stamp, slug, deleteDocs);
-
-    for (const name of runLogNames(stamp, extras.logs)) {
-        await unlinkCounting(vscode.Uri.joinPath(logDir, name), res);
-    }
-
-    if (deleteDocs && slug && slug !== '(unknown)') {
-        for (const kind of ['request', 'response', 'review']) {
-            await unlinkCounting(vscode.Uri.joinPath(docsDir, `${stamp}_${kind}_${slug}.md`), res);
-        }
-        // Rebuttal documents are documents: same explicit opt-in as the request/response pair.
-        for (const name of extras.docs) {
-            await unlinkCounting(vscode.Uri.joinPath(docsDir, name), res);
-        }
-    }
-
-    const key = runCacheKey(logDir, stamp);
-    tails.delete(key);
-    settled.delete(key);
-    res.removedRuns++;
-    return true;
-}
-
-/**
- * Remove finished runs older than `retentionDays`. Live, locked and too-recent runs are left
- * alone. Returns what was actually removed so the caller can log or report it.
- */
-export async function cleanupOldRuns(folderUri: vscode.Uri, opts: CleanupOptions, nowMs: number)
-    : Promise<CleanupResult> {
-    const res: CleanupResult = { removedRuns: 0, removedFiles: 0, freedBytes: 0, skippedLive: 0 };
-    if (!opts.retentionDays || opts.retentionDays <= 0) return res;
-    if (!await codexRescueDocsDir(folderUri)) return res;
-
-    const cutoff = nowMs - opts.retentionDays * 24 * 60 * 60 * 1000;
-    // Scan without a display cap — cleanup must reach runs far past the panel's limit, which
-    // is exactly where the accumulation everyone worries about lives — but without the event
-    // bodies, which is what keeps that unbounded scan cheap on a remote workspace.
-    const runs = await discoverRuns(folderUri, nowMs, Number.MAX_SAFE_INTEGER, { skipEventBodies: true });
-    for (const run of runs) {
-        if (!isTerminalPhase(run.phase)) { res.skippedLive++; continue; }
-        const when = run.endedAtMs ?? run.startedAtMs;
-        if (when === undefined || when > cutoff) continue;
-        await deleteRun(folderUri, run.stamp, run.slug, opts.deleteDocs, res);
-    }
-    return res;
-}
-
 // ---------------------------------------------------------------------------
 // Trash
 //
@@ -715,8 +617,9 @@ export async function cleanupOldRuns(folderUri: vscode.Uri, opts: CleanupOptions
 // documents are only recoverable through git once they have actually been committed. A misclick
 // on the 🗑 used to be final for both.
 //
-// Automatic cleanup deliberately does NOT come through here — it exists to reclaim disk, and a
-// trash that fills up as fast as cleanup empties the log directory would defeat its own purpose.
+// The plugin's age-based cleanup deliberately does NOT come through here and never looks inside
+// the trash — it exists to reclaim disk, and a trash that fills up as fast as cleanup empties the
+// log directory would defeat its own purpose.
 //
 // Files are moved with fs.rename within the same directory tree, so this stays cheap on a remote
 // workspace: nothing is read into the extension host, only renamed on the far side.
@@ -792,8 +695,7 @@ async function readTrashMeta(dir: vscode.Uri): Promise<TrashMeta | null> {
 }
 
 /**
- * Move one run's files into the trash. Same liveness rule as `deleteRun`: a run still holding
- * its lock is left alone, because send.sh may be mid-write and moving a file out from under it
+ * Move one run's files into the trash. A run still holding its lock is left alone, because send.sh may be mid-write and moving a file out from under it
  * would corrupt the record rather than preserve it.
  *
  * Returns false when nothing was moved (still locked, or no files found).
@@ -824,7 +726,7 @@ export async function trashRun(folderUri: vscode.Uri, stamp: string, slug: strin
         } catch { /* locked by AV or permission — skip, never fatal */ }
     };
 
-    // Same split as `deleteRun`: per-turn logs always, rebuttal documents only on opt-in.
+    // Per-turn logs always, rebuttal documents only on opt-in.
     // `restoreTrashed` replays `meta.entries` verbatim, so recording the origin here is all
     // that restore needs — both kinds come back on their own.
     const extras = await followupExtras(docsDir, logDir, stamp, slug, includeDocs);

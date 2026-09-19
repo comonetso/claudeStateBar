@@ -63,6 +63,8 @@ Under `docs/codex_rescue/`, paired by timestamp and slug. The directory is creat
 
 The short back-and-forth mode anchors to the project root; everything else is relative to the current directory.
 
+Old records clean themselves up. Each time the skill runs, it removes from that project the app-server transcript of runs that finished successfully (often several MB each) and anything in `.log/` and `.scratch/` last touched more than 7 days ago. Request/response documents, the trash and a run that is still going are never touched. Set `CR_KEEP_DAYS` to change the 7 days, or `0` to turn cleanup off — for every session, put it in the `env` block of `~/.claude/settings.json`.
+
 ## Installing
 
 Install it as a Claude Code plugin. Inside Claude Code, run `/plugin marketplace add comonetso/claudeStateBar`, then `/plugin install codex-rescue@comonetso`, and reopen Claude Code. Plugin updates come through `claude plugin update codex-rescue@comonetso`, or automatically once you turn on auto-update for the `comonetso` marketplace (off by default for marketplaces outside Anthropic's own; see the [installation guide](https://github.com/comonetso/claudeStateBar/blob/main/docs/codex-rescue-guide.md#0-installation)).

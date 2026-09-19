@@ -45,6 +45,8 @@
 #                           CONSULT 단발로는 3회 물어도 결론이 안 났다
 #   CR_CHAT_LIMIT=<초>    CHAT 시간 상한 (기본 60). --explore 를 쓰면 **명시 필수**
 #   CR_CHAT_LOOK_MAX=<바이트>  CHAT --look 총 크기 상한 (기본 65536)
+#   CR_KEEP_DAYS=<일>     지난 기록 보존 기간 (기본 7, 0 이면 정리하지 않는다). 발동할 때마다
+#                         scripts/cleanup-logs.mjs 로 정리한다 (2026-09-19)
 #
 #   ⛔ CR_TIMEOUT 은 제거됐다 — Windows 에서 작동하지 않는다(실측). 쓰면 거부한다
 #
@@ -84,6 +86,22 @@ winp() {
   else
     printf '%s' "$1"
   fi
+}
+
+# ── 🧹 지난 기록 정리 (2026-09-19 사용자 결정) ──────────────────
+# 발동할 때마다 이 프로젝트의 지난 기록을 정리한다. 무엇을 지우고 무엇을 두는지는
+# scripts/cleanup-logs.mjs 머리말에 있다. 예전엔 VS Code 확장의 자동 정리(기본 꺼짐)뿐이라
+# 서버 한 프로젝트에 211MB 가 쌓였다. 부가 기능이라 실패해도 실행은 계속한다.
+# 🔴 부르는 자리는 두 조건을 지킨다 —
+#    ① 잠금과 trap 을 건 **뒤**: 이번 실행의 스탬프가 잠금으로 빠지고, 도중에 끊겨도 잠금이 풀린다
+#    ② 변경 감시 스냅샷(BEFORE)보다 **앞**: 뒤에 돌면 정리가 지운 `.scratch/` 항목이
+#       "Codex 가 지운 파일"로 보고된다
+cr_cleanup() {   # $1=docs/codex_rescue 경로  $2=건너뛸 스탬프(없으면 생략)
+  [ -n "${CR_DRYRUN:-}" ] && return 0
+  command -v node >/dev/null 2>&1 || return 0
+  local js="$SELF_DIR/scripts/cleanup-logs.mjs"
+  [ -f "$js" ] || return 0
+  node "$(winp "$js")" --dir "$(winp "$1")" --keep-days "${CR_KEEP_DAYS:-7}" ${2:+--skip-stamp "$2"} >&2 || true
 }
 
 # ── frontmatter 헬퍼 (2026-08-25, FOLLOWUP 신설과 함께) ─────────
@@ -402,6 +420,7 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
   ch_cleanup() { rm -rf -- "${CH_TMP:-}" 2>/dev/null; ch_unlock; return 0; }
   trap ch_cleanup EXIT
   trap 'ch_cleanup; echo "codex_rescue: 중단됨(신호 수신)" >&2; exit 130' HUP INT TERM
+  cr_cleanup "$CH_DOCS"   # CHAT 은 `.log/` 에 스탬프 파일을 안 쓴다 — 건너뛸 스탬프가 없다
 
   # 문서의 thread_id 를 비우고 끊긴 사유를 남긴다. 실제로 비워졌을 때만 0 을 돌려준다 —
   # 실패를 성공으로 보고하면 다음 턴이 어긋난 세션을 조용히 재개한다.
@@ -1375,6 +1394,7 @@ trap cleanup EXIT
 # hard kill(작업관리자 등)은 여기 못 오므로 그건 heartbeat stale 이 담당한다.
 trap '[ -n "${STATUS:-}" ] && write_status interrupted "\"$(date -u "+%Y-%m-%dT%H:%M:%SZ")\"" 2>/dev/null
       cleanup; echo "codex_rescue: 중단됨(신호 수신)" >&2; exit 130' HUP INT TERM
+cr_cleanup "docs/codex_rescue" "$STAMP"   # 잠금·trap 뒤, 스냅샷 앞 — cr_cleanup 주석 참조
 EVENTS="$RUN_DIR/events.jsonl"
 ERRLOG="$RUN_DIR/stderr.log"
 LASTMSG="$RUN_DIR/last_message.md"
