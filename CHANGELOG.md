@@ -24,6 +24,15 @@ project is alive (a heartbeat within the last 30 seconds, the Codex panel's own 
 threshold, or an open ping-pong lock). `.scratch/` is shared between runs, so the older files a live
 run was still using could be deleted from under it. The plugin version moves to 1.16.8.
 
+The question codex_rescue asks before each run now recommends a model and reasoning effort instead of
+offering the current setting first. Claude judges how hard the task is, picks the combination whose
+Codex description fits, and lowers it a step (or narrows the investigation) when that combination has
+used more in a single run than the limits allow: what is left of the 5-hour window on plans that have
+one, and the weekly headroom divided by the days until reset. Which of these applies is decided by the
+limits the account actually has rather than the plan's name. The lookup script now counts past usage
+per turn and per combination, shows the task name, duration and tool calls of recent runs, and prints
+Codex's own descriptions of each model and effort level.
+
 ## [1.16.7] - 2026-09-19
 
 The `codex_rescue` plugin now cleans up its own old records. Nothing did this unless you had turned

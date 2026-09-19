@@ -181,20 +181,36 @@ and ended at 96%. Start one when half the window is already gone and it gets cut
 
 The lookup is `scripts/codex-status.mjs`. It never calls a model, so it costs no tokens, and it takes
 a few seconds. It reports the current model and reasoning effort, the 5-hour and weekly limits, the
-models you can pick, and how much a single run used over the last three weeks.
+models and effort levels you can pick (with the descriptions Codex gives them), and how much a single
+run used over the last three weeks, broken down by model and effort. For the last few runs it also
+shows what the task was, how long it took and how many tool calls it made.
+
+Claude uses this to pick a **recommended combination** (2026-09-19). It first judges how hard the task
+is and picks the model and effort whose Codex description fits, then checks the most that combination
+has used in a single run before. If that is over the line below, it recommends one step lower or a
+narrower investigation. The line depends on which limits apply, not on the plan's name.
+
+- Plans with both a 5-hour and a weekly limit: what is left of the 5-hour window, and the weekly daily
+  share (weekly headroom ÷ days until reset). Going over either one lowers the recommendation
+- Plans with only a weekly limit: the weekly daily share
+- Limits could not be read, or there are none: the recommendation goes by difficulty alone
+
+Past runs count only if they were on the same plan.
 
 ```
-Codex: <model> / effort <level>
-Estimate: 48% of the 5-hour window left; past runs used up to 50% at once. My read: a heavy one.
-1. Go ahead
-2. Narrow the investigation
-3. Change model
-4. Change reasoning effort
+Codex recommends: gpt-5.6-sol / medium   (current setting: gpt-6-astra / high)
+Difficulty: moderate — three files to look at, no server lookups (my read)
+Limits: weekly daily share 13.7% (65% left ÷ 4.8 days) · this combination used at most +2% per run
+1. Go with the recommendation (sol/medium)
+2. Keep the current setting (astra/high)
+3. Narrow the investigation (sol/medium)
+4. Pick the model and effort yourself
 5. Cancel
 ```
 
 Consultations, fixes, reviews and follow-ups ask every time; ping-pong asks once, when the
-conversation starts. With no answer, nothing runs. Say "your call" or "as is" and it goes ahead.
+conversation starts. With no answer, nothing runs. Say "your call" to take the recommendation, or
+"as is" to keep the current setting.
 
 **The script enforces this** (2026-09-16). A run once went out without the question, so `send.sh`
 now refuses to start without the mark that an answer was received (`CR_CONFIRMED=1`) — the same

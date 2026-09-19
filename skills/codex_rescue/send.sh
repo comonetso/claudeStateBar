@@ -62,8 +62,8 @@ confirm_gate() {
   [ "${CR_CONFIRMED:-}" = 1 ] && return 0
   die "실행 전 확인을 안 했다 — CR_CONFIRMED=1 이 없어 멈춘다.
   1. node $SELF_DIR/scripts/codex-status.mjs --cwd <프로젝트 루트>
-  2. 모델·추론 수준·예상 소모를 사용자에게 텍스트로 묻는다 (SKILL.md § 절차 2-1 질문 틀 그대로)
-  3. 답을 받은 뒤에만 CR_CONFIRMED=1 을 붙여 다시 실행한다 (모델·수준을 바꿨으면 CR_MODEL·CR_EFFORT 도)
+  2. 난이도와 한도를 함께 따진 권장 조합을 사용자에게 텍스트로 묻는다 (SKILL.md § 절차 2-1 질문 틀 그대로)
+  3. 답을 받은 뒤에만 CR_CONFIRMED=1 을 붙여 다시 실행한다 (현재 설정과 다른 조합을 골랐으면 CR_MODEL·CR_EFFORT 도)
   🔴 답을 받지 않고 이 값을 붙이지 마라. 답이 없거나 애매하면 다시 묻는다."
 }
 
