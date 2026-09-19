@@ -471,7 +471,7 @@ was captured command output. Read those as **samples, not an average.**
 that project the app-server transcript of runs that finished successfully — the largest file a
 run writes, often several MB — and anything in `.log/` and `.scratch/` last touched more than
 `CR_KEEP_DAYS` days ago (default 7; `0` turns it off). Request/response documents, the trash and
-a run still holding its lock are never touched. It happens inside the skill, so it works without
+a run still holding its lock are never touched. `.scratch/` is skipped altogether while another run in the same project is still going, since runs share it. It happens inside the skill, so it works without
 VS Code. To set `CR_KEEP_DAYS` for every session, put it in the `env` block of
 `~/.claude/settings.json`.
 

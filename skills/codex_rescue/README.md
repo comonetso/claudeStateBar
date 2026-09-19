@@ -63,7 +63,7 @@ Under `docs/codex_rescue/`, paired by timestamp and slug. The directory is creat
 
 The short back-and-forth mode anchors to the project root; everything else is relative to the current directory.
 
-Old records clean themselves up. Each time the skill runs, it removes from that project the app-server transcript of runs that finished successfully (often several MB each) and anything in `.log/` and `.scratch/` last touched more than 7 days ago. Request/response documents, the trash and a run that is still going are never touched. Set `CR_KEEP_DAYS` to change the 7 days, or `0` to turn cleanup off — for every session, put it in the `env` block of `~/.claude/settings.json`.
+Old records clean themselves up. Each time the skill runs, it removes from that project the app-server transcript of runs that finished successfully (often several MB each) and anything in `.log/` and `.scratch/` last touched more than 7 days ago. Request/response documents, the trash and a run that is still going are never touched. `.scratch/` is skipped altogether while another run in the same project is still going, since runs share it. Set `CR_KEEP_DAYS` to change the 7 days, or `0` to turn cleanup off — for every session, put it in the `env` block of `~/.claude/settings.json`.
 
 ## Installing
 

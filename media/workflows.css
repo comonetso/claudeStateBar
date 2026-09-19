@@ -1,0 +1,191 @@
+  body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 16px; }
+  .toolbar { display:flex; align-items:center; gap:6px; justify-content:flex-end; margin-bottom:10px; }
+  .flabel { color: var(--vscode-descriptionForeground); font-size:.8em; margin-right:2px; }
+  .fbtn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; padding:2px 11px; cursor:pointer; font-size:1em; line-height:1.4; }
+  .fbtn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+  h1 { font-size:1.2em; margin:0 0 4px 0; }
+  .wspath { color: var(--vscode-descriptionForeground); font-size:.8em; margin:0 0 2px 0; opacity:.75;
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sub { color: var(--vscode-descriptionForeground); font-size:.85em; margin-bottom:16px; }
+
+  .run { border:1px solid var(--vscode-panel-border); border-radius:6px; padding:10px 14px; margin-bottom:12px; }
+  .run-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+  .arrow { flex-shrink:0; width:12px; color: var(--vscode-descriptionForeground); transition: transform .12s; }
+  .run.collapsed .arrow { transform: rotate(-90deg); }
+  .run-name { font-weight:600; font-size:1.05em; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mode-chip { font-size:.72em; padding:1px 7px; border-radius:4px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); flex-shrink:0; letter-spacing:.3px; }
+  /* A card with no run behind it. Outlined rather than filled, so it reads as "less than a
+     normal card" instead of competing with the mode chip beside it. */
+  .mode-chip.docs-chip { background:transparent; color: var(--vscode-descriptionForeground);
+    border:1px solid var(--vscode-panel-border); }
+  .run-time { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; font-variant-numeric: tabular-nums; }
+  .spacer { flex:1 1 auto; }
+  .badge { font-size:.8em; padding:2px 9px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
+  .badge.running, .badge.starting, .badge.finalizing { background: var(--vscode-statusBarItem-warningBackground); color: var(--vscode-statusBarItem-warningForeground); }
+  .badge.done    { background: var(--vscode-testing-iconPassed, #3fb950); color:#fff; }
+  .badge.failed  { background: var(--vscode-statusBarItem-errorBackground, #f85149); color:#fff; }
+  .badge.stopped { background: var(--vscode-descriptionForeground, #8b949e); color: var(--vscode-editor-background, #1e1e1e); }
+  .badge.stale   { background:#d29922; color:#1e1e1e; }
+  .del-btn { flex-shrink:0; background:transparent; border:none; color: var(--vscode-descriptionForeground); cursor:pointer; font-size:1em; padding:2px 6px; border-radius:4px; }
+  .del-btn:hover { background: var(--vscode-statusBarItem-errorBackground, #f85149); color:#fff; }
+  .run-body { margin-top:8px; }
+  .run.collapsed .run-body { display:none; }
+  /* Finished runs fold into one row. Twenty done cards, even collapsed, pushed the live ones
+     and the ones that need a look off the first screen. */
+  .done-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
+               padding:6px 14px; margin-bottom:12px; border:1px dashed var(--vscode-panel-border);
+               border-radius:6px; color: var(--vscode-descriptionForeground); }
+  .done-group.collapsed .done-head .arrow { transform: rotate(-90deg); }
+  .done-group.collapsed .done-body { display:none; }
+  .meta { color: var(--vscode-descriptionForeground); font-size:.78em; font-family: var(--vscode-editor-font-family); margin-bottom:8px; line-height:1.6; }
+  .doclink { color: var(--vscode-textLink-foreground); cursor:pointer; text-decoration:none; }
+  .doclink:hover { text-decoration:underline; }
+  .now { margin:2px 0 10px 0; padding:8px 11px; border-left:2px solid var(--vscode-textLink-foreground); background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); border-radius:0 4px 4px 0; line-height:1.5; font-size:.93em; white-space:pre-wrap; word-break:break-word; }
+  /* The last word in a turn was Claude cutting in, not Codex. Same orange the row uses, so
+     the reader does not have to parse the text to know who spoke. */
+  .now.steer { border-left-color:#d98b45; }
+  /* A turn's says-block leads its body, right under the header, so it loses the top gap. */
+  .turn-body > .now:first-child { margin-top:6px; }
+  /* The body carries the same column layout the items container has, since it sits between
+     them — without this the activities inside a turn lose their spacing. */
+  .turn-body { display:flex; flex-direction:column; gap:6px; }
+  .turn-body.folded { display:none; }
+  .turn-fold { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; }
+  .turn-hd.folded .turn-fold { transform: rotate(-90deg); display:inline-block; }
+  /* Each turn owns its documents: the request really is a separate file per turn, and the
+     result link jumps into that turn's section of the one response document. */
+  .turn-links { flex-shrink:0; display:flex; gap:12px; font-size:.82em; }
+  .plan { font-size:.82em; color: var(--vscode-descriptionForeground); margin-bottom:8px; }
+  .plan-chip { display:inline-block; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius:4px; padding:1px 7px; margin:0 4px 3px 0; }
+  .plan-chip.on { opacity:.55; text-decoration:line-through; }
+
+  .items { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+  /* Turn boundary in a multi-turn (follow-up) run. Twenty activities in one column give no
+     hint where one question ended and the next began, so the seam is drawn as a boxed,
+     oversized number with a rule running off it — it has to survive a long scroll, which a
+     text row of the same weight as its neighbours would not. Neutral colours on purpose:
+     orange already means "Claude spoke" one row below. */
+  .turn-hd { display:flex; align-items:center; gap:8px; margin:12px 0 3px 0; cursor:pointer; }
+  .turn-hd:first-child { margin-top:2px; }
+  .turn-hd::after { content:''; flex:1 1 auto; height:1px; background: var(--vscode-panel-border); }
+  .turn-no { flex-shrink:0; padding:1px 12px; border-radius:5px;
+    border:1.5px solid var(--vscode-focusBorder, var(--vscode-panel-border));
+    background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.12));
+    color: var(--vscode-foreground); font-size:1.2em; font-weight:700; letter-spacing:.5px; }
+  .it { font-size:.9em; }
+  .it-head { display:flex; align-items:baseline; gap:8px; }
+  .dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; position:relative; top:1px; }
+  .dot.running { background:#e3b341; animation: pulse 1.2s ease-in-out infinite; }
+  .dot.done { background:#3fb950; }
+  .dot.failed { background:#f85149; }
+  /* Advisory notice — visible but clearly not a failure. */
+  .dot.warn { background:#d29922; }
+  .kind { font-size:.78em; padding:0 6px; border-radius:3px; flex-shrink:0; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+  .kind.k-agent_message, .kind.k-reasoning { background:#3a3f5c; color:#c3caff; }
+  .kind.k-command_execution { background:#4a4030; color:#f0d9a8; }
+  .kind.k-web_search { background:#2f4a3a; color:#a8e6bf; }
+  .kind.k-file_change { background:#4a3050; color:#e6b3f0; }
+  .kind.k-error { background:#4a3f22; color:#f0d9a8; }
+  /* Claude steering the run mid-turn. Orange, matching the chat panel's Claude colour
+     (#d98b45) so the same speaker reads the same in both panels — and deliberately far from
+     k-error's amber, because that chip carries Codex CLI advisories and the two were
+     confused for each other on screen. */
+  .kind.k-claude_steer { background:#4a2b16; color:#e8a86a; font-weight:600; }
+  /* The chip alone gets lost in a fifty-row list, so the whole row carries a rail in the
+     same colour — an interjection is the row a user scans back for. */
+  .it.steer { border-left:2px solid #d98b45; padding-left:7px; margin-left:-9px; }
+  .lbl { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family: var(--vscode-editor-font-family); font-size:.92em; }
+  .dur { color: var(--vscode-descriptionForeground); font-size:.82em; flex-shrink:0; }
+  details.cmdgroup { margin:0; }
+  /* The summary lines up with ordinary rows — no leading marker, no indent on the rows it
+     reveals — so a collapsed group reads as one of the list rather than a nested block. */
+  details.cmdgroup > summary { display:flex; align-items:center; gap:7px; cursor:pointer;
+    padding:3px 0; list-style:none; color: var(--vscode-descriptionForeground); }
+  details.cmdgroup > summary::-webkit-details-marker { display:none; }
+  details.cmdgroup > summary:hover { color: var(--vscode-foreground); }
+  details.cmdgroup .gcount { font-size:.9em; }
+  details.cmdgroup > .it { margin-left:0; }
+  /* Affordance sits after the count, where the eye already is. */
+  .ghint { font-size:.82em; opacity:.8; padding:0 6px; border-radius:4px;
+    border:1px solid var(--vscode-panel-border); white-space:nowrap; }
+  details.cmdgroup > summary:hover .ghint { opacity:1; border-color: var(--vscode-focusBorder); }
+  .ghint::before { content:'▸'; display:inline-block; margin-right:4px; font-size:.9em;
+    transition:transform .12s; }
+  details.cmdgroup[open] .ghint::before { transform:rotate(90deg); }
+  details.cmdgroup[open] .gh-open { display:none; }
+  details.cmdgroup:not([open]) .gh-close { display:none; }
+  /* A row whose label doesn't fit opens in place: the one-line summary is replaced by the
+     wrapped full text. '.plain' marks rows with nothing more to show — see markClipped(). */
+  details.row { margin:0; }
+  details.row > summary { list-style:none; }
+  details.row > summary::-webkit-details-marker { display:none; }
+  details.row:not(.plain) > summary { cursor:pointer; }
+  details.row:not(.plain) > summary:hover { background: var(--vscode-list-hoverBackground); border-radius:4px; }
+  details.row.plain > summary { cursor:default; }
+  /* No body block: unwrap the label itself so the tail that was clipped becomes readable. */
+  details.row[open] > summary .lbl { white-space:pre-wrap; word-break:break-word; overflow:visible; text-overflow:clip; }
+  /* With a body block the label would just repeat its first line. */
+  details.row.hasfull[open] > summary .lbl { display:none; }
+  .full { margin:6px 0 2px 17px; padding:8px 10px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); border-radius:4px; white-space:pre-wrap; word-break:break-word; font-family: var(--vscode-editor-font-family); font-size:.88em; line-height:1.5; max-height:420px; overflow:auto; }
+  .empty { color: var(--vscode-descriptionForeground); font-style:italic; }
+
+  /* Trash drawer. Sits above the list rather than replacing it: what you deleted only makes
+     sense next to what you kept, and restoring is usually a comparison, not a lookup. */
+  .trash { border:1px dashed var(--vscode-panel-border); border-radius:6px;
+    padding:10px 14px; margin-bottom:14px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.06)); }
+  .trash-head { display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
+  .trash-note { color: var(--vscode-descriptionForeground); font-size:.8em; }
+  .trash-row { display:flex; align-items:baseline; gap:8px; padding:5px 0;
+    border-top:1px solid var(--vscode-panel-border); }
+  .trash-row:first-child { border-top:none; }
+  .trash-name { font-weight:600; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .trash-meta { color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; }
+  .tbtn { background:transparent; color: var(--vscode-textLink-foreground); border:1px solid var(--vscode-panel-border);
+    border-radius:4px; padding:1px 9px; cursor:pointer; font-size:.85em; flex-shrink:0; }
+  .tbtn:hover { background: var(--vscode-list-hoverBackground); }
+  /* How much is at stake, in the button itself. Red means the documents are all that's left —
+     this click ends the record. Amber means the logs are bulk and the documents can still be
+     kept back. Neutral means only logs remain, so nothing irreplaceable is going. */
+  .tbtn.danger { color:#f85149; border-color: rgba(248,81,73,.55); font-weight:600; }
+  .tbtn.danger:hover { background: rgba(248,81,73,.15); border-color:#f85149; }
+  .tbtn.warn { color:#d29922; border-color: rgba(210,153,34,.55); }
+  .tbtn.warn:hover { background: rgba(210,153,34,.15); border-color:#d29922; }
+  /* Same three-way coding on the contents label, so the row and its button agree. */
+  .what { font-size:.8em; padding:0 6px; border-radius:3px; white-space:nowrap;
+    border:1px solid transparent; }
+  .what.docs-only { color:#f85149; border-color: rgba(248,81,73,.45); font-weight:600; }
+  .what.both { color:#d29922; border-color: rgba(210,153,34,.45); }
+  .warn { color:#d29922; font-size:.85em; margin-top:6px; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+/* ── Workflow additions ────────────────────────────────────────────────────────
+   Everything above is the Codex panel's stylesheet, copied as-is so the two panels read alike
+   (user's call, 2026-09-19). Below is only what a workflow has and a Codex run does not: agents
+   between the card and its rows, a few more kinds of row, and the agent's final report.
+   Phases reuse the Codex turn header (.turn-hd / .turn-no / .turn-body) unchanged. */
+.agents { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+details.agent { margin:0; }
+details.agent > summary { list-style:none; cursor:pointer; padding:3px 4px; margin:0 -4px; border-radius:4px; }
+details.agent > summary::-webkit-details-marker { display:none; }
+details.agent > summary:hover { background: var(--vscode-list-hoverBackground); }
+.agent-head { display:flex; align-items:center; gap:8px; }
+.aname { font-weight:600; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.a-model, .a-tok { color: var(--vscode-descriptionForeground); font-size:.82em; white-space:nowrap; flex-shrink:0; }
+/* One line of what the agent is doing (or said last), readable without opening it. Hidden once
+   open: the rows below say the same thing in full. */
+.agent-sub { color: var(--vscode-descriptionForeground); font-size:.88em; margin:2px 0 0 17px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+details.agent[open] > summary .agent-sub { display:none; }
+.agent-body { margin:4px 0 8px 17px; padding-left:10px; border-left:1px solid var(--vscode-panel-border); }
+details.agent[open] .ghint::before { transform:rotate(90deg); }
+details.agent[open] .gh-open { display:none; }
+details.agent:not([open]) .gh-close { display:none; }
+.dot.stopped { background:#8b949e; }
+.stopped-tag { color:#d29922; font-size:.85em; font-weight:600; flex-shrink:0; }
+.kind.k-file_read { background:#2f3f4a; color:#a8d4f0; }
+.kind.k-code_search { background:#2f4a48; color:#a8e6df; }
+.kind.k-tool { background:#3a3a3a; color:#cfcfcf; }
+.kind.k-report { background:#2f4a30; color:#b5e6a8; font-weight:600; }
+.mode-chip.task-chip { background:transparent; color: var(--vscode-descriptionForeground);
+  border:1px solid var(--vscode-panel-border); }
+.wf-desc { color: var(--vscode-descriptionForeground); font-size:.88em; margin:0 0 8px 0; }

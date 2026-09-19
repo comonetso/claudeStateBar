@@ -96,12 +96,13 @@ winp() {
 #    ① 잠금과 trap 을 건 **뒤**: 이번 실행의 스탬프가 잠금으로 빠지고, 도중에 끊겨도 잠금이 풀린다
 #    ② 변경 감시 스냅샷(BEFORE)보다 **앞**: 뒤에 돌면 정리가 지운 `.scratch/` 항목이
 #       "Codex 가 지운 파일"로 보고된다
-cr_cleanup() {   # $1=docs/codex_rescue 경로  $2=건너뛸 스탬프(없으면 생략)
+cr_cleanup() {   # $1=docs/codex_rescue 경로  $2=건너뛸 스탬프  $3=자기 잠금 파일 이름(핑퐁) — 없으면 비운다
   [ -n "${CR_DRYRUN:-}" ] && return 0
   command -v node >/dev/null 2>&1 || return 0
   local js="$SELF_DIR/scripts/cleanup-logs.mjs"
   [ -f "$js" ] || return 0
-  node "$(winp "$js")" --dir "$(winp "$1")" --keep-days "${CR_KEEP_DAYS:-7}" ${2:+--skip-stamp "$2"} >&2 || true
+  node "$(winp "$js")" --dir "$(winp "$1")" --keep-days "${CR_KEEP_DAYS:-7}" \
+    ${2:+--skip-stamp "$2"} ${3:+--skip-lock "$3"} >&2 || true
 }
 
 # ── frontmatter 헬퍼 (2026-08-25, FOLLOWUP 신설과 함께) ─────────
@@ -420,7 +421,8 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
   ch_cleanup() { rm -rf -- "${CH_TMP:-}" 2>/dev/null; ch_unlock; return 0; }
   trap ch_cleanup EXIT
   trap 'ch_cleanup; echo "codex_rescue: 중단됨(신호 수신)" >&2; exit 130' HUP INT TERM
-  cr_cleanup "$CH_DOCS"   # CHAT 은 `.log/` 에 스탬프 파일을 안 쓴다 — 건너뛸 스탬프가 없다
+  # CHAT 은 `.log/` 에 스탬프 파일을 안 쓴다 — 건너뛸 스탬프는 없고, 자기 잠금만 '다른 실행'에서 뺀다
+  cr_cleanup "$CH_DOCS" "" "$(basename -- "$CH_LOCK")"
 
   # 문서의 thread_id 를 비우고 끊긴 사유를 남긴다. 실제로 비워졌을 때만 0 을 돌려준다 —
   # 실패를 성공으로 보고하면 다음 턴이 어긋난 세션을 조용히 재개한다.

@@ -17,7 +17,9 @@ import {
 } from './statusPanel';
 import { collectClaudeStats, summarizeSession } from './claudeStats';
 import { parseWorkflowScript, placeAgents } from './workflowPhases';
-import { createOrShowWorkflowPanel, pushWorkflows, pushWorkflowTrash, getTrackedSessionFile, pushLanguage } from './workflowPanel';
+import { createOrShowWorkflowPanel, pushWorkflows, pushWorkflowTrash, pushAgentActivity, isWorkflowPanelOpen,
+         getOpenAgentKeys, pushLanguage, WorkflowView, WorkflowPanelCallbacks } from './workflowPanel';
+import { parseAgentActivity, AgentActivityItem } from './providers/claude/agentActivity';
 import { createOrShowCodexPanel, pushRuns, pushTrash, pushCodexLanguage, isCodexPanelOpen, CodexRunView, CodexTrashView } from './codexRescuePanel';
 import { createOrShowChatPanel, pushChats, pushChatTrash, pushChatLanguage, isChatPanelOpen, CodexChatView, ChatTrashView } from './codexChatPanel';
 import { discoverChats, trashChat, listChatTrash, restoreChat, purgeChat, emptyChatTrash } from './providers/codexRescue/chatDiscovery';
@@ -64,7 +66,7 @@ interface WorkflowAgentInfo {
     agentId: string;
     status: 'running' | 'done' | 'stopped';  // stopped = killed/interrupted (see agentWasInterrupted)
     summary: string;  // final result (done) or current activity (running/stopped) — 160-char preview
-    fullSummary?: string;  // untruncated full text (final report / activity) — panel expands it via <details> on done agents
+    fullSummary?: string;  // the final report, done agents only. Kept host-side: the panel receives it with the agent's rows
     durationMs: number;  // first→last message span from the agent log; 0 if unknown
     name?: string;  // display label (Task agents: meta.json description); workflow agents leave undefined → "에이전트 N"
     fullName?: string;  // untruncated role/task text (name is capped at 50 chars) — panel shows it as a hover tooltip
@@ -81,6 +83,8 @@ interface WorkflowInfo {
     agents: WorkflowAgentInfo[];
     startedAt?: number;  // epoch ms — earliest agent start across the workflow (title clock)
     endedAt?: number;    // epoch ms — latest agent activity; final elapsed = endedAt - startedAt once all done
+    sessionFile?: string;  // the session it ran in — deleting, trashing and reading agent logs go through it
+    activityAt?: number;   // journal (or newest agent log) mtime — the project-wide list sorts by it
 }
 
 const statusBarItems: Map<string, StatusBarEntry> = new Map();
@@ -469,13 +473,13 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }
 
-        // Workflows section — a single entry that opens the live panel (which lists all
-        // workflows + their agents). The panel auto-refreshes with the status bar.
-        // Skipped for providers without workflow journals (Codex): scanning its rollout
-        // path for Claude's subagents/ layout can only ever come back empty, and offering
-        // a workflow entry there would promise a feature that provider does not have.
-        if (sessionFile && capabilitiesFor(clickedEntry?.provider ?? 'claude').workflows) {
-            const workflows = lastWorkflowsBySession.get(sessionFile) ?? await findWorkflowsForSession(sessionFile);
+        // Workflows section — a single entry that opens the live panel. Since 2026-09-19 the panel
+        // covers the whole project (every session, newest 20), like the Codex panel, so the count
+        // here no longer depends on which session was clicked.
+        // Skipped for providers without workflow journals (Codex): offering a workflow entry there
+        // would promise a feature that provider does not have.
+        if (capabilitiesFor(clickedEntry?.provider ?? 'claude').workflows) {
+            const workflows = await findWorkflowsForProject(lastWorkflowsBySession);
             items.push({ label: planT('menu.sepWorkflows'), kind: vscode.QuickPickItemKind.Separator });
             if (workflows.length > 0) {
                 const runningWf = workflows.filter(w => w.agents.some(a => a.status === 'running')).length;
@@ -613,67 +617,7 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.commands.executeCommand('workbench.action.reloadWindow');
                 break;
             case 'workflows':
-                if (sessionFile) {
-                    const workflows = await findWorkflowsForSession(sessionFile);
-                    createOrShowWorkflowPanel(context, sessionFile, workflows, {
-                        onDelete: async (wfId: string) => {
-                            if (wfId.startsWith('tasks:')) {
-                                const cleanupBtn = planT('common.cleanup');
-                                const ok = await vscode.window.showWarningMessage(
-                                    planT('msg.tasksClearConfirm'),
-                                    { modal: true },
-                                    cleanupBtn
-                                );
-                                if (ok !== cleanupBtn) return;
-                                const n = await deleteDoneTaskAgents(sessionFile, wfId);
-                                log(`[tasks] cleared ${n} completed task-agent log(s) in ${wfId}`);
-                                pushWorkflows(await findWorkflowsForSession(sessionFile));
-                                return;
-                            }
-                            // Straight to the trash, no confirmation — same reasoning as the
-                            // Codex panel: the prompt belongs at the irreversible end.
-                            // Carry the name and agent count into the trash: wf_a1b2c3 tells you
-                            // nothing about what you deleted, and the journal that would have
-                            // told you is inside the bin you'd have to restore to read.
-                            const before = await findWorkflowsForSession(sessionFile);
-                            const target = before.find(w => w.wfId === wfId);
-                            if (await trashWorkflowDir(sessionFile, wfId, target?.name, target?.agents.length ?? 0)) {
-                                vscode.window.setStatusBarMessage(planT('wf.trash.trashed'), 5000);
-                            }
-                            pushWorkflows(await findWorkflowsForSession(sessionFile));
-                            void pushWfTrash(sessionFile);
-                        },
-                        onTrashOpen: () => { void pushWfTrash(sessionFile); },
-                        onRestore: async (wfId: string) => {
-                            if (await restoreWorkflow(sessionFile, wfId)) {
-                                vscode.window.setStatusBarMessage(planT('wf.trash.restored', wfId), 5000);
-                            } else {
-                                vscode.window.showWarningMessage(planT('wf.trash.conflict', wfId));
-                            }
-                            pushWorkflows(await findWorkflowsForSession(sessionFile));
-                            void pushWfTrash(sessionFile);
-                        },
-                        onPurge: async (wfId: string) => {
-                            const deleteBtn = planT('common.delete');
-                            const ok = await vscode.window.showWarningMessage(
-                                planT('wf.trash.purgeConfirm', wfId), { modal: true }, deleteBtn);
-                            if (ok !== deleteBtn) return;
-                            await purgeWorkflow(sessionFile, wfId);
-                            void pushWfTrash(sessionFile);
-                        },
-                        onEmptyTrash: async () => {
-                            const items = await listWorkflowTrash(sessionFile);
-                            if (!items.length) return;
-                            const emptyBtn = planT('wf.trash.empty');
-                            const ok = await vscode.window.showWarningMessage(
-                                planT('wf.trash.emptyConfirm', items.length), { modal: true }, emptyBtn);
-                            if (ok !== emptyBtn) return;
-                            const n = await emptyWorkflowTrash(sessionFile);
-                            vscode.window.showInformationMessage(planT('wf.trash.emptied', n));
-                            void pushWfTrash(sessionFile);
-                        }
-                    });
-                }
+                await openWorkflowPanel(context);
                 break;
         }
     });
@@ -727,6 +671,11 @@ export function activate(context: vscode.ExtensionContext) {
     // codex_rescue live progress panel. The command is registered unconditionally (cheap)
     // but package.json hides it from the palette unless `claudeStateBar.hasCodexRescue` is
     // set, which only happens in a workspace that has docs/codex_rescue/.
+    // The workflow panel has its own command now that it no longer depends on a clicked session —
+    // the Codex panel's counterpart, one entry below it in the palette.
+    context.subscriptions.push(vscode.commands.registerCommand('claudeContextBar.showWorkflows',
+        () => openWorkflowPanel(context)));
+
     const codexRunsCmd = vscode.commands.registerCommand('claudeContextBar.showCodexRuns', async () => {
         createOrShowCodexPanel(context, await collectCodexRuns(), {
             // A URI string, not a path: `Uri.file` would send a remote workspace's document
@@ -1342,37 +1291,8 @@ function deriveAgentRoleLabels(prompts: Map<string, string>): Map<string, { labe
 //   - durationMs: span between its first and last message timestamps
 //   - activity: what it's doing right now (last tool call / last text) — used for
 //     running agents (done agents show their journal result instead)
-// Collect EVERY assistant step (tool calls + text blocks) in chronological order from an
-// agent's jsonl lines, joined into one report. Used only for a DONE agent's full view so the
-// user can see the agent's whole sequence of actions — not just its final message. A running
-// agent still shows only its latest activity: the earlier steps aren't reliably all present
-// until completion (agent jsonl is appended per finished message, not streamed), and the live
-// "what is it doing right now" signal is what matters mid-run. Tool-using agents yield many
-// steps; a pure-discussion agent (no tools) yields a single text block — that's a data limit,
-// not a bug.
-function collectAgentSteps(lines: string[]): string {
-    const steps: string[] = [];
-    for (let i = 0; i < lines.length; i++) {
-        if (!lines[i].trim()) continue;
-        let e: any;
-        try { e = JSON.parse(lines[i]); } catch { continue; }
-        if (e.type !== 'assistant' || !e.message) continue;
-        const content = e.message.content;
-        const blocks = Array.isArray(content)
-            ? content
-            : (typeof content === 'string' && content.trim() ? [{ type: 'text', text: content }] : []);
-        for (const b of blocks) {
-            if (b?.type === 'tool_use') {
-                const arg = b.input?.file_path || b.input?.path || b.input?.command || b.input?.pattern || b.input?.description;
-                const argStr = typeof arg === 'string' ? ` — ${arg.replace(/\s+/g, ' ').slice(0, 80)}` : '';
-                steps.push(`🔧 ${b.name}${argStr}`);
-            } else if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
-                steps.push(b.text.trim());
-            }
-        }
-    }
-    return steps.join('\n\n');
-}
+// The agent's step-by-step record is no longer flattened into text here: the panel asks for it
+// row by row when an agent is opened (providers/claude/agentActivity.ts, 2026-09-19).
 
 // Detect a killed/interrupted agent. When the user stops a running Task/workflow agent
 // (TaskStop), Claude Code appends a trailing user record to its agent-<id>.jsonl carrying
@@ -1399,12 +1319,10 @@ function agentWasInterrupted(lines: string[]): boolean {
     return false;
 }
 
-async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; fullActivity: string; fullSteps: string; firstTs: number; lastTs: number; interrupted: boolean; tokens: number; model: string }> {
+async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; firstTs: number; lastTs: number; interrupted: boolean; tokens: number; model: string }> {
     let firstTs = 0;
     let lastTs = 0;
     let activity = planT('wf.working');
-    let fullActivity = '';
-    let fullSteps = '';
     let interrupted = false;
     // Token total for the agent = the LAST usage record, not a sum of them.
     //
@@ -1420,7 +1338,6 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
     try {
         const content = await readTextFile(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`));
         const lines = content.trim().split('\n');
-        fullSteps = collectAgentSteps(lines);
         interrupted = agentWasInterrupted(lines);
 
         // First timestamp = start.
@@ -1459,14 +1376,12 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
                                 const arg = b.input?.file_path || b.input?.path || b.input?.command || b.input?.pattern || b.input?.description;
                                 const argStr = typeof arg === 'string' ? ` — ${arg.replace(/\s+/g, ' ').slice(0, 60)}` : '';
                                 activity = `🔧 ${b.name}${argStr}`;
-                                fullActivity = activity;
                                 foundActivity = true;
                                 break;
                             }
                             if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
                                 const t = b.text.replace(/\s+/g, ' ').trim();
                                 activity = t.length > 140 ? t.slice(0, 140) + '…' : t;
-                                fullActivity = b.text.trim();
                                 foundActivity = true;
                                 break;
                             }
@@ -1474,7 +1389,6 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
                     } else if (typeof blocks === 'string' && blocks.trim()) {
                         const t = blocks.replace(/\s+/g, ' ').trim();
                         activity = t.length > 140 ? t.slice(0, 140) + '…' : t;
-                        fullActivity = blocks.trim();
                         foundActivity = true;
                     }
                 }
@@ -1483,7 +1397,7 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
         }
     } catch { /* agent log not readable yet */ }
     const durationMs = (firstTs && lastTs && lastTs >= firstTs) ? lastTs - firstTs : 0;
-    return { durationMs, activity, fullActivity, fullSteps, firstTs, lastTs, interrupted, tokens, model };
+    return { durationMs, activity, firstTs, lastTs, interrupted, tokens, model };
 }
 
 // Parse a single Task-subagent log (subagents/agent-<id>.jsonl + its sibling
@@ -1549,7 +1463,6 @@ async function parseTaskAgent(
     let isDone = false;
     let fullText = '';
     let activity = planT('wf.working');
-    let fullActivity = '';
     // Same token rule as workflow agents: the LAST usage record, never a sum of them.
     let tokens = 0;
     let tokensFound = false;
@@ -1591,13 +1504,11 @@ async function parseTaskAgent(
                     const arg = b.input?.file_path || b.input?.path || b.input?.command || b.input?.pattern || b.input?.description;
                     const argStr = typeof arg === 'string' ? ` — ${arg.replace(/\s+/g, ' ').slice(0, 60)}` : '';
                     activity = `🔧 ${b.name}${argStr}`;
-                    fullActivity = activity;
                     break;
                 }
                 if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
                     const t = b.text.replace(/\s+/g, ' ').trim();
                     activity = t.length > 140 ? t.slice(0, 140) + '…' : t;
-                    fullActivity = b.text.trim();
                     break;
                 }
             }
@@ -1617,10 +1528,9 @@ async function parseTaskAgent(
         agentId,
         status,
         summary: status === 'done' ? preview : activity,
-        // done/stopped → full chronological steps (every tool call + text) so the user sees the
-        // whole run (a killed agent's last actions too), falling back to the final report text.
-        // Running → latest activity only.
-        fullSummary: status === 'running' ? fullActivity : (collectAgentSteps(lines) || fullText || fullActivity),
+        // The final report, and only once there is one. What the agent did along the way is
+        // fetched row by row when the panel opens this agent (agentActivity.ts).
+        ...(status === 'done' && fullText ? { fullSummary: fullText } : {}),
         durationMs,
         name: displayName || 'agent',
         ...(tokens ? { tokens } : {}),
@@ -1771,19 +1681,16 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                     const status: 'running' | 'done' | 'stopped' = isDone ? 'done' : ((timing.interrupted || failedIds.has(id)) ? 'stopped' : 'running');
                     const res = doneSummary.get(id);
                     const summary = status === 'done' ? (res?.preview || '') : timing.activity;
-                    // done/stopped → show the agent's full chronological steps (all tool calls +
-                    // text), so the user sees everything it did (a killed agent's last actions
-                    // included). Fall back to the journal result's full text. Running → latest only.
-                    const fullSummary = status === 'running'
-                        ? timing.fullActivity
-                        : (timing.fullSteps || (status === 'done' ? (res?.full || '') : timing.fullActivity));
+                    // The journal result's full text, once there is one. The steps along the way
+                    // are fetched row by row when the panel opens this agent (agentActivity.ts).
+                    const fullSummary = status === 'done' ? (res?.full || undefined) : undefined;
                     const role = roleLabels.get(id);  // undefined → panel falls back to "에이전트 N"
                     const name = role?.label;
                     // Only surface fullName when it actually differs (i.e. the label was clipped),
                     // so unchanged labels don't carry a redundant tooltip.
                     const fullName = role && role.full !== role.label ? role.full : undefined;
                     agents.push({
-                        agentId: id, status, summary, fullSummary, durationMs: timing.durationMs,
+                        agentId: id, status, summary, ...(fullSummary ? { fullSummary } : {}), durationMs: timing.durationMs,
                         ...(name ? { name } : {}), ...(fullName ? { fullName } : {}),
                         ...(timing.tokens ? { tokens: timing.tokens } : {}),
                         // Displayed name, resolved here so the webview stays free of model
@@ -1831,14 +1738,19 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                 mtime = (await vscode.workspace.fs.stat(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'))).mtime;
             } catch { /* no journal yet */ }
 
-            wfList.push({ wf: { wfId, name, description, phases, agents, ...(wfStartedAt ? { startedAt: wfStartedAt } : {}), ...(wfEndedAt ? { endedAt: wfEndedAt } : {}) }, mtime });
+            wfList.push({ wf: { wfId, name, description, phases, agents, ...(wfStartedAt ? { startedAt: wfStartedAt } : {}), ...(wfEndedAt ? { endedAt: wfEndedAt } : {}),
+                                sessionFile: sessionFileUri, activityAt: mtime }, mtime });
         }
 
         // Task subagents (Agent tool) — bundle the flat subagents/agent-*.jsonl logs into
         // one pseudo-workflow PER BATCH (grouped by start-time gap) alongside the journals.
         try {
             const taskBundles = await findTaskAgentBundles(sessionDirUri);
-            for (const b of taskBundles) wfList.push(b);
+            for (const b of taskBundles) {
+                b.wf.sessionFile = sessionFileUri;
+                b.wf.activityAt = b.mtime;
+                wfList.push(b);
+            }
         } catch (e) {
             log(`[workflows] task-agent scan error: ${e}`);
         }
@@ -2054,18 +1966,6 @@ async function purgeWorkflow(sessionFileUri: string, wfId: string): Promise<bool
     return ok;
 }
 
-async function pushWfTrash(sessionFileUri: string): Promise<void> {
-    pushWorkflowTrash(await listWorkflowTrash(sessionFileUri));
-}
-
-async function emptyWorkflowTrash(sessionFileUri: string): Promise<number> {
-    let n = 0;
-    for (const it of await listWorkflowTrash(sessionFileUri)) {
-        if (await purgeWorkflow(sessionFileUri, it.wfId)) n++;
-    }
-    return n;
-}
-
 // Clear the COMPLETED Task-subagent logs (agent-*.jsonl + paired .meta.json) for a
 // session's pseudo-workflow ('tasks'). Running agents are kept so we never remove a log
 // a live agent is still appending to. Returns the number of agents cleared.
@@ -2096,6 +1996,269 @@ async function deleteDoneTaskAgents(sessionFileUri: string, wfId: string): Promi
         log(`[tasks] delete error: ${e}`);
         return 0;
     }
+}
+
+// --- Project-wide workflow list (the workflow panel, 2026-09-19) ------------------------------
+//
+// The panel used to show one session's workflows — the one clicked in the menu — so a workflow
+// from yesterday's session was simply gone. It now lists the whole project, newest first, the way
+// the Codex panel lists runs, capped at the same 20 cards (discoverRuns' default limit).
+//
+// Cost is the thing to watch: an agent log runs to hundreds of KB, and over Remote-SSH every read
+// crosses the wire. So sessions that are live this refresh reuse the scan the workflow-complete
+// beep already did (lastWorkflowsBySession); any other session is scanned once and kept until its
+// folders change; sessions are walked newest first and the walk stops once 20 are in hand; and an
+// agent's step-by-step rows are only read when the panel opens that agent.
+
+const PROJECT_WF_LIMIT = 20;
+const projectWfCache = new Map<string, { sig: string; workflows: WorkflowInfo[] }>();
+let lastProjectWorkflows: WorkflowInfo[] = [];
+
+async function mtimeOf(uri: vscode.Uri): Promise<number> {
+    try { return (await vscode.workspace.fs.stat(uri)).mtime; } catch { return 0; }
+}
+
+function sessionDirOf(sessionFile: string): vscode.Uri {
+    const uri = vscode.Uri.parse(sessionFile);
+    return uri.with({ path: uri.path.replace(/\.jsonl$/, '') });
+}
+
+/** Claude's project folders for this window's workspace folders. */
+async function workspaceProjectUris(): Promise<vscode.Uri[]> {
+    const projectsUri = await getClaudeProjectsUri();
+    const folders = vscode.workspace.workspaceFolders;
+    if (!projectsUri || !folders || folders.length === 0) return [];
+    let entries: [string, vscode.FileType][];
+    try { entries = await vscode.workspace.fs.readDirectory(projectsUri); } catch { return []; }
+    return entries
+        .filter(([n, t]) => t === vscode.FileType.Directory && folders.some(f => projectDirMatchesFolder(n, f)))
+        .map(([n]) => vscode.Uri.joinPath(projectsUri, n));
+}
+
+/** Every session file of this project, newest first. */
+async function projectSessionFiles(): Promise<{ file: string; mtime: number }[]> {
+    const out: { file: string; mtime: number }[] = [];
+    for (const proj of await workspaceProjectUris()) {
+        let entries: [string, vscode.FileType][];
+        try { entries = await vscode.workspace.fs.readDirectory(proj); } catch { continue; }
+        const files = entries
+            .filter(([n, t]) => t === vscode.FileType.File && n.endsWith('.jsonl') && !n.startsWith('agent-'))
+            .map(([n]) => vscode.Uri.joinPath(proj, n));
+        const stats = await Promise.all(files.map(async u => ({ file: u.toString(), mtime: await mtimeOf(u) })));
+        out.push(...stats);
+    }
+    return out.sort((a, b) => b.mtime - a.mtime);
+}
+
+/**
+ * The project's workflows, newest activity first, at most PROJECT_WF_LIMIT.
+ * @param liveSessions what this refresh already scanned. A session missing from it is past
+ *   `hideAfter`, and a workflow cannot outlive the conversation that launched it — so an agent
+ *   still reading as running there is shown as stopped rather than as live forever.
+ */
+async function findWorkflowsForProject(liveSessions: Map<string, WorkflowInfo[]>): Promise<WorkflowInfo[]> {
+    const sessions = await projectSessionFiles();
+    const all: WorkflowInfo[] = [];
+    for (const s of sessions) {
+        if (all.length >= PROJECT_WF_LIMIT) break;
+        let wfs = liveSessions.get(s.file);
+        if (!wfs) {
+            const dir = sessionDirOf(s.file);
+            const subMtime = await mtimeOf(vscode.Uri.joinPath(dir, 'subagents'));
+            if (!subMtime) continue;   // never ran a sub-agent — nothing to show or cache
+            const wfDirMtime = await mtimeOf(vscode.Uri.joinPath(dir, 'subagents', 'workflows'));
+            const sig = `${s.mtime}|${subMtime}|${wfDirMtime}`;
+            const hit = projectWfCache.get(s.file);
+            if (hit && hit.sig === sig) {
+                wfs = hit.workflows;
+            } else {
+                wfs = await findWorkflowsForSession(s.file);
+                for (const wf of wfs) for (const a of wf.agents) if (a.status === 'running') a.status = 'stopped';
+                projectWfCache.set(s.file, { sig, workflows: wfs });
+            }
+        }
+        all.push(...wfs);
+    }
+    const known = new Set(sessions.map(s => s.file));
+    for (const k of [...projectWfCache.keys()]) if (!known.has(k)) projectWfCache.delete(k);
+    all.sort((a, b) => (b.activityAt || 0) - (a.activityAt || 0));
+    lastProjectWorkflows = all.slice(0, PROJECT_WF_LIMIT);
+    return lastProjectWorkflows;
+}
+
+// Keys the panel hands back. The host checks every one against what it last sent, so a key from
+// the webview can never name a file of its own choosing.
+function wfKey(wf: WorkflowInfo): string { return `${wf.sessionFile ?? ''}|${wf.wfId}`; }
+function agentKey(wf: WorkflowInfo, agentId: string): string { return `${wfKey(wf)}|${agentId}`; }
+
+function findShownWorkflow(key: string): WorkflowInfo | undefined {
+    return lastProjectWorkflows.find(w => wfKey(w) === key);
+}
+
+function toWorkflowView(wf: WorkflowInfo, liveSessions: Map<string, WorkflowInfo[]>): WorkflowView {
+    const sid = (wf.sessionFile ?? '').replace(/^.*\//, '').replace(/\.jsonl$/, '');
+    return {
+        key: wfKey(wf), wfId: wf.wfId, name: wf.name, description: wf.description, phases: wf.phases,
+        startedAt: wf.startedAt, endedAt: wf.endedAt,
+        isTask: wf.wfId.startsWith('tasks:'),
+        session: sid.slice(0, 8),
+        sessionLive: !!wf.sessionFile && liveSessions.has(wf.sessionFile),
+        agents: wf.agents.map(a => ({
+            akey: agentKey(wf, a.agentId), agentId: a.agentId, status: a.status, summary: a.summary,
+            durationMs: a.durationMs, name: a.name, fullName: a.fullName, tokens: a.tokens,
+            model: a.model, phase: a.phase, hasReport: !!a.fullSummary,
+        })),
+    };
+}
+
+const agentActivityCache = new Map<string, { mtime: number; size: number; running: boolean; items: AgentActivityItem[] }>();
+
+function agentLogUri(sessionFile: string, wfId: string, agentId: string): vscode.Uri | null {
+    if (!/^[A-Za-z0-9_-]+$/.test(agentId)) return null;
+    const dir = sessionDirOf(sessionFile);
+    if (/^wf_[A-Za-z0-9-]+$/.test(wfId)) {
+        return vscode.Uri.joinPath(dir, 'subagents', 'workflows', wfId, `agent-${agentId}.jsonl`);
+    }
+    if (/^tasks:\d+$/.test(wfId)) return vscode.Uri.joinPath(dir, 'subagents', `agent-${agentId}.jsonl`);
+    return null;
+}
+
+/**
+ * One agent's rows and final report, for an agent the panel has open. Null for an unknown key.
+ * `changed` is false when nothing moved since the last read — the refresh loop skips the push
+ * then, so a finished agent left open does not repaint the panel every tick.
+ */
+async function readAgentActivity(akey: string): Promise<{ items: AgentActivityItem[]; report: string; changed: boolean } | null> {
+    const cut = akey.lastIndexOf('|');
+    if (cut < 0) return null;
+    const wf = findShownWorkflow(akey.slice(0, cut));
+    const agent = wf?.agents.find(a => a.agentId === akey.slice(cut + 1));
+    if (!wf || !agent || !wf.sessionFile) return null;
+    const uri = agentLogUri(wf.sessionFile, wf.wfId, agent.agentId);
+    if (!uri) return null;
+    const running = agent.status === 'running';
+    let st: vscode.FileStat | null = null;
+    try { st = await vscode.workspace.fs.stat(uri); } catch { /* not written yet */ }
+    const hit = agentActivityCache.get(akey);
+    let items: AgentActivityItem[] = [];
+    let changed = true;
+    if (st && hit && hit.mtime === st.mtime && hit.size === st.size && hit.running === running) {
+        items = hit.items;
+        changed = false;
+    } else if (st) {
+        try {
+            items = parseAgentActivity((await readTextFile(uri)).split('\n'), running);
+            agentActivityCache.set(akey, { mtime: st.mtime, size: st.size, running, items });
+        } catch (e) {
+            log(`[workflows] activity read failed for ${agent.agentId}: ${e}`);
+        }
+    }
+    return { items, report: agent.fullSummary || '', changed };
+}
+
+// --- Workflow panel wiring ---------------------------------------------------------------
+
+async function pushProjectWorkflows(): Promise<void> {
+    const wfs = await findWorkflowsForProject(lastWorkflowsBySession);
+    pushWorkflows(wfs.map(w => toWorkflowView(w, lastWorkflowsBySession)));
+}
+
+async function pushProjectTrash(): Promise<void> {
+    const items = await listProjectWorkflowTrash();
+    pushWorkflowTrash(items.map(i => ({
+        key: `${i.sessionFile}|${i.wfId}`, wfId: i.wfId, name: i.name, deletedAt: i.deletedAt, agentCount: i.agentCount,
+    })));
+}
+
+/** @param onlyIfChanged skip the push when the rows have not moved (the refresh loop). */
+async function pushAgentRows(akey: string, onlyIfChanged = false): Promise<void> {
+    const r = await readAgentActivity(akey);
+    if (r && (r.changed || !onlyIfChanged)) pushAgentActivity(akey, r.items, r.report);
+}
+
+/** After a delete or restore: forget what was cached for that session so the change shows. */
+async function rescanSession(sessionFile: string): Promise<void> {
+    projectWfCache.delete(sessionFile);
+    if (lastWorkflowsBySession.has(sessionFile)) {
+        lastWorkflowsBySession.set(sessionFile, await findWorkflowsForSession(sessionFile));
+    }
+}
+
+function workflowPanelCallbacks(): WorkflowPanelCallbacks {
+    return {
+        onDelete: async (key: string) => {
+            const wf = findShownWorkflow(key);
+            if (!wf || !wf.sessionFile) return;
+            const sessionFile = wf.sessionFile;
+            if (wf.wfId.startsWith('tasks:')) {
+                const cleanupBtn = planT('common.cleanup');
+                const ok = await vscode.window.showWarningMessage(planT('msg.tasksClearConfirm'), { modal: true }, cleanupBtn);
+                if (ok !== cleanupBtn) return;
+                const n = await deleteDoneTaskAgents(sessionFile, wf.wfId);
+                log(`[tasks] cleared ${n} completed task-agent log(s) in ${wf.wfId}`);
+            } else if (await trashWorkflowDir(sessionFile, wf.wfId, wf.name, wf.agents.length)) {
+                // Straight to the trash, no confirmation — the prompt belongs at the irreversible end.
+                vscode.window.setStatusBarMessage(planT('wf.trash.trashed'), 5000);
+            }
+            await rescanSession(sessionFile);
+            await pushProjectWorkflows();
+            void pushProjectTrash();
+        },
+        onTrashOpen: () => { void pushProjectTrash(); },
+        onRestore: async (key: string) => {
+            const it = findShownTrash(key);
+            if (!it) return;
+            if (await restoreWorkflow(it.sessionFile, it.wfId)) {
+                vscode.window.setStatusBarMessage(planT('wf.trash.restored', it.wfId), 5000);
+            } else {
+                vscode.window.showWarningMessage(planT('wf.trash.conflict', it.wfId));
+            }
+            await rescanSession(it.sessionFile);
+            await pushProjectWorkflows();
+            void pushProjectTrash();
+        },
+        onPurge: async (key: string) => {
+            const it = findShownTrash(key);
+            if (!it) return;
+            const deleteBtn = planT('common.delete');
+            const ok = await vscode.window.showWarningMessage(planT('wf.trash.purgeConfirm', it.wfId), { modal: true }, deleteBtn);
+            if (ok !== deleteBtn) return;
+            await purgeWorkflow(it.sessionFile, it.wfId);
+            void pushProjectTrash();
+        },
+        onEmptyTrash: async () => {
+            const items = await listProjectWorkflowTrash();
+            if (!items.length) return;
+            const emptyBtn = planT('wf.trash.empty');
+            const ok = await vscode.window.showWarningMessage(planT('wf.trash.emptyConfirm', items.length), { modal: true }, emptyBtn);
+            if (ok !== emptyBtn) return;
+            let n = 0;
+            for (const it of items) if (await purgeWorkflow(it.sessionFile, it.wfId)) n++;
+            vscode.window.showInformationMessage(planT('wf.trash.emptied', n));
+            void pushProjectTrash();
+        },
+        onAgentOpen: (akey: string) => { void pushAgentRows(akey); },
+    };
+}
+
+async function openWorkflowPanel(context: vscode.ExtensionContext): Promise<void> {
+    const wfs = await findWorkflowsForProject(lastWorkflowsBySession);
+    createOrShowWorkflowPanel(context, wfs.map(w => toWorkflowView(w, lastWorkflowsBySession)), workflowPanelCallbacks());
+}
+
+type ProjectTrashItem = TrashedWorkflow & { sessionFile: string };
+let lastProjectTrash: ProjectTrashItem[] = [];
+
+async function listProjectWorkflowTrash(): Promise<ProjectTrashItem[]> {
+    const sessions = await projectSessionFiles();
+    const lists = await Promise.all(sessions.map(async s =>
+        (await listWorkflowTrash(s.file)).map(t => ({ ...t, sessionFile: s.file }))));
+    lastProjectTrash = lists.flat().sort((a, b) => b.deletedAt - a.deletedAt);
+    return lastProjectTrash;
+}
+
+function findShownTrash(key: string): ProjectTrashItem | undefined {
+    return lastProjectTrash.find(t => `${t.sessionFile}|${t.wfId}` === key);
 }
 
 // Encode an absolute workspace path into Claude's projects/ directory name format.
@@ -2967,10 +3130,8 @@ async function refreshAllSessionsOnce() {
     // user's core ask: "beep me when all the subagents I spun up have finished."
     // First scan / suppressBeep only baselines (silent) so an already-finished
     // workflow that was done before the extension loaded doesn't beep on startup.
-    // Cache the tracked session's workflow scan so the panel-sync push below can
-    // reuse it instead of hitting disk a second time.
-    const trackedSessionFile = getTrackedSessionFile();
-    let trackedWorkflowsCache: WorkflowInfo[] | undefined;
+    // The scans land in lastWorkflowsBySession, which the workflow panel's project-wide list
+    // reuses below instead of reading those sessions a second time.
     // Only providers that actually have workflow journals on disk are scanned. Codex has
     // no equivalent structure yet (Phase 4), so walking its files here would be pure waste.
     const workflowCapableFiles = new Set(
@@ -2988,7 +3149,6 @@ async function refreshAllSessionsOnce() {
             log(`[wf-done] scan error for session: ${e}`);
             continue;
         }
-        if (sessionFile === trackedSessionFile) trackedWorkflowsCache = workflows;
         lastWorkflowsBySession.set(sessionFile, workflows);
         // Lazily fetched once per session (only when a wf_* workflow reaches journal
         // all-done) — the set of workflows the parent session confirms have truly finished.
@@ -3099,15 +3259,15 @@ async function refreshAllSessionsOnce() {
         !s.isFallback && (s.provider !== 'codex' || s.codexActive === true)
     ) ?? null);
 
-    // Keep the workflow panel (if open) in sync. The workflow-done loop above
-    // already scanned the tracked session, so reuse that result instead of hitting
-    // disk again. (Fall back to a fresh scan only if the cache somehow missed.)
-    if (trackedSessionFile) {
-        if (trackedWorkflowsCache !== undefined) {
-            try { pushWorkflows(trackedWorkflowsCache); }
-            catch (e) { log(`[workflows] push error: ${e}`); }
-        } else {
-            findWorkflowsForSession(trackedSessionFile).then(pushWorkflows).catch(e => log(`[workflows] push error: ${e}`));
+    // Keep the workflow panel (if open) in sync: the project-wide list, then the rows of any agent
+    // the user has open. Live sessions reuse the scans the loop above just made; finished ones come
+    // from projectWfCache; an open agent is re-read only when its log moved (readAgentActivity).
+    if (isWorkflowPanelOpen()) {
+        try {
+            await pushProjectWorkflows();
+            for (const ak of getOpenAgentKeys()) await pushAgentRows(ak, true);
+        } catch (e) {
+            log(`[workflows] push error: ${e}`);
         }
     }
 

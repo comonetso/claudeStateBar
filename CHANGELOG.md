@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.16.8] - 2026-09-19
+
+The workflow panel now works like the Codex progress panel. It used to show the workflows of one
+session — the one you clicked in the menu — so anything from an earlier conversation was gone. It
+now lists every session of the project, newest first, up to the same 20 cards the Codex panel
+shows, and it can be opened from the command palette (`claudeStateBar: Show Claude Workflows`) as
+well as the menu. Cards start folded, show the start date as well as the time, and finished ones go
+into a single "N finished" row that starts folded and names any that were stopped; one you watched
+while it ran stays outside until you close the panel. Opening an agent now shows what it did as
+rows — commands, file reads, edits, searches, what it said — each marked done or failed with how
+long it took, with runs of successful ones folded into a line and failures left in view, and its
+final report last. Those rows are read only when you open the agent. Phases are drawn like a Codex
+turn header, start open, and are no longer remembered after the panel closes. 🗑 appears on
+finished cards only, and the trash covers the whole project. An agent left marked as running in a
+session idle past `hideAfter` is shown as stopped.
+
+The Codex progress panel folds its finished runs the same way: one row, closed when the panel
+opens, with failures and stops named on it, and a run you watched finish stays in view.
+
+The codex_rescue plugin's cleanup no longer touches `.scratch/` while another run in the same
+project is alive (a heartbeat within the last 30 seconds, the Codex panel's own "no response"
+threshold, or an open ping-pong lock). `.scratch/` is shared between runs, so the older files a live
+run was still using could be deleted from under it. The plugin version moves to 1.16.8.
+
 ## [1.16.7] - 2026-09-19
 
 The `codex_rescue` plugin now cleans up its own old records. Nothing did this unless you had turned

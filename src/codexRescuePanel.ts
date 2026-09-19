@@ -100,7 +100,7 @@ export function isCodexPanelOpen(): boolean { return panel !== null; }
  * to tell which project's panel is in front. Abbreviated with the same rule (and the same
  * `shortNames` overrides) the status bar uses, so one project reads the same in both places.
  */
-function workspaceLabel(): { short: string; full: string } | null {
+export function workspaceLabel(): { short: string; full: string } | null {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) return null;
     const shortNames = vscode.workspace.getConfiguration('claudeContextBar')
@@ -264,6 +264,13 @@ function getHtml(webview: vscode.Webview): string {
   .del-btn:hover { background: var(--vscode-statusBarItem-errorBackground, #f85149); color:#fff; }
   .run-body { margin-top:8px; }
   .run.collapsed .run-body { display:none; }
+  /* Finished runs fold into one row. Twenty done cards, even collapsed, pushed the live ones
+     and the ones that need a look off the first screen. */
+  .done-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
+               padding:6px 14px; margin-bottom:12px; border:1px dashed var(--vscode-panel-border);
+               border-radius:6px; color: var(--vscode-descriptionForeground); }
+  .done-group.collapsed .done-head .arrow { transform: rotate(-90deg); }
+  .done-group.collapsed .done-body { display:none; }
   .meta { color: var(--vscode-descriptionForeground); font-size:.78em; font-family: var(--vscode-editor-font-family); margin-bottom:8px; line-height:1.6; }
   .doclink { color: var(--vscode-textLink-foreground); cursor:pointer; text-decoration:none; }
   .doclink:hover { text-decoration:underline; }
@@ -445,6 +452,13 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
   // would just add a second click to reach what they asked for.
   const foldedTurns = {};
   let lastRenderedSig = null;
+  // The finished-runs group starts closed every time the panel opens (user's call, 2026-09-19):
+  // the list is opened to see what is running, and the finished ones are what got in the way.
+  let doneGroupOpen = false;
+  // Runs this panel has seen while they were still going. They stay out of the finished group
+  // until the panel is closed (user's call, 2026-09-19): the finish chime brings you here to read
+  // the result, and the card folding away at that moment would undo the reason you came.
+  const watchedLive = {};
 
   function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
   function pad2(n) { return String(n).padStart(2, '0'); }
@@ -565,7 +579,7 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
     parts.push(t('cx.autoRefresh'));
     sub.textContent = parts.join(' · ');
 
-    list.innerHTML = lastRuns.map(function (run, index) {
+    const cards = lastRuns.map(function (run, index) {
       const phase = run.phase;
       const badgeCls = (phase==='starting'||phase==='finalizing') ? 'running' : phase;
       const badge = '<span class="badge ' + esc(badgeCls) + '">' + esc(t('cx.phase.'+phase)) + '</span>';
@@ -778,7 +792,38 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
           staleLine + nowBlock + plan + items +
         '</div>' +
       '</div>';
-    }).join('');
+    });
+
+    // Live and not-yet-settled runs stay on top; finished ones go into the group below them.
+    // 'stale' is not finished: it is the one state that asks the user to go and look.
+    const liveCards = [], overCards = [];
+    let gFail = 0, gStop = 0;
+    lastRuns.forEach(function (r, i) {
+      const over = r.phase==='done' || r.phase==='failed' || r.phase==='stopped';
+      if (!over) watchedLive[r.stamp] = true;
+      if (!over || watchedLive[r.stamp]) { liveCards.push(cards[i]); return; }
+      overCards.push(cards[i]);
+      if (r.phase === 'failed') gFail++;
+      if (r.phase === 'stopped') gStop++;
+    });
+    let html = liveCards.join('');
+    if (overCards.length) {
+      // A failure folded away unseen is the one thing this group must not do, so the head
+      // names failures and stops even while closed. Counted from the group itself: a watched
+      // run left outside is already in plain view.
+      const extra = [];
+      if (gFail) extra.push(t('cx.nFailed', gFail));
+      if (gStop) extra.push(t('cx.nStopped', gStop));
+      html += '<div class="done-group' + (doneGroupOpen ? '' : ' collapsed') + '">' +
+        '<div class="done-head" data-dgroup="1">' +
+          '<span class="arrow">▾</span>' +
+          '<span>' + esc(t('cx.doneGroup', overCards.length)) + '</span>' +
+          (extra.length ? '<span>· ' + esc(extra.join(' · ')) + '</span>' : '') +
+        '</div>' +
+        '<div class="done-body">' + overCards.join('') + '</div>' +
+      '</div>';
+    }
+    list.innerHTML = html;
     tick();
     markClipped();
   }
@@ -875,6 +920,8 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
       if (body) body.classList.toggle('folded', !!foldedTurns[fkey]);
       return;
     }
+    const dg = e.target.closest('[data-dgroup]');
+    if (dg) { doneGroupOpen = !doneGroupOpen; render(lastRuns, true); return; }
     const del = e.target.closest('[data-del]');
     if (del) { vscodeApi.postMessage({ type:'delete', stamp: del.getAttribute('data-del') }); return; }
     // A fully-visible row has nothing to open; swallow the click so it doesn't flicker.

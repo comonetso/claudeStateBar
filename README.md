@@ -154,17 +154,16 @@ Local and remote read paths were verified to produce identical parsed results �
 
 ## 🎬 Workflow & Task Agent viewer panel
 
-Open the **Workflow Viewer** from the session QuickPick menu to see a live WebView panel of every active Claude Code workflow and Task (Agent tool) sub‑agent:
+Open it from the session menu, or with `claudeStateBar: Show Claude Workflows` in the command palette. It lists this project's Claude Code workflows and Task (Agent tool) sub‑agents — every session, not only the one you clicked — newest first, up to 20. Since 1.16.8 it looks and behaves like the [Codex progress panel](#-codex-progress-panel-optional) below:
 
-- **Workflow progress** — each workflow appears as a card with its phases, running/done agents, per‑agent summary, elapsed time, and live activity
-- **Agents grouped by phase** — when a workflow declares more than one phase, its agents are boxed under the phase they ran in, each box carrying a done/total counter. Click a phase header to fold it; phases with no running agents start folded, and what you fold is remembered after the panel is closed
-- **Model and tokens per agent** — every row shows which model ran it and how many tokens it used, and the card header carries the agent count and the workflow's total
-- **Full result expand** — long final reports fold into a `▶ summary` toggle so you can read the full output without clutter
+- **Cards** — each workflow is a card with its name, start date and time, elapsed or total time, and a status badge. Everything starts folded. Finished workflows go into a single "N finished" row, itself folded, which also says how many were stopped; one you watched while it ran stays outside that row until you close the panel
+- **Earlier sessions too** — a workflow from yesterday's conversation is still there. The card says which session it ran in, and whether that session is open right now. If a session has been idle past `hideAfter`, any agent it left marked as running is shown as stopped
+- **Agents grouped by phase** — when a workflow declares more than one phase, its agents sit under the phase they ran in, drawn like a Codex turn header with a done/total counter. Click the header to fold it
+- **What each agent did** — open an agent to see its steps as rows: commands, file reads, edits, code searches, web lookups and what it said, each marked done or failed, with how long it took. Runs of successful commands, reads or searches fold into one line; a failure never does, and opening it shows the error output. The last row is the agent's final report. The rows are read only when you open the agent, which keeps the panel light over Remote‑SSH
+- **Model and tokens per agent** — every agent shows which model ran it and how many tokens it used, and the card carries the agent count and the workflow's total
 - **Role labels** — each agent's role comes from the `label` its workflow script gave it, falling back to text extracted from the agent's prompt header, so you see "Lens A: Bug Detection" instead of "agent-1"
-- **Task (Agent tool) sub‑agents** — sub‑agents spawned via Claude Code's Agent tool are shown separately, grouped into **batches by start time** (5‑minute gap = new batch)
-- **Per‑batch 🗑 cleanup** — delete finished task‑agent logs for a specific batch while keeping any still‑running agents untouched
-- **Trash** — deleting a workflow moves it aside instead of destroying it, with no confirmation to click through. Open 🗑 at the top of the panel to restore it or delete it for good. Restoring is refused if a live workflow has since taken that id
-- **Details-open persistence** — expanded `<details>` panels stay open across live re‑renders
+- **Task (Agent tool) sub‑agents** — sub‑agents spawned via Claude Code's Agent tool are shown as their own cards, grouped into **batches by start time** (5‑minute gap = new batch). 🗑 on a finished batch deletes its completed agents' logs
+- **Trash** — 🗑 on a finished workflow moves it aside instead of destroying it, with no confirmation to click through. Open 🗑 at the top of the panel to restore it or delete it for good; the trash covers every session of the project. Restoring is refused if a live workflow has since taken that id
 - **Font size control** — `A−` / `A+` buttons adjust the panel text size
 - **Bilingual UI** — full EN / 한국어 toggle, same as the settings panel
 
@@ -274,7 +273,7 @@ The first run creates `docs/codex_rescue/` inside your project. The panel reads 
 - `.log/` — raw run records. Full command output lands here, so size varies a lot by run (a few hundred KB per run is typical, and a run that allows cutting in also keeps its full app-server transcript, often several MB); the skill drops its own `.gitignore` in this directory to **keep it out of git**
 - `.scratch/` — Codex's workbench: scripts, dumps and intermediate data it made while investigating. Responses often point at files here as evidence. Also kept out of git
 
-The plugin cleans up after itself. Each time codex_rescue runs, it removes from that project the app-server transcript of runs that finished successfully, and anything in `.log/` and `.scratch/` last touched more than 7 days ago. The request/response documents, the trash, and a run that is still running are never touched. Set `CR_KEEP_DAYS` to change the 7 days, or `0` to turn cleanup off; to apply it to every session, put it in the `env` block of `~/.claude/settings.json`. This happens in the plugin, not the extension, so it works the same without VS Code. For anything sooner, the 🗑 button on a card takes the whole run, documents included, straight to the trash.
+The plugin cleans up after itself. Each time codex_rescue runs, it removes from that project the app-server transcript of runs that finished successfully, and anything in `.log/` and `.scratch/` last touched more than 7 days ago. The request/response documents, the trash, and a run that is still running are never touched. `.scratch/` is skipped altogether while another run in the same project is still going, since runs share it. Set `CR_KEEP_DAYS` to change the 7 days, or `0` to turn cleanup off; to apply it to every session, put it in the `env` block of `~/.claude/settings.json`. This happens in the plugin, not the extension, so it works the same without VS Code. For anything sooner, the 🗑 button on a card takes the whole run, documents included, straight to the trash.
 
 ### Trash
 

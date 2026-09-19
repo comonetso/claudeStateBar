@@ -13,16 +13,22 @@
 //      생긴 조각이 IVR 에서 63MB 였고, 확장은 이벤트 파일로 실행을 찾아서 그걸 영영 못 봤다.
 //   ③ `.scratch/` 의 최상위 항목 — 안쪽까지 가장 최근 수정이 보존 기간보다 오래됐을 때.
 //      Codex 가 이름을 제멋대로 지어서 어느 실행 것인지 묶을 수 없으니 날짜로만 판단한다.
+//      🔴 **다른 실행이 살아 있으면 그 회차엔 ③ 을 통째로 건너뛴다** (2026-09-19 Codex 리뷰 지적).
+//      `.scratch/` 는 실행마다 나뉘지 않은 공용 작업대라, 살아 있는 실행이 다시 쓰려는 오래된 항목을
+//      지울 수 있다. 살았는지는 확장 진행 패널의 '응답 없음' 기준(30초)을 그대로 쓴다 — 심장박동
+//      파일이 30초 안에 갱신됐으면 산 것이다. 심장박동이 아직 없으면(Codex 시작 전) 잠금을 만든 시각으로 본다.
+//      핑퐁 잠금(`.chat_<슬러그>.lock`)은 심장박동이 없어 가를 수 없으니 있으면 산 것으로 친다(사용자 결정).
 //
 // 건드리지 않는 것:
 //   - 요청서·응답 .md 문서(커밋되는 기록), 휴지통 `.trash/`·`.chat_trash/`
 //   - 점으로 시작하는 `.log/` 파일 — 실행 중 잠금 `.<스탬프>.lock`, 복구 표식 `.*.inflight`, `.gitignore`
 //   - 잠금이 있는 스탬프 전부, 그리고 --skip-stamp 로 받은 이번 실행의 스탬프
 //     (같은 스탬프 재실행은 지난 실패의 stderr 를 먼저 읽어야 한다)
+//     --skip-lock 은 핑퐁이 넘기는 자기 잠금 파일 이름이다 — 자기 자신을 '살아 있는 다른 실행'으로 세지 않게
 //   - 심볼릭 링크 너머 — 재거나 지울 때 따라가지 않는다. 따라가면 작업 폴더 밖까지 닿는다
 //
 // 사용법:
-//   node cleanup-logs.mjs --dir <…/docs/codex_rescue> --keep-days <N> [--skip-stamp <스탬프>] [--dry-run]
+//   node cleanup-logs.mjs --dir <…/docs/codex_rescue> --keep-days <N> [--skip-stamp <스탬프>] [--skip-lock <잠금 파일 이름>] [--dry-run]
 //
 // 부가 기능이다. 실패해도 종료 코드 0 으로 끝내고 사유만 stderr 에 남긴다 — 이것 때문에
 // 실행을 막으면 안 된다. (인자 오류만 2)
@@ -33,6 +39,8 @@ import { pathToFileURL } from 'node:url';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STAMP_RE = /^(\d{6}_\d{6})_/;
+// 확장 진행 패널이 '응답 없음'으로 판정하는 기준(runDiscovery.ts STALE_AFTER_MS)과 같다. 새 숫자를 만들지 않는다.
+const LIVE_MS = 30 * 1000;
 
 function parseArgs(argv) {
     const o = { dryRun: false };
@@ -54,7 +62,8 @@ function parseArgs(argv) {
     if (path.basename(dir) !== 'codex_rescue' || path.basename(path.dirname(dir)) !== 'docs') {
         throw new Error(`docs/codex_rescue 폴더가 아니다: ${dir}`);
     }
-    return { dir, keepDays: Number(o['keep-days']), skipStamp: o['skip-stamp'] || '', dryRun: o.dryRun };
+    return { dir, keepDays: Number(o['keep-days']), skipStamp: o['skip-stamp'] || '',
+             skipLock: o['skip-lock'] || '', dryRun: o.dryRun };
 }
 
 function lstat(p) {
@@ -82,8 +91,21 @@ function stateOf(statusFile) {
     try { return JSON.parse(fs.readFileSync(statusFile, 'utf8')).state; } catch { return undefined; }
 }
 
-export function cleanup({ dir, keepDays, skipStamp, dryRun }, nowMs = Date.now()) {
-    const res = { logFiles: 0, scratchItems: 0, bytes: 0, removed: [], failed: [] };
+// 이번 실행 말고 살아 있는 실행이 있나 — `.scratch/` 정리를 건너뛸지 가른다(머리말 ③).
+function otherRunAlive(logDir, logNames, skipStamp, skipLock, nowMs) {
+    for (const n of logNames) {
+        if (n === skipLock) continue;
+        if (/^\.chat_.+\.lock$/.test(n)) return true;
+        const m = /^\.(\d{6}_\d{6})\.lock$/.exec(n);
+        if (!m || m[1] === skipStamp) continue;
+        const beat = lstat(path.join(logDir, `${m[1]}_heartbeat`)) || lstat(path.join(logDir, n));
+        if (beat && nowMs - beat.mtimeMs <= LIVE_MS) return true;
+    }
+    return false;
+}
+
+export function cleanup({ dir, keepDays, skipStamp, skipLock = '', dryRun }, nowMs = Date.now()) {
+    const res = { logFiles: 0, scratchItems: 0, bytes: 0, removed: [], failed: [], scratchSkipped: false };
     if (keepDays <= 0) return res;
     const cutoff = nowMs - keepDays * DAY_MS;
 
@@ -130,6 +152,10 @@ export function cleanup({ dir, keepDays, skipStamp, dryRun }, nowMs = Date.now()
     }
 
     // ── .scratch/ ──
+    if (otherRunAlive(logDir, logNames, skipStamp, skipLock, nowMs)) {
+        res.scratchSkipped = true;
+        return res;
+    }
     const scratch = path.join(dir, '.scratch');
     let scratchNames = [];
     try { scratchNames = fs.readdirSync(scratch); } catch { /* 없으면 할 일 없음 */ }
@@ -164,6 +190,7 @@ async function main() {
     }
     if (opts.dryRun) {
         for (const p of res.removed) process.stdout.write(`(미리보기) ${p}\n`);
+        if (res.scratchSkipped) process.stdout.write('(미리보기) 살아 있는 다른 실행이 있어 작업 폴더(.scratch)는 이번에 건너뛴다\n');
     }
     if (res.logFiles || res.scratchItems) {
         const parts = [];
