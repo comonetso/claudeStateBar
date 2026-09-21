@@ -1183,11 +1183,32 @@ async function getClaudeProjectsUri(): Promise<vscode.Uri | null> {
 
 // Render a structured result object as readable "key: value" multiline text instead
 // of a raw JSON.stringify blob. Nested objects/arrays are JSON-encoded inline.
+// Since Claude Code 2.1.278 the harness frames what it hands a workflow agent. The script's
+// prompt arrives as "[Workflow harness — computed task] <notice> The computed task text
+// follows:" with every line after it indented two spaces, and some runs (what decides it is not
+// known — it is not whether a slash command started them) first get a "[Workflow harness — user
+// request]" message relaying the user's request, identical for every agent. Read as-is, that
+// relay became every agent's prompt, so no agent
+// could be told apart or matched to the script (measured 2026-09-22: 0 of 10 placed), and the
+// notice would leak into role labels. Returns the prompt as it read before 2.1.278, or null for
+// a message that is not the agent's task. Frames of any other kind pass through untouched.
+function unwrapHarnessPrompt(text: string): string | null {
+    const m = /^\[Workflow harness\s*\S\s*([^\]]+)\]/.exec(text);
+    if (!m) return text;
+    if (m[1] === 'user request') return null;
+    if (m[1] !== 'computed task') return text;
+    const marker = 'The computed task text follows:';
+    const at = text.indexOf(marker);
+    const body = at >= 0 ? text.slice(at + marker.length) : text.slice(text.indexOf('\n') + 1);
+    return body.replace(/^ {2}/gm, '').replace(/^\n+/, '');
+}
+
 // Extract the FIRST user-message text from an agent log (agent-<id>.jsonl). This is the
 // prompt the orchestrator handed the subagent — it carries the agent's role. Journal-based
 // workflow agents record NO label anywhere on disk (journal `started` entries hold only
 // {key, agentId}; the meta.json sidecar holds only {agentType:"workflow-subagent"}), so the
-// prompt is the only available role signal. Returns '' when no user text is found.
+// prompt is the only available role signal. Harness framing is removed first (see
+// unwrapHarnessPrompt). Returns '' when no user text is found.
 async function getAgentFirstPromptText(wfDirUri: vscode.Uri, agentId: string): Promise<string> {
     try {
         const content = await readTextFile(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`));
@@ -1204,7 +1225,9 @@ async function getAgentFirstPromptText(wfDirUri: vscode.Uri, agentId: string): P
                     if (b?.type === 'text' && typeof b.text === 'string') text += b.text;
                 }
             }
-            if (text.trim()) return text;
+            if (!text.trim()) continue;
+            const task = unwrapHarnessPrompt(text);
+            if (task !== null && task.trim()) return task;
         }
     } catch { /* agent log not readable yet */ }
     return '';
@@ -1610,6 +1633,37 @@ async function findTaskAgentBundles(sessionDirUri: vscode.Uri): Promise<{ wf: Wo
 //  property — or a prompt quoting one — could inject a phantom phase. The new parser
 //  confines them to the meta block and additionally recovers per-agent placement.)
 
+// A workflow's script is not always beside its agents. Claude Code files the script under the
+// project dir of the working directory the conversation has at launch, while the agent logs and
+// the result file (workflows/<wfId>.json) stay under the dir the session started in. A session
+// that cd'd into a subfolder therefore splits them — measured 2026-09-22 on AI_IVR_Server-Gabia:
+// 7 of 27 scripts sat under another project dir with the same session id, and every one of those
+// runs had its result file at home. Missing the script costs the panel the run's name,
+// description, phases and agent labels, while the phone's remote-control view (fed by the live
+// session, not the disk) shows them fine. Session ids are unique across project dirs, so look there.
+//
+// A found location is remembered: the script is written once and never moves (its mtime was
+// 0–8 s before the first agent log on all 21 runs measured). A miss is remembered only until the
+// run's journal changes, since a same-second launch could list the run before its script lands.
+const strayScriptCache = new Map<string, { uri?: vscode.Uri; journalMtime?: number }>();
+
+/** This session id's workflows/scripts/ under every other project dir, with the entries. */
+async function listStrayScriptDirs(sessionDirUri: vscode.Uri): Promise<{ dir: vscode.Uri; entries: [string, vscode.FileType][] }[]> {
+    const m = /^(.*)\/([^/]+)\/([^/]+)$/.exec(sessionDirUri.path);
+    if (!m) return [];
+    const [, projectsPath, ownSlug, sessionId] = m;
+    const projectsUri = sessionDirUri.with({ path: projectsPath });
+    let slugs: [string, vscode.FileType][];
+    try { slugs = await vscode.workspace.fs.readDirectory(projectsUri); } catch { return []; }
+    const found = await Promise.all(slugs
+        .filter(([slug, type]) => type === vscode.FileType.Directory && slug !== ownSlug)
+        .map(async ([slug]) => {
+            const dir = vscode.Uri.joinPath(projectsUri, slug, sessionId, 'workflows', 'scripts');
+            try { return { dir, entries: await vscode.workspace.fs.readDirectory(dir) }; } catch { return null; }
+        }));
+    return found.filter((x): x is { dir: vscode.Uri; entries: [string, vscode.FileType][] } => x !== null);
+}
+
 async function findWorkflowsForSession(sessionFileUri: string): Promise<WorkflowInfo[]> {
     // Collect with each workflow's journal mtime so we can sort newest-activity-first.
     const wfList: { wf: WorkflowInfo; mtime: number }[] = [];
@@ -1635,6 +1689,28 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
         try {
             scriptEntries = await vscode.workspace.fs.readDirectory(scriptsDirUri);
         } catch { /* no scripts dir */ }
+
+        // Home first; other project dirs are listed at most once per call, and only when some
+        // run's script is not at home (see strayScriptCache).
+        let strayDirs: { dir: vscode.Uri; entries: [string, vscode.FileType][] }[] | undefined;
+        const resolveScript = async (wfId: string, journalMtime: number): Promise<vscode.Uri | undefined> => {
+            const own = scriptEntries.find(([n]) => n.endsWith(`-${wfId}.js`));
+            if (own) return vscode.Uri.joinPath(scriptsDirUri, own[0]);
+            const key = `${sessionDirUri.toString()}|${wfId}`;
+            const hit = strayScriptCache.get(key);
+            if (hit?.uri) return hit.uri;
+            if (hit && hit.journalMtime === journalMtime) return undefined;
+            if (!strayDirs) strayDirs = await listStrayScriptDirs(sessionDirUri);
+            for (const { dir, entries } of strayDirs) {
+                const e = entries.find(([n]) => n.endsWith(`-${wfId}.js`));
+                if (!e) continue;
+                const uri = vscode.Uri.joinPath(dir, e[0]);
+                strayScriptCache.set(key, { uri });
+                return uri;
+            }
+            strayScriptCache.set(key, { journalMtime });
+            return undefined;
+        };
 
         for (const [wfId, ftype] of wfDirs) {
             if (ftype !== vscode.FileType.Directory || !wfId.startsWith('wf_')) continue;
@@ -1702,13 +1778,18 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                 }
             } catch { /* journal unreadable */ }
 
+            let mtime = 0;
+            try {
+                mtime = (await vscode.workspace.fs.stat(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'))).mtime;
+            } catch { /* no journal yet */ }
+
             let name = wfId;
             let description = '';
             let phases: string[] = [];
-            const scriptEntry = scriptEntries.find(([n]) => n.endsWith(`-${wfId}.js`));
-            if (scriptEntry) {
+            const scriptUri = await resolveScript(wfId, mtime);
+            if (scriptUri) {
                 try {
-                    const js = await readTextFile(vscode.Uri.joinPath(scriptsDirUri, scriptEntry[0]));
+                    const js = await readTextFile(scriptUri);
                     const parsed = parseWorkflowScript(js);
                     name = parsed.name || wfId;
                     description = parsed.description;
@@ -1727,16 +1808,14 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                         // heuristic — it is the name they chose for that agent.
                         if (p.label) { a.name = p.label; a.fullName = undefined; }
                     }
-                } catch { /* fallback to wfId */ }
+                } catch {
+                    // Fall back to wfId, and forget a remembered location that no longer reads.
+                    strayScriptCache.delete(`${sessionDirUri.toString()}|${wfId}`);
+                }
             }
 
             // Stable agent order (same on every refresh) instead of journal-append order.
             agents.sort((a, b) => a.agentId.localeCompare(b.agentId));
-
-            let mtime = 0;
-            try {
-                mtime = (await vscode.workspace.fs.stat(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'))).mtime;
-            } catch { /* no journal yet */ }
 
             wfList.push({ wf: { wfId, name, description, phases, agents, ...(wfStartedAt ? { startedAt: wfStartedAt } : {}), ...(wfEndedAt ? { endedAt: wfEndedAt } : {}),
                                 sessionFile: sessionFileUri, activityAt: mtime }, mtime });
@@ -3966,17 +4045,25 @@ function untilHumanCompact(iso: string | null): string {
     return `${m}m`;
 }
 
-// Suffix appended to the first session item, e.g. " - 27% (in 2h 43m)".
-// Compact mode drops the label and uses a short time format: " · 27% (4h 24m)".
+// The weekly figure that trails the 5-hour one in the status bar: " - 24%" compact,
+// " · Weekly 24%" otherwise. No reset time — the countdown belongs to the 5-hour window
+// (user decision, 2026-09-22). Shared by the Claude and Codex suffixes so both read alike.
+function weeklyTail(percent: number, compact: boolean): string {
+    return compact ? ` - ${percent}%` : ` · ${planT('sb.weekly')} ${percent}%`;
+}
+
+// Suffix appended to the first session item, e.g. " - Session 27% (in 2h 43m) · Weekly 24%".
+// Compact mode drops the labels and uses a short time format: " · 27% (4h 24m) - 24%".
 // Only added when plan usage is OK; setup/error states are surfaced by the dedicated
 // warning item (updatePlanFallback) so the user always sees a clear prompt.
 function planTextSuffix(compact: boolean): string {
     if (planStatus === 'ok' && lastUsage && lastUsage.sessionPercent != null) {
         const p = Math.round(lastUsage.sessionPercent);
+        const weekly = lastUsage.weeklyPercent != null ? weeklyTail(Math.round(lastUsage.weeklyPercent), compact) : '';
         if (compact) {
-            return ` · ${p}% (${untilHumanCompact(lastUsage.sessionResetAt)})`;
+            return ` · ${p}% (${untilHumanCompact(lastUsage.sessionResetAt)})${weekly}`;
         }
-        return ` - ${planT('sb.sessionLabel')} ${p}% (${untilHuman(lastUsage.sessionResetAt)})`;
+        return ` - ${planT('sb.sessionLabel')} ${p}% (${untilHuman(lastUsage.sessionResetAt)})${weekly}`;
     }
     return '';
 }
@@ -4369,6 +4456,14 @@ function codexHeadlineLabel(u: CodexUsageSnapshot | null): string {
     return planT(codexHasFiveHourLimit(u) ? 'sb.codexLimit' : 'sb.codexSecondary');
 }
 
+// The weekly figure after a 5-hour headline, as for Claude. Empty when the headline already is
+// the weekly window (a weekly-only plan keeps "49% (2d 7h)" as it was, user decision 2026-09-22).
+function codexWeeklyTail(u: CodexUsageSnapshot | null, compact: boolean): string {
+    if (!codexHasFiveHourLimit(u)) return '';
+    const weekly = codexWeeklyWindow(u);
+    return weekly ? weeklyTail(codexUsedPercent(weekly.usedPercent), compact) : '';
+}
+
 // Suffix appended to the leading Codex session item — mirrors planTextSuffix().
 function codexUsageTextSuffix(compact: boolean): string {
     const u = accountCodexUsage();
@@ -4377,9 +4472,9 @@ function codexUsageTextSuffix(compact: boolean): string {
     const p = codexUsedPercent(w.usedPercent);
     const iso = isoFromEpoch(w.resetsAt);
     if (compact) {
-        return ` · ${p}% (${untilHumanCompact(iso)})`;
+        return ` · ${p}% (${untilHumanCompact(iso)})${codexWeeklyTail(u, true)}`;
     }
-    return ` - ${codexHeadlineLabel(u)} ${p}% (${untilHuman(iso)})`;
+    return ` - ${codexHeadlineLabel(u)} ${p}% (${untilHuman(iso)})${codexWeeklyTail(u, false)}`;
 }
 
 // Markdown block describing Codex account usage; inserted into Codex session tooltips.
@@ -4445,8 +4540,9 @@ function updateCodexUsageFallback(noCodexSessions: boolean): void {
     const iso = isoFromEpoch(w.resetsAt);
     const compact = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('compactMode', false);
     item.text = compact
-        ? `${providerIcon('codex')} Codex · ${used}% (${untilHumanCompact(iso)})`
-        : `${providerIcon('codex')} Codex - ${codexHeadlineLabel(u)} ${used}% (${untilHuman(iso)})`;
+        ? `${providerIcon('codex')} Codex · ${used}% (${untilHumanCompact(iso)})${codexWeeklyTail(u, true)}`
+        : `${providerIcon('codex')} Codex - ${codexHeadlineLabel(u)} ${used}% (${untilHuman(iso)})${codexWeeklyTail(u, false)}`;
+    // Colour follows the headline figure only (user decision, 2026-09-22).
     item.color = colorForPercent(w.usedPercent) ?? '#FF9F6E';
     item.backgroundColor = undefined;
     item.tooltip = new vscode.MarkdownString(

@@ -37,7 +37,7 @@ Reads Claude Code's local session logs (`~/.claude/projects/*.jsonl`) and shows,
 ### 📊 claudeState — Claude.ai plan usage
 Fetches your **account‑wide plan usage** directly from claude.ai (no SDK, no extra service):
 - **5‑hour session limit %** with reset countdown (merged into the first session item)
-- **Weekly usage %**, plus a per‑model breakdown in the tooltip (**Fable / Opus / Sonnet** — whichever models claude.ai currently reports)
+- **Weekly usage %** right after the 5‑hour figure, without a countdown — `2% (4h 49m) - 24%` in compact mode, `Session 2% (in 4h 49m) · Weekly 24%` otherwise — plus a per‑model breakdown in the tooltip (**Fable / Opus / Sonnet** — whichever models claude.ai currently reports)
 - **Session‑reset detection** → optional **Telegram** notification when your 5‑hour window resets
 - Credentials (Session Key, Bot Token) are stored **encrypted** via VS Code SecretStorage
 
@@ -99,6 +99,8 @@ With several VS Code windows open, only one of them queries Codex and the rest r
 If the current window has no recorded Codex conversation UUID or its rollout is unavailable, account usage is still shown as a standalone **`⬢ Codex`** item. This is intentionally account-only: the extension does not attach another window's model or context figures by guesswork. Once a UUID is resolved, the standalone item is replaced by that conversation's normal session item.
 
 Codex account usage is a **separate concept** from Claude's 5‑hour / weekly plan usage. Each provider's usage is merged only into that provider's own first session item.
+
+The status bar text follows the Claude one. An account with a 5‑hour limit shows it with its countdown and then the weekly figure (`30% (2h 3m) - 49%`); a weekly‑only account shows the weekly figure with its countdown (`49% (2d 7h)`). On the standalone **`⬢ Codex`** item the text colour follows the first figure; a session item is coloured by its context usage, as before.
 
 ### Codex settings
 

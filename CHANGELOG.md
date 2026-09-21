@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.16.9] - 2026-09-22
+
+The workflow panel could lose a run's name, description, phases and agent names — showing the run
+id and "Agent 1, Agent 2…" instead — while the remote-control view on the phone still showed them.
+Two things caused it. A session that changed its working directory before launching a workflow (a
+`cd gateway`, say) has the workflow's script saved under that folder's project directory, apart
+from the agent logs, and the panel only looked beside the logs; it now also looks for the same
+session under the other project directories. And since Claude Code 2.1.278 every workflow agent's
+prompt arrives wrapped in a harness notice, and some runs first hand each agent a copy of the user's
+request that started them, the same for all of them, so the panel could no longer tell the agents
+apart or match them to the script. It now reads the task past that wrapping, as before.
+
+The status bar now shows the weekly limit next to the 5-hour one, without a countdown:
+`2% (4h 49m) - 24%` in compact mode, `Session 2% (in 4h 49m) · Weekly 24%` otherwise. It used to
+appear only in the tooltip, or on the standalone item shown when no session is open. Codex follows
+the same pattern on accounts with a 5-hour limit; a weekly-only account keeps showing its weekly
+figure with the countdown, as before.
+
 ## [1.16.8] - 2026-09-19
 
 The workflow panel now works like the Codex progress panel. It used to show the workflows of one
