@@ -25,7 +25,7 @@ It builds on Claude Code's own cross-session messaging (`ListAgents` and `SendMe
 - **Nothing runs twice.** A resent request is recognised and answered from the existing record. The same ID with a different body is refused.
 - **The receiver stays in its lane.** A question is answered, a notice is checked for impact only, and a change request is logged for that session's own user to act on — nothing is edited on another session's behalf.
 - **Both sides keep a record** under `docs/_msg/peer_req/<request id>/`, committed to Git by default.
-- **When a session starts**, the plugin tells you it is loaded, how many peers the repository has, and whether anything arrived or finished while you were away.
+- **When a session starts**, the plugin tells you it is loaded, how many peers the repository has, and whether anything arrived or finished while you were away. If the session has no title, it gets one in the form "device · project", which makes it easy to spot in another machine's list. A title you gave yourself is left alone, and older Claude Code versions that don't report the current title get no automatic title.
 
 ## Turn on Remote Control first
 
@@ -103,6 +103,12 @@ Put `.peer_req.json` at the root of the repository you send from.
 
 `machine_id` is a label you choose. A peer with the same `machine_id` as `self` is on the same machine; the plugin finds its session by the working folder. A peer on another machine is found by its Remote Control title. If you always give that peer's session the same title, put it in `rc_title`. The title matches exactly, or with a trailing " · 2", " · 3"; if more than one session matches, you are asked which one. You can leave it out — you then pick the session once, the first time you send (see "Finding the right session on another machine" below). `self.root` must be the folder the file sits in, which catches address books copied over from another repository.
 
+`machine_id` is not case-sensitive: `my-pc` and `My-PC` in two repositories on the same machine count as the same machine. A good choice is the `ClaudeDeviceName` variable in the `env` block of your Claude Code settings, or the computer name — `doctor` and `discover` show that value as this device's name.
+
+Peer names (the keys under `peers`) and group names may be written in Korean. Leave out spaces. Sessions still running version 0.1 can't read an address book with Korean names, so reopen the sessions on that machine with the new version before you use them.
+
+**Edit another repository's address book from that repository.** `self` is that repository's own label, and when another session "fixes" it to make the pair line up, the names drift apart one after another. If Claude tries to change another repository's `.peer_req.json` with Write or Edit, the plugin blocks it and tells Claude to show you the `doctor` output instead. `doctor` cross-checks the address books of peers on the same machine and points out where they disagree.
+
 **Every repository that takes part needs this file, including one that only receives.** A receiving repository can leave out `peers`, but it must have `self` — that is how it checks that a message was meant for it. Without a valid `self` it turns every request away as the wrong target rather than guessing.
 
 ## Using it
@@ -122,11 +128,11 @@ Claude works out from your wording whether it is a question, a notice or a chang
 - **Notice** — it checks what the change affects in its own code and reports back. It doesn't fix anything.
 - **Change request** — it acknowledges and records it, then tells its own user. The work happens only when that user says so.
 
-Other commands, each after `/peer-req:peer_req`: `here` marks the current conversation as this repository's session (useful when several windows are open on the same folder), `status` lists recent requests, `inbox` shows what arrived or finished that you haven't been told about yet, and `doctor` checks the address book and settings without sending anything. `forget <peer>` clears the session remembered for a peer, so the next send looks it up again.
+Other commands, each after `/peer-req:peer_req`: `here` marks the current conversation as this repository's session (useful when several windows are open on the same folder), `status` lists recent requests, `inbox` shows what arrived or finished that you haven't been told about yet, and `doctor` checks the address book and settings without sending anything, and cross-checks them against the address books of peers on the same machine. `discover` lists the sessions running on this machine with each one's folder and address book — it works before you have an address book. `forget <peer>` clears the session remembered for a peer, so the next send looks it up again.
 
-**Finding the right session on the same machine.** If exactly one session is open in the peer's folder, the message goes there and that session is remembered. If there are none or several, you are asked to pick, and your choice is remembered. The memory follows the conversation, so it survives a VS Code reload. When that conversation is closed, the next send looks the folder up again the same way.
+**Finding the right session on the same machine.** If exactly one session is open in the peer's folder, the message goes there. If there are none or several, you are asked to pick. Once the peer replies that it received the message, that session is remembered and you aren't asked again. The memory follows the conversation, so it survives a VS Code reload. When that conversation is closed, the next send looks the folder up again the same way. If the remembered session sends a message back as "not the target", the memory is cleared.
 
-**Finding the right session on another machine.** The Remote Control list shows only each session's title, not which machine or folder it runs in. So if the address book has an `rc_title`, that title is used; if not, you pick the session from the list once. If, after leaving out sessions already used by other peers, only one session from another machine is listed, the message goes there without asking. Your pick is remembered on this PC and you aren't asked again. A Remote Control title stays the same for the same conversation, across a VS Code reload and when you leave the conversation and come back. If you rename the session, it is still recognised as long as its reference in the list (such as `[87f895]`) is unchanged. A new conversation gets a new title, so you pick once more then. If a message does reach the wrong session, the receiving side checks its address book, sees the message isn't for it, and sends it back as "not the target"; that session is then forgotten and left out of the choices from then on.
+**Finding the right session on another machine.** The Remote Control list shows each session's title and a short reference (such as `[87f895]`), not which machine or folder it runs in. So the plugin looks in this order. If a session you sent to before replied that it received the message, it is found by its reference. The reference is the same no matter who looks at the list, and it stays the same for the same conversation when the title changes or VS Code reloads, so a renamed session is still recognised. If that session isn't listed, the address book's `rc_title` is tried, then the title used before. Failing that, if only one session from another machine is left after leaving out sessions already used by other peers, the message goes there without asking — unless the list has a line the plugin couldn't read or a kind of line it hasn't seen before, since that line might be the real peer; then you are asked. If several are left, you pick once from the list. Whichever way the session was chosen, it is remembered only after the peer replies that it received the message. A new conversation gets a new reference and title, so you pick once more then. If a message does reach the wrong session, the receiving side checks its address book, sees the message isn't for it, and sends it back as "not the target"; that session (its title and reference) is forgotten and left out of the choices from then on. A new conversation with the same title becomes a candidate again. When the session found by `rc_title` answers "not the target", the address book is left as it is and only that session is left out.
 
 ## When the other session isn't open
 
@@ -137,6 +143,7 @@ By default an unattended run gets read-only tools (Read, Grep, Glob): it can loo
 ## Limits
 
 - Sessions in different permission modes may hold messages for approval. A session that skips permission prompts holds messages from sessions that don't, and the other way round; an unanswered approval dialog drops the message after five minutes. On the same machine the sender is told; across machines nothing reports back, which is why the plugin waits for an acknowledgement instead of trusting "sent".
+- While version 0.1 and version 0.2 sessions are open on the same PC, they don't know about each other's picks for peers on other machines. If both versions kept rewriting the same memory file they would erase each other's "not the target" records, so each version keeps its own file. Version 0.2 takes over the "not the target" records left by 0.1, but not 0.1's picks, which were saved without waiting for an acknowledgement. Once the sessions are reopened on the new version, you pick once more the first time you send.
 - On the same machine a single message is capped at about a million characters.
 - A session's address changes when it restarts. If a reply can't be delivered, the receiving side looks up the sender's current session in the same folder and tries again. If the sender is gone, the result stays in the receiver's record. On the same machine the sender picks it up from there the next time it checks its status or starts a session; across machines it stays only on the receiving side.
 - The plugin reads Claude Code's local session registry to find sessions on the same machine, and puts the chosen session's ID in the message so the receiver can check the message was meant for it. That file is not a documented interface. If a Claude Code update changes it, the plugin stops sending to sessions on the same machine rather than guess — cross-machine messaging is unaffected.
@@ -145,9 +152,10 @@ By default an unattended run gets read-only tools (Read, Grep, Glob): it can loo
 
 ```
 .claude-plugin/plugin.json
-hooks/hooks.json              session-start notice
+hooks/hooks.json              session-start notice · stop edits to another repository's address book
 skills/peer_req/SKILL.md      what Claude follows
 scripts/peer.cjs              address book, envelopes, hashes, records, state
 scripts/session-start.cjs
+scripts/guard-addressbook.cjs
 test/peer.test.mjs            node --test skills/peer_req/test/peer.test.mjs  (the tests need Node 18+; the plugin doesn't)
 ```

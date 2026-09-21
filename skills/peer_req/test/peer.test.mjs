@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { validateBook, findDuplicateKeys } = require('../scripts/lib/addressbook.cjs');
-const { makeRequest, renderMessage, extractEnvelope, checkEnvelope, HEADER_VERSION, headerHash } = require('../scripts/lib/envelope.cjs');
+const { makeRequest, makeReply, renderMessage, extractEnvelope, checkEnvelope, HEADER_VERSION, headerHash } = require('../scripts/lib/envelope.cjs');
 const { appendEvent, listEvents } = require('../scripts/lib/store.cjs');
 const { fold } = require('../scripts/lib/state.cjs');
 const { parseAgents, titleMatches } = require('../scripts/lib/sessions.cjs');
@@ -179,7 +179,7 @@ test('ListAgents 출력을 읽는다 — 이름에 · 가 있어도', () => {
   const a = parseAgents(AGENTS);
   assert.equal(a.self.name, 'app-7c');
   assert.equal(a.rows.length, 4);
-  assert.deepEqual(a.rows[1], { name: 'Admin · ops', ref: '88b689', kind: 'Remote Control', status: 'idle', where: 'remote' });
+  assert.deepEqual(a.rows[1], { name: 'Admin · ops', ref: '88b689', kind: 'Remote Control', status: 'idle', where: 'remote', section: 'Peer sessions' });
   assert.equal(a.rows[0].where, 'local');
 });
 
@@ -231,8 +231,9 @@ test('왕복: 같은 머신 A → B 질문, 자동 선택·ACK·결과·중복·
   assert.equal(t.status, 'ready');
   assert.equal(t.via, 'auto');
   assert.equal(t.send_to, 'repob-7f');
-  const declared = JSON.parse(fs.readFileSync(path.join(state, 'declared', 'pc.b.json'), 'utf8'));
-  assert.equal(declared.session_id, 'sid-b');
+  assert.equal(t.remember_after_ack, true);
+  // 받았다는 답이 오기 전에는 짝 세션을 기억하지 않는다(2026-09-21)
+  assert.equal(fs.existsSync(path.join(state, 'declared', 'pc.b.json')), false);
   cli(['record', '--id', p.request_id, '--to', 'b', '--event', 'transport_accepted'], { cwd: A, env: envA });
 
   // 2) 받는 쪽 — 접수
@@ -242,9 +243,12 @@ test('왕복: 같은 머신 A → B 질문, 자동 선택·ACK·결과·중복·
   assert.equal(r1.verdict, 'new');
   assert.equal(r1.body, '로그인 API 응답 형식이 어떻게 돼 있어?');
 
-  // 3) 보내는 쪽 — ACK 기록 → received
+  // 3) 보내는 쪽 — ACK 기록 → received, 그때 짝 세션을 기억한다
   const ack = cli(['ingest', '--message-file', r1.reply_file, '--from', 'uds:pipe-b'], { cwd: A, env: envA });
   assert.equal(ack.state.state, 'received');
+  assert.equal(ack.promoted.kind, 'declared');
+  const declared = JSON.parse(fs.readFileSync(path.join(state, 'declared', 'pc.b.json'), 'utf8'));
+  assert.equal(declared.session_id, 'sid-b');
 
   // 4) ACK 를 받는 쪽 receive 에 넣으면 회신하지 않는다(ACK 에 ACK 안 함)
   assert.equal(cli(['receive', '--message-file', r1.reply_file], { cwd: B, env: envB }).verdict, 'not_a_request');
@@ -287,6 +291,10 @@ test('왕복: 같은 머신 A → B 질문, 자동 선택·ACK·결과·중복·
   assert.equal(rr2.send_to, 'repoa-99');
   const rep2 = cli(['reply', '--id', p.request_id, '--status', 'completed', '--body-file', ansFile], { cwd: B, env: envB });
   assert.equal(rep2.reply_to, 'repoa-99');
+  // C04: 한 번 다시 찾은 뒤 또 막혀도 다시 찾는다 — 전에는 두 번째가 늘 "다른 머신" 으로 끝났다
+  const rr3 = cli(['reroute', '--id', p.request_id, '--agents-file', listB, '--detail', 'ENOINBOX again'], { cwd: B, env: envB });
+  assert.equal(rr3.status, 'ready');
+  assert.equal(rr3.send_to, 'repoa-99');
 });
 
 function sameMachinePair() {
@@ -416,54 +424,129 @@ function remoteRepo(srvSelector) {
   const state = tmp('state');
   const prep = (agents, extra) => cli(['prepare', '--to', 'srv', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agents].concat(extra || []), { cwd: A, env: { PEER_REQ_STATE: state } });
   const remembered = () => {
-    const f = path.join(state, 'remote_titles', 'srv.api.json');
+    const f = path.join(state, 'remote_titles_v2', 'srv.api.json');
     return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null;
   };
-  return { A, state, list, prep, remembered };
+  // 받는 쪽이 "받았다" 고 답한 것처럼 ACK 를 만들어 넣는다(다른 머신이라 그쪽 저장소는 흉내만 낸다)
+  const ack = (p, status) => {
+    const env = extractEnvelope(fs.readFileSync(p.targets[0].message_file, 'utf8'));
+    const f = path.join(A, 'ack-' + Math.random().toString(36).slice(2) + '.txt');
+    fs.writeFileSync(f, renderMessage(makeReply({ type: 'ack', request: env, responder: env.recipient_endpoint, status: status || 'received' })));
+    return cli(['ingest', '--message-file', f], { cwd: A, env: { PEER_REQ_STATE: state } });
+  };
+  // 엉뚱한 세션(주소록 없는 저장소)이 받아 WRONG_TARGET 을 돌려보낸 것
+  const wrong = (p) => {
+    const N = tmp('nobook');
+    const msg = path.join(N, 'in.txt');
+    fs.copyFileSync(p.targets[0].message_file, msg);
+    const w = cli(['receive', '--message-file', msg], { cwd: N, env: { PEER_REQ_STATE: tmp('state') } });
+    assert.equal(w.verdict, 'wrong_target');
+    return cli(['ingest', '--message-file', w.reply_file], { cwd: A, env: { PEER_REQ_STATE: state } });
+  };
+  const pick = (p, agents, name) => cli(['prepare', '--request-id', p.request_id, '--to', 'srv', '--agents-file', agents, '--pick', name], { cwd: A, env: { PEER_REQ_STATE: state } });
+  return { A, state, list, prep, remembered, ack, wrong, pick };
 }
 
-test('D27 rc_title 이 없어도, 다른 짝 몫을 빼고 원격 세션이 하나뿐이면 거기로 보내고 기억한다', () => {
+// "이 짝 아님" 목록에서 뺀 시각(at)을 떼고 비교한다
+function notOf(t) {
+  return t.remembered().not.map((n) => ({ title: n.title, ref: n.ref }));
+}
+
+test('D27 rc_title 이 없어도, 다른 짝 몫을 원격 세션이 하나뿐이면 거기로 보내고, 받았다는 답이 오면 기억한다', () => {
   const t = remoteRepo();
   const p = t.prep(t.list(['Admin · ops [0000aa]', 'host-lively-otter [0000bb]']));
   assert.equal(p.targets[0].status, 'ready');
   assert.equal(p.targets[0].via, 'only_candidate');
   assert.equal(p.targets[0].send_to, 'host-lively-otter');
+  assert.equal(p.targets[0].remember_after_ack, true);
+  assert.equal(t.remembered(), null); // 보내기 전에는 기억하지 않는다(2026-09-21)
+  assert.equal(t.ack(p).promoted.kind, 'remote');
   assert.equal(t.remembered().title, 'host-lively-otter');
   assert.equal(t.remembered().ref, '0000bb');
 });
 
-test('D27 여럿이면 묻고, 고른 것을 기억해 다음 요청부터 묻지 않는다', () => {
+test('D27 여럿이면 묻고, 고른 것을 받았다는 답이 온 뒤 기억해 다음 요청부터 묻지 않는다', () => {
   const t = remoteRepo();
   const agents = t.list(['Admin · ops [0000aa]', 'host-lively-otter [0000bb]', 'host-calm-river [0000cc]']);
   const p = t.prep(agents);
   assert.equal(p.targets[0].status, 'ask');
   assert.deepEqual(p.targets[0].candidates.map((c) => c.name).sort(), ['host-calm-river', 'host-lively-otter']); // 다른 짝(ops) 몫은 빠진다
-  const p2 = cli(['prepare', '--request-id', p.request_id, '--to', 'srv', '--agents-file', agents, '--pick', 'host-calm-river'], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
+  const p2 = t.pick(p, agents, 'host-calm-river');
   assert.equal(p2.targets[0].status, 'ready');
-  assert.equal(p2.targets[0].remembered, true);
+  assert.equal(p2.targets[0].remember_after_ack, true);
+  t.ack(p2);
   assert.equal(t.remembered().source, 'user');
   const p3 = t.prep(agents); // 새 요청
   assert.equal(p3.targets[0].status, 'ready');
-  assert.equal(p3.targets[0].via, 'remembered');
+  assert.equal(p3.targets[0].via, 'remembered_ref');
   assert.equal(p3.targets[0].send_to, 'host-calm-river');
 });
 
 test('D27 이름을 붙여 제목이 바뀌어도 참조 번호로 같은 세션을 찾아가고 기억을 고친다', () => {
   const t = remoteRepo();
-  t.prep(t.list(['host-lively-otter [0000bb]']));
+  t.ack(t.prep(t.list(['host-lively-otter [0000bb]'])));
   const p = t.prep(t.list(['Admin · ops [0000aa]', 'Srv · API DEV [0000bb]', 'host-calm-river [0000cc]']));
   assert.equal(p.targets[0].status, 'ready');
   assert.equal(p.targets[0].via, 'remembered_ref');
   assert.equal(p.targets[0].send_to, 'Srv · API DEV');
+  t.ack(p);
   assert.equal(t.remembered().title, 'Srv · API DEV');
 });
 
 test('D27 기억한 세션이 목록에서 사라지면(새 대화) 다시 묻는다', () => {
   const t = remoteRepo();
-  t.prep(t.list(['host-lively-otter [0000bb]']));
+  t.ack(t.prep(t.list(['host-lively-otter [0000bb]'])));
   const p = t.prep(t.list(['host-calm-river [0000cc]', 'host-quiet-lake [0000dd]']));
   assert.equal(p.targets[0].status, 'ask');
   assert.ok(p.targets[0].note.includes('host-lively-otter'));
+});
+
+test('R15 옛 제목을 다른 대화가 다시 써도, 기억한 참조 번호가 목록에 있으면 그쪽이 이긴다', () => {
+  const t = remoteRepo();
+  t.ack(t.prep(t.list(['fixed [0000bb]'])));
+  const p = t.prep(t.list(['fixed [0000cc]', 'renamed [0000bb]']));
+  assert.equal(p.targets[0].status, 'ready');
+  assert.equal(p.targets[0].via, 'remembered_ref');
+  assert.equal(p.targets[0].send_to, 'renamed');
+});
+
+test('R23 주소록 rc_title 로 보낸 짝도 참조 번호를 기억해, 제목이 바뀌어도 따라간다', () => {
+  const t = remoteRepo({ rc_title: 'SRV · API' });
+  const p = t.prep(t.list(['SRV · API [0000bb]', 'host-calm-river [0000cc]']));
+  assert.equal(p.targets[0].via, 'rc_title');
+  t.ack(p);
+  assert.equal(t.remembered().ref, '0000bb');
+  const p2 = t.prep(t.list(['SRV · API renamed [0000bb]', 'host-calm-river [0000cc]']));
+  assert.equal(p2.targets[0].status, 'ready');
+  assert.equal(p2.targets[0].via, 'remembered_ref');
+  assert.equal(p2.targets[0].send_to, 'SRV · API renamed');
+});
+
+test('목록에 읽지 못한 줄·처음 보는 종류의 줄이 있으면 남은 하나로 자동 전송하지 않는다', () => {
+  const t = remoteRepo();
+  const f1 = path.join(t.A, 'agents-unknown.txt');
+  fs.writeFileSync(f1, 'This session is a [1]\nPeer sessions (2):\n  host-lively-otter [0000bb]  ·  Remote Control  ·  idle\n  real-peer [0000ee]  ·  Remote Control (new)  ·  idle\n');
+  const p1 = t.prep(f1);
+  assert.equal(p1.targets[0].status, 'ask');
+  assert.ok(p1.targets[0].reason.includes('처음 보는 종류'));
+  const f2 = path.join(t.A, 'agents-short.txt');
+  fs.writeFileSync(f2, 'This session is a [1]\nPeer sessions (2):\n  host-lively-otter [0000bb]  ·  Remote Control  ·  idle\n  this line changed format\n');
+  assert.equal(t.prep(f2).targets[0].status, 'ask');
+  assert.equal(t.remembered(), null);
+});
+
+test('기억한 세션이 "대상 아님" 으로 돌아오면 기억을 지운다 · 같은 제목의 새 대화(참조 번호가 다르다)는 다시 후보다', () => {
+  const t = remoteRepo();
+  t.ack(t.prep(t.list(['host-lively-otter [0000bb]'])));
+  const p = t.prep(t.list(['host-lively-otter [0000bb]']));
+  assert.equal(p.targets[0].via, 'remembered_ref');
+  const ing = t.wrong(p);
+  assert.equal(ing.wrong_title.forgot, true);
+  assert.equal(t.remembered().title, null);
+  assert.deepEqual(notOf(t), [{ title: 'host-lively-otter', ref: '0000bb' }]);
+  const again = t.prep(t.list(['host-lively-otter [0000ff]'])); // 같은 제목, 다른 대화
+  assert.equal(again.targets[0].status, 'ready');
+  assert.equal(again.targets[0].send_to, 'host-lively-otter');
 });
 
 test('D27 주소록 rc_title 이 있는데 목록에 없으면 남은 하나로 자동 전송하지 않고 묻는다', () => {
@@ -476,55 +559,64 @@ test('D27 주소록 rc_title 이 있는데 목록에 없으면 남은 하나로 
 
 test('D27 다른 짝에 기억해 둔 제목은 후보에서 뺀다', () => {
   const t = remoteRepo();
-  fs.mkdirSync(path.join(t.state, 'remote_titles'), { recursive: true });
-  fs.writeFileSync(path.join(t.state, 'remote_titles', 'srv.db.json'), JSON.stringify({ title: 'host-calm-river', ref: '0000cc', source: 'user', not: [] }));
+  fs.mkdirSync(path.join(t.state, 'remote_titles_v2'), { recursive: true });
+  fs.writeFileSync(path.join(t.state, 'remote_titles_v2', 'srv.db.json'), JSON.stringify({ title: 'host-calm-river', ref: '0000cc', source: 'user', not: [] }));
   const p = t.prep(t.list(['host-lively-otter [0000bb]', 'host-calm-river [0000cc]']));
   assert.equal(p.targets[0].status, 'ready');
   assert.equal(p.targets[0].send_to, 'host-lively-otter');
 });
 
-test('D27 받는 쪽이 "대상 아님" 으로 돌려보내면 기억을 지우고 그 제목을 후보에서 뺀다', () => {
+test('D27 사용자가 고른 세션이 "대상 아님" 으로 돌아오면 기억하지 않고 그 세션을 {제목, 참조 번호} 로 후보에서 뺀다', () => {
   const t = remoteRepo();
-  const p = t.prep(t.list(['host-lively-otter [0000bb]', 'host-calm-river [0000cc]']), []);
   const agents = t.list(['host-lively-otter [0000bb]', 'host-calm-river [0000cc]']);
-  const picked = cli(['prepare', '--request-id', p.request_id, '--to', 'srv', '--agents-file', agents, '--pick', 'host-calm-river'], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
-  const N = tmp('nobook'); // 엉뚱한 세션이 받았다
-  const msg = path.join(N, 'in.txt');
-  fs.copyFileSync(picked.targets[0].message_file, msg);
-  const w = cli(['receive', '--message-file', msg], { cwd: N, env: { PEER_REQ_STATE: tmp('state') } });
-  assert.equal(w.verdict, 'wrong_target');
-  const ing = cli(['ingest', '--message-file', w.reply_file], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
+  const p = t.prep(agents);
+  const picked = t.pick(p, agents, 'host-calm-river');
+  const ing = t.wrong(picked);
   assert.equal(ing.wrong_title.title, 'host-calm-river');
-  assert.equal(ing.wrong_title.forgot, true);
+  assert.equal(ing.wrong_title.ref, '0000cc');
+  assert.equal(ing.wrong_title.forgot, false); // 받았다는 답이 오기 전이라 기억한 적이 없다
   assert.equal(t.remembered().title, null);
-  assert.deepEqual(t.remembered().not, ['host-calm-river']);
+  assert.deepEqual(notOf(t), [{ title: 'host-calm-river', ref: '0000cc' }]);
   const again = t.prep(agents); // 남은 후보는 하나 → 그리로
   assert.equal(again.targets[0].status, 'ready');
   assert.equal(again.targets[0].send_to, 'host-lively-otter');
 });
 
-test('D27 주소록 rc_title 로 보낸 것은 "대상 아님" 이 와도 기억을 건드리지 않는다', () => {
+test('D27 주소록 rc_title 로 보낸 세션이 "대상 아님" 이면 rc_title 은 그대로 두고 그 세션(참조 번호)만 뺀다', () => {
   const t = remoteRepo({ rc_title: 'SRV · API' });
   const p = t.prep(t.list(['SRV · API [0000bb]']));
   assert.equal(p.targets[0].via, 'rc_title');
-  const N = tmp('nobook');
-  const msg = path.join(N, 'in.txt');
-  fs.copyFileSync(p.targets[0].message_file, msg);
-  const w = cli(['receive', '--message-file', msg], { cwd: N, env: { PEER_REQ_STATE: tmp('state') } });
-  const ing = cli(['ingest', '--message-file', w.reply_file], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
-  assert.equal(ing.wrong_title, null);
-  assert.equal(t.remembered(), null);
+  const ing = t.wrong(p);
+  assert.equal(ing.wrong_title.ref, '0000bb');
+  assert.deepEqual(notOf(t), [{ title: 'SRV · API', ref: '0000bb' }]);
+  // 같은 대화가 다시 보여도 다시 보내지 않는다 — rc_title 이 있으니 남은 것으로 자동 선택도 하지 않는다
+  assert.notEqual(t.prep(t.list(['SRV · API [0000bb]'])).targets[0].status, 'ready');
+  // 새 대화(참조 번호가 다르다)는 다시 rc_title 로 찾는다
+  const fresh = t.prep(t.list(['SRV · API [0000ee]']));
+  assert.equal(fresh.targets[0].status, 'ready');
+  assert.equal(fresh.targets[0].via, 'rc_title');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(t.A, '.peer_req.json'), 'utf8')).peers.srv.session_selector.rc_title, 'SRV · API'); // 주소록은 그대로
+});
+
+test('0.1.x 가 제목 문자열로 적어 둔 "이 짝 아님" 도 읽는다', () => {
+  const t = remoteRepo();
+  fs.mkdirSync(path.join(t.state, 'remote_titles'), { recursive: true });
+  fs.writeFileSync(path.join(t.state, 'remote_titles', 'srv.api.json'), JSON.stringify({ title: null, ref: null, not: ['host-calm-river'] }));
+  const p = t.prep(t.list(['host-lively-otter [0000bb]', 'host-calm-river [0000cc]']));
+  assert.equal(p.targets[0].status, 'ready');
+  assert.equal(p.targets[0].send_to, 'host-lively-otter');
 });
 
 test('D27 forget 은 다른 머신 짝의 기억도 지운다 · doctor 가 보여 준다', () => {
   const t = remoteRepo();
-  t.prep(t.list(['host-lively-otter [0000bb]']));
+  t.ack(t.prep(t.list(['host-lively-otter [0000bb]'])));
   const d = cli(['doctor'], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
   assert.equal(d.peers.filter((x) => x.alias === 'srv')[0].remembered.title, 'host-lively-otter');
   assert.equal(d.peers.filter((x) => x.alias === 'srv')[0].rc_title, null);
   const f = cli(['forget', '--to', 'srv'], { cwd: t.A, env: { PEER_REQ_STATE: t.state } });
   assert.equal(f.removed, true);
-  assert.equal(t.remembered(), null);
+  assert.equal(t.remembered().title, null);
+  assert.ok(t.remembered().invalidated_at); // 지운 때를 남긴다 — 그 전에 보낸 요청의 늦은 ACK 가 되살리지 않게
 });
 
 test('주소록이 깨져 있으면 prepare 가 멈춘다(exit 3)', () => {
@@ -867,4 +959,273 @@ test('재리뷰 P1 실행 파일은 PATH 의 절대 경로에서만 찾는다(�
   delete env.NoDefaultCurrentDirectoryInExePath;
   execFileSync(process.execPath, [PEER, 'status'], { cwd: R, env, encoding: 'utf8' });
   assert.equal(fs.existsSync(path.join(R, 'PWNED.txt')), false);
+});
+
+// ───────────── 2026-09-21 짝 식별 개선 (확인 뒤 기억 · 기기 이름 · 한글 별칭 · doctor 대조 · discover · 훅) ─────────────
+
+test('같은 머신: 기록해 둔 세션으로 보냈는데 "대상 아님" 이 오면 그 기록을 지운다', () => {
+  const { A, B, agentsFile, bodyFile, envA, envB } = sameMachinePair();
+  const p1 = cli(['prepare', '--to', 'b', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agentsFile], { cwd: A, env: envA });
+  const m1 = path.join(B, 'in1.txt');
+  fs.copyFileSync(p1.targets[0].message_file, m1);
+  const r1 = cli(['receive', '--message-file', m1], { cwd: B, env: envB });
+  cli(['ingest', '--message-file', r1.reply_file], { cwd: A, env: envA });
+  const p2 = cli(['prepare', '--to', 'b', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agentsFile], { cwd: A, env: envA });
+  assert.equal(p2.targets[0].via, 'declared');
+  const m2 = path.join(B, 'in2.txt');
+  fs.copyFileSync(p2.targets[0].message_file, m2);
+  const w = cli(['receive', '--message-file', m2], { cwd: B, env: { ...envB, CLAUDE_CODE_SESSION_ID: 'sid-other' } });
+  assert.equal(w.verdict, 'wrong_target');
+  const ing = cli(['ingest', '--message-file', w.reply_file], { cwd: A, env: envA });
+  assert.equal(ing.forgot_local, true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(envA.PEER_REQ_STATE, 'declared', 'pc.b.json'), 'utf8')).session_id, null); // 지운 기록만 남는다
+});
+
+test('늦게 온 ACK 는 그사이 새로 고른 기억을 덮지 않는다', () => {
+  const t = remoteRepo();
+  const agents = t.list(['host-lively-otter [0000bb]', 'host-calm-river [0000cc]']);
+  const first = t.pick(t.prep(agents), agents, 'host-lively-otter');
+  const second = t.pick(t.prep(agents), agents, 'host-calm-river');
+  t.ack(second);
+  assert.equal(t.remembered().title, 'host-calm-river');
+  const late = t.ack(first); // 먼저 보낸 것의 ACK 가 나중에 왔다
+  assert.equal(late.promoted.skipped, 'newer');
+  assert.equal(t.remembered().title, 'host-calm-river');
+});
+
+test('기기 이름은 대소문자를 무시한다 — 같은 PC 를 달리 적어도 같은 머신 짝이다', () => {
+  const { A, agentsFile, bodyFile, envA } = sameMachinePair();
+  const book = JSON.parse(fs.readFileSync(path.join(A, '.peer_req.json'), 'utf8'));
+  book.self.machine_id = 'M1';
+  fs.writeFileSync(path.join(A, '.peer_req.json'), JSON.stringify(book));
+  const v = validateBook(JSON.stringify(book), path.join(A, '.peer_req.json'));
+  assert.equal(v.ok, true);
+  assert.ok(v.warnings.some((w) => w.includes('대소문자')));
+  const p = cli(['prepare', '--to', 'b', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agentsFile], { cwd: A, env: envA });
+  assert.equal(p.targets[0].same_machine, true);
+  assert.equal(p.targets[0].via, 'auto');
+});
+
+test('한글 별칭을 받는다 — 기록 파일 이름은 해시 키로 쓴다', () => {
+  const { A, B, agentsFile, bodyFile, envA, envB } = sameMachinePair();
+  const book = JSON.parse(fs.readFileSync(path.join(A, '.peer_req.json'), 'utf8'));
+  book.peers = { '볼트': book.peers.b };
+  book.groups = { '위키형제': ['볼트'] };
+  fs.writeFileSync(path.join(A, '.peer_req.json'), JSON.stringify(book));
+  assert.equal(validateBook(JSON.stringify(book), path.join(A, '.peer_req.json')).ok, true);
+  const spaced = { schema_version: 1, self: book.self, peers: { '볼 트': book.peers['볼트'] } };
+  assert.equal(validateBook(JSON.stringify(spaced), path.join(A, '.peer_req.json')).ok, false); // 공백은 안 된다
+  const p = cli(['prepare', '--to', '위키형제', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agentsFile], { cwd: A, env: envA });
+  assert.equal(p.targets[0].alias, '볼트');
+  assert.match(path.basename(p.targets[0].message_file), /^p-[0-9a-f]{12}\.txt$/);
+  const m = path.join(B, 'in.txt');
+  fs.copyFileSync(p.targets[0].message_file, m);
+  cli(['receive', '--message-file', m], { cwd: B, env: envB });
+  const ans = path.join(B, 'ans.txt');
+  fs.writeFileSync(ans, '답');
+  const rep = cli(['reply', '--id', p.request_id, '--status', 'completed', '--body-file', ans], { cwd: B, env: envB });
+  const res = cli(['ingest', '--message-file', rep.reply_file], { cwd: A, env: envA });
+  assert.equal(res.alias, '볼트');
+  assert.match(path.basename(res.result_file), /^p-[0-9a-f]{12}\.md$/);
+});
+
+test('받은 요청에는 reported 만 기록한다 — 보낸 쪽 기록(transport_accepted 등)은 거부', () => {
+  const { A, B, agentsFile, bodyFile, envA, envB } = sameMachinePair();
+  const p = cli(['prepare', '--to', 'b', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agentsFile], { cwd: A, env: envA });
+  const m = path.join(B, 'in.txt');
+  fs.copyFileSync(p.targets[0].message_file, m);
+  cli(['receive', '--message-file', m], { cwd: B, env: envB });
+  const bad = cliFail(['record', '--id', p.request_id, '--event', 'transport_accepted'], { cwd: B, env: envB });
+  assert.equal(bad.code, 2);
+  assert.equal(cli(['record', '--id', p.request_id, '--event', 'reported'], { cwd: B, env: envB }).ok, true);
+});
+
+test('doctor 가 같은 머신 짝 주소록과 대조해 어긋남을 잡는다', () => {
+  const { A, B, envA } = sameMachinePair();
+  assert.equal(cli(['doctor'], { cwd: A, env: envA }).problem_count, 0);
+  const bookB = JSON.parse(fs.readFileSync(path.join(B, '.peer_req.json'), 'utf8'));
+  bookB.self.endpoint_id = 'pc.renamed'; // 다른 세션이 남의 self 를 고쳐 놓은 상황
+  fs.writeFileSync(path.join(B, '.peer_req.json'), JSON.stringify(bookB));
+  const d = cli(['doctor'], { cwd: A, env: envA });
+  assert.equal(d.problem_count, 1);
+  assert.equal(d.peers[0].cross_check.problems[0].code, 'endpoint_mismatch');
+  fs.unlinkSync(path.join(B, '.peer_req.json'));
+  assert.equal(cli(['doctor'], { cwd: A, env: envA }).peers[0].cross_check.problems[0].code, 'peer_book_missing');
+});
+
+test('discover 는 주소록이 없어도 이 머신의 세션과 폴더·주소록 self 를 보여 준다', () => {
+  const { B, envA } = sameMachinePair();
+  const N = tmp('nobook');
+  const d = cli(['discover'], { cwd: N, env: { ...envA, ClaudeDeviceName: 'DEV-PC' } });
+  assert.equal(d.device_name, 'DEV-PC');
+  assert.equal(d.count, 1);
+  assert.equal(d.sessions[0].name, 'repob-7f');
+  assert.equal(fwd(d.sessions[0].cwd), fwd(B));
+  assert.equal(d.sessions[0].addressbook.self.endpoint_id, 'pc.b');
+});
+
+test('훅: 다른 저장소의 주소록 Write·Edit 는 거부하고, 이 저장소 주소록·다른 파일은 통과시킨다', () => {
+  const { A, B } = sameMachinePair();
+  const hook = path.join(HERE, '..', 'scripts', 'guard-addressbook.cjs');
+  const run = (toolName, file) => execFileSync(process.execPath, [hook], { input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: toolName, cwd: A, tool_input: { file_path: file } }), encoding: 'utf8' });
+  const denied = JSON.parse(run('Write', path.join(B, '.peer_req.json')));
+  assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+  assert.ok(denied.hookSpecificOutput.permissionDecisionReason.includes('doctor'));
+  assert.equal(JSON.parse(run('Edit', path.join(B, '.PEER_REQ.JSON'))).hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(run('Edit', path.join(A, '.peer_req.json')), '');
+  assert.equal(run('Edit', path.join(B, 'src', 'main.js')), '');
+  assert.equal(execFileSync(process.execPath, [hook], { input: 'not json', encoding: 'utf8' }), ''); // 판정 못 하면 통과
+});
+
+test('시작 훅: 사람이 지은 제목이 없을 때만 "기기 · 프로젝트" 제목을 붙인다', () => {
+  const B = receiverRepo();
+  fs.mkdirSync(path.join(B, '.vscode'));
+  fs.writeFileSync(path.join(B, '.vscode', 'settings.json'), '{\n  // 주석\n  "window.title": "3. Claude State Bar",\n}\n');
+  const hook = path.join(HERE, '..', 'scripts', 'session-start.cjs');
+  const home = tmp('home');
+  fs.mkdirSync(path.join(home, 'sessions'));
+  const reg = (version) => fs.writeFileSync(path.join(home, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'sid-t', cwd: B, name: 'b', version }));
+  const run = (input, execPath) =>
+    JSON.parse(execFileSync(process.execPath, [hook], { input: JSON.stringify(input), env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'cli', PEER_REQ_UNATTENDED: '', ClaudeDeviceName: 'DEV-PC', CLAUDE_CONFIG_DIR: home, CLAUDE_CODE_EXECPATH: execPath || '' }, encoding: 'utf8' })).hookSpecificOutput;
+  assert.equal(run({ source: 'startup', cwd: B, session_id: 'sid-t', session_title: '' }).sessionTitle, 'DEV-PC · Claude State Bar');
+  assert.equal(run({ source: 'startup', cwd: B, session_id: 'sid-t', session_title: '내가 지은 제목' }).sessionTitle, undefined);
+  // 칸이 없다 — 2.1.278 은 제목이 없으면 칸을 안 보낸다. 확인한 버전 이상일 때만 "제목 없음" 으로 본다(2026-09-22 결정)
+  assert.equal(run({ source: 'resume', cwd: B, session_id: 'sid-t' }).sessionTitle, undefined); // 버전을 모른다
+  reg('2.1.278');
+  assert.equal(run({ source: 'startup', cwd: B, session_id: 'sid-t' }).sessionTitle, 'DEV-PC · Claude State Bar');
+  reg('2.1.200');
+  assert.equal(run({ source: 'startup', cwd: B, session_id: 'sid-t' }).sessionTitle, undefined);
+  fs.unlinkSync(path.join(home, 'sessions', `${process.pid}.json`));
+  assert.equal(run({ source: 'startup', cwd: B, session_id: 'sid-t' }, 'C:\\x\\anthropic.claude-code-2.1.300-win32-x64\\claude.exe').sessionTitle, 'DEV-PC · Claude State Bar');
+  fs.writeFileSync(path.join(B, '.vscode', 'settings.json'), '{ "window.title": "${rootName}" }');
+  assert.equal(run({ source: 'startup', cwd: B, session_title: '' }).sessionTitle, 'DEV-PC · ' + path.basename(B));
+});
+
+// ───────────── Codex 리뷰(2026-09-21, 0.2.0) 9건 재현 ─────────────
+
+test('리뷰1 그룹으로 보낼 때 한 원격 세션을 두 짝에 배정하지 않는다', () => {
+  const A = tmp('repoA');
+  const srv = (id, root) => ({ endpoint_id: id, machine_id: 'srv', location: { root } });
+  fs.writeFileSync(path.join(A, '.peer_req.json'), JSON.stringify({ schema_version: 1, self: { endpoint_id: 'pc.a', machine_id: 'm1', root: fwd(A) }, peers: { one: srv('srv.one', '/one'), two: srv('srv.two', '/two') }, groups: { both: ['one', 'two'] } }));
+  const agents = path.join(A, 'agents.txt');
+  fs.writeFileSync(agents, 'This session is a [1]\n  host-lively-otter [0000bb]  ·  Remote Control  ·  idle\n');
+  const body = path.join(A, 'body.txt');
+  fs.writeFileSync(body, 'q');
+  const p = cli(['prepare', '--to', 'both', '--intent', 'notice', '--body-file', body, '--agents-file', agents], { cwd: A, env: { PEER_REQ_STATE: tmp('state') } });
+  assert.equal(p.targets[0].status, 'ready');
+  assert.notEqual(p.targets[1].status, 'ready');
+});
+
+test('리뷰2 먼저 고른 세션의 ACK 가 먼저 와도, 나중에 고른 세션의 ACK 가 이긴다(고른 순서로 비교)', () => {
+  const t = remoteRepo();
+  const agents = t.list(['host-lively-otter [0000bb]', 'host-calm-river [0000cc]']);
+  const first = t.pick(t.prep(agents), agents, 'host-lively-otter');
+  const second = t.pick(t.prep(agents), agents, 'host-calm-river');
+  t.ack(first);
+  assert.equal(t.remembered().title, 'host-lively-otter');
+  const later = t.ack(second);
+  assert.equal(later.promoted.kind, 'remote');
+  assert.equal(t.remembered().title, 'host-calm-river');
+});
+
+test('리뷰4 서브에이전트·팀메이트 섹션과 cloud session 은 목록 불완전으로 보지 않는다 · 잘린 목록은 불완전', () => {
+  const t = remoteRepo();
+  const f = path.join(t.A, 'agents-sections.txt');
+  fs.writeFileSync(
+    f,
+    'This session is a [1] — x\n\nPeer sessions (3):\n  local-1 [000002]  ·  interactive  ·  idle\n  host-lively-otter [0000bb]  ·  Remote Control  ·  idle\n  nightly [0000cc]  ·  cloud session  ·  idle\n\nSubagents:\n  helper [aaaa11]  ·  general-purpose  ·  running  ·  started 1m ago\n\nTeammates (1):\n  mate  ·  worker\n'
+  );
+  const p = t.prep(f);
+  assert.equal(p.targets[0].status, 'ready');
+  assert.equal(p.targets[0].via, 'only_candidate');
+  const cut = path.join(t.A, 'agents-cut.txt');
+  fs.writeFileSync(cut, 'This session is a [1]\n\nPeer sessions (4):\n  host-lively-otter [0000bb]  ·  Remote Control  ·  idle\n  (… 3 more not shown)\n');
+  assert.equal(t.prep(cut).targets[0].status, 'ask');
+});
+
+test('리뷰5 다른 짝이 새 대화로 바뀌면(같은 제목·새 참조 번호) 그 세션을 이 짝 몫으로 가져가지 않는다', () => {
+  const t = remoteRepo();
+  fs.mkdirSync(path.join(t.state, 'remote_titles_v2'), { recursive: true });
+  fs.writeFileSync(path.join(t.state, 'remote_titles_v2', 'srv.other.json'), JSON.stringify({ title: 'Other · API', ref: '0000aa', source: 'user', not: [] }));
+  const p = t.prep(t.list(['Other · API [0000ee]']));
+  assert.notEqual(p.targets[0].status, 'ready');
+});
+
+test('리뷰6 "대상 아님"·forget 으로 지운 뒤에는 그 전에 보낸 요청의 늦은 ACK 가 기억을 되살리지 않는다', () => {
+  const t = remoteRepo();
+  const agents = t.list(['host-lively-otter [0000bb]', 'host-calm-river [0000cc]']);
+  const p1 = t.pick(t.prep(agents), agents, 'host-calm-river');
+  const p2 = t.pick(t.prep(agents), agents, 'host-calm-river');
+  t.wrong(p2);
+  const late = t.ack(p1);
+  assert.equal(late.promoted.skipped, 'excluded');
+  assert.equal(t.remembered().title, null);
+  assert.deepEqual(notOf(t), [{ title: 'host-calm-river', ref: '0000cc' }]);
+  const t2 = remoteRepo();
+  const q = t2.prep(t2.list(['host-lively-otter [0000bb]']));
+  cli(['forget', '--to', 'srv'], { cwd: t2.A, env: { PEER_REQ_STATE: t2.state } });
+  assert.equal(t2.ack(q).promoted.skipped, 'invalidated');
+  assert.equal(t2.remembered().title, null);
+});
+
+test('리뷰7 같은 PC 짝에게 다시 보냈으면 따라잡기가 그 시도의 duplicate ACK 도 읽어 새 세션을 기억한다', () => {
+  const { A, B, agentsFile, bodyFile, envA, envB } = sameMachinePair();
+  const home = envA.CLAUDE_CONFIG_DIR;
+  const p = cli(['prepare', '--to', 'b', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agentsFile], { cwd: A, env: envA });
+  const m1 = path.join(B, 'in1.txt');
+  fs.copyFileSync(p.targets[0].message_file, m1);
+  cli(['receive', '--message-file', m1], { cwd: B, env: envB }); // 보낸 쪽은 이 ACK 를 못 받았다
+  // 받는 쪽 대화가 바뀌었다 — 같은 요청을 새 세션으로 다시 보낸다
+  fs.writeFileSync(path.join(home, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'sid-b2', cwd: B, name: 'repob-8x' }));
+  const agents2 = path.join(A, 'agents2.txt');
+  fs.writeFileSync(agents2, 'This session is repoa-11 [000001]\n  repob-8x [000003]  ·  interactive  ·  idle\n');
+  const p2 = cli(['prepare', '--request-id', p.request_id, '--to', 'b', '--agents-file', agents2], { cwd: A, env: envA });
+  assert.equal(p2.targets[0].send_to, 'repob-8x');
+  const m2 = path.join(B, 'in2.txt');
+  fs.copyFileSync(p2.targets[0].message_file, m2);
+  assert.equal(cli(['receive', '--message-file', m2], { cwd: B, env: { ...envB, CLAUDE_CODE_SESSION_ID: 'sid-b2' } }).verdict, 'duplicate');
+  cli(['status'], { cwd: A, env: envA }); // 따라잡기
+  assert.equal(JSON.parse(fs.readFileSync(path.join(envA.PEER_REQ_STATE, 'declared', 'pc.b.json'), 'utf8')).session_id, 'sid-b2');
+});
+
+test('리뷰8 0.1.x 폴더(remote_titles)는 읽기만 한다 — "이 짝 아님" 은 가져오고, 확인 안 된 옛 기억은 쓰지 않는다', () => {
+  const t = remoteRepo();
+  const legacy = path.join(t.state, 'remote_titles', 'srv.api.json');
+  fs.mkdirSync(path.dirname(legacy), { recursive: true });
+  const old = JSON.stringify({ title: 'host-old', ref: '0000dd', source: 'auto', picked_at: '2026-09-19T00:00:00.000Z', not: ['host-calm-river'] });
+  fs.writeFileSync(legacy, old);
+  const p = t.prep(t.list(['host-old [0000dd]', 'host-calm-river [0000cc]']));
+  assert.equal(p.targets[0].status, 'ready');
+  assert.equal(p.targets[0].via, 'only_candidate'); // 옛 기억(remembered_ref)이 아니라 남은 하나
+  t.ack(p);
+  assert.equal(fs.readFileSync(legacy, 'utf8'), old); // 0.1.x 가 쓰는 파일은 그대로
+  assert.equal(t.remembered().title, 'host-old');
+});
+
+test('리뷰9 같은 PC 에서 사용자가 목록에서 고른 세션도 받았다는 답이 온 뒤에 기억한다(--pick)', () => {
+  const home = tmp('home');
+  const state = tmp('state');
+  const A = tmp('repoA');
+  const B = tmp('repoB');
+  fs.mkdirSync(path.join(home, 'sessions'));
+  fs.writeFileSync(path.join(home, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'sid-b1', cwd: B, name: 'repob-11' }));
+  fs.writeFileSync(path.join(home, 'sessions', `${process.ppid}.json`), JSON.stringify({ pid: process.ppid, sessionId: 'sid-b2', cwd: path.join(B, 'sub'), name: 'repob-22' }));
+  fs.writeFileSync(path.join(A, '.peer_req.json'), JSON.stringify({ schema_version: 1, self: { endpoint_id: 'pc.a', machine_id: 'm1', root: fwd(A) }, peers: { b: { endpoint_id: 'pc.b', machine_id: 'm1', location: { root: fwd(B) } } } }));
+  const agentsFile = path.join(A, 'agents.txt');
+  fs.writeFileSync(agentsFile, 'This session is a [1]\n  repob-11 [000002]  ·  interactive  ·  idle\n  repob-22 [000003]  ·  interactive  ·  idle\n');
+  const bodyFile = path.join(A, 'body.txt');
+  fs.writeFileSync(bodyFile, 'q');
+  const env = { CLAUDE_CONFIG_DIR: home, PEER_REQ_STATE: state, CLAUDE_CODE_SESSION_ID: 'sid-a' };
+  const p = cli(['prepare', '--to', 'b', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agentsFile], { cwd: A, env });
+  assert.equal(p.targets[0].status, 'ask');
+  const p2 = cli(['prepare', '--request-id', p.request_id, '--to', 'b', '--agents-file', agentsFile, '--pick', 'repob-22'], { cwd: A, env });
+  assert.equal(p2.targets[0].status, 'ready');
+  assert.equal(p2.targets[0].remember_after_ack, true);
+  const declaredFile = path.join(state, 'declared', 'pc.b.json');
+  assert.equal(fs.existsSync(declaredFile), false); // 보내기 전에는 기억하지 않는다
+  const req = extractEnvelope(fs.readFileSync(p2.targets[0].message_file, 'utf8'));
+  const ackFile = path.join(A, 'ack.txt');
+  fs.writeFileSync(ackFile, renderMessage(makeReply({ type: 'ack', request: req, responder: 'pc.b', status: 'received' })));
+  cli(['ingest', '--message-file', ackFile], { cwd: A, env });
+  assert.equal(JSON.parse(fs.readFileSync(declaredFile, 'utf8')).session_id, 'sid-b2');
 });

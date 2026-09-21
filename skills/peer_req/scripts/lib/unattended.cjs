@@ -260,7 +260,7 @@ function runUnattended(o) {
   if (st && BLOCKED.indexOf(st.state) !== -1) return { ok: false, error: '이 요청은 지금 "' + st.state + '" 상태다 — 무인으로 돌리지 않는다(보류·거부·만료 우회 금지 · 이미 끝남)' };
   const refresh = !!(st && st.state === 'awaiting_user');
 
-  const same = peer.machine_id === book.self.machine_id;
+  const same = util.sameMachine(peer.machine_id, book.self.machine_id);
   const host = peer.location.host_alias;
   if (!same && !host) return { ok: false, error: o.alias + ' 는 다른 머신인데 location.host_alias(SSH 별칭)가 없다 — 무인 경로를 쓸 수 없다' };
   if (!same && !ab.HOST_RE.test(host)) return { ok: false, error: 'host_alias 형식 오류: ' + host };
@@ -274,7 +274,7 @@ function runUnattended(o) {
     intent: rec.intent,
     body: rec.body,
   });
-  const msgFile = store.writeText(dir, 'outbox', o.alias + '-unattended.txt', envl.renderMessage(env));
+  const msgFile = store.writeText(dir, 'outbox', util.fileKey(o.alias) + '-unattended.txt', envl.renderMessage(env));
   // 다시 확인(refresh)은 상태를 처음으로 돌리지 않는다 — 실패해도 awaiting_user 가 남아야 한다
   if (!refresh) store.appendEvent(dir, { type: 'prepared', recipient: o.alias, attempt_id: env.attempt_id, detail: 'via=unattended perm=' + perm + (same ? '' : ' host=' + host) });
   const fromTag = 'unattended:' + book.self.endpoint_id;

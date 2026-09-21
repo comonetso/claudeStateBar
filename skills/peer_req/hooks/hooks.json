@@ -1,5 +1,5 @@
 {
-  "description": "peer_req: announce the plugin, check Remote Control auto-connect, and report unreported peer requests when a session starts",
+  "description": "peer_req: announce the plugin, check Remote Control auto-connect, report unreported peer requests and name an untitled session when a session starts; stop Claude from editing another repository's peer address book",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,17 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.cjs\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-addressbook.cjs\""
           }
         ]
       }

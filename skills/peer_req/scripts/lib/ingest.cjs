@@ -17,6 +17,19 @@ const store = require('./store.cjs');
 const state = require('./state.cjs');
 const ab = require('./addressbook.cjs');
 const sessions = require('./sessions.cjs');
+const util = require('./util.cjs');
+
+// 이 응답이 "그 대상이 맞다" 는 증거인가 — 받았다(received·duplicate) 또는 결과를 보냈다
+function confirmsTarget(env) {
+  if (env.type === 'ack') return env.status === 'received' || env.status === 'duplicate';
+  return env.type === 'result' && env.status !== 'wrong_target';
+}
+
+// 이 응답에 해당하는 우리 쪽 prepared 이벤트(같은 시도) — 고른 세션(route)이 거기 적혀 있다
+function sentEventFor(dir, env, alias) {
+  const evs = store.listEvents(dir).filter((e) => e.type === 'prepared' && e.attempt_id === env.attempt_id && e.recipient === alias);
+  return evs.length ? evs[evs.length - 1] : null;
+}
 
 // 응답이 어느 받는 쪽의 것인가.
 //   보통은 응답자 endpoint 로 찾는다. 단 WRONG_TARGET 은 **엉뚱한 곳이 받았다는 뜻**이라 응답자가
@@ -43,7 +56,7 @@ function ingestEnvelope(root, env, from) {
   // 같은 결과를 또 받았으면(무인 "다시 확인" 등) 기록하지 않는다 — 이미 알린 것이 다시 "알리지 않은 것" 이 되지 않게
   const before = state.fold(store.listEvents(dir))[alias];
   if (env.type === 'result' && before && before.state === env.status) {
-    const prevFile = path.join(dir, 'result', alias + '.md');
+    const prevFile = path.join(dir, 'result', util.fileKey(alias) + '.md');
     const prev = fs.existsSync(prevFile) ? fs.readFileSync(prevFile, 'utf8') : null;
     if (prev === env.body + '\n') {
       return { ok: true, request_id: env.request_id, short_id: env.request_id.slice(0, 8), alias: alias, type: env.type, status: env.status, accepted: false, unchanged: true, body: env.body, result_file: prevFile, state: before };
@@ -55,12 +68,27 @@ function ingestEnvelope(root, env, from) {
   // 상태가 실제로 이 응답으로 바뀐 경우에만 결과 본문을 쓴다 — 완료 뒤 늦게 온 임시 결과가 덮지 않게(2차 리뷰 P2)
   const accepted = !!after && after.state === env.status && after.changedAt === added.event.at;
   let resultFile = null;
-  if (env.type === 'result' && accepted) resultFile = store.writeText(dir, 'result', alias + '.md', env.body + '\n');
-  // 적어 둔 다른 머신 세션으로 보냈는데 "대상 아님" 이 돌아왔으면 그 제목을 잊고, 다음부터 후보에서 뺀다(D27)
+  if (env.type === 'result' && accepted) resultFile = store.writeText(dir, 'result', util.fileKey(alias) + '.md', env.body + '\n');
+  const target = rec.targets[alias];
+  const sent = sentEventFor(dir, env, alias);
+  // 대상이 맞다는 답이 왔다 — 그때 고른 세션을 기억한다(2026-09-21: 전에는 보내기 전에 기억했다)
+  let promoted = null;
+  if (sent && sent.route && confirmsTarget(env) && env.sender_endpoint === target.endpoint_id) {
+    try {
+      promoted = sessions.promoteRoute(target.endpoint_id, target.root, sent.route, sent.at);
+    } catch (e) {
+      promoted = { error: e.message };
+    }
+  }
+  // "대상 아님" 이 돌아왔다 — 다른 머신이면 그 세션을 {제목, ref} 로 후보에서 빼고 기억을 지운다.
+  // 주소록 rc_title 은 사용자가 정한 값이라 그대로 두고, 그 세션(ref)만 뺀다. 같은 머신이면 그 세션 기록을 지운다.
   let wrongTitle = null;
-  if (env.type === 'ack' && env.status === 'wrong_target') {
-    const sent = store.listEvents(dir).filter((e) => e.type === 'prepared' && e.attempt_id === env.attempt_id && e.recipient === alias && e.remote_title)[0];
-    if (sent) wrongTitle = Object.assign({ title: sent.remote_title }, sessions.markWrongTitle(rec.targets[alias].endpoint_id, sent.remote_title));
+  let forgotLocal = false;
+  if (env.type === 'ack' && env.status === 'wrong_target' && sent) {
+    const r = sent.route;
+    if (r && r.same_machine) forgotLocal = sessions.forgetIfDeclared(target.endpoint_id, r.session_id);
+    else if (r && (r.title || r.ref)) wrongTitle = Object.assign({ title: r.title || null, ref: r.ref || null }, sessions.markWrongTitle(target.endpoint_id, { title: r.title, ref: r.ref }));
+    else if (sent.remote_title) wrongTitle = Object.assign({ title: sent.remote_title }, sessions.markWrongTitle(target.endpoint_id, sent.remote_title)); // 0.1.x 기록
   }
   return {
     ok: true,
@@ -73,6 +101,8 @@ function ingestEnvelope(root, env, from) {
     body: env.body,
     result_file: resultFile,
     wrong_title: wrongTitle,
+    forgot_local: forgotLocal,
+    promoted: promoted,
     state: after,
   };
 }
@@ -102,7 +132,7 @@ function syncFromPeerRecords(root, book) {
     Object.keys(rec.targets || {}).forEach((alias) => {
       const t = rec.targets[alias];
       const peer = peers[alias];
-      if (!peer || peer.machine_id !== book.self.machine_id) return;
+      if (!peer || !util.sameMachine(peer.machine_id, book.self.machine_id)) return;
       const mine = states[alias];
       if (mine && state.FINAL.indexOf(mine.state) !== -1) return;
       const peerDir = path.join(store.recordsRoot(t.root), id);
@@ -111,8 +141,14 @@ function syncFromPeerRecords(root, book) {
       const theirs = state.fold(store.listEvents(peerDir)).self;
       if (!theirs) return;
       if (!mine || mine.state === 'prepared' || mine.state === 'transport_accepted' || mine.state === 'unknown') {
-        const ack = readReply(path.join(peerDir, 'outbox', 'ack.txt'));
-        if (ack) pulled.push(ingestEnvelope(root, ack, 'peer-record'));
+        // 처음 받은 ACK(ack.txt) + 같은 요청을 다시 보냈으면 그 시도의 duplicate ACK — 받는 쪽은 재시도마다
+        // ack-duplicate-<attempt>.txt 를 남긴다. 이것까지 읽어야 다시 보낸 세션이 기억에 오른다(Codex 리뷰).
+        const files = ['ack.txt'];
+        if (mine && mine.attempt_id && /^[0-9a-f-]{36}$/i.test(mine.attempt_id)) files.push('ack-duplicate-' + mine.attempt_id + '.txt');
+        files.forEach((name) => {
+          const ack = readReply(path.join(peerDir, 'outbox', name));
+          if (ack) pulled.push(ingestEnvelope(root, ack, 'peer-record'));
+        });
       }
       if (state.isTerminal(theirs.state)) {
         const res = readReply(store.resultMessageFile(peerDir));

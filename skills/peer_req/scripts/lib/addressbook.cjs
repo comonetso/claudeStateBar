@@ -19,7 +19,10 @@ const util = require('./util.cjs');
 const BOOK_NAME = '.peer_req.json';
 
 const ID_RE = /^[a-z0-9][a-z0-9._-]*$/;
-const ALIAS_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+// 별칭은 사람이 부르는 이름이라 한글도 받는다(2026-09-21 사용자 결정). 공백은 받지 않는다 — 명령 인자로 넘기기 때문이다.
+// 기록 파일 이름에는 별칭 대신 util.fileKey 를 쓴다.
+// ⚠️ 0.1.x 는 한글 별칭 주소록을 "형식 오류" 로 읽는다 — 옛 버전으로 열려 있는 세션이 있으면 그 세션을 새로 연 뒤 쓴다.
+const ALIAS_RE = /^[A-Za-z0-9가-힣][A-Za-z0-9가-힣_-]*$/;
 // SSH 별칭 — 앞에 '-' 가 오면 ssh 가 옵션으로 읽는다(-oProxyCommand=… 로 로컬 명령 실행, 리뷰 P1)
 const HOST_RE = /^[A-Za-z0-9_][A-Za-z0-9._@-]*$/;
 const KNOWN_TOP = ['schema_version', 'self', 'peers', 'groups', 'records', 'unattended'];
@@ -139,7 +142,7 @@ function validateBook(text, file) {
     Object.keys(peers).forEach((alias) => {
       const p = peers[alias];
       const at = 'peers.' + alias;
-      if (!ALIAS_RE.test(alias)) errors.push(at + ': 별칭 형식 오류 (영문·숫자·_ -)');
+      if (!ALIAS_RE.test(alias)) errors.push(at + ': 별칭 형식 오류 (한글·영문·숫자·_ -, 공백 없이)');
       if (!isObject(p)) {
         errors.push(at + ': 객체가 아니다');
         return;
@@ -154,7 +157,10 @@ function validateBook(text, file) {
       if (loc.host_alias !== undefined && (typeof loc.host_alias !== 'string' || !HOST_RE.test(loc.host_alias))) {
         errors.push(at + '.location.host_alias 는 ~/.ssh/config 의 Host 이름이어야 한다(영문·숫자·. _ @ -, 첫 글자 - 금지): ' + JSON.stringify(loc.host_alias));
       }
-      const sameMachine = isObject(self) && p.machine_id === self.machine_id;
+      const sameMachine = isObject(self) && util.sameMachine(p.machine_id, self.machine_id);
+      if (sameMachine && p.machine_id !== self.machine_id) {
+        warnings.push(at + '.machine_id(' + p.machine_id + ') 가 self(' + self.machine_id + ')와 대소문자만 다르다 — 같은 기기로 본다');
+      }
       // rc_title 은 선택이다(D27) — 없으면 목록에서 한 번 고른 세션을 이 PC 가 기억한다. 적었다면 빈 값이면 안 된다.
       if (p.session_selector !== undefined && !isObject(p.session_selector)) {
         errors.push(at + '.session_selector 는 객체여야 한다');
@@ -219,6 +225,21 @@ function loadBook(start) {
   return { found: true, file: file, root: path.dirname(file), ok: r.ok, errors: r.errors, warnings: r.warnings, book: r.book };
 }
 
+// 그 폴더에 있는 주소록만 읽는다(위로 올라가지 않는다) — 짝 저장소의 주소록을 정확히 대조할 때 쓴다.
+// 짝 폴더에 주소록이 없는데 상위 폴더의 다른 주소록을 짝의 것으로 읽으면 대조가 틀린다.
+function loadBookAt(dir) {
+  const file = path.join(dir, BOOK_NAME);
+  if (!fs.existsSync(file)) return { found: false, file: file, root: dir, ok: false, errors: [], warnings: [], book: null };
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    return { found: true, file: file, root: dir, ok: false, errors: ['읽지 못했다: ' + e.message], warnings: [], book: null };
+  }
+  const r = validateBook(text, file);
+  return { found: true, file: file, root: dir, ok: r.ok, errors: r.errors, warnings: r.warnings, book: r.book };
+}
+
 function peersOf(book) {
   return isObject(book && book.peers) ? book.peers : {};
 }
@@ -235,4 +256,4 @@ function recordsCommitted(book) {
   return !(book && book.records && book.records.commit === false);
 }
 
-module.exports = { BOOK_NAME, ID_RE, HOST_RE, findBook, findDuplicateKeys, validateBook, loadBook, peersOf, expandTarget, recordsCommitted };
+module.exports = { BOOK_NAME, ID_RE, ALIAS_RE, HOST_RE, findBook, findDuplicateKeys, validateBook, loadBook, loadBookAt, peersOf, expandTarget, recordsCommitted };

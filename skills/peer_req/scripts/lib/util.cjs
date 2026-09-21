@@ -67,6 +67,25 @@ function isUnder(child, root, platform) {
   return c === r || c.indexOf(r.charAt(r.length - 1) === '/' ? r : r + '/') === 0;
 }
 
+// 같은 기기인가 — 기기 이름은 대소문자를 무시하고 비교한다(2026-09-21 사용자 결정).
+// 한 PC 를 저장소마다 'bluemingpc'·'BluemingPC' 로 달리 적어 같은 PC 짝이 다른 머신으로 갈리던 일이 있었다.
+function sameMachine(a, b) {
+  return typeof a === 'string' && typeof b === 'string' && a !== '' && a.toLowerCase() === b.toLowerCase();
+}
+
+// 이 기기의 이름 — 사용자가 설정 env 에 두는 ClaudeDeviceName, 없으면 컴퓨터 이름(2026-09-21 사용자 결정)
+function deviceName() {
+  const v = String(process.env.ClaudeDeviceName || '').trim();
+  return v || os.hostname().split('.')[0];
+}
+
+// 짝 별칭 → 기록 파일 이름에 쓸 키. 영문·숫자·_- 별칭은 그대로 쓴다(이전 기록과 같은 이름).
+// 한글 같은 그 밖의 별칭은 해시로 바꾼다 — 파일 시스템마다 다른 유니코드 정규화·금지 문자를 피한다.
+function fileKey(alias) {
+  const s = String(alias);
+  return /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(s) ? s : 'p-' + sha256(s).slice(0, 12);
+}
+
 function isAbsolutePath(p) {
   const s = String(p || '').replace(/\\/g, '/');
   return s.charAt(0) === '/' || /^[a-zA-Z]:\//.test(s);
@@ -257,6 +276,9 @@ module.exports = {
   normPath,
   samePath,
   isUnder,
+  sameMachine,
+  deviceName,
+  fileKey,
   isAbsolutePath,
   mkdirp,
   unlinkQuiet,

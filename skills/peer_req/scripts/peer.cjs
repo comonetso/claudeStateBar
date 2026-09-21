@@ -11,9 +11,10 @@
 // (PowerShell 은 `VAR=값 node …` 를 못 쓴다, 리뷰 P2).
 //
 // 서브커맨드
-//   doctor                                   주소록·선언·짝 후보·RC 설정 점검. 아무것도 쓰거나 보내지 않는다
+//   doctor                                   주소록·선언·짝 후보·RC 설정 점검 + 같은 머신 짝 주소록과 교차 대조. 아무것도 쓰거나 보내지 않는다
+//   discover                                 이 머신에 떠 있는 세션과 각자의 폴더·주소록(self) 목록. 아무것도 쓰지 않는다
 //   prepare  --to <짝|그룹> --intent <i> --body-file <f> --agents-file <f> [--request-id <id>] [--pick "<이름>"]
-//   record   --id <id> --to <짝> --event <type> [--detail <text>]
+//   record   --id <id> --to <짝> --event <type> [--detail <text>]   (받는 쪽은 --event reported 만)
 //   bind     --to <짝> --session-id <sid>    사용자가 알려 준 같은 머신 세션을 기록한다
 //   forget   --to <짝>                        기록한 세션을 지운다
 //   here                                     받는 대화에서 "여기가 짝" 선언 (주소록 self 필요)
@@ -140,17 +141,21 @@ function cmdDoctor(args, cwd) {
   };
   if (b.found && b.ok) {
     report.self = b.book.self;
+    report.device_name = util.deviceName();
     report.records_commit = ab.recordsCommitted(b.book);
     const peers = ab.peersOf(b.book);
+    let problems = 0;
     Object.keys(peers).forEach((alias) => {
       const p = peers[alias];
-      const same = p.machine_id === b.book.self.machine_id;
+      const same = util.sameMachine(p.machine_id, b.book.self.machine_id);
       const row = { alias: alias, endpoint_id: p.endpoint_id, same_machine: same, root: p.location.root };
       if (same) {
         const dec = declared[p.endpoint_id] || null;
         row.declared = dec;
         row.declared_alive = !!(dec && reg.sessions.some((s) => s.sessionId === dec.session_id));
         row.sessions_in_root = reg.sessions.filter((s) => util.isUnder(s.cwd, p.location.root)).map((s) => ({ name: s.name, session_id: s.sessionId, status: s.status }));
+        row.cross_check = crossCheck(b.book, p);
+        problems += row.cross_check.problems.length;
       } else {
         row.rc_title = (p.session_selector && p.session_selector.rc_title) || null;
         row.remembered = titles[p.endpoint_id] || null;
@@ -158,19 +163,72 @@ function cmdDoctor(args, cwd) {
       }
       report.peers.push(row);
     });
+    report.problem_count = problems;
     if (report.peers.length === 0) report.note = '짝이 없다 — 받기만 하는 저장소다';
     if (b.book.groups) report.groups = b.book.groups;
   }
   print(report);
 }
 
+// 같은 머신 짝의 주소록과 내 주소록을 대조한다 — 파일 하나만 보면 둘 다 "정상" 인데 서로 어긋나 있을 수 있다
+// (2026-09-21 사고: 두 저장소 doctor 가 모두 ok 였는데 상대 self 이름이 달라 곧바로 WRONG_TARGET 이 났다).
+// 대조만 한다. 상대 주소록은 고치지 않는다 — 고치는 것은 그 저장소 세션의 몫이다.
+function crossCheck(myBook, peer) {
+  const out = { peer_book: null, problems: [], notes: [] };
+  const theirs = ab.loadBookAt(peer.location.root);
+  out.peer_book = theirs.found ? theirs.file : null;
+  if (!theirs.found) {
+    out.problems.push({ code: 'peer_book_missing', message: '짝 폴더에 주소록이 없다 — 보내면 받는 쪽이 대상을 확인하지 못해 WRONG_TARGET 으로 돌려보낸다' });
+    return out;
+  }
+  if (!theirs.ok) {
+    out.problems.push({ code: 'peer_book_invalid', message: '짝 주소록이 깨져 있다: ' + theirs.errors[0] });
+    return out;
+  }
+  const s = theirs.book.self;
+  if (s.endpoint_id !== peer.endpoint_id) {
+    out.problems.push({ code: 'endpoint_mismatch', message: '짝 주소록의 self 는 "' + s.endpoint_id + '" 인데 내 주소록엔 "' + peer.endpoint_id + '" 로 적혀 있다 — 보내면 WRONG_TARGET' });
+  }
+  if (!util.sameMachine(s.machine_id, peer.machine_id)) {
+    out.problems.push({ code: 'machine_mismatch', message: '짝 주소록의 기기 이름은 "' + s.machine_id + '" 인데 내 주소록엔 "' + peer.machine_id + '"' });
+  }
+  const back = Object.keys(ab.peersOf(theirs.book)).map((a) => ({ alias: a, p: theirs.book.peers[a] })).filter((x) => x.p.endpoint_id === myBook.self.endpoint_id);
+  if (back.length === 0) {
+    out.notes.push('짝은 나를 짝으로 적어 두지 않았다 — 짝이 나에게 먼저 보낼 수는 없다(받기·답장은 된다)');
+  } else if (!util.samePath(back[0].p.location.root, myBook.self.root)) {
+    out.problems.push({ code: 'reverse_root_mismatch', message: '짝 주소록이 나를 다른 폴더(' + back[0].p.location.root + ')로 적어 두었다' });
+  }
+  return out;
+}
+
+// ───────────────────────── discover ─────────────────────────
+// 주소록이 없어도 쓸 수 있다 — "이 머신에 떠 있는 세션이 각각 어느 폴더인가" 를 보여 준다.
+// 2026-09-21: 이게 없어서 세션이 내부 함수를 node -e 로 직접 불러 폴더를 알아냈다.
+function cmdDiscover(args, cwd) {
+  const reg = sessions.readRegistry();
+  const me = process.env.CLAUDE_CODE_SESSION_ID || null;
+  const rows = reg.sessions.map((s) => {
+    const b = ab.loadBook(s.cwd);
+    return {
+      name: s.name,
+      session_id: s.sessionId,
+      cwd: s.cwd,
+      status: s.status,
+      kind: s.kind,
+      this_session: s.sessionId === me,
+      addressbook: b.found ? { root: b.root, ok: b.ok, self: b.ok ? b.book.self : null, error: b.ok ? null : b.errors[0] } : null,
+    };
+  });
+  print({ device_name: util.deviceName(), registry: { readable: reg.readable, reason: reg.reason || null }, count: rows.length, sessions: rows });
+}
+
 // ───────────────────────── prepare ─────────────────────────
 
 // 사용자가 목록에서 직접 고른 대상(--pick "<이름>" 또는 "<이름> [ref]").
-// 같은 머신이면 그 세션 번호를 찾아 기록해 둔다 — 다음부터는 묻지 않는다.
+// 고른 세션은 상대가 받았다고 답한 뒤 기억한다 — 다음부터는 묻지 않는다.
 function resolvePicked(o) {
   const peer = ab.peersOf(o.book)[o.alias];
-  const same = peer.machine_id === o.book.self.machine_id;
+  const same = util.sameMachine(peer.machine_id, o.book.self.machine_id);
   const m = o.pick.match(/^(.*?)(?: \[([0-9a-z]+)\])?$/);
   const rows = o.agents.rows.filter((r) => r.name === m[1] && (!m[2] || r.ref === m[2]));
   const base = { alias: o.alias, endpoint_id: peer.endpoint_id, same_machine: same };
@@ -183,6 +241,9 @@ function resolvePicked(o) {
     return Object.assign(base, { status: 'ready', via: 'user_pick', send_to: sendTo, row: row, remember: true });
   }
   // 같은 머신은 세션 번호가 있어야 받는 쪽이 "내 앞으로 온 게 맞나" 를 확인할 수 있다 — 모르면 보내지 않는다(2차 리뷰 P2 · 사용자 결정)
+  if (row.where !== 'local' && sessions.localRowsOf(o.agents, o.registry).indexOf(row) === -1) {
+    return Object.assign(base, { status: 'ask', reason: '"' + row.name + '" 는 이 머신의 세션이 아니다(' + row.kind + ')', candidates: [] });
+  }
   const hits = o.registry.readable ? o.registry.sessions.filter((s) => s.name === row.name) : [];
   if (hits.length === 1) return Object.assign(base, { status: 'ready', via: 'user_pick', send_to: sendTo, row: row, session_id: hits[0].sessionId, bind: true });
   return Object.assign(base, {
@@ -190,6 +251,13 @@ function resolvePicked(o) {
     reason: o.registry.readable ? '"' + row.name + '" 의 세션 번호를 찾지 못했다(' + hits.length + '개) — 받는 쪽에서 here 로 선언해 달라고 한다' : '세션 등록 파일을 읽을 수 없어 세션 번호를 확인할 수 없다 — 같은 머신 전송을 하지 않는다',
     candidates: [],
   });
+}
+
+// prepared 이벤트에 남길 "고른 세션" — 확인(ACK) 뒤 기억하거나, WRONG_TARGET 이면 지울 근거
+function routeOf(r) {
+  const source = r.via === 'user_pick' ? 'user' : r.via === 'remembered_ref' ? 'ref' : r.via === 'rc_title' ? 'rc_title' : r.via === 'remembered' ? 'title' : 'auto';
+  if (r.same_machine) return { same_machine: true, via: r.via, send_to: r.send_to, session_id: r.session_id || null, name: r.row ? r.row.name : r.send_to, bind: !!r.bind, source: source };
+  return { same_machine: false, via: r.via, send_to: r.send_to, title: r.row ? r.row.name : null, ref: r.row ? r.row.ref : null, remember: !!r.remember, source: source };
 }
 
 function cmdPrepare(args, cwd) {
@@ -203,6 +271,8 @@ function cmdPrepare(args, cwd) {
   if (!aliases) throw new UsageError('주소록에 "' + target + '" 라는 짝·그룹이 없다. 있는 것: ' + Object.keys(peers).concat(Object.keys(book.groups || {})).join(', '));
   const agents = sessions.parseAgents(readFileArg(args, 'agents-file'));
   const selfSessionId = process.env.CLAUDE_CODE_SESSION_ID || null;
+  // 지난 요청의 ACK 를 같은 머신 짝 기록에서 먼저 따라잡는다 — 그래야 확인된 짝 세션이 기억에 올라와 있다
+  syncIfPossible(ctx.b, root);
 
   let requestId = opt(args, 'request-id');
   let intent;
@@ -252,11 +322,15 @@ function cmdPrepare(args, cwd) {
   const registry = sessions.readRegistry();
   const pick = opt(args, 'pick');
   if (pick && aliases.length !== 1) throw new UsageError('--pick 은 짝 하나에게 보낼 때만 쓴다');
+  // 그룹으로 보낼 때 앞 짝에게 배정한 세션 — 기억은 ACK 뒤라 기록에 아직 없으니 여기서 넘겨 준다
+  const claimed = { refs: {}, sessions: {} };
   const results = aliases.map((alias) => {
     const r = pick
       ? resolvePicked({ book: book, alias: alias, agents: agents, registry: registry, pick: pick })
-      : sessions.resolvePeer({ book: book, alias: alias, agents: agents, selfSessionId: selfSessionId, registry: registry });
+      : sessions.resolvePeer({ book: book, alias: alias, agents: agents, selfSessionId: selfSessionId, registry: registry, claimed: claimed });
     if (r.status === 'ready') {
+      if (r.row && r.row.ref && !r.same_machine) claimed.refs[r.row.ref] = alias;
+      if (r.session_id) claimed.sessions[r.session_id] = alias;
       const peer = peers[alias];
       const env = envl.makeRequest({
         requestId: requestId,
@@ -266,14 +340,15 @@ function cmdPrepare(args, cwd) {
         intent: intent,
         body: body,
       });
-      const file = store.writeText(dir, 'outbox', alias + '.txt', envl.renderMessage(env));
-      // remote_title: 적어 둔 세션으로 보낸 시도만 남긴다 — WRONG_TARGET 이 오면 ingest 가 그 제목을 지운다.
-      // 주소록 rc_title 로 보낸 것은 사용자가 정한 값이라 자동으로 지우지 않는다.
+      const file = store.writeText(dir, 'outbox', util.fileKey(alias) + '.txt', envl.renderMessage(env));
+      // 고른 세션은 여기서 기억하지 않는다 — route 로 적어 두고, 상대가 받았다고 답하면 ingest 가 기억한다.
+      // WRONG_TARGET 이 오면 같은 route 로 그 세션을 후보에서 빼거나(다른 머신) 기록을 지운다(같은 머신).
+      const route = routeOf(r);
+      // remote_title: 0.1.x 가 읽던 필드 — 적어 둔 세션으로 보낸 다른 머신 시도에만
       const learned = !r.same_machine && r.via !== 'rc_title' && r.row ? r.row.name : null;
-      store.appendEvent(dir, { type: 'prepared', recipient: alias, attempt_id: env.attempt_id, detail: 'via=' + r.via + ' to=' + r.send_to, remote_title: learned });
-      if (r.bind) sessions.declare(peer.endpoint_id, { sessionId: r.session_id, root: peer.location.root, name: r.send_to, source: r.via === 'user_pick' ? 'user' : 'auto' });
-      if (r.remember) sessions.rememberTitle(peer.endpoint_id, { title: r.row.name, ref: r.row.ref, source: r.via === 'user_pick' ? 'user' : r.via === 'remembered_ref' ? 'ref' : 'auto' });
-      return { alias: alias, status: 'ready', send_to: r.send_to, via: r.via, message_file: file, attempt_id: env.attempt_id, same_machine: r.same_machine, remembered: !!r.remember, note: r.note || null };
+      store.appendEvent(dir, { type: 'prepared', recipient: alias, attempt_id: env.attempt_id, detail: 'via=' + r.via + ' to=' + r.send_to, remote_title: learned, route: route });
+      const willRemember = !!(route.same_machine ? route.bind : route.remember);
+      return { alias: alias, status: 'ready', send_to: r.send_to, via: r.via, message_file: file, attempt_id: env.attempt_id, same_machine: r.same_machine, remember_after_ack: willRemember, note: r.note || null };
     }
     if (r.status === 'unreachable') store.appendEvent(dir, { type: 'unreachable', recipient: alias, detail: r.reason });
     return { alias: alias, status: r.status, reason: r.reason, note: r.note || null, candidates: r.candidates || [], same_machine: r.same_machine };
@@ -292,7 +367,10 @@ function cmdPrepare(args, cwd) {
 
 // ───────────────────────── record · bind · forget · here ─────────────────────────
 
+// 보낸 쪽이 전송 도구 결과로 적는 것 / 받은 쪽이 적는 것 — 받은 쪽은 "알렸다" 하나뿐이다
+// (2026-09-21: 받은 쪽이 transport_accepted 를 적은 일이 있었다. 무해했지만 절차가 섞였다는 신호다)
 const RECORDABLE = ['transport_accepted', 'unreachable', 'held', 'refused', 'expired', 'failed', 'unknown', 'reported'];
+const RECORDABLE_INBOUND = ['reported'];
 
 function cmdRecord(args, cwd) {
   const root = repoContext(cwd).root;
@@ -302,6 +380,9 @@ function cmdRecord(args, cwd) {
   const dir = store.requestDir(root, id);
   const rec = store.readRequestRecord(dir);
   if (!rec) throw new UsageError('기록에 ' + id + ' 가 없다');
+  if (rec.direction === 'inbound' && RECORDABLE_INBOUND.indexOf(type) === -1) {
+    throw new UsageError('받은 요청에는 ' + RECORDABLE_INBOUND.join('·') + ' 만 기록한다 — ' + type + ' 는 보낸 쪽이 적는 것이다');
+  }
   const who = rec.direction === 'inbound' ? 'self' : need(args, 'to');
   if (rec.direction === 'outbound' && !rec.targets[who]) throw new UsageError(id + ' 의 받는 쪽에 ' + who + ' 가 없다');
   store.appendEvent(dir, { type: type, recipient: who, detail: opt(args, 'detail') });
@@ -311,7 +392,7 @@ function cmdRecord(args, cwd) {
 function sameMachinePeer(book, alias) {
   const peer = ab.peersOf(book)[alias];
   if (!peer) throw new UsageError('주소록에 짝 "' + alias + '" 가 없다');
-  if (peer.machine_id !== book.self.machine_id) throw new UsageError(alias + ' 는 다른 머신 짝이다 — 세션 기록은 같은 머신 짝에만 쓴다');
+  if (!util.sameMachine(peer.machine_id, book.self.machine_id)) throw new UsageError(alias + ' 는 다른 머신 짝이다 — 세션 기록은 같은 머신 짝에만 쓴다');
   return peer;
 }
 
@@ -330,7 +411,7 @@ function cmdForget(args, cwd) {
   const alias = need(args, 'to');
   const peer = ab.peersOf(book)[alias];
   if (!peer) throw new UsageError('주소록에 짝 "' + alias + '" 가 없다');
-  const same = peer.machine_id === book.self.machine_id;
+  const same = util.sameMachine(peer.machine_id, book.self.machine_id);
   print({ ok: true, alias: alias, same_machine: same, removed: same ? sessions.forget(peer.endpoint_id) : sessions.forgetTitle(peer.endpoint_id) });
 }
 
@@ -492,9 +573,11 @@ function cmdReroute(args, cwd) {
   const rec = store.readRequestRecord(dir);
   if (!rec || rec.direction !== 'inbound') throw new UsageError('받은 기록에 ' + id + ' 가 없다');
   store.appendEvent(dir, { type: 'reply_undelivered', recipient: 'self', detail: opt(args, 'detail') });
-  const from = currentReplyTo(dir, rec) || '';
-  if (from.indexOf('uds:') !== 0) {
-    return print({ status: 'unreachable', reason: '다른 머신에서 온 요청이다. Remote Control 주소는 다시 찾지 않는다 — 결과는 이 저장소 기록에 남아 있다', reply_to: from, record_dir: dir });
+  // 같은 머신에서 온 요청인가는 **처음 받은 주소**로 가른다. 한 번 다시 찾은 뒤의 답장 주소는 세션 이름이라
+  // 'uds:' 로 시작하지 않는다 — 그걸로 가르면 두 번째 reroute 가 늘 "다른 머신" 으로 끝났다(C04).
+  const first = String(rec.from || '');
+  if (first.indexOf('uds:') !== 0) {
+    return print({ status: 'unreachable', reason: '다른 머신에서 온 요청이다. Remote Control 주소는 다시 찾지 않는다 — 결과는 이 저장소 기록에 남아 있다', reply_to: currentReplyTo(dir, rec) || first, record_dir: dir });
   }
   const agents = sessions.parseAgents(readFileArg(args, 'agents-file'));
   let r = sessions.findReplyTarget({ senderRoot: rec.envelope.sender_root, agents: agents, selfSessionId: process.env.CLAUDE_CODE_SESSION_ID || null });
@@ -621,6 +704,7 @@ function cmdInbox(args, cwd) {
 
 const COMMANDS = {
   doctor: cmdDoctor,
+  discover: cmdDiscover,
   prepare: cmdPrepare,
   record: cmdRecord,
   bind: cmdBind,
