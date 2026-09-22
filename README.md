@@ -101,7 +101,7 @@ If the current window has no recorded Codex conversation UUID or its rollout is 
 
 Codex account usage is a **separate concept** from Claude's 5‑hour / weekly plan usage. Each provider's usage is merged only into that provider's own first session item.
 
-The status bar text follows the Claude one. An account with a 5‑hour limit shows it with its countdown and then the weekly figure (`30% (2h 3m) - 49%`); a weekly‑only account shows the weekly figure with its countdown (`49% (2d 7h)`). On the standalone **`⬢ Codex`** item the text colour follows the first figure; a session item is coloured by its context usage, as before.
+The status bar text follows the Claude one. An account with a 5‑hour limit shows it with its countdown and then the weekly figure (`30% (2h 3m) - 49%`); a weekly‑only account shows the weekly figure with its countdown (`49% (2d 7h)`). On the standalone **`⬢ Codex`** item the text colour follows the first figure: yellow from 70%, red from 90%, and below that the same resting colour as a session item (`baseColor`), while the ⬢ glyph keeps the light blue of a Codex session item. A session item is coloured by its context usage, as before.
 
 ### Codex settings
 
@@ -201,7 +201,7 @@ Up to three coloured dots at the front of this extension's status-bar items, jus
 - **Only while running** — a dot appears when its kind starts and disappears when it ends. When all three run they sit side by side in that order, as close together as the status bar allows
 - **Hover and click** — the tooltip lists what is running: each workflow's name and how many of its agents are done, each command's description and start time, each Codex run's subject and mode. Clicking a dot opens that panel
 - **How quickly they follow** — orange and grey follow the status-bar refresh (a changed conversation file, or every 30 seconds by default); blue follows the Codex scan, which runs every 2 seconds while a run is live
-- **Colours** — the dots use theme colours. On the default light theme the orange dot is low in contrast, and a high-contrast theme may not give it a colour of its own
+- **Colours** — each dot has a shade per theme kind (dark, light, high contrast) chosen to stand out on the status bar: all three measure at least 5:1 against the status bar on VS Code's six default themes. To change one, set `claudeContextBar.workflowDot`, `claudeContextBar.backgroundDot` or `claudeContextBar.codexDot` under `workbench.colorCustomizations`, for example `"workbench.colorCustomizations": { "claudeContextBar.workflowDot": "#FF8800" }`
 
 ---
 

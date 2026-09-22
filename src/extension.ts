@@ -145,6 +145,7 @@ let planFallbackItem: vscode.StatusBarItem | null = null;
 // Account usage remains meaningful even when workspace scope cannot associate the Codex
 // webview's selected thread with a persisted rollout.
 let codexUsageFallbackItem: vscode.StatusBarItem | null = null;
+let codexUsageFallbackIconItem: vscode.StatusBarItem | null = null;
 let planRefreshInterval: NodeJS.Timeout | null = null;
 let planTickInterval: NodeJS.Timeout | null = null;
 
@@ -1089,6 +1090,7 @@ export function activate(context: vscode.ExtensionContext) {
             pendingQuestion.clear();
             planFallbackItem?.dispose();
             codexUsageFallbackItem?.dispose();
+            codexUsageFallbackIconItem?.dispose();
             disposeStage();
             disposeActivityDots();
             statusBarItems.forEach(entry => {
@@ -1153,6 +1155,7 @@ export function deactivate() {
     pendingQuestion.clear();
     planFallbackItem?.dispose();
     codexUsageFallbackItem?.dispose();
+    codexUsageFallbackIconItem?.dispose();
     disposeStage();
     disposeActivityDots();
     statusBarItems.forEach(entry => {
@@ -3065,17 +3068,7 @@ async function refreshAllSessionsOnce() {
     // was unreadable in both directions: a healthy 28% session rendered in dusty rose and
     // looked like a warning, and a genuine 78% one could be dismissed as "that project's
     // colour". Sessions are told apart by name, and providers by their icon colour.
-    const baseColorHex: Record<string, string> = {
-        'White': '#ffffff',
-        'Blue': '#a8d8ea',
-        'Purple': '#c9b1ff',
-        'Cyan': '#a0e7e5',
-        'Green': '#b5d8c7',
-        'Yellow': '#ffeaa7',
-        'Orange': '#ffd6a5',
-        'Pink': '#ffc6ff',
-    };
-    const restingColor = baseColorHex[baseColor] || baseColorHex['White'];
+    const restingColor = restingTextColor(baseColor);
 
     // Track which sessions we've seen
     const seenPaths = new Set<string>();
@@ -4268,6 +4261,22 @@ function untilHuman(iso: string | null): string {
     return planT('sb.minsLater', m);
 }
 
+// The `baseColor` setting as a hex value: the colour of any usage text that is below its
+// warning line. Shared by the session items and the account-only Codex item.
+function restingTextColor(baseColor: string): string {
+    const baseColorHex: Record<string, string> = {
+        'White': '#ffffff',
+        'Blue': '#a8d8ea',
+        'Purple': '#c9b1ff',
+        'Cyan': '#a0e7e5',
+        'Green': '#b5d8c7',
+        'Yellow': '#ffeaa7',
+        'Orange': '#ffd6a5',
+        'Pink': '#ffc6ff',
+    };
+    return baseColorHex[baseColor] || baseColorHex['White'];
+}
+
 function colorForPercent(percent: number | null): vscode.ThemeColor | undefined {
     if (percent == null) return undefined;
     const p = Math.round(percent);
@@ -4853,10 +4862,16 @@ function codexUsageTooltipBlock(): string {
     return s;
 }
 
+// Two entries, like a session item: the glyph keeps the Codex identity colour and the text
+// follows the usage colour. It used to be one entry painted #FF9F6E below the warning line,
+// which read as a warning while Codex sat idle at 53%.
 function ensureCodexUsageFallback(): void {
     if (!codexUsageFallbackItem) {
-        codexUsageFallbackItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 9);
+        codexUsageFallbackItem = vscode.window.createStatusBarItem('codexUsage.text', vscode.StatusBarAlignment.Right, 9);
         codexUsageFallbackItem.command = 'claudeContextBar.openSettings';
+        codexUsageFallbackIconItem = vscode.window.createStatusBarItem('codexUsage.icon', vscode.StatusBarAlignment.Right, 10);
+        codexUsageFallbackIconItem.command = 'claudeContextBar.openSettings';
+        compactIconBesideText(codexUsageFallbackIconItem, codexUsageFallbackItem, 9);
     }
 }
 
@@ -4866,30 +4881,41 @@ function ensureCodexUsageFallback(): void {
 function updateCodexUsageFallback(noCodexSessions: boolean): void {
     ensureCodexUsageFallback();
     const item = codexUsageFallbackItem!;
+    const iconItem = codexUsageFallbackIconItem!;
     const u = accountCodexUsage();
     // A weekly-only account leads with its weekly figure rather than showing nothing.
     const w = codexHeadlineWindow(u);
     if (!isCodexEnabled() || !noCodexSessions || !w) {
         item.hide();
+        iconItem.hide();
         return;
     }
 
     const used = codexUsedPercent(w.usedPercent);
     const iso = isoFromEpoch(w.resetsAt);
-    const compact = vscode.workspace.getConfiguration('claudeContextBar').get<boolean>('compactMode', false);
+    const config = vscode.workspace.getConfiguration('claudeContextBar');
+    const compact = config.get<boolean>('compactMode', false);
     item.text = compact
-        ? `${providerIcon('codex')} Codex · ${used}% (${untilHumanCompact(iso)})${codexWeeklyTail(u, true)}`
-        : `${providerIcon('codex')} Codex - ${codexHeadlineLabel(u)} ${used}% (${untilHuman(iso)})${codexWeeklyTail(u, false)}`;
-    // Colour follows the headline figure only (user decision, 2026-09-22).
-    item.color = colorForPercent(w.usedPercent) ?? '#FF9F6E';
+        ? `Codex · ${used}% (${untilHumanCompact(iso)})${codexWeeklyTail(u, true)}`
+        : `Codex - ${codexHeadlineLabel(u)} ${used}% (${untilHuman(iso)})${codexWeeklyTail(u, false)}`;
+    // Colour follows the headline figure only (user decision, 2026-09-22); below the warning
+    // line it is the same resting colour as a session item (user decision, 2026-09-22).
+    item.color = colorForPercent(w.usedPercent) ?? restingTextColor(config.get<string>('baseColor', 'White'));
     item.backgroundColor = undefined;
-    item.tooltip = new vscode.MarkdownString(
+    const tooltip = new vscode.MarkdownString(
         sectionHeader('Codex Usage', '#FF9F6E') +
         codexUsageTooltipBlock() +
         `${planT('tt.codexNoWorkspaceSession')}\n\n` +
         `*${planT('tt.clickSettings')}*`
     );
+    item.tooltip = tooltip;
+    iconItem.text = providerIcon('codex');
+    iconItem.color = '#8ecae6';
+    iconItem.backgroundColor = undefined;
+    iconItem.tooltip = tooltip;
+    // Text first: the icon is placed relative to it.
     item.show();
+    iconItem.show();
 }
 
 // A coloured section divider for the merged tooltip — visually separates the claudeState

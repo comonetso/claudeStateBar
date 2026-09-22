@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
 // Status-bar dots for work running behind the conversation (user's call, 2026-09-22): orange while
-// a workflow runs, green while a background task does, blue while a Codex run from the progress
+// a workflow runs, grey while a background task does, blue while a Codex run from the progress
 // panel does. A status-bar item takes a single colour, so each dot is its own item; each shows
 // only while its kind runs and disappears when it ends, and all three show at once when all three
 // run. They sit at the very front of this extension's items, left of the first session, where the
@@ -23,15 +23,25 @@ export interface DotSpec {
 
 const ORDER: DotKind[] = ['workflow', 'background', 'codex'];
 
-// Theme colours, so each theme supplies the shade. Background is grey (user's call, 2026-09-22:
-// green and blue were hard to tell apart, and background work is background) — the same
-// `disabledForeground` an idle session's text uses. A Codex review the same day found that
-// `charts.*` is not guaranteed to contrast with the status bar: fine on the default dark theme,
-// orange about 2.83:1 on the default light one, and no orange value of its own in high contrast.
+// This extension's own colours (package.json `contributes.colors`), so every theme kind gets a
+// shade that stands out on the status bar and a user can override each one in
+// `workbench.colorCustomizations`. Background is grey (user's call, 2026-09-22: green and blue
+// were hard to tell apart, and background work is background).
+//
+// The first version borrowed `charts.orange` and `disabledForeground`, which a Codex review the
+// same day showed are not meant for the status bar. Measured against the status-bar background of
+// the six default themes: `charts.orange` is a translucent find-highlight colour underneath
+// (#EA5C0055) and came out 1.59:1 on Dark Modern, 1.49:1 on Light Modern and 2.83:1 on 2026 Light,
+// with no value at all in high contrast; `disabledForeground` was 1.84–2.34:1 on the 2026 themes
+// and Light Modern (3:1 is the usual floor for a graphic). The defaults now used (user's call,
+// 2026-09-22, following VS Code's own colour tokens) all measure 5:1 or more: orange #CD861A on
+// dark (what the 2026 dark theme already gives `charts.orange`), #895503 on light and
+// `editorWarning.foreground` in high contrast; grey `descriptionForeground`; blue `charts.blue`,
+// which already measured 5.02–8.10:1 and is only registered so it can be overridden too.
 const COLOR: Record<DotKind, vscode.ThemeColor> = {
-    workflow: new vscode.ThemeColor('charts.orange'),
-    background: new vscode.ThemeColor('disabledForeground'),
-    codex: new vscode.ThemeColor('charts.blue'),
+    workflow: new vscode.ThemeColor('claudeContextBar.workflowDot'),
+    background: new vscode.ThemeColor('claudeContextBar.backgroundDot'),
+    codex: new vscode.ThemeColor('claudeContextBar.codexDot'),
 };
 
 // Right-aligned items: a higher priority sits further left. The first session group takes 30

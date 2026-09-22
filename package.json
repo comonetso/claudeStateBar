@@ -2,7 +2,7 @@
   "name": "claude-state-bar",
   "displayName": "Claude Code & Codex Status Bar",
   "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly usage read live from the Codex app-server and kept identical across every window. Includes live Workflow/Agent and background-task panels, status-bar dots for work still running, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
-  "version": "1.17.0",
+  "version": "1.17.1",
   "extensionKind": [
     "ui"
   ],
@@ -91,6 +91,38 @@
         }
       }
     },
+    "colors": [
+      {
+        "id": "claudeContextBar.workflowDot",
+        "description": "Status-bar dot shown while a Claude Code workflow is running.",
+        "defaults": {
+          "dark": "#CD861A",
+          "light": "#895503",
+          "highContrast": "editorWarning.foreground",
+          "highContrastLight": "editorWarning.foreground"
+        }
+      },
+      {
+        "id": "claudeContextBar.backgroundDot",
+        "description": "Status-bar dot shown while a Claude background command or monitor is running.",
+        "defaults": {
+          "dark": "descriptionForeground",
+          "light": "descriptionForeground",
+          "highContrast": "descriptionForeground",
+          "highContrastLight": "descriptionForeground"
+        }
+      },
+      {
+        "id": "claudeContextBar.codexDot",
+        "description": "Status-bar dot shown while a Codex run from the progress panel is running.",
+        "defaults": {
+          "dark": "charts.blue",
+          "light": "charts.blue",
+          "highContrast": "charts.blue",
+          "highContrastLight": "charts.blue"
+        }
+      }
+    ],
     "commands": [
       {
         "command": "claudeContextBar.showSessionMenu",

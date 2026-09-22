@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.17.1] - 2026-09-22
+
+The status-bar dots now have their own colours for dark, light and high-contrast themes, so they
+stand out on every default theme, and each can be changed in `workbench.colorCustomizations`
+(`claudeContextBar.workflowDot`, `claudeContextBar.backgroundDot`, `claudeContextBar.codexDot`).
+
+The standalone Codex usage item no longer looks like a warning: below 70% its text has the same
+resting colour as a session item, and its glyph the light blue of a Codex session.
+
+A workflow whose end notice arrived while Claude was answering could stay listed as running in the
+workflow panel. That kind of notice is now read too.
+
 ## [1.17.0] - 2026-09-22
 
 A background task panel lists, for the sessions on the status bar, the commands and monitors Claude
