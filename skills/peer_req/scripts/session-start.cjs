@@ -12,6 +12,7 @@
 //      🔴 Claude Code 2.1.278 은 제목이 없으면 session_title 칸을 **아예 보내지 않는다**(설치본 `session_title:s??pd(id)`,
 //      없으면 undefined — Codex 리뷰가 찾았다). 그래서 칸이 없을 때는 버전을 보고, 확인한 2.1.278 이상일 때만
 //      "제목 없음" 으로 본다. 그보다 낮거나 버전을 모르면 사람 제목이 있을지 몰라 붙이지 않는다(2026-09-22 사용자 결정).
+//      같은 제목의 살아 있는 세션이 있으면 " · 2" 처럼 순번을 붙인다(0.2.1) — 형식·기다리는 시간·실패 처리는 lib/title.cjs.
 //
 // 🔴 알림을 두 갈래로 싣는다 (D21)
 //   · systemMessage      → 사용자 화면용. VS Code 확장에서 보이는지는 아직 확인 못 했다
@@ -32,6 +33,7 @@ const ab = require('./lib/addressbook.cjs');
 const store = require('./lib/store.cjs');
 const state = require('./lib/state.cjs');
 const ingest = require('./lib/ingest.cjs');
+const titles = require('./lib/title.cjs');
 const util = require('./lib/util.cjs');
 
 function readStdin() {
@@ -106,6 +108,7 @@ function claudeVersion(sessionId) {
   return m ? parseVersion(m[1]) : null;
 }
 
+// 붙일 제목의 바탕("기기 · 프로젝트"), 붙이지 않을 때는 null. 순번은 main 이 lib/title.cjs 로 붙인다.
 function autoTitle(input, root) {
   const title = util.deviceName() + ' · ' + projectLabel(root);
   if (typeof input.session_title === 'string') return input.session_title.trim() ? null : title;
@@ -197,14 +200,22 @@ function main() {
   }
 
   const out = { hookEventName: 'SessionStart', additionalContext: ctx.join('\n') };
-  const title = autoTitle(input, b.found ? b.root : cwd);
-  if (title) out.sessionTitle = title;
-  process.stdout.write(JSON.stringify({ systemMessage: line, hookSpecificOutput: out }));
+  const base = autoTitle(input, b.found ? b.root : cwd);
+  // 제목을 붙일 때만 목록을 조회한다 — 사람이 지은 제목이 있으면 네트워크를 쓰지 않는다
+  return (base ? titles.numberedTitle(base, input.session_id) : Promise.resolve(null)).then((title) => {
+    if (title) out.sessionTitle = title;
+    return new Promise((resolve) => {
+      process.stdout.write(JSON.stringify({ systemMessage: line, hookSpecificOutput: out }), () => resolve());
+    });
+  });
 }
 
+// 훅 실패로 세션을 막지 않는다 — 어떤 예외든 삼키고 0 으로 끝낸다
+const exit = () => process.exit(0);
+let running;
 try {
-  main();
+  running = main();
 } catch (e) {
-  // 훅 실패로 세션을 막지 않는다
+  running = null;
 }
-process.exit(0);
+Promise.resolve(running).then(exit, exit);
