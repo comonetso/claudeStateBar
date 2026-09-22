@@ -25,7 +25,7 @@ It builds on Claude Code's own cross-session messaging (`ListAgents` and `SendMe
 - **Nothing runs twice.** A resent request is recognised and answered from the existing record. The same ID with a different body is refused.
 - **The receiver stays in its lane.** A question is answered, a notice is checked for impact only, and a change request is logged for that session's own user to act on — nothing is edited on another session's behalf.
 - **Both sides keep a record** under `docs/_msg/peer_req/<request id>/`, committed to Git by default.
-- **When a session starts**, the plugin tells you it is loaded, how many peers the repository has, and whether anything arrived or finished while you were away. If the session has no title, it gets one in the form "device · project", which makes it easy to spot in another machine's list. When another open session on the same machine already has that title — the same project open in two VS Code windows, say — the new one gets the next number, as in "device · project · 2". To count them the plugin reads your Remote Control session list with the login stored in `~/.claude/.credentials.json`, waiting at most 2 seconds; if it can't (no such file, as with a macOS keychain login, a failed or slow request), the title goes on without a number. A title you gave yourself is left alone, and older Claude Code versions that don't report the current title get no automatic title.
+- **When a session starts**, the plugin tells you it is loaded, how many peers the repository has, and whether anything arrived or finished while you were away. It never renames the session: finding a peer does not depend on session titles, and naming your sessions is left to you.
 
 ## Turn on Remote Control first
 

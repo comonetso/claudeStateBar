@@ -1,5 +1,5 @@
 {
-  "description": "peer_req: announce the plugin, check Remote Control auto-connect, report unreported peer requests and name an untitled session when a session starts; stop Claude from editing another repository's peer address book",
+  "description": "peer_req: announce the plugin, check Remote Control auto-connect, and report unreported peer requests when a session starts; stop Claude from editing another repository's peer address book",
   "hooks": {
     "SessionStart": [
       {

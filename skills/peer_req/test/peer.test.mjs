@@ -9,7 +9,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1078,83 +1077,25 @@ test('훅: 다른 저장소의 주소록 Write·Edit 는 거부하고, 이 저�
   assert.equal(execFileSync(process.execPath, [hook], { input: 'not json', encoding: 'utf8' }), ''); // 판정 못 하면 통과
 });
 
-test('시작 훅: 사람이 지은 제목이 없을 때만 "기기 · 프로젝트" 제목을 붙인다', () => {
+// 0.2.2 — 세션 제목은 붙이지 않는다(2026-09-22 사용자 결정). 이름은 사용자 쪽 도구의 몫이고, 두 곳이 붙이면 어긋난다.
+test('시작 훅은 세션 제목을 붙이지 않는다 — 제목이 없어도, 있어도', () => {
   const B = receiverRepo();
   fs.mkdirSync(path.join(B, '.vscode'));
-  fs.writeFileSync(path.join(B, '.vscode', 'settings.json'), '{\n  // 주석\n  "window.title": "3. Claude State Bar",\n}\n');
+  fs.writeFileSync(path.join(B, '.vscode', 'settings.json'), '{ "window.title": "Claude State Bar" }');
   const hook = path.join(HERE, '..', 'scripts', 'session-start.cjs');
   const home = tmp('home');
   fs.mkdirSync(path.join(home, 'sessions'));
-  const reg = (version) => fs.writeFileSync(path.join(home, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'sid-t', cwd: B, name: 'b', version }));
-  const run = (input, execPath) =>
-    JSON.parse(execFileSync(process.execPath, [hook], { input: JSON.stringify(input), env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'cli', PEER_REQ_UNATTENDED: '', ClaudeDeviceName: 'DEV-PC', CLAUDE_CONFIG_DIR: home, CLAUDE_CODE_EXECPATH: execPath || '' }, encoding: 'utf8' })).hookSpecificOutput;
-  assert.equal(run({ source: 'startup', cwd: B, session_id: 'sid-t', session_title: '' }).sessionTitle, 'DEV-PC · Claude State Bar');
-  assert.equal(run({ source: 'startup', cwd: B, session_id: 'sid-t', session_title: '내가 지은 제목' }).sessionTitle, undefined);
-  // 칸이 없다 — 2.1.278 은 제목이 없으면 칸을 안 보낸다. 확인한 버전 이상일 때만 "제목 없음" 으로 본다(2026-09-22 결정)
-  assert.equal(run({ source: 'resume', cwd: B, session_id: 'sid-t' }).sessionTitle, undefined); // 버전을 모른다
-  reg('2.1.278');
-  assert.equal(run({ source: 'startup', cwd: B, session_id: 'sid-t' }).sessionTitle, 'DEV-PC · Claude State Bar');
-  reg('2.1.200');
-  assert.equal(run({ source: 'startup', cwd: B, session_id: 'sid-t' }).sessionTitle, undefined);
-  fs.unlinkSync(path.join(home, 'sessions', `${process.pid}.json`));
-  assert.equal(run({ source: 'startup', cwd: B, session_id: 'sid-t' }, 'C:\\x\\anthropic.claude-code-2.1.300-win32-x64\\claude.exe').sessionTitle, 'DEV-PC · Claude State Bar');
-  fs.writeFileSync(path.join(B, '.vscode', 'settings.json'), '{ "window.title": "${rootName}" }');
-  assert.equal(run({ source: 'startup', cwd: B, session_title: '' }).sessionTitle, 'DEV-PC · ' + path.basename(B));
-});
-
-// 0.2.1 — 같은 "기기 · 프로젝트" 의 살아 있는 세션이 있으면 순번. 식은 전역 rc_title.js 와 같아야 한다.
-test('시작 훅 제목 순번: 살아 있는 같은 제목의 가장 큰 번호 + 1, 조회가 안 되면 순번 없이', async () => {
-  const { nextSeq, withSeq, numberedTitle } = require('../scripts/lib/title.cjs');
-  const base = 'DEV-PC · Claude State Bar';
-  const s = (title, status, id) => ({ title, status: status || 'active', id });
-  assert.equal(nextSeq(base, []), 1);
-  assert.equal(nextSeq(base, [s(base)]), 2); // 순번 없는 제목을 1로 센다
-  assert.equal(nextSeq(base, [s(base), s(base + ' · 3')]), 4);
-  assert.equal(nextSeq(base, [s(base + ' 수정'), s('OTHER · Claude State Bar'), s('dev-pc · Claude State Bar')]), 1); // 사람 제목·다른 기기는 세지 않는다
-  assert.equal(withSeq(base, 1), base);
-  assert.equal(withSeq(base, 2), base + ' · 2');
-
-  const home = tmp('home');
-  fs.mkdirSync(path.join(home, 'sessions'));
-  const saved = process.env.CLAUDE_CONFIG_DIR;
-  process.env.CLAUDE_CONFIG_DIR = home;
-  let reply = { status: 200, body: { data: [] } };
-  const seen = [];
-  const server = http.createServer((req, res) => {
-    seen.push(req.headers.authorization);
-    if (reply.hang) return; // 답하지 않는다 — 시간 초과
-    res.writeHead(reply.status, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(reply.body));
-  });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const url = `http://127.0.0.1:${server.address().port}/v1/code/sessions?limit=100`;
-  try {
-    assert.equal(await numberedTitle(base, 'sid-x', url, 1000), base); // 로그인 토큰 파일이 없다 — 조회하지 않는다
-    assert.equal(seen.length, 0);
-    fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'tok-1' } }));
-
-    reply = { status: 200, body: { data: [s(base), s(base + ' · 3', 'archived'), s(base + ' · 2'), s('OTHER · Claude State Bar · 5')] } };
-    assert.equal(await numberedTitle(base, 'sid-x', url, 1000), base + ' · 3'); // 보관된 · 3 은 세지 않는다
-    assert.equal(seen[seen.length - 1], 'Bearer tok-1');
-
-    // 자기 자신(RC 가 이미 붙은 세션)은 세지 않는다
-    fs.writeFileSync(path.join(home, 'sessions', '4242.json'), JSON.stringify({ sessionId: 'sid-x', bridgeSessionId: 'session_me' }));
-    reply = { status: 200, body: { sessions: [s(base, 'active', 'cse_me')] } };
-    assert.equal(await numberedTitle(base, 'sid-x', url, 1000), base);
-    assert.equal(await numberedTitle(base, 'sid-other', url, 1000), base + ' · 2');
-
-    reply = { status: 401, body: { error: 'expired' } };
-    assert.equal(await numberedTitle(base, 'sid-x', url, 1000), base);
-    reply = { hang: true };
-    const t0 = Date.now();
-    assert.equal(await numberedTitle(base, 'sid-x', url, 300), base);
-    assert.ok(Date.now() - t0 < 1500, '기다리는 한도를 넘겨 기다렸다');
-    assert.equal(await numberedTitle(base, 'sid-x', 'http://127.0.0.1:1/none', 1000), base); // 연결 실패
-  } finally {
-    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-    else process.env.CLAUDE_CONFIG_DIR = saved;
-    server.closeAllConnections && server.closeAllConnections();
-    server.close();
+  fs.writeFileSync(path.join(home, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'sid-t', cwd: B, version: '2.1.300' }));
+  const run = (input) =>
+    JSON.parse(execFileSync(process.execPath, [hook], { input: JSON.stringify(input), env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'cli', PEER_REQ_UNATTENDED: '', ClaudeDeviceName: 'DEV-PC', CLAUDE_CONFIG_DIR: home, CLAUDE_CODE_EXECPATH: '' }, encoding: 'utf8' })).hookSpecificOutput;
+  for (const input of [
+    { source: 'startup', cwd: B, session_id: 'sid-t', session_title: '' },
+    { source: 'startup', cwd: B, session_id: 'sid-t' },
+    { source: 'resume', cwd: B, session_id: 'sid-t', session_title: '내가 지은 제목' },
+  ]) {
+    const out = run(input);
+    assert.equal(out.sessionTitle, undefined, JSON.stringify(input));
+    assert.ok(out.additionalContext.includes('peer_req'));
   }
 });
 

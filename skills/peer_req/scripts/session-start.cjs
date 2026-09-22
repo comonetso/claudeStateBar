@@ -7,12 +7,9 @@
 //   2. Remote Control 자동 켜기 설정(remoteControlAtStartup)을 본다 — 꺼져 있으면 켜는 법을 안내한다.
 //      설정을 대신 바꾸지 않는다.
 //   3. 이 저장소에 주소록이 있으면 짝 요약과 "알리지 않은 요청·결과 N건" 을 보고한다
-//   4. 세션 제목이 없으면 "기기 · 프로젝트" 로 붙인다(2026-09-21 사용자 결정) — 공식 출력 sessionTitle(`/rename` 과 같다).
-//      다른 머신의 짝을 목록에서 알아보기 쉬워진다. 사람이 지은 제목이 있으면(session_title) 건드리지 않는다.
-//      🔴 Claude Code 2.1.278 은 제목이 없으면 session_title 칸을 **아예 보내지 않는다**(설치본 `session_title:s??pd(id)`,
-//      없으면 undefined — Codex 리뷰가 찾았다). 그래서 칸이 없을 때는 버전을 보고, 확인한 2.1.278 이상일 때만
-//      "제목 없음" 으로 본다. 그보다 낮거나 버전을 모르면 사람 제목이 있을지 몰라 붙이지 않는다(2026-09-22 사용자 결정).
-//      같은 제목의 살아 있는 세션이 있으면 " · 2" 처럼 순번을 붙인다(0.2.1) — 형식·기다리는 시간·실패 처리는 lib/title.cjs.
+//   세션 제목은 붙이지 않는다 — 0.2.0~0.2.1 에 있던 "기기 · 프로젝트" 자동 제목을 0.2.2 에서 뺐다(2026-09-22 사용자 결정).
+//   짝 찾기는 제목을 쓰지 않고(참조 번호 → rc_title → 전에 쓰던 제목 → 고르기), 이름은 사용자 쪽 도구(/rename 등)의 몫이다.
+//   두 곳이 이름을 붙이면 서로 어긋나고, 사용자가 지은 이름을 덮을 위험만 는다.
 //
 // 🔴 알림을 두 갈래로 싣는다 (D21)
 //   · systemMessage      → 사용자 화면용. VS Code 확장에서 보이는지는 아직 확인 못 했다
@@ -33,7 +30,6 @@ const ab = require('./lib/addressbook.cjs');
 const store = require('./lib/store.cjs');
 const state = require('./lib/state.cjs');
 const ingest = require('./lib/ingest.cjs');
-const titles = require('./lib/title.cjs');
 const util = require('./lib/util.cjs');
 
 function readStdin() {
@@ -54,66 +50,6 @@ function isKorean(settings) {
   }
   const lang = String(settings.language || process.env.LANG || locale).toLowerCase();
   return lang.indexOf('ko') === 0 || lang.indexOf('korean') !== -1 || lang.indexOf('한국') !== -1;
-}
-
-// 프로젝트 이름 — .vscode/settings.json 의 window.title(창 제목과 맞춘다), 없거나 ${…} 변수가 섞였으면 폴더 이름.
-// JSONC(주석·끝 쉼표)일 수 있어 JSON.parse 대신 그 키만 뽑는다. 앞의 정렬용 번호("1. ")는 뗀다.
-function projectLabel(dir) {
-  const leaf = path.basename(String(dir).replace(/[\\/]+$/, '')) || String(dir);
-  try {
-    const raw = fs.readFileSync(path.join(dir, '.vscode', 'settings.json'), 'utf8');
-    const m = raw.match(/"window\.title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-    if (m) {
-      const v = m[1].replace(/\\(.)/g, '$1').trim().replace(/^\d+\.\s*/, '');
-      if (v && v.indexOf('${') === -1) return v;
-    }
-  } catch (e) {
-    // 없으면 폴더 이름
-  }
-  return leaf;
-}
-
-// 제목 칸이 없을 때 "제목 없음" 으로 믿어도 되는 Claude Code 버전 — 실제로 확인한 버전이다(근거 없는 값이 아니다)
-const TITLE_ABSENT_MEANS_NONE_SINCE = [2, 1, 278];
-
-function parseVersion(s) {
-  const m = String(s || '').match(/(\d+)\.(\d+)\.(\d+)/);
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
-}
-
-function atLeast(v, min) {
-  for (let i = 0; i < 3; i++) {
-    if (v[i] !== min[i]) return v[i] > min[i];
-  }
-  return true;
-}
-
-// 이 세션의 Claude Code 버전 — ① 세션 등록 파일(~/.claude/sessions/<pid>.json, 비공식)의 version
-// ② CLAUDE_CODE_EXECPATH 의 "claude-code-<버전>"(VS Code 확장의 실행 파일 경로). 둘 다 없으면 모른다.
-function claudeVersion(sessionId) {
-  const dir = path.join(util.claudeHome(), 'sessions');
-  if (sessionId) {
-    let names = [];
-    try {
-      names = fs.readdirSync(dir).filter((n) => /^\d+\.json$/.test(n));
-    } catch (e) {
-      names = [];
-    }
-    for (let i = 0; i < names.length; i++) {
-      const j = util.readJson(path.join(dir, names[i]), null);
-      if (j && j.sessionId === sessionId && parseVersion(j.version)) return parseVersion(j.version);
-    }
-  }
-  const m = String(process.env.CLAUDE_CODE_EXECPATH || '').match(/claude-code-(\d+\.\d+\.\d+)/);
-  return m ? parseVersion(m[1]) : null;
-}
-
-// 붙일 제목의 바탕("기기 · 프로젝트"), 붙이지 않을 때는 null. 순번은 main 이 lib/title.cjs 로 붙인다.
-function autoTitle(input, root) {
-  const title = util.deviceName() + ' · ' + projectLabel(root);
-  if (typeof input.session_title === 'string') return input.session_title.trim() ? null : title;
-  const v = claudeVersion(input.session_id);
-  return v && atLeast(v, TITLE_ABSENT_MEANS_NONE_SINCE) ? title : null;
 }
 
 function pendingItems(root) {
@@ -200,22 +136,12 @@ function main() {
   }
 
   const out = { hookEventName: 'SessionStart', additionalContext: ctx.join('\n') };
-  const base = autoTitle(input, b.found ? b.root : cwd);
-  // 제목을 붙일 때만 목록을 조회한다 — 사람이 지은 제목이 있으면 네트워크를 쓰지 않는다
-  return (base ? titles.numberedTitle(base, input.session_id) : Promise.resolve(null)).then((title) => {
-    if (title) out.sessionTitle = title;
-    return new Promise((resolve) => {
-      process.stdout.write(JSON.stringify({ systemMessage: line, hookSpecificOutput: out }), () => resolve());
-    });
-  });
+  process.stdout.write(JSON.stringify({ systemMessage: line, hookSpecificOutput: out }));
 }
 
-// 훅 실패로 세션을 막지 않는다 — 어떤 예외든 삼키고 0 으로 끝낸다
-const exit = () => process.exit(0);
-let running;
 try {
-  running = main();
+  main();
 } catch (e) {
-  running = null;
+  // 훅 실패로 세션을 막지 않는다
 }
-Promise.resolve(running).then(exit, exit);
+process.exit(0);
