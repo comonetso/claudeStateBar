@@ -3,10 +3,16 @@
 // conversation files with plain node.
 //
 // Only real notifications count. The same `<task-notification>` text also turns up quoted —
-// queued copies (`queue-operation`), attachments, and any tool output or reasoning that echoed
-// one — and treating those as notices could mark a workflow that is still running as stopped.
-// A real one, checked on both a local and a Remote-SSH host on 2026-09-14, is a `user` line whose
-// `origin` is `{"kind":"task-notification"}` and whose content starts with the notification.
+// queued copies (`queue-operation`), other attachments, and any tool output or reasoning that
+// echoed one — and treating those as notices could mark a workflow that is still running as
+// stopped. A real one comes in one of two shapes, and its content starts with the notification:
+// - a `user` line whose `origin` is `{"kind":"task-notification"}` (checked on a local and a
+//   Remote-SSH host on 2026-09-14);
+// - when it arrived while Claude was mid-answer, an `attachment` of type `queued_command` with
+//   `commandMode: "task-notification"`, the text in `attachment.prompt`. Found on 2026-09-22 while
+//   building the background task panel: of 209 notices on this PC none was recorded both ways, and
+//   this shape was the more common one for background commands (91 of 152). Reading only the first
+//   shape left a workflow whose end notice came this way looking as if it still ran.
 //
 // A notice names a task, not a run. The launch result maps the task to its run on one line:
 // `Workflow launched in background. Task ID: w7ge56jts … Run ID: wf_10a16cfe-09e`, also visible in
@@ -24,18 +30,26 @@ export function parseWorkflowNotices(text: string): Map<string, string> {
             if (tid && rid) taskToRun.set(tid[1], rid[1]);
         }
 
-        if (!line.includes('"kind":"task-notification"') || !line.includes('<task-notification>')) continue;
+        if (!line.includes('<task-notification>')) continue;
+        if (!line.includes('"kind":"task-notification"') && !line.includes('"commandMode":"task-notification"')) continue;
         let entry: any;
         try {
             entry = JSON.parse(line);
         } catch {
             continue;
         }
-        if (entry?.type !== 'user' || entry?.origin?.kind !== 'task-notification') continue;
-        const raw = entry.message?.content;
-        const content = typeof raw === 'string'
-            ? raw
-            : Array.isArray(raw) ? raw.map((b: any) => (b?.type === 'text' ? b.text || '' : '')).join('') : '';
+        let content: string;
+        if (entry?.type === 'user' && entry?.origin?.kind === 'task-notification') {
+            const raw = entry.message?.content;
+            content = typeof raw === 'string'
+                ? raw
+                : Array.isArray(raw) ? raw.map((b: any) => (b?.type === 'text' ? b.text || '' : '')).join('') : '';
+        } else if (entry?.type === 'attachment' && entry.attachment?.type === 'queued_command'
+                   && entry.attachment?.commandMode === 'task-notification') {
+            content = typeof entry.attachment.prompt === 'string' ? entry.attachment.prompt : '';
+        } else {
+            continue;
+        }
         if (!content.trimStart().startsWith('<task-notification>')) continue;
 
         const status = /<status>(\w+)<\/status>/.exec(content)?.[1];
