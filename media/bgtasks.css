@@ -1,0 +1,72 @@
+  /* The workflow panel's card, header and finished-group rules (media/workflows.css), trimmed to
+     what a background task uses, so the three panels read alike. Added below: the command line
+     and the output box. */
+  body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 16px; }
+  .toolbar { display:flex; align-items:center; gap:6px; justify-content:flex-end; margin-bottom:10px; }
+  .flabel { color: var(--vscode-descriptionForeground); font-size:.8em; margin-right:2px; }
+  .fbtn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; padding:2px 11px; cursor:pointer; font-size:1em; line-height:1.4; }
+  .fbtn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+  h1 { font-size:1.2em; margin:0 0 4px 0; }
+  .wspath { color: var(--vscode-descriptionForeground); font-size:.8em; margin:0 0 2px 0; opacity:.75;
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .scope { color: var(--vscode-descriptionForeground); font-size:.8em; margin:0 0 2px 0; }
+  .sub { color: var(--vscode-descriptionForeground); font-size:.85em; margin-bottom:16px; }
+
+  .run { border:1px solid var(--vscode-panel-border); border-radius:6px; padding:10px 14px; margin-bottom:12px; }
+  .run-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+  .arrow { flex-shrink:0; width:12px; color: var(--vscode-descriptionForeground); transition: transform .12s; }
+  .run.collapsed .arrow { transform: rotate(-90deg); }
+  .run-name { font-weight:600; font-size:1.05em; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mode-chip { font-size:.72em; padding:1px 7px; border-radius:4px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); flex-shrink:0; letter-spacing:.3px; }
+  .mode-chip.kind-monitor { background:#2f4a48; color:#a8e6df; }
+  .run-time { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; font-variant-numeric: tabular-nums; }
+  .spacer { flex:1 1 auto; }
+  .badge { font-size:.8em; padding:2px 9px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
+  .badge.running { background: var(--vscode-statusBarItem-warningBackground); color: var(--vscode-statusBarItem-warningForeground); }
+  .badge.done    { background: var(--vscode-testing-iconPassed, #3fb950); color:#fff; }
+  .badge.failed  { background: var(--vscode-statusBarItem-errorBackground, #f85149); color:#fff; }
+  .badge.stopped { background: var(--vscode-descriptionForeground, #8b949e); color: var(--vscode-editor-background, #1e1e1e); }
+  .del-btn { flex-shrink:0; background:transparent; border:none; color: var(--vscode-descriptionForeground); cursor:pointer; font-size:1em; padding:2px 6px; border-radius:4px; }
+  .del-btn:hover { background: var(--vscode-statusBarItem-errorBackground, #f85149); color:#fff; }
+  .run-body { margin-top:8px; }
+  .run.collapsed .run-body { display:none; }
+  .done-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
+               padding:6px 14px; margin-bottom:12px; border:1px dashed var(--vscode-panel-border);
+               border-radius:6px; color: var(--vscode-descriptionForeground); }
+  .done-group.collapsed .done-head .arrow { transform: rotate(-90deg); }
+  .done-group.collapsed .done-body { display:none; }
+  .meta { color: var(--vscode-descriptionForeground); font-size:.78em; font-family: var(--vscode-editor-font-family); margin-bottom:8px; line-height:1.6; }
+  .dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .dot.running { background:#e3b341; animation: pulse 1.2s ease-in-out infinite; }
+  .dot.completed { background:#3fb950; }
+  .dot.failed { background:#f85149; }
+  .dot.stopped { background:#8b949e; }
+  .empty { color: var(--vscode-descriptionForeground); font-style:italic; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+  /* Group header: the workflow panel's phase header (.turn-hd in media/workflows.css) — boxed name,
+     a rule running off it, click to fold. */
+  .grp-hd { display:flex; align-items:center; gap:8px; margin:18px 0 10px 0; cursor:pointer; user-select:none; }
+  .grp-hd:first-child { margin-top:2px; }
+  .grp-hd::after { content:''; flex:1 1 auto; height:1px; background: var(--vscode-panel-border); }
+  .grp-fold { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; }
+  .grp-hd.folded .grp-fold { transform: rotate(-90deg); display:inline-block; }
+  .grp-name { flex-shrink:0; padding:1px 12px; border-radius:5px;
+    border:1.5px solid var(--vscode-focusBorder, var(--vscode-panel-border));
+    background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.12));
+    color: var(--vscode-foreground); font-size:1.1em; font-weight:700; letter-spacing:.5px; }
+  .grp-hd .dur { color: var(--vscode-descriptionForeground); font-size:.82em; flex-shrink:0; }
+  .grp-body.folded { display:none; }
+  .grp-body > .empty { margin:0 0 12px 4px; }
+
+  /* The notification's own summary line, for a finished task: it says how it ended in Claude
+     Code's words ("failed with exit code 1", "stream ended"). */
+  .summary { color: var(--vscode-descriptionForeground); font-size:.85em; margin:0 0 8px 0; }
+  /* Command and output share the code-block look; the command sits above in the link colour so
+     the two don't read as one block. */
+  pre.cmd, pre.out { margin:0 0 8px 0; padding:8px 10px; border-radius:4px;
+    background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1));
+    font-family: var(--vscode-editor-font-family); font-size:.85em; line-height:1.5;
+    white-space:pre-wrap; word-break:break-word; }
+  pre.cmd { color: var(--vscode-textLink-foreground); max-height:9em; overflow:auto; }
+  pre.out { max-height:18em; overflow:auto; }

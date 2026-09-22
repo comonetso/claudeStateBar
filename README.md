@@ -1,6 +1,6 @@
 # Claude Code & Codex Status Bar
 
-**Claude Code and OpenAI Codex, side by side in your VS Code status bar** — per‑session context usage, model and effort, task‑complete beeps, and account limits (Claude.ai 5‑hour session & weekly, Codex 5‑hour & weekly usage), with a live Workflow/Agent viewer panel, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.
+**Claude Code and OpenAI Codex, side by side in your VS Code status bar** — per‑session context usage, model and effort, task‑complete beeps, and account limits (Claude.ai 5‑hour session & weekly, Codex 5‑hour & weekly usage), with live Workflow/Agent and background‑task panels, status‑bar dots for work still running, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.
 
 [![GitHub stars](https://img.shields.io/github/stars/comonetso/claudeStateBar?style=social)](https://github.com/comonetso/claudeStateBar)
 
@@ -33,6 +33,7 @@ Reads Claude Code's local session logs (`~/.claude/projects/*.jsonl`) and shows,
 - **Ghost‑session detection** — hides stale sessions after `/clear` or tab close; auto‑unhides on new activity
 - **Compact mode & custom short names** — project names such as `my-cool-project → MCP`; Codex model names stay fully readable
 - **Live activity indicator** — shows elapsed seconds while Claude is thinking (🤔) or responding
+- **Running‑work dots** — coloured dots at the front of the status bar while a workflow, a background task or a Codex run is going (see [Status‑bar dots](#-status-bar-dots-for-running-work))
 
 ### 📊 claudeState — Claude.ai plan usage
 Fetches your **account‑wide plan usage** directly from claude.ai (no SDK, no extra service):
@@ -160,14 +161,47 @@ Open it from the session menu, or with `claudeStateBar: Show Claude Workflows` i
 
 - **Cards** — each workflow is a card with its name, start date and time, elapsed or total time, and a status badge. Everything starts folded. Finished workflows go into a single "N finished" row, itself folded, which also says how many were stopped; one you watched while it ran stays outside that row until you close the panel
 - **Earlier sessions too** — a workflow from yesterday's conversation is still there. The card says which session it ran in, and whether that session is open right now. If a session has been idle past `hideAfter`, any agent it left marked as running is shown as stopped
-- **Agents grouped by phase** — when a workflow declares more than one phase, its agents sit under the phase they ran in, drawn like a Codex turn header with a done/total counter. Click the header to fold it
+- **Agents grouped by phase** — when a workflow declares more than one phase, its agents sit under the phase they ran in, drawn like a Codex turn header with a done/total counter. Click the header to fold it. Agents are listed in the order they were started, as the phone's remote-control view lists them
 - **What each agent did** — open an agent to see its steps as rows: commands, file reads, edits, code searches, web lookups and what it said, each marked done or failed, with how long it took. Runs of successful commands, reads or searches fold into one line; a failure never does, and opening it shows the error output. The last row is the agent's final report. The rows are read only when you open the agent, which keeps the panel light over Remote‑SSH
 - **Model and tokens per agent** — every agent shows which model ran it and how many tokens it used, and the card carries the agent count and the workflow's total
-- **Role labels** — each agent's role comes from the `label` its workflow script gave it, falling back to text extracted from the agent's prompt header, so you see "Lens A: Bug Detection" instead of "agent-1"
+- **Role labels** — each agent's role comes from the `label` its workflow script gave it, falling back to text extracted from the agent's prompt header, so you see "Lens A: Bug Detection" instead of "agent-1". Recent Claude Code versions record each agent's label and phase when they start it, and the panel reads those first, so a run whose script can't be found still shows its agents' names and phases
 - **Task (Agent tool) sub‑agents** — sub‑agents spawned via Claude Code's Agent tool are shown as their own cards, grouped into **batches by start time** (5‑minute gap = new batch). 🗑 on a finished batch deletes its completed agents' logs
 - **Trash** — 🗑 on a finished workflow moves it aside instead of destroying it, with no confirmation to click through. Open 🗑 at the top of the panel to restore it or delete it for good; the trash covers every session of the project. Restoring is refused if a live workflow has since taken that id
 - **Font size control** — `A−` / `A+` buttons adjust the panel text size
 - **Bilingual UI** — full EN / 한국어 toggle, same as the settings panel
+
+---
+
+## ⏳ Background task panel
+
+Open it from the session menu, right under the workflows, or with `claudeStateBar: Show Claude Background Tasks` in the command palette. It answers two questions about the sessions shown on the status bar (those active within `hideAfter`, 24 hours by default) — what Claude ran in the background, and which commands took long — as two groups:
+
+- **Background** — commands Claude Code ran with `run_in_background`, and the monitors it started. A chip tells a command from a monitor
+- **Long commands** — ordinary commands that ran for more than 2 minutes. On the machines checked that was about 1 command in 250
+
+Each group folds under a header that shows how many are running and finished. The phone's remote-control view mixes workflows into its background list; here they keep their own panel above, and commands started by a workflow's agents are left out. So is the background command Claude uses to hand a problem to Codex through `codex_rescue` — the Codex progress panel shows that run.
+
+- **Running tasks** — each card shows the task's description, how long it has been running and the command. A background task also shows its output so far: the box follows new lines while you are scrolled to the bottom, and while the panel is open the output is re-read every 2 seconds. An ordinary command appears once it passes 2 minutes and has no output to show yet — Claude Code only records it when the command ends — so its card says Claude is waiting for it
+- **Finished tasks** — each group folds its finished tasks into one row, newest first, up to 10 per group. Each says whether it completed, failed (with the exit code) or was stopped; open one to see its command and output. A task you watched while it ran stays outside that row until you close the panel. 🗑 on a row clears that group's finished tasks from the list without touching any file; this is remembered per workspace
+- **When a task counts as finished** — a background task, when Claude Code's notice that it ended is in the conversation or its output file already ends with `[exited with code N]`; with neither it stays "running", so one whose session ended before it did can read as running until that session drops off the status bar. An ordinary command, when its result is in the conversation
+- **Output that is gone** — Claude Code keeps a background task's output in a temporary folder that is often cleared later, and the card then says so. A monitor still shows the events it reported. An ordinary command's output lives in the conversation itself, so it stays
+- **Sound** — a background task that completes plays the workflow sound, under the same `workflowCompleteBeep` setting. A failed or stopped task is silent, as a failed workflow is, and so is one the extension never saw running — for instance one that had already finished when the extension started. A long ordinary command never sounds: Claude was waiting on it and answers the moment it ends
+- **View only** — there is no stop button. Nothing on disk records a task's process, so the panel has no safe way to end one; ask Claude in the chat instead
+- **Remote‑SSH** — the conversation file is the one the status bar already reads, so the list costs no extra transfer, and output files are read from the host that ran the task
+
+---
+
+## 🟠 Status-bar dots for running work
+
+Up to three coloured dots at the front of this extension's status-bar items, just left of the first session, say what is running behind the conversation. Whether sub-agents, a background command or a Codex run is still going shows at a glance, without opening a panel.
+
+- **Orange** — a workflow in one of the status bar's sessions has an agent running. Agent-tool sub-agents don't light it
+- **Grey** — a background task in those sessions is running: a `run_in_background` command or a monitor. Long ordinary commands don't light it, and neither does Claude's own background call to Codex — that run shows as blue
+- **Blue** — a run in the [Codex progress panel](#-codex-progress-panel-optional) is running. One the panel shows as not responding, such as a run cut off when the window reloaded mid-run, doesn't light it
+- **Only while running** — a dot appears when its kind starts and disappears when it ends. When all three run they sit side by side in that order, as close together as the status bar allows
+- **Hover and click** — the tooltip lists what is running: each workflow's name and how many of its agents are done, each command's description and start time, each Codex run's subject and mode. Clicking a dot opens that panel
+- **How quickly they follow** — orange and grey follow the status-bar refresh (a changed conversation file, or every 30 seconds by default); blue follows the Codex scan, which runs every 2 seconds while a run is live
+- **Colours** — the dots use theme colours. On the default light theme the orange dot is low in contrast, and a high-contrast theme may not give it a colour of its own
 
 ---
 
@@ -349,7 +383,7 @@ Claude Code & Codex Status Bar plays configurable WAV sounds for key events:
 | Context reaches danger threshold | `Ring02.wav` | `soundDanger` / `soundDangerGain` |
 | Claude finishes a response (`end_turn`) | `tada.wav` | `soundCompletion` / `soundCompletionGain` |
 | Claude pauses to ask a question | `Speech On.wav` | `soundQuestion` / `soundQuestionGain` |
-| All Claude workflow/task agents or Codex spawned agents complete | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
+| All Claude workflow/task agents or Codex spawned agents complete, or a background task (not a long ordinary command) completes | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
 
 All sound paths can be overridden with your own WAV file. Gain is adjustable from 50% to 5000% (values above ~300% may distort). Use **`claudeStateBar: Test Beep Sound`** from the Command Palette to preview.
 
@@ -518,7 +552,7 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 | `claudeContextBar.soundQuestionGain` | `100` | Question sound gain % |
 | `claudeContextBar.soundWorkflow` | `""` | WAV path for Claude workflow/task-agent or Codex spawned-agent all-complete beep |
 | `claudeContextBar.soundWorkflowGain` | `100` | Workflow complete sound gain % |
-| `claudeContextBar.workflowCompleteBeep` | `true` | Fire the workflow sound when Claude workflow/task agents or Codex spawned agents all complete |
+| `claudeContextBar.workflowCompleteBeep` | `true` | Fire the workflow sound when Claude workflow/task agents or Codex spawned agents all complete, or when a background task completes |
 | `claudeContextBar.detectStuckToolUse` | `false` | Heuristic: beep if a tool_use has no follow‑up for `stuckToolUseThresholdSec` |
 | `claudeContextBar.stuckToolUseThresholdSec` | `90` | Seconds of tool_use silence before stuck‑tool heuristic fires |
 

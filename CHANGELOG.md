@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.17.0] - 2026-09-22
+
+A background task panel lists, for the sessions on the status bar, the commands and monitors Claude
+Code runs in the background, and in a second group the ordinary commands that ran for more than
+2 minutes. A running task shows its command and output; finished ones fold away, the latest 10 per
+group, and a completed background task plays the workflow sound. Open it from the session menu or
+with `claudeStateBar: Show Claude Background Tasks`.
+
+Dots at the front of the status bar show what is still running behind the conversation: orange for
+a workflow, grey for a background task, blue for a Codex run. Hover one to see what is running, and
+click it to open that panel.
+
+The workflow panel lists a run's agents in the order they were started, as the phone's
+remote-control view does, instead of a shuffled order, and keeps their names and phases even when the
+run's script can't be found.
+
 ## [1.16.9] - 2026-09-22
 
 The workflow panel could lose a run's name, description, phases and agent names — showing the run

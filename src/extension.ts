@@ -20,6 +20,9 @@ import { parseWorkflowScript, placeAgents } from './workflowPhases';
 import { createOrShowWorkflowPanel, pushWorkflows, pushWorkflowTrash, pushAgentActivity, isWorkflowPanelOpen,
          getOpenAgentKeys, pushLanguage, WorkflowView, WorkflowPanelCallbacks } from './workflowPanel';
 import { parseAgentActivity, AgentActivityItem } from './providers/claude/agentActivity';
+import { parseBackgroundTasks, exitCodeFromOutputTail, BgTask } from './providers/claude/backgroundTasks';
+import { createOrShowBgTaskPanel, pushBgTasks, pushBgTaskLanguage, isBgTaskPanelOpen, getOpenBgTaskKeys,
+         BgTaskView, BgTaskGroupId, BgTaskPanelData, BgTaskPanelCallbacks } from './bgTaskPanel';
 import { createOrShowCodexPanel, pushRuns, pushTrash, pushCodexLanguage, isCodexPanelOpen, CodexRunView, CodexTrashView } from './codexRescuePanel';
 import { createOrShowChatPanel, pushChats, pushChatTrash, pushChatLanguage, isChatPanelOpen, CodexChatView, ChatTrashView } from './codexChatPanel';
 import { discoverChats, trashChat, listChatTrash, restoreChat, purgeChat, emptyChatTrash } from './providers/codexRescue/chatDiscovery';
@@ -42,6 +45,7 @@ import { setRunsOnRemote } from './core/runtimeContext';
 import { SoundKind, getSoundPath, getSoundGain, playSoundFile, playBeep, playCompletionSound, playWorkflowCompleteSound, playQuestionSound } from './core/sound';
 import { alertedSessions, lastKnownEndTurnAt, pendingCompletion, lastKnownQuestionAt, pendingQuestion, alertedStuckToolUseAt, alertedWorkflowDone, seenRunningWorkflowKeys, getFirstScan, setFirstScan } from './core/beepGate';
 import { updateStageItem, startStageTicker, disposeStage, initStageIndicator } from './core/stageIndicator';
+import { updateActivityDots, disposeActivityDots } from './core/activityDots';
 import { SessionInfo, ProviderId, CodexUsageSnapshot, providerIcon, capabilitiesFor } from './core/sessionTypes';
 import { findCodexSessions, isCodexEnabled, getCodexHomeUri, resetCodexHome } from './providers/codex/sessionProvider';
 import { findRolloutBySessionId } from './providers/codex/discovery';
@@ -420,7 +424,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Status bar click → QuickPick menu (hide this / restore hidden / open settings)
     const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
         const menuStarted = Date.now();
-        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'codexRuns' | 'codexChats' | 'cleanupGhosts' | 'claudeStatus' | 'refreshNow' | 'codexAutoUpdate'; sessionFile?: string };
+        type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'bgTasks' | 'codexRuns' | 'codexChats' | 'cleanupGhosts' | 'claudeStatus' | 'refreshNow' | 'codexAutoUpdate'; sessionFile?: string };
         const items: Item[] = [];
 
         const clickedEntry = sessionFile ? statusBarItems.get(sessionFile) : undefined;
@@ -498,6 +502,17 @@ export function activate(context: vscode.ExtensionContext) {
                     action: 'workflows'
                 });
             }
+
+            // Background tasks — right under the workflows, since the remote-control view lists
+            // the two together; they are separate panels here (user's call, 2026-09-22).
+            const bg = bgMenuCounts();
+            items.push({ label: planT('menu.sepBgTasks'), kind: vscode.QuickPickItemKind.Separator });
+            items.push({
+                label: (bg.running > 0 ? '$(sync~spin) ' : '$(terminal) ')
+                    + (bg.shown > 0 ? planT('menu.viewBgTasks', bg.shown) : planT('menu.noBgTasks')),
+                description: bg.running > 0 ? planT('menu.running', bg.running) : planT('menu.noneRunning'),
+                action: 'bgTasks'
+            });
         }
 
         // codex_rescue 진행 상황. 스킬이 깔린 머신에서만 나타난다 — 안 쓰는 사용자에게는
@@ -619,6 +634,9 @@ export function activate(context: vscode.ExtensionContext) {
             case 'workflows':
                 await openWorkflowPanel(context);
                 break;
+            case 'bgTasks':
+                await openBgTaskPanel(context);
+                break;
         }
     });
     context.subscriptions.push(menuCommand);
@@ -675,6 +693,10 @@ export function activate(context: vscode.ExtensionContext) {
     // the Codex panel's counterpart, one entry below it in the palette.
     context.subscriptions.push(vscode.commands.registerCommand('claudeContextBar.showWorkflows',
         () => openWorkflowPanel(context)));
+    bgStore = context.workspaceState;
+    context.subscriptions.push(vscode.commands.registerCommand('claudeContextBar.showBackgroundTasks',
+        () => openBgTaskPanel(context)));
+    context.subscriptions.push({ dispose: () => ensureBgFastPolling(false) });
 
     const codexRunsCmd = vscode.commands.registerCommand('claudeContextBar.showCodexRuns', async () => {
         createOrShowCodexPanel(context, await collectCodexRuns(), {
@@ -934,6 +956,7 @@ export function activate(context: vscode.ExtensionContext) {
         // (The QuickPick menu rebuilds on each click, so it already picks up the new language.)
         if (e.affectsConfiguration('claudeState.language')) {
             pushLanguage();
+            pushBgTaskLanguage();
             pushCodexLanguage();
             pushChatLanguage();
             pushStatusLanguage();
@@ -1067,6 +1090,7 @@ export function activate(context: vscode.ExtensionContext) {
             planFallbackItem?.dispose();
             codexUsageFallbackItem?.dispose();
             disposeStage();
+            disposeActivityDots();
             statusBarItems.forEach(entry => {
                 entry.item.dispose();
                 entry.iconItem.dispose();
@@ -1130,6 +1154,7 @@ export function deactivate() {
     planFallbackItem?.dispose();
     codexUsageFallbackItem?.dispose();
     disposeStage();
+    disposeActivityDots();
     statusBarItems.forEach(entry => {
         entry.item.dispose();
         entry.iconItem.dispose();
@@ -1611,7 +1636,8 @@ async function findTaskAgentBundles(sessionDirUri: vscode.Uri): Promise<{ wf: Wo
         const startTs = batch[0].firstTs;
         const endTs = batch.reduce((m, x) => Math.max(m, x.lastTs), 0);
         const newestMtime = batch.reduce((m, x) => Math.max(m, x.mtime), 0);
-        const agents = batch.map(x => x.agent).sort((a, b) => a.agentId.localeCompare(b.agentId));
+        // Start order: `parsed` was sorted by firstTs above, so the first agent launched is on top.
+        const agents = batch.map(x => x.agent);
         const d = new Date(startTs);
         const hh = String(d.getHours()).padStart(2, '0');
         const mm = String(d.getMinutes()).padStart(2, '0');
@@ -1722,8 +1748,13 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
             // Declared out here so the script parser below can match agents to phases by
             // their prompt text without reading every agent log a second time.
             const promptTexts = new Map<string, string>();
+            // The label and phase a `started` record carries. Journals written since about
+            // 2026-09-13 have them (all 4 on AI_IVR_Server-Gabia from then on, none of the 11
+            // before); older ones don't, and are left to the guesses below.
+            const journalMeta = new Map<string, { label?: string; phase?: string }>();
             try {
                 const journalContent = await readTextFile(vscode.Uri.joinPath(wfDirUri, 'journal.jsonl'));
+                // A Set keeps insertion order, so agents come out in the order they were started.
                 const startedIds = new Set<string>();
                 const doneSummary = new Map<string, { preview: string; full: string }>();
                 const failedIds = new Set<string>();
@@ -1731,7 +1762,12 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                     if (!line.trim()) continue;
                     try {
                         const rec = JSON.parse(line);
-                        if (rec.type === 'started' && rec.agentId) startedIds.add(rec.agentId);
+                        if (rec.type === 'started' && rec.agentId) {
+                            startedIds.add(rec.agentId);
+                            const label = typeof rec.label === 'string' && rec.label.trim() ? rec.label.trim() : undefined;
+                            const phase = typeof rec.phase === 'string' && rec.phase.trim() ? rec.phase.trim() : undefined;
+                            if ((label || phase) && !journalMeta.has(rec.agentId)) journalMeta.set(rec.agentId, { label, phase });
+                        }
                         else if (rec.type === 'result' && rec.agentId) {
                             doneSummary.set(rec.agentId, summarizeResultFull(rec.result));
                         }
@@ -1814,8 +1850,23 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                 }
             }
 
-            // Stable agent order (same on every refresh) instead of journal-append order.
-            agents.sort((a, b) => a.agentId.localeCompare(b.agentId));
+            // What the journal recorded beats both guesses above (heading heuristic, script
+            // matching). A recorded phase the script's list lacks — or every phase, when the
+            // script was not found — is appended in start order, since the panel files agents
+            // whose phase is not in the list under "other".
+            for (const a of agents) {
+                const m = journalMeta.get(a.agentId);
+                if (!m) continue;
+                if (m.label) { a.name = m.label; a.fullName = undefined; }
+                if (m.phase) {
+                    a.phase = m.phase;
+                    if (!phases.includes(m.phase)) phases = [...phases, m.phase];
+                }
+            }
+
+            // No sort: agents stay in the order they were started (journal order), which is the
+            // order the script launched them and the order the remote-control view lists them.
+            // Sorting by agentId, as this did until 1.16.9, shuffled them — the ids are random.
 
             wfList.push({ wf: { wfId, name, description, phases, agents, ...(wfStartedAt ? { startedAt: wfStartedAt } : {}), ...(wfEndedAt ? { endedAt: wfEndedAt } : {}),
                                 sessionFile: sessionFileUri, activityAt: mtime }, mtime });
@@ -2338,6 +2389,256 @@ async function listProjectWorkflowTrash(): Promise<ProjectTrashItem[]> {
 
 function findShownTrash(key: string): ProjectTrashItem | undefined {
     return lastProjectTrash.find(t => `${t.sessionFile}|${t.wfId}` === key);
+}
+
+// --- Background task panel -----------------------------------------------------------------
+// Commands Claude ran with run_in_background, and monitors (providers/claude/backgroundTasks.ts).
+// Only the sessions the status bar shows are looked at (user's call, 2026-09-22): finding a
+// background command takes the whole conversation file, which the status-bar pass reads anyway,
+// so over Remote-SSH this adds no transfer. The project-wide scan the workflow panel does would
+// have meant 173MB on AI_IVR_Server-Gabia the first time the panel opened, and the user said old
+// history does not matter here.
+
+/** Finished tasks the panel lists per group, newest first (user's call, 2026-09-22: "10 each"). */
+const BG_FINISHED_LIMIT = 10;
+/**
+ * An ordinary command is listed once it has run this long (user's call, 2026-09-22). Measured the
+ * same day: of 6,635 foreground commands on this PC, 23 took 2 minutes or more (65 took 1, 2 took 5);
+ * on AI_IVR_Server-Gabia 30 of 6,518.
+ */
+const LONG_COMMAND_MS = 2 * 60 * 1000;
+/** workspaceState key: tasks cleared from the list with the finished group's trash button. */
+const BG_CLEARED_KEY = 'claudeStateBar.bgTasksCleared';
+
+interface BgTaskEntry extends BgTask { key: string; sessionFile: string; }
+
+const bgTaskCache = new Map<string, { mtime: number; tasks: BgTask[] }>();
+let lastBgTasks: BgTaskEntry[] = [];
+// A finished task's output never changes, and a running one's is re-read only when it moved.
+const bgOutputCache = new Map<string, { mtime: number; size: number; text: string | null }>();
+// The workflow chime's rule: sound only for a running → completed change seen by this runtime.
+const bgSeenRunning = new Set<string>();
+const bgAlerted = new Set<string>();
+// Per window, not global: two windows on different projects would otherwise prune each other's
+// cleared keys (each keeps only the sessions it can see).
+let bgStore: vscode.Memento | null = null;
+
+async function scanBackgroundTasks(sessionFiles: string[]): Promise<BgTaskEntry[]> {
+    const out: BgTaskEntry[] = [];
+    for (const f of sessionFiles) {
+        const uri = vscode.Uri.parse(f);
+        const mtime = await mtimeOf(uri);
+        let hit = bgTaskCache.get(f);
+        if (!hit || hit.mtime !== mtime) {
+            try {
+                hit = { mtime, tasks: parseBackgroundTasks(await readShared(uri), LONG_COMMAND_MS) };
+            } catch (e) {
+                log(`[bg] read failed for ${f}: ${e}`);
+                continue;
+            }
+            bgTaskCache.set(f, hit);
+        }
+        for (const t of hit.tasks) out.push({ ...t, key: `${f}|${t.taskId}`, sessionFile: f });
+    }
+    const keep = new Set(sessionFiles);
+    for (const k of [...bgTaskCache.keys()]) if (!keep.has(k)) bgTaskCache.delete(k);
+    return out;
+}
+
+/** The output file as a URI on the host that ran the task, or null for a path that isn't one. */
+function bgOutputUri(sessionFile: string, outputFile: string): vscode.Uri | null {
+    // The path comes out of the conversation file and this is the one read it drives, so it has
+    // to look like Claude Code's own task output (…/tasks/<id>.output) before it is opened.
+    if (!/[\\/]tasks[\\/][A-Za-z0-9_-]+\.output$/.test(outputFile)) return null;
+    const session = vscode.Uri.parse(sessionFile);
+    if (session.scheme === 'file') return vscode.Uri.file(outputFile);
+    const p = outputFile.replace(/\\/g, '/');
+    return session.with({ path: /^[A-Za-z]:/.test(p) ? '/' + p : p });
+}
+
+/** Text of a task's output file; null when it is gone (it lives in a temporary folder). */
+async function readBgOutput(t: BgTaskEntry): Promise<{ text: string | null; mtime: number }> {
+    const uri = t.outputFile ? bgOutputUri(t.sessionFile, t.outputFile) : null;
+    if (!uri) return { text: null, mtime: 0 };
+    let st: vscode.FileStat;
+    try {
+        st = await vscode.workspace.fs.stat(uri);
+    } catch {
+        bgOutputCache.delete(t.key);
+        return { text: null, mtime: 0 };
+    }
+    const hit = bgOutputCache.get(t.key);
+    if (hit && hit.mtime === st.mtime && hit.size === st.size) return { text: hit.text, mtime: st.mtime };
+    let text: string | null;
+    try { text = await readTextFile(uri); } catch { text = null; }
+    bgOutputCache.set(t.key, { mtime: st.mtime, size: st.size, text });
+    return { text, mtime: st.mtime };
+}
+
+type BgViewGroups = Record<BgTaskGroupId, { running: BgTaskView[]; finished: BgTaskView[] }>;
+
+/**
+ * Every listed task as the panel draws it, split into the two groups. Output is read for running
+ * background tasks and for anything finished the user has open. A running background task whose
+ * output already ends in `[exited with code N]` reads as finished — the user counted that line as
+ * an end as well as the notification. A running foreground command is listed only once it has
+ * passed LONG_COMMAND_MS; it has no output to show until it ends.
+ */
+async function computeBgViews(): Promise<BgViewGroups> {
+    const cleared = new Set(bgStore?.get<string[]>(BG_CLEARED_KEY, []) ?? []);
+    const open = new Set(getOpenBgTaskKeys());
+    const groups: BgViewGroups = { background: { running: [], finished: [] }, long: { running: [], finished: [] } };
+    const now = Date.now();
+    for (const t of lastBgTasks) {
+        let { status, endedAt, exitCode } = t;
+        let output: string | null | undefined;
+        if (t.kind === 'foreground') {
+            if (status === 'running' && now - t.startedAt < LONG_COMMAND_MS) continue;
+            if (status !== 'running' && open.has(t.key)) output = t.output ?? '';
+        } else if (status === 'running' || open.has(t.key)) {
+            if (t.kind === 'monitor' && !t.outputFile) {
+                // A running monitor's file path only arrives with its end notice; its events are
+                // its stdout lines, and they are in the conversation already.
+                output = t.events.join('\n');
+            } else {
+                const r = await readBgOutput(t);
+                // A monitor whose file was cleared away still has its events to show.
+                output = r.text === null && t.kind === 'monitor' && t.events.length ? t.events.join('\n') : r.text;
+                const code = status === 'running' && r.text !== null ? exitCodeFromOutputTail(r.text) : undefined;
+                if (code !== undefined) {
+                    status = code === 0 ? 'completed' : 'failed';
+                    exitCode = code;
+                    endedAt = r.mtime || undefined;
+                }
+            }
+        }
+        const view: BgTaskView = {
+            key: t.key, taskId: t.taskId, kind: t.kind, description: t.description, command: t.command,
+            status, startedAt: t.startedAt, endedAt, exitCode, summary: t.summary,
+            session: t.sessionFile.replace(/^.*\//, '').replace(/\.jsonl$/, '').slice(0, 8),
+            eventCount: t.events.length,
+            ...(output !== undefined ? { output } : {}),
+        };
+        const g = groups[t.kind === 'foreground' ? 'long' : 'background'];
+        if (status === 'running') g.running.push(view);
+        else if (!cleared.has(t.key)) g.finished.push(view);
+    }
+    for (const g of Object.values(groups)) {
+        g.running.sort((a, b) => b.startedAt - a.startedAt);
+        g.finished.sort((a, b) => (b.endedAt || b.startedAt) - (a.endedAt || a.startedAt));
+    }
+    return groups;
+}
+
+async function buildBgPanelData(): Promise<BgTaskPanelData> {
+    const groups = await computeBgViews();
+    const cut = (g: BgViewGroups[BgTaskGroupId]) =>
+        ({ running: g.running, finished: g.finished.slice(0, BG_FINISHED_LIMIT), finishedTotal: g.finished.length });
+    return { background: cut(groups.background), long: cut(groups.long), longMinutes: LONG_COMMAND_MS / 60000 };
+}
+
+let bgPushing = false;
+async function pushBgTaskPanel(): Promise<void> {
+    if (!isBgTaskPanelOpen()) { ensureBgFastPolling(false); return; }
+    // A slow remote read can outlast the 2s tick; skip the tick rather than pile reads up.
+    if (bgPushing) return;
+    bgPushing = true;
+    try {
+        const data = await buildBgPanelData();
+        pushBgTasks(data);
+        // Only a background task has output that grows while it runs.
+        ensureBgFastPolling(data.background.running.length > 0);
+    } finally {
+        bgPushing = false;
+    }
+}
+
+// A running task's output grows between status-bar ticks (30s), and the conversation file — whose
+// watcher triggers a refresh — does not change while it does. So while the panel is open and
+// something runs, its output is re-read every 2s: the rate the Codex panel uses for a live run.
+// The end itself needs no timer: its notice lands in the conversation and the watcher sees that.
+let bgFastTimer: NodeJS.Timeout | null = null;
+function ensureBgFastPolling(on: boolean): void {
+    if (on && !bgFastTimer) {
+        bgFastTimer = setInterval(() => { void pushBgTaskPanel().catch(e => log(`[bg] poll error: ${e}`)); }, 2000);
+    } else if (!on && bgFastTimer) {
+        clearInterval(bgFastTimer);
+        bgFastTimer = null;
+    }
+}
+
+/** Running tasks plus the finished ones the panel would list — for the session menu's entry. */
+function bgMenuCounts(): { running: number; shown: number } {
+    const cleared = new Set(bgStore?.get<string[]>(BG_CLEARED_KEY, []) ?? []);
+    const now = Date.now();
+    const listed = lastBgTasks.filter(t =>
+        !(t.kind === 'foreground' && t.status === 'running' && now - t.startedAt < LONG_COMMAND_MS));
+    const running = listed.filter(t => t.status === 'running').length;
+    const finished = (fg: boolean) =>
+        listed.filter(t => (t.kind === 'foreground') === fg && t.status !== 'running' && !cleared.has(t.key)).length;
+    return { running, shown: running + Math.min(finished(false), BG_FINISHED_LIMIT) + Math.min(finished(true), BG_FINISHED_LIMIT) };
+}
+
+function bgTaskPanelCallbacks(): BgTaskPanelCallbacks {
+    return {
+        // No confirmation: nothing is deleted — the tasks only leave this list.
+        onClearFinished: async (group: BgTaskGroupId) => {
+            if (!bgStore) return;
+            const cleared = new Set(bgStore.get<string[]>(BG_CLEARED_KEY, []));
+            const { finished } = (await computeBgViews())[group];
+            for (const v of finished) cleared.add(v.key);
+            // Keep only keys of sessions still listed, so the store does not grow for ever.
+            const files = new Set(lastBgTasks.map(t => t.sessionFile));
+            await bgStore.update(BG_CLEARED_KEY, [...cleared].filter(k => files.has(k.slice(0, k.lastIndexOf('|')))));
+            vscode.window.setStatusBarMessage(planT('bg.cleared', finished.length), 5000);
+            await pushBgTaskPanel();
+        },
+        onOpen: () => { void pushBgTaskPanel(); },
+        // Nothing to free: outputs are cached per task and dropped when the task leaves the list.
+        onClose: () => { /* no-op */ },
+    };
+}
+
+async function openBgTaskPanel(context: vscode.ExtensionContext): Promise<void> {
+    createOrShowBgTaskPanel(context, await buildBgPanelData(), bgTaskPanelCallbacks());
+    await pushBgTaskPanel();
+}
+
+// --- Status-bar dots for running work (core/activityDots.ts) ------------------------------------
+// Fed from what the refresh pass and the Codex scan already hold — no extra reads. A workflow
+// counts while any agent runs (Agent-tool batches are left out, user's call); a background task
+// is a command or monitor with no end yet (long ordinary commands are left out, user's call); a
+// Codex run is one the progress panel shows as starting, running or finalizing. A `stale` run —
+// its heartbeat gone cold, as when a window reload ends the session mid-run — is left out
+// (user's call, 2026-09-22): there is no evidence it runs, and the dot would otherwise stay lit.
+function refreshActivityDots(): void {
+    const hhmm = (ms: number) => {
+        const d = new Date(ms);
+        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    };
+    const workflows: { label: string; detail?: string }[] = [];
+    for (const wfs of lastWorkflowsBySession.values()) {
+        for (const wf of wfs) {
+            if (!wf.wfId.startsWith('wf_') || !wf.agents.some(a => a.status === 'running')) continue;
+            const done = wf.agents.filter(a => a.status === 'done').length;
+            workflows.push({ label: wf.name, detail: planT('dots.agents', done, wf.agents.length) });
+        }
+    }
+    const background = lastBgTasks
+        .filter(t => t.kind !== 'foreground' && t.status === 'running')
+        .map(t => ({ label: t.description || t.command, detail: t.startedAt ? planT('dots.since', hhmm(t.startedAt)) : undefined }));
+    const codex = (lastCodexRuns ?? [])
+        .filter(r => !isTerminalPhase(r.phase) && r.phase !== 'stale')
+        .map(r => ({ label: r.subject || r.slug, detail: r.mode ? r.mode.toUpperCase() : undefined }));
+    const spec = (kind: 'workflow' | 'background' | 'codex', lines: { label: string; detail?: string }[], command: string) => ({
+        title: planT(`dots.${kind}.title`, lines.length), lines,
+        hint: planT(`dots.${kind}.hint`), name: planT(`dots.${kind}.name`), command,
+    });
+    updateActivityDots({
+        workflow: spec('workflow', workflows, 'claudeContextBar.showWorkflows'),
+        background: spec('background', background, 'claudeContextBar.showBackgroundTasks'),
+        codex: spec('codex', codex, 'claudeContextBar.showCodexRuns'),
+    }, statusBarExtensionId);
 }
 
 // Encode an absolute workspace path into Claude's projects/ directory name format.
@@ -3298,6 +3599,33 @@ async function refreshAllSessionsOnce() {
         }
     }
 
+    // --- Background tasks: the same sessions, the same chime and the same setting as the
+    // workflow beep above (user's call, 2026-09-22). Only a notice saying `completed` sounds,
+    // as only a completed workflow does, and a long foreground command never does — Claude was
+    // waiting on it and answers the moment it ends. Scanned whether or not the panel is open,
+    // because the chime has to fire either way; the read is shared with the token parser here.
+    try {
+        lastBgTasks = await scanBackgroundTasks([...seenPaths].filter(f => workflowCapableFiles.has(f)));
+        let chime = false;
+        for (const t of lastBgTasks) {
+            if (t.kind === 'foreground') continue;
+            if (t.status === 'running') { bgSeenRunning.add(t.key); continue; }
+            if (bgAlerted.has(t.key)) continue;
+            bgAlerted.add(t.key);
+            if (t.status === 'completed' && bgSeenRunning.has(t.key) && !suppressBeep) chime = true;
+        }
+        if (chime && wfBeepEnabled) {
+            log('[bg] background task completed → beep');
+            playWorkflowCompleteSound();
+        }
+        const listed = new Set(lastBgTasks.map(t => t.key));
+        for (const k of [...bgSeenRunning]) if (!listed.has(k)) bgSeenRunning.delete(k);
+        for (const k of [...bgAlerted]) if (!listed.has(k)) bgAlerted.delete(k);
+        for (const k of [...bgOutputCache.keys()]) if (!listed.has(k)) bgOutputCache.delete(k);
+    } catch (e) {
+        log(`[bg] scan error: ${e}`);
+    }
+
     // Remove status bar items for sessions that are no longer active
     for (const [sessionFile, entry] of statusBarItems) {
         if (!seenPaths.has(sessionFile)) {
@@ -3349,6 +3677,14 @@ async function refreshAllSessionsOnce() {
             log(`[workflows] push error: ${e}`);
         }
     }
+    if (isBgTaskPanelOpen()) {
+        try {
+            await pushBgTaskPanel();
+        } catch (e) {
+            log(`[bg] push error: ${e}`);
+        }
+    }
+    refreshActivityDots();
 
     // codex_rescue runs ride the same refresh tick. No-ops instantly unless this workspace
     // actually uses the skill, so ordinary users pay nothing for it. Deliberately not
@@ -3792,6 +4128,8 @@ async function syncCodexRuns(): Promise<void> {
     } finally {
         codexSyncInFlight = false;
     }
+    // The blue dot follows the Codex scan, which runs every 2s while a run is live.
+    refreshActivityDots();
 }
 
 async function syncCodexRunsInner(): Promise<void> {
