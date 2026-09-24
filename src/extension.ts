@@ -32,7 +32,7 @@ import { getDict, Lang } from './i18n';
 import { readTextFile } from './core/fs';
 import { readAutoUpdateState, enableAutoUpdate, AutoUpdateState, installedPluginLabels } from './providers/codex/pluginAutoUpdate';
 import { beginRefreshShare, endRefreshShare, readShared, recordPass, recordFolded, recordTickLag, recordMenu, takeRefreshSummary } from './core/refreshPerf';
-import { parseWorkflowNotices } from './workflowNotices';
+import { parseTaskNotices } from './workflowNotices';
 import { log, setLogChannel, getLogChannel } from './core/logger';
 import { getLatestTokenCount } from './providers/claude/tokenParser';
 import { summarizeResultFull } from './core/textFormat';
@@ -77,6 +77,7 @@ interface WorkflowAgentInfo {
     tokens?: number;  // last usage record's in+cache_creation+cache_read+out — matches Claude Code's own totalTokens
     model?: string;   // raw model id from the agent's own log (e.g. claude-opus-5)
     phase?: string;   // phase recovered from the workflow script; undefined → no grouping for this agent
+    lastAt?: number;  // sub-agents only: time of the log's last entry, to tell a stale end notice from a woken agent
 }
 
 interface WorkflowInfo {
@@ -1586,6 +1587,7 @@ async function parseTaskAgent(
         name: displayName || 'agent',
         ...(tokens ? { tokens } : {}),
         ...(model ? { model: getShortModelName(model, false) } : {}),
+        ...(lastTs ? { lastAt: lastTs } : {}),
     };
     let mtime = 0;
     try {
@@ -1893,17 +1895,32 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
     // A workflow whose session ended while it ran — or that was killed or failed — leaves no
     // journal result and no interrupt marker in its agents' logs, so they read as running forever.
     // What it does leave is a task notification in the parent conversation. Looked up only while
-    // some wf_* workflow still has a running agent. Inside a refresh pass the read is shared with
-    // the token parser, so over Remote-SSH the conversation is not transferred a second time.
-    const unsettled = wfList.filter(x => x.wf.wfId.startsWith('wf_') && x.wf.agents.some(a => a.status === 'running'));
+    // some agent still runs. Inside a refresh pass the read is shared with the token parser, so
+    // over Remote-SSH the conversation is not transferred a second time.
+    //
+    // Sub-agents get the same treatment (user's call, 2026-09-24: a workflow and a sub-agent are the
+    // same act, launched through a script or directly). Until then only wf_* runs were checked, so
+    // a sub-agent cut off with its session stayed running — and, once sub-agents lit the orange
+    // status-bar dot the same day, kept the dot lit. A sub-agent's notice names the agent itself.
+    // Unlike a run it can be woken again after it stopped, so a notice older than the agent's own
+    // last entry is ignored.
+    const unsettled = wfList.filter(x => x.wf.agents.some(a => a.status === 'running'));
     if (unsettled.length > 0) {
         try {
-            const notices = parseWorkflowNotices(await readShared(vscode.Uri.parse(sessionFileUri)));
+            const notices = parseTaskNotices(await readShared(vscode.Uri.parse(sessionFileUri)));
+            const ended = (s: string | undefined) => s === 'stopped' || s === 'killed' || s === 'failed';
             for (const { wf } of unsettled) {
-                const notice = notices.get(wf.wfId);
-                if (notice !== 'stopped' && notice !== 'killed' && notice !== 'failed') continue;
+                if (wf.wfId.startsWith('wf_')) {
+                    if (!ended(notices.byRun.get(wf.wfId))) continue;
+                    for (const a of wf.agents) {
+                        if (a.status === 'running') a.status = 'stopped';
+                    }
+                    continue;
+                }
                 for (const a of wf.agents) {
-                    if (a.status === 'running') a.status = 'stopped';
+                    if (a.status !== 'running') continue;
+                    const n = notices.byTask.get(a.agentId);
+                    if (n && ended(n.status) && (!a.lastAt || n.at >= a.lastAt)) a.status = 'stopped';
                 }
             }
         } catch (e) {
@@ -1986,14 +2003,19 @@ async function readWorkflowTerminalStatus(sessionFileUri: string, wfId: string):
     }
 }
 
-// Delete a workflow's data directory (.../subagents/workflows/<wfId>/). Used by the
-// panel's delete button. Returns true on success.
 // --- Workflow trash -------------------------------------------------------
 //
 // The Codex panel's counterpart, and for the same reason: a workflow's journal and agent logs
 // live under ~/.claude and are not in any repository, so the delete button used to be the end
 // of them. Trashed workflows move to `workflows/.trash/<wfId>/`, which the discovery loop
 // already skips — it only descends into names starting with `wf_`.
+//
+// A batch of sub-agents goes to the same trash (user's call, 2026-09-24: treat sub-agents as
+// workflows). Until then its delete button asked, then deleted the finished agents' logs for good.
+// A batch has no folder of its own — its agents' `agent-<id>.jsonl` and `.meta.json` sit directly
+// under `subagents/` (the only two kinds of file there, measured the same day) — so trashing one
+// makes `.trash/tasks-<batch start>/` and moves those files in; `:` from the batch id is not
+// allowed in a Windows file name. Restoring moves them back, and refuses if any name is taken.
 
 export interface TrashedWorkflow {
     wfId: string;
@@ -2002,31 +2024,65 @@ export interface TrashedWorkflow {
     agentCount: number;
 }
 
-function workflowsDirOf(sessionFileUri: string): vscode.Uri {
-    const uri = vscode.Uri.parse(sessionFileUri);
-    const sessionDirUri = uri.with({ path: uri.path.replace(/\.jsonl$/, '') });
-    return vscode.Uri.joinPath(sessionDirUri, 'subagents', 'workflows');
+function subagentsDirOf(sessionFileUri: string): vscode.Uri {
+    return vscode.Uri.joinPath(sessionDirOf(sessionFileUri), 'subagents');
 }
 
-/** Move a workflow into the trash. Returns false when it isn't there or the move fails. */
-async function trashWorkflowDir(sessionFileUri: string, wfId: string,
-                                name: string | undefined, agentCount: number): Promise<boolean> {
-    if (!wfId.startsWith('wf_')) return false;
+function workflowsDirOf(sessionFileUri: string): vscode.Uri {
+    return vscode.Uri.joinPath(subagentsDirOf(sessionFileUri), 'workflows');
+}
+
+/** A trash entry's folder name: the run id, or `tasks-<start>` for a batch of sub-agents. */
+function trashDirName(wfId: string): string | null {
+    if (/^wf_[A-Za-z0-9-]+$/.test(wfId)) return wfId;
+    const batch = /^tasks:(\d+)$/.exec(wfId);
+    return batch ? `tasks-${batch[1]}` : null;
+}
+
+function isTrashDirName(name: string): boolean {
+    return /^wf_[A-Za-z0-9-]+$/.test(name) || /^tasks-\d+$/.test(name);
+}
+
+/** Move a workflow, or a batch of sub-agents, into the trash. False when nothing moved. */
+async function trashWorkflowDir(sessionFileUri: string, wf: WorkflowInfo): Promise<boolean> {
+    const dirName = trashDirName(wf.wfId);
+    if (!dirName) return false;
     try {
         const wfRoot = workflowsDirOf(sessionFileUri);
         const trashRoot = vscode.Uri.joinPath(wfRoot, '.trash');
         await vscode.workspace.fs.createDirectory(trashRoot);
-        const dst = vscode.Uri.joinPath(trashRoot, wfId);
+        const dst = vscode.Uri.joinPath(trashRoot, dirName);
         // Re-trashing the same id would otherwise fail on an existing destination.
         try { await vscode.workspace.fs.delete(dst, { recursive: true, useTrash: false }); } catch { /* absent */ }
-        await vscode.workspace.fs.rename(vscode.Uri.joinPath(wfRoot, wfId), dst, { overwrite: true });
-        const meta = { schema: 1, wfId, name, agentCount, deletedAt: Date.now() };
-        await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(trashRoot, `${wfId}.json`),
+        if (dirName === wf.wfId) {
+            await vscode.workspace.fs.rename(vscode.Uri.joinPath(wfRoot, wf.wfId), dst, { overwrite: true });
+        } else {
+            const subagentsDir = subagentsDirOf(sessionFileUri);
+            await vscode.workspace.fs.createDirectory(dst);
+            let moved = 0;
+            for (const a of wf.agents) {
+                for (const file of [`agent-${a.agentId}.jsonl`, `agent-${a.agentId}.meta.json`]) {
+                    try {
+                        await vscode.workspace.fs.rename(vscode.Uri.joinPath(subagentsDir, file),
+                                                         vscode.Uri.joinPath(dst, file), { overwrite: false });
+                        moved++;
+                    } catch (e) {
+                        if (file.endsWith('.jsonl')) log(`[workflows] trash: could not move ${file}: ${e}`);
+                    }
+                }
+            }
+            if (moved === 0) {
+                try { await vscode.workspace.fs.delete(dst, { recursive: true, useTrash: false }); } catch { /* ignore */ }
+                return false;
+            }
+        }
+        const meta = { schema: 1, wfId: wf.wfId, name: wf.name, agentCount: wf.agents.length, deletedAt: Date.now() };
+        await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(trashRoot, `${dirName}.json`),
                                             Buffer.from(JSON.stringify(meta), 'utf8'));
-        log(`[workflows] trashed ${wfId}`);
+        log(`[workflows] trashed ${wf.wfId}`);
         return true;
     } catch (e) {
-        log(`[workflows] trash failed for ${wfId}: ${e}`);
+        log(`[workflows] trash failed for ${wf.wfId}: ${e}`);
         return false;
     }
 }
@@ -2041,7 +2097,7 @@ async function listWorkflowTrash(sessionFileUri: string): Promise<TrashedWorkflo
     }
     const out: TrashedWorkflow[] = [];
     for (const [name, type] of entries) {
-        if (!(type & vscode.FileType.Directory) || !name.startsWith('wf_')) continue;
+        if (!(type & vscode.FileType.Directory) || !isTrashDirName(name)) continue;
         let meta: any = null;
         try {
             const raw = Buffer.from(await vscode.workspace.fs.readFile(
@@ -2058,19 +2114,43 @@ async function listWorkflowTrash(sessionFileUri: string): Promise<TrashedWorkflo
     return out.sort((a, b) => b.deletedAt - a.deletedAt);
 }
 
-/** Put a trashed workflow back. Refuses when a live workflow already holds that id. */
+/**
+ * Put a trashed workflow, or batch of sub-agents, back. Refuses when a live workflow already holds
+ * that id, or a sub-agent file of the same name is already there — nothing is overwritten.
+ * @param wfId the trash entry's folder name (`wf_…` or `tasks-<start>`).
+ */
 async function restoreWorkflow(sessionFileUri: string, wfId: string): Promise<boolean> {
-    if (!wfId.startsWith('wf_')) return false;
+    if (!isTrashDirName(wfId)) return false;
     try {
         const wfRoot = workflowsDirOf(sessionFileUri);
-        const dst = vscode.Uri.joinPath(wfRoot, wfId);
-        try {
-            await vscode.workspace.fs.stat(dst);
-            log(`[workflows] restore refused for ${wfId}: id already in use`);
-            return false;
-        } catch { /* free — proceed */ }
         const trashRoot = vscode.Uri.joinPath(wfRoot, '.trash');
-        await vscode.workspace.fs.rename(vscode.Uri.joinPath(trashRoot, wfId), dst, { overwrite: false });
+        if (wfId.startsWith('wf_')) {
+            const dst = vscode.Uri.joinPath(wfRoot, wfId);
+            try {
+                await vscode.workspace.fs.stat(dst);
+                log(`[workflows] restore refused for ${wfId}: id already in use`);
+                return false;
+            } catch { /* free — proceed */ }
+            await vscode.workspace.fs.rename(vscode.Uri.joinPath(trashRoot, wfId), dst, { overwrite: false });
+        } else {
+            const src = vscode.Uri.joinPath(trashRoot, wfId);
+            const subagentsDir = subagentsDirOf(sessionFileUri);
+            const files = (await vscode.workspace.fs.readDirectory(src))
+                .filter(([, type]) => type === vscode.FileType.File).map(([name]) => name);
+            for (const file of files) {
+                try {
+                    await vscode.workspace.fs.stat(vscode.Uri.joinPath(subagentsDir, file));
+                    log(`[workflows] restore refused for ${wfId}: ${file} already in use`);
+                    return false;
+                } catch { /* free */ }
+            }
+            await vscode.workspace.fs.createDirectory(subagentsDir);
+            for (const file of files) {
+                await vscode.workspace.fs.rename(vscode.Uri.joinPath(src, file),
+                                                 vscode.Uri.joinPath(subagentsDir, file), { overwrite: false });
+            }
+            await vscode.workspace.fs.delete(src, { recursive: true, useTrash: false });
+        }
         try {
             await vscode.workspace.fs.delete(vscode.Uri.joinPath(trashRoot, `${wfId}.json`), { useTrash: false });
         } catch { /* metadata may not exist */ }
@@ -2083,7 +2163,7 @@ async function restoreWorkflow(sessionFileUri: string, wfId: string): Promise<bo
 }
 
 async function purgeWorkflow(sessionFileUri: string, wfId: string): Promise<boolean> {
-    if (!wfId.startsWith('wf_')) return false;
+    if (!isTrashDirName(wfId)) return false;
     const trashRoot = vscode.Uri.joinPath(workflowsDirOf(sessionFileUri), '.trash');
     let ok = false;
     try {
@@ -2097,38 +2177,6 @@ async function purgeWorkflow(sessionFileUri: string, wfId: string): Promise<bool
         await vscode.workspace.fs.delete(vscode.Uri.joinPath(trashRoot, `${wfId}.json`), { useTrash: false });
     } catch { /* metadata may not exist */ }
     return ok;
-}
-
-// Clear the COMPLETED Task-subagent logs (agent-*.jsonl + paired .meta.json) for a
-// session's pseudo-workflow ('tasks'). Running agents are kept so we never remove a log
-// a live agent is still appending to. Returns the number of agents cleared.
-async function deleteDoneTaskAgents(sessionFileUri: string, wfId: string): Promise<number> {
-    try {
-        const uri = vscode.Uri.parse(sessionFileUri);
-        const sessionDirUri = uri.with({ path: uri.path.replace(/\.jsonl$/, '') });
-        // Clear only the COMPLETED agents in THIS batch (wfId 'tasks:<startTs>'); running ones
-        // and other batches stay untouched.
-        const bundles = await findTaskAgentBundles(sessionDirUri);
-        const batch = bundles.find(b => b.wf.wfId === wfId);
-        if (!batch) return 0;
-        const subagentsDirUri = vscode.Uri.joinPath(sessionDirUri, 'subagents');
-        let cleared = 0;
-        for (const agent of batch.wf.agents) {
-            if (agent.status !== 'done') continue;  // keep running agents
-            const jsonlName = 'agent-' + agent.agentId + '.jsonl';
-            try {
-                await vscode.workspace.fs.delete(vscode.Uri.joinPath(subagentsDirUri, jsonlName), { useTrash: false });
-                cleared++;
-            } catch (e) { log(`[tasks] delete failed for ${jsonlName}: ${e}`); }
-            try {
-                await vscode.workspace.fs.delete(vscode.Uri.joinPath(subagentsDirUri, 'agent-' + agent.agentId + '.meta.json'), { useTrash: false });
-            } catch { /* meta may not exist */ }
-        }
-        return cleared;
-    } catch (e) {
-        log(`[tasks] delete error: ${e}`);
-        return 0;
-    }
 }
 
 // --- Project-wide workflow list (the workflow panel, 2026-09-19) ------------------------------
@@ -2323,14 +2371,9 @@ function workflowPanelCallbacks(): WorkflowPanelCallbacks {
             const wf = findShownWorkflow(key);
             if (!wf || !wf.sessionFile) return;
             const sessionFile = wf.sessionFile;
-            if (wf.wfId.startsWith('tasks:')) {
-                const cleanupBtn = planT('common.cleanup');
-                const ok = await vscode.window.showWarningMessage(planT('msg.tasksClearConfirm'), { modal: true }, cleanupBtn);
-                if (ok !== cleanupBtn) return;
-                const n = await deleteDoneTaskAgents(sessionFile, wf.wfId);
-                log(`[tasks] cleared ${n} completed task-agent log(s) in ${wf.wfId}`);
-            } else if (await trashWorkflowDir(sessionFile, wf.wfId, wf.name, wf.agents.length)) {
-                // Straight to the trash, no confirmation — the prompt belongs at the irreversible end.
+            // Straight to the trash, no confirmation — the prompt belongs at the irreversible end.
+            // A batch of sub-agents goes the same way (user's call, 2026-09-24).
+            if (await trashWorkflowDir(sessionFile, wf)) {
                 vscode.window.setStatusBarMessage(planT('wf.trash.trashed'), 5000);
             }
             await rescanSession(sessionFile);
@@ -2342,9 +2385,9 @@ function workflowPanelCallbacks(): WorkflowPanelCallbacks {
             const it = findShownTrash(key);
             if (!it) return;
             if (await restoreWorkflow(it.sessionFile, it.wfId)) {
-                vscode.window.setStatusBarMessage(planT('wf.trash.restored', it.wfId), 5000);
+                vscode.window.setStatusBarMessage(planT('wf.trash.restored', trashLabel(it)), 5000);
             } else {
-                vscode.window.showWarningMessage(planT('wf.trash.conflict', it.wfId));
+                vscode.window.showWarningMessage(planT(isTaskTrash(it) ? 'wf.trash.conflictTasks' : 'wf.trash.conflict', trashLabel(it)));
             }
             await rescanSession(it.sessionFile);
             await pushProjectWorkflows();
@@ -2354,7 +2397,7 @@ function workflowPanelCallbacks(): WorkflowPanelCallbacks {
             const it = findShownTrash(key);
             if (!it) return;
             const deleteBtn = planT('common.delete');
-            const ok = await vscode.window.showWarningMessage(planT('wf.trash.purgeConfirm', it.wfId), { modal: true }, deleteBtn);
+            const ok = await vscode.window.showWarningMessage(planT('wf.trash.purgeConfirm', trashLabel(it)), { modal: true }, deleteBtn);
             if (ok !== deleteBtn) return;
             await purgeWorkflow(it.sessionFile, it.wfId);
             void pushProjectTrash();
@@ -2392,6 +2435,13 @@ async function listProjectWorkflowTrash(): Promise<ProjectTrashItem[]> {
 
 function findShownTrash(key: string): ProjectTrashItem | undefined {
     return lastProjectTrash.find(t => `${t.sessionFile}|${t.wfId}` === key);
+}
+
+function isTaskTrash(it: ProjectTrashItem): boolean { return it.wfId.startsWith('tasks-'); }
+
+/** A batch of sub-agents has no run id worth showing (the panel hides it too), so it goes by name. */
+function trashLabel(it: ProjectTrashItem): string {
+    return isTaskTrash(it) ? (it.name || it.wfId) : it.wfId;
 }
 
 // --- Background task panel -----------------------------------------------------------------
@@ -2609,7 +2659,8 @@ async function openBgTaskPanel(context: vscode.ExtensionContext): Promise<void> 
 
 // --- Status-bar dots for running work (core/activityDots.ts) ------------------------------------
 // Fed from what the refresh pass and the Codex scan already hold — no extra reads. A workflow
-// counts while any agent runs (Agent-tool batches are left out, user's call); a background task
+// counts while any agent runs, and so does an Agent-tool batch (user's call, 2026-09-24: the dot
+// first took wf_ runs only, so a sub-agent running on its own lit nothing); a background task
 // is a command or monitor with no end yet (long ordinary commands are left out, user's call); a
 // Codex run is one the progress panel shows as starting, running or finalizing. A `stale` run —
 // its heartbeat gone cold, as when a window reload ends the session mid-run — is left out
@@ -2622,7 +2673,7 @@ function refreshActivityDots(): void {
     const workflows: { label: string; detail?: string }[] = [];
     for (const wfs of lastWorkflowsBySession.values()) {
         for (const wf of wfs) {
-            if (!wf.wfId.startsWith('wf_') || !wf.agents.some(a => a.status === 'running')) continue;
+            if (!wf.agents.some(a => a.status === 'running')) continue;
             const done = wf.agents.filter(a => a.status === 'done').length;
             workflows.push({ label: wf.name, detail: planT('dots.agents', done, wf.agents.length) });
         }

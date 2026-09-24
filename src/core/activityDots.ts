@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 
 // Status-bar dots for work running behind the conversation (user's call, 2026-09-22): orange while
-// a workflow runs, grey while a background task does, blue while a Codex run from the progress
-// panel does. A status-bar item takes a single colour, so each dot is its own item; each shows
+// a workflow runs (or an Agent-tool sub-agent, since 2026-09-24), grey while a background task
+// does, blue while a Codex run from the progress panel does. A status-bar item takes a single colour, so each dot is its own item; each shows
 // only while its kind runs and disappears when it ends, and all three show at once when all three
 // run. They sit at the very front of this extension's items, left of the first session, where the
 // user pointed. Hovering lists what is running; a click opens that kind's panel.

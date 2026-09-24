@@ -268,9 +268,10 @@
       ? '<span class="run-time" data-started="' + wf.startedAt + '" data-done="' + (finished && wf.endedAt ? wf.endedAt : '') + '"></span>'
       : '';
     // Only finished cards get a delete button, as in the Codex panel — moving a workflow's
-    // folder out from under a running agent would corrupt it rather than keep it.
+    // folder out from under a running agent would corrupt it rather than keep it. A batch of
+    // sub-agents goes to the same trash (2026-09-24), so the button reads the same.
     const delBtn = finished
-      ? '<button class="del-btn" data-del="' + esc(wf.key) + '" title="' + esc(t(wf.isTask ? 'wf.clearTasks' : 'common.delete')) + '">🗑</button>'
+      ? '<button class="del-btn" data-del="' + esc(wf.key) + '" title="' + esc(t('common.delete')) + '">🗑</button>'
       : '';
     const title = wf.name + (wf.description ? '\n' + wf.description : '');
     return '<div class="run' + (userToggled[wf.key] ? '' : ' collapsed') + '" data-id="' + esc(wf.key) + '">' +

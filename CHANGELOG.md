@@ -2,6 +2,13 @@
 
 ## [1.17.1] - 2026-09-22
 
+Sub-agents launched with the Agent tool are now handled the same way as workflows. The orange dot
+lights while one runs, and its tooltip lists each running batch by the name the workflow panel gives
+it. A sub-agent the conversation reports as stopped, killed or failed now shows as stopped instead of
+running for ever, unless it has written more since. 🗑 on a finished batch moves it to the workflow
+trash, where it can be restored or deleted for good; it used to ask, then delete the finished agents'
+logs outright.
+
 The status-bar dots now have their own colours for dark, light and high-contrast themes, so they
 stand out on every default theme, and each can be changed in `workbench.colorCustomizations`
 (`claudeContextBar.workflowDot`, `claudeContextBar.backgroundDot`, `claudeContextBar.codexDot`).

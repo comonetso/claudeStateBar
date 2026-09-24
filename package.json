@@ -94,7 +94,7 @@
     "colors": [
       {
         "id": "claudeContextBar.workflowDot",
-        "description": "Status-bar dot shown while a Claude Code workflow is running.",
+        "description": "Status-bar dot shown while a Claude Code workflow or sub-agent is running.",
         "defaults": {
           "dark": "#CD861A",
           "light": "#895503",

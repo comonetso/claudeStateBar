@@ -130,7 +130,6 @@ const EN: Dict = {
 
     // Shared action labels (also reused as modal button text → must match the comparison)
     'common.delete': 'Delete',
-    'common.cleanup': 'Clean up',
     'common.reload': 'Reload',
 
     // Workflow panel (webview) + dynamic agent labels generated in extension.ts
@@ -148,6 +147,7 @@ const EN: Dict = {
     'wf.trash.trashed': 'Moved to the trash. Open 🗑 at the top to put it back.',
     'wf.trash.restored': 'Restored "{0}".',
     'wf.trash.conflict': 'Could not restore "{0}" — a workflow with that id is already there.',
+    'wf.trash.conflictTasks': 'Could not restore "{0}" — a sub-agent log with the same name is already there.',
     'wf.trash.purgeConfirm': 'Delete "{0}" permanently?\n\nThis is the step that cannot be undone.',
     'wf.trash.emptyConfirm': 'Empty the trash?\n\n{0} workflow(s) will be deleted permanently.',
     'wf.trash.emptied': 'Emptied {0} workflow(s).',
@@ -189,7 +189,6 @@ const EN: Dict = {
     'wf.unitSec': 's',
     'wf.unitMin': 'm',
     'wf.unitMan': '',
-    'wf.clearTasks': 'Clear completed Tasks in this bundle',
     'wf.working': 'Working…',
     'wf.taskBundle': 'Sub-agents {0} ({1})',
 
@@ -312,13 +311,13 @@ const EN: Dict = {
     'menu.noWorkflows': 'Workflow panel',
     'menu.noneRunning': 'none running',
     // Status-bar dots for running work (core/activityDots.ts).
-    'dots.workflow.title': 'Workflows running: {0}',
+    'dots.workflow.title': 'Workflows and sub-agents running: {0}',
     'dots.background.title': 'Background tasks running: {0}',
     'dots.codex.title': 'Codex runs in progress: {0}',
     'dots.workflow.hint': 'Click to open the workflow panel',
     'dots.background.hint': 'Click to open the background task panel',
     'dots.codex.hint': 'Click to open the Codex progress panel',
-    'dots.workflow.name': 'Claude State Bar: running workflows',
+    'dots.workflow.name': 'Claude State Bar: running workflows and sub-agents',
     'dots.background.name': 'Claude State Bar: running background tasks',
     'dots.codex.name': 'Claude State Bar: running Codex runs',
     'dots.agents': 'agents {0}/{1} done',
@@ -397,7 +396,6 @@ const EN: Dict = {
     'msg.cleanupDone': 'claudeStateBar: deleted {0} old version(s){1}.',
     'msg.cleanupFailedSuffix': ' ({0} failed)',
     'msg.noHidden': 'claudeStateBar: no hidden sessions to restore.',
-    'msg.tasksClearConfirm': 'Clean up completed sub-agent (Task) records in this bundle?\n\nCompleted agent logs are permanently deleted. Running agents are kept.',
     'msg.updatedZombie': 'claudeStateBar updated {0} → {1}. Stale (zombie) items may remain in the status bar. Reload the window to clean them up.',
     'msg.cleanupGhostsConfirm': 'To clean up ghost/stale status-bar items, the window must be reloaded. Reload now?',
     'msg.autoCleanupDone': 'claudeStateBar: cleaned up {0} old version(s). Reload the window to remove stale items still on screen.',
@@ -632,7 +630,6 @@ const KO: Dict = {
 
     // 공용 동작 라벨 (모달 버튼 텍스트로도 재사용 → 반환값 비교와 반드시 일치)
     'common.delete': '삭제',
-    'common.cleanup': '정리',
     'common.reload': '다시 로드',
 
     // 워크플로우 패널(webview) + extension.ts에서 생성되는 동적 라벨
@@ -650,6 +647,7 @@ const KO: Dict = {
     'wf.trash.trashed': '휴지통으로 옮겼습니다. 상단 🗑 에서 다시 꺼낼 수 있습니다.',
     'wf.trash.restored': '"{0}" 을(를) 복구했습니다.',
     'wf.trash.conflict': '"{0}" 을(를) 복구하지 못했습니다 — 같은 id의 워크플로우가 이미 있습니다.',
+    'wf.trash.conflictTasks': '"{0}" 을(를) 복구하지 못했습니다 — 같은 이름의 서브에이전트 기록이 이미 있습니다.',
     'wf.trash.purgeConfirm': '"{0}" 을(를) 완전히 삭제할까요?\n\n되돌릴 수 없는 단계는 여기입니다.',
     'wf.trash.emptyConfirm': '휴지통을 비울까요?\n\n워크플로우 {0}건이 완전히 삭제됩니다.',
     'wf.trash.emptied': '워크플로우 {0}건을 비웠습니다.',
@@ -691,7 +689,6 @@ const KO: Dict = {
     'wf.unitSec': '초',
     'wf.unitMin': '분',
     'wf.unitMan': '만',
-    'wf.clearTasks': '이 묶음의 완료된 Task 정리',
     'wf.working': '작업 중…',
     'wf.taskBundle': '서브에이전트 {0} ({1}마리)',
 
@@ -811,13 +808,13 @@ const KO: Dict = {
     'menu.allDone': '모두 완료',
     'menu.noWorkflows': '워크플로우 패널',
     'menu.noneRunning': '진행 중 없음',
-    'dots.workflow.title': '워크플로 실행 중 {0}건',
+    'dots.workflow.title': '워크플로·서브에이전트 실행 중 {0}건',
     'dots.background.title': '백그라운드 작업 실행 중 {0}건',
     'dots.codex.title': 'Codex 실행 중 {0}건',
     'dots.workflow.hint': '누르면 워크플로 패널이 열립니다',
     'dots.background.hint': '누르면 백그라운드 작업 패널이 열립니다',
     'dots.codex.hint': '누르면 Codex 진행 패널이 열립니다',
-    'dots.workflow.name': 'Claude State Bar: 실행 중인 워크플로',
+    'dots.workflow.name': 'Claude State Bar: 실행 중인 워크플로·서브에이전트',
     'dots.background.name': 'Claude State Bar: 실행 중인 백그라운드 작업',
     'dots.codex.name': 'Claude State Bar: 실행 중인 Codex',
     'dots.agents': '에이전트 {0}/{1} 완료',
@@ -895,7 +892,6 @@ const KO: Dict = {
     'msg.cleanupDone': 'claudeStateBar: {0}개 이전 버전 삭제 완료{1}.',
     'msg.cleanupFailedSuffix': ' ({0}개 실패)',
     'msg.noHidden': 'claudeStateBar: 복원할 숨긴 세션이 없습니다.',
-    'msg.tasksClearConfirm': '이 묶음의 완료된 서브에이전트(Task) 기록을 정리할까요?\n\n완료된 에이전트 로그가 영구 삭제됩니다. 진행 중인 에이전트는 보존됩니다.',
     'msg.updatedZombie': 'claudeStateBar가 {0} → {1}로 업데이트됐습니다. 상태바에 오래된(좀비) 항목이 남아있을 수 있습니다. 창을 다시 로드하면 정리됩니다.',
     'msg.cleanupGhostsConfirm': '유령/오래된 상태바 항목을 정리하려면 창을 다시 로드해야 합니다. 지금 다시 로드할까요?',
     'msg.autoCleanupDone': 'claudeStateBar: 이전 버전 {0}개를 정리했습니다. 화면에 남은 오래된 항목을 제거하려면 창을 다시 로드하세요.',

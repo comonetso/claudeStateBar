@@ -1,5 +1,5 @@
-// Which workflow run each task notification in a Claude Code conversation refers to, and the
-// status it carries. Deliberately free of vscode, so it can be checked against real
+// Which workflow run or sub-agent each task notification in a Claude Code conversation refers to,
+// and the status it carries. Deliberately free of vscode, so it can be checked against real
 // conversation files with plain node.
 //
 // Only real notifications count. The same `<task-notification>` text also turns up quoted —
@@ -18,9 +18,23 @@
 // `Workflow launched in background. Task ID: w7ge56jts … Run ID: wf_10a16cfe-09e`, also visible in
 // its transcript path. Some "didn't finish before the previous session ended" notices name the run
 // themselves as `(run wf_…)`, used when no launch line matched. Later lines win.
-export function parseWorkflowNotices(text: string): Map<string, string> {
+//
+// A sub-agent (the Agent tool) needs no such mapping: its notice's task id is its agentId, the
+// name of its log file. Measured 2026-09-24 on this PC: 23 of 25 sub-agents launched in the last
+// 45 days ran asynchronously, and all 23 had a notice naming them that way, every one `completed`
+// — no stopped, killed or failed sub-agent notice was on disk to check. Each notice is returned
+// with its time, since a sub-agent can be woken again after it stopped.
+export interface TaskNotices {
+    /** Workflow run id → status of its latest notice. */
+    byRun: Map<string, string>;
+    /** Task id → status and time of its latest notice. For a sub-agent the task id is its agentId. */
+    byTask: Map<string, { status: string; at: number }>;
+}
+
+export function parseTaskNotices(text: string): TaskNotices {
     const taskToRun = new Map<string, string>();
     const byRun = new Map<string, string>();
+    const byTask = new Map<string, { status: string; at: number }>();
     for (const line of text.split('\n')) {
         if (!line) continue;
 
@@ -57,6 +71,10 @@ export function parseWorkflowNotices(text: string): Map<string, string> {
         const taskId = /<task-id>(\w+)<\/task-id>/.exec(content)?.[1];
         const run = (taskId && taskToRun.get(taskId)) || /\(run (wf_[A-Za-z0-9-]+)\)/.exec(content)?.[1];
         if (run) byRun.set(run, status);
+        if (taskId) {
+            const at = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+            byTask.set(taskId, { status, at: Number.isFinite(at) ? at : 0 });
+        }
     }
-    return byRun;
+    return { byRun, byTask };
 }
