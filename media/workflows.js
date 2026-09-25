@@ -37,6 +37,7 @@
   }
 
   let lastWfs = [];
+  let gotWfs = false;
   let lastRenderedSig = null;
   // Everything starts collapsed and is remembered only while the panel is open — the Codex
   // panel's rule. userToggled holds the cards the user opened.
@@ -448,8 +449,10 @@
   window.addEventListener('message', function (e) {
     const m = e.data;
     if (!m) return;
-    if (m.type === 'i18n') { dict = m.dict || {}; lang = m.lang || 'en'; applyI18n(); render(lastWfs, true); }
-    else if (m.type === 'workflows') render(m.workflows);
+    // Before the first list lands the panel shows its loading line; re-rendering the empty initial
+    // list here would swap it for "no workflows" while they are still being read.
+    if (m.type === 'i18n') { dict = m.dict || {}; lang = m.lang || 'en'; applyI18n(); if (gotWfs) render(lastWfs, true); }
+    else if (m.type === 'workflows') { gotWfs = true; render(m.workflows); }
     else if (m.type === 'trash') renderTrash(m.items || []);
     else if (m.type === 'activity') {
       activity[m.akey] = { items: m.items || [], report: m.report || '' };

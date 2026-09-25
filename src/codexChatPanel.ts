@@ -55,6 +55,12 @@ export interface CodexChatView {
     lastAtMs?: number;
     live: boolean;
     entries: ChatEntryView[];
+    /**
+     * Set when the conversation lives in another working tree of this repository rather than
+     * a folder this window has open: that tree's folder name, and its full path for the hover.
+     */
+    tag?: string;
+    tagPath?: string;
 }
 
 /** One trashed conversation as the drawer lists it. */
@@ -81,6 +87,8 @@ export interface ChatPanelCallbacks {
 let panel: vscode.WebviewPanel | null = null;
 let callbacks: ChatPanelCallbacks | null = null;
 let lastSignature: string | null = null;
+/** Latest list handed over, kept across a close so a reopened panel shows it at once. */
+let lastChats: CodexChatView[] | null = null;
 
 export function isChatPanelOpen(): boolean { return panel !== null; }
 
@@ -96,7 +104,7 @@ function panelTitle(): string {
  */
 function signature(chats: CodexChatView[]): string {
     return chats.map(c =>
-        c.stamp + ':' + c.entries.length + ':' + (c.live ? '1' : '0') + ':' + (c.threadId || '-')
+        c.stamp + ':' + (c.tag || '') + ':' + c.entries.length + ':' + (c.live ? '1' : '0') + ':' + (c.threadId || '-')
     ).join('|');
 }
 
@@ -107,15 +115,20 @@ function getNonce(): string {
     return text;
 }
 
+/**
+ * Opens without waiting for a scan (user's call, 2026-09-25: panels must never open late). Pass
+ * what is already known, or null; the caller starts a scan and `pushChats` fills the panel in.
+ */
 export function createOrShowChatPanel(
     context: vscode.ExtensionContext,
-    chats: CodexChatView[],
+    chats: CodexChatView[] | null,
     cb: ChatPanelCallbacks
 ): void {
     callbacks = cb;
+    if (chats) lastChats = chats;
     if (panel) {
         panel.reveal(vscode.ViewColumn.Active);
-        pushChats(chats);
+        if (lastChats) pushChats(lastChats);
         return;
     }
 
@@ -131,7 +144,8 @@ export function createOrShowChatPanel(
     panel.webview.onDidReceiveMessage((msg) => {
         if (msg?.type === 'ready') {
             panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()) });
-            lastSignature = null; pushChats(chats);
+            lastSignature = null;
+            if (lastChats) pushChats(lastChats);
         } else if (msg?.type === 'open' && typeof msg.path === 'string') {
             callbacks?.onOpenDoc(msg.path);
         } else if (msg?.type === 'delete' && typeof msg.stamp === 'string') {
@@ -155,6 +169,7 @@ export function pushChatTrash(items: ChatTrashView[]): void {
 }
 
 export function pushChats(chats: CodexChatView[]): void {
+    lastChats = chats;
     if (!panel) return;
     const sig = signature(chats);
     if (sig === lastSignature) return;
@@ -260,7 +275,7 @@ function getHtml(webview: vscode.Webview): string {
     <button class="fbtn" id="trashBtn" data-i18n="cxc.trash">Trash</button>
   </div>
   <div id="drawer"></div>
-  <div id="list"></div>
+  <div id="list"><div class="empty" data-i18n="wf.loading">Loading…</div></div>
   <button class="jump" id="jumpBtn" style="display:none" data-i18n="cxc.newReply">New reply &#8595;</button>
 
 <script nonce="${nonce}">
@@ -443,6 +458,8 @@ function getHtml(webview: vscode.Webview): string {
     h += '<span class="chat-name">' + esc(c.subject || c.slug) + '</span>';
     h += '<span class="chip">' + tn('cxc.turns', turns) + '</span>';
     if (c.origin) h += '<span class="chip origin">' + esc(c.origin) + '</span>';
+    // Another working tree of this repository. Same outlined chip: where it lives, not a state.
+    if (c.tag) h += '<span class="chip origin" title="' + esc(c.tagPath || c.tag) + '">⎇ ' + esc(c.tag) + '</span>';
     h += '<span class="chat-time">' + esc(when(c.lastAtMs)) + '</span>';
     h += '<span class="spacer"></span>';
     if (c.live) {
@@ -576,16 +593,20 @@ function getHtml(webview: vscode.Webview): string {
     }
   });
 
+  // The panel opens before its first scan lands, on a loading line. Rendering the empty initial
+  // list when the language arrives would replace that line with "no conversations" too early.
+  let gotChats = false;
   window.addEventListener('message', function (ev) {
     const m = ev.data;
     if (!m) return;
     if (m.type === 'i18n') {
       dict = m.dict || {};
       applyStatic();
-      render();
+      if (gotChats) render();
       return;
     }
     if (m.type === 'chats') {
+      gotChats = true;
       const wasAtBottom = atBottom();
       chats = m.chats || [];
       // Newest conversation opens by default; the rest stay folded. Re-reading almost always

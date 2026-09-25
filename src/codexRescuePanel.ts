@@ -34,6 +34,14 @@ export interface CodexRunView {
     slug: string;
     /** Card heading when present; the slug is the fallback for runs recorded without one. */
     subject?: string;
+    /** URI string of the working tree the run lives in — which folder a delete acts on. */
+    root?: string;
+    /**
+     * Set when that tree is not a folder this window has open (another worktree of the same
+     * repository): the tree's folder name, shown as a chip, and its full path for the hover.
+     */
+    tag?: string;
+    tagPath?: string;
     mode: string;
     phase: RunPhase;
     startedAt?: number;
@@ -56,8 +64,9 @@ export interface CodexRunView {
     /**
      * Multi-turn only. Requests are separate files per turn; the result is one document that
      * every turn appends to, so each entry carries an anchor into it rather than its own URI.
+     * startedAt/endedAt are that turn's own clock; either is absent when it could not be read.
      */
-    turnDocs?: { turn: number; requestUri?: string; resultAnchor?: string }[];
+    turnDocs?: { turn: number; requestUri?: string; resultAnchor?: string; startedAt?: number; endedAt?: number }[];
     staleForMs?: number;
     /** Documents survive but the event log is gone — the card exists to reach the documents. */
     docsOnly?: boolean;
@@ -90,6 +99,9 @@ export interface CodexPanelCallbacks {
 let panel: vscode.WebviewPanel | null = null;
 let callbacks: CodexPanelCallbacks | null = null;
 let lastPushedSignature: string | null = null;
+// Latest list handed over, kept across a close so a reopened panel shows it at once. Null until
+// the first scan: the panel then opens on its "loading…" line and fills in when one lands.
+let lastRuns: CodexRunView[] | null = null;
 
 export function isCodexPanelOpen(): boolean { return panel !== null; }
 
@@ -140,10 +152,11 @@ function panelTitle(): string {
 // stops re-rendering; a live one keeps changing and keeps updating.
 function signature(runs: CodexRunView[]): string {
     return JSON.stringify((runs || []).map(r => ({
-        s: r.stamp, p: r.phase, e: r.endedAt || 0, t: r.totalTokens || 0,
+        s: r.stamp, g: r.tag || '', p: r.phase, e: r.endedAt || 0, t: r.totalTokens || 0,
         d: r.todo, k: r.staleForMs ? Math.floor(r.staleForMs / 5000) : 0,
         r: !!r.resultUri, m: (r.model || '') + '/' + (r.effort || ''),
         i: r.items.map(i => [i.id, i.status, i.label, i.body, i.durationMs, i.turn || 1]),
+        w: (r.turnDocs || []).map(d => [d.startedAt || 0, d.endedAt || 0]),
     })));
 }
 
@@ -154,15 +167,20 @@ function getNonce(): string {
     return text;
 }
 
+/**
+ * Opens without waiting for a scan (user's call, 2026-09-25: panels must never open late). Pass
+ * what is already known, or null; the caller starts a scan and `pushRuns` fills the panel in.
+ */
 export function createOrShowCodexPanel(
     context: vscode.ExtensionContext,
-    runs: CodexRunView[],
+    runs: CodexRunView[] | null,
     cb: CodexPanelCallbacks
 ): void {
     callbacks = cb;
+    if (runs) lastRuns = runs;
     if (panel) {
         panel.reveal(vscode.ViewColumn.Active);
-        pushRuns(runs);
+        if (lastRuns) pushRuns(lastRuns);
         return;
     }
 
@@ -178,7 +196,8 @@ export function createOrShowCodexPanel(
     panel.webview.onDidReceiveMessage((msg) => {
         if (msg?.type === 'ready') {
             panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()) });
-            lastPushedSignature = null; pushRuns(runs);
+            lastPushedSignature = null;
+            if (lastRuns) pushRuns(lastRuns);
         } else if (msg?.type === 'open' && typeof msg.path === 'string') {
             callbacks?.onOpenDoc(msg.path, typeof msg.anchor === 'string' ? msg.anchor : undefined);
         } else if (msg?.type === 'delete' && typeof msg.stamp === 'string') {
@@ -202,6 +221,7 @@ export function pushTrash(items: CodexTrashView[]): void {
 }
 
 export function pushRuns(runs: CodexRunView[]): void {
+    lastRuns = runs;
     if (!panel) return;
     const sig = signature(runs);
     if (sig === lastPushedSignature) return;
@@ -252,6 +272,10 @@ function getHtml(webview: vscode.Webview): string {
      normal card" instead of competing with the mode chip beside it. */
   .mode-chip.docs-chip { background:transparent; color: var(--vscode-descriptionForeground);
     border:1px solid var(--vscode-panel-border); }
+  /* Ran in another working tree of this repository. Outlined for the same reason as the chip
+     above: it says where the run lives, not what state it is in. */
+  .mode-chip.tree-chip { background:transparent; color: var(--vscode-descriptionForeground);
+    border:1px solid var(--vscode-panel-border); letter-spacing:0; }
   .run-time { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; font-variant-numeric: tabular-nums; }
   .spacer { flex:1 1 auto; }
   .badge { font-size:.8em; padding:2px 9px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
@@ -289,6 +313,9 @@ function getHtml(webview: vscode.Webview): string {
   /* Each turn owns its documents: the request really is a separate file per turn, and the
      result link jumps into that turn's section of the one response document. */
   .turn-links { flex-shrink:0; display:flex; gap:12px; font-size:.82em; }
+  /* A turn's own start and duration, right after its number. The card clock above spans every
+     turn plus the gaps between them, so it cannot say how long any one question took. */
+  .turn-time { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.82em; white-space:nowrap; font-variant-numeric: tabular-nums; }
   .plan { font-size:.82em; color: var(--vscode-descriptionForeground); margin-bottom:8px; }
   .plan-chip { display:inline-block; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius:4px; padding:1px 7px; margin:0 4px 3px 0; }
   .plan-chip.on { opacity:.55; text-decoration:line-through; }
@@ -412,7 +439,7 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
     </div>
     <div id="trash-list"></div>
   </div>
-  <div id="list"></div>
+  <div id="list"><div class="empty" data-i18n="wf.loading">Loading…</div></div>
 <script nonce="${nonce}">
   const vscodeApi = acquireVsCodeApi();
   let dict = {};
@@ -481,6 +508,10 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
     if (s < 60) return s.toFixed(1)+'s';
     return Math.floor(s/60)+'m '+Math.round(s%60)+'s';
   }
+  function fmtHM(ms) {
+    const d = new Date(ms);
+    return pad2(d.getHours())+':'+pad2(d.getMinutes());
+  }
   // Independent 1s ticker so a running run's clock advances even when its data is unchanged.
   function tick() {
     const now = Date.now();
@@ -490,7 +521,24 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
       const doneEnd = el.getAttribute('data-done');
       const elapsed = doneEnd ? (Number(doneEnd) - started) : (now - started);
       const label = doneEnd ? t('wf.took') : t('wf.elapsed');
-      el.textContent = '🕘 ' + fmtClock(started) + ' · ' + label + fmtElapsed(elapsed);
+      let text = '🕘 ' + fmtClock(started) + ' · ' + label + fmtElapsed(elapsed);
+      // Multi-turn only: the wall clock above includes the gaps between turns, when Claude was
+      // reading and rewriting, so the time Codex itself spent is shown beside it.
+      const work = el.getAttribute('data-work');
+      if (work !== null) {
+        const wlive = Number(el.getAttribute('data-wlive')) || 0;
+        text += ' (' + t('cx.workSum') + fmtElapsed(Number(work) + (wlive ? now - wlive : 0)) + ')';
+      }
+      el.textContent = text;
+    });
+    // Per-turn clock: time of day only, since the card clock right above already has the date.
+    document.querySelectorAll('.turn-time[data-started]').forEach(function (el) {
+      const started = Number(el.getAttribute('data-started'));
+      if (!started) return;
+      const doneEnd = el.getAttribute('data-done');
+      const elapsed = doneEnd ? (Number(doneEnd) - started) : (now - started);
+      const label = doneEnd ? t('wf.took') : t('wf.elapsed');
+      el.textContent = fmtHM(started) + ' · ' + label + fmtElapsed(elapsed);
     });
   }
   setInterval(tick, 1000);
@@ -508,8 +556,9 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
   }
   function sigOf(runs) {
     return JSON.stringify((runs||[]).map(function (r) {
-      return [r.stamp, r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultUri, (r.model||'') + '/' + (r.effort||''),
-        r.items.map(function (i) { return [i.id,i.status,i.label,i.body,i.durationMs,i.turn||1]; })];
+      return [r.stamp, r.tag||'', r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultUri, (r.model||'') + '/' + (r.effort||''),
+        r.items.map(function (i) { return [i.id,i.status,i.label,i.body,i.durationMs,i.turn||1]; }),
+        (r.turnDocs||[]).map(function (d) { return [d.startedAt||0, d.endedAt||0]; })];
     }));
   }
 
@@ -670,10 +719,13 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
       // Per-turn document links. The request is a file of its own for every turn; the result
       // is the one response document, so each turn points at it with an anchor and the opener
       // scrolls there. Without the anchor a turn-3 link would drop you at turn 1 every time.
-      function turnLinks(turn) {
+      function turnEntry(turn) {
         const docs = run.turnDocs || [];
-        let entry = null;
-        for (let i = 0; i < docs.length; i++) { if (docs[i].turn === turn) { entry = docs[i]; break; } }
+        for (let i = 0; i < docs.length; i++) { if (docs[i].turn === turn) return docs[i]; }
+        return null;
+      }
+      function turnLinks(turn) {
+        const entry = turnEntry(turn);
         const out = [];
         if (run.resultUri) {
           const anchor = entry && entry.resultAnchor
@@ -696,6 +748,15 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
         return turnFinished(turn) ? '' : saysBlock(narrationOfTurn(run.items, turn));
       }
 
+      // A finished turn with no end on record gets nothing: a start with no duration beside it
+      // would read as a turn still running. Only the turn actually in flight counts up.
+      function turnTime(turn) {
+        const e = turnEntry(turn);
+        if (!e || !e.startedAt) return '';
+        if (!e.endedAt && turnFinished(turn)) return '';
+        return '<span class="turn-time" data-started="' + e.startedAt + '" data-done="' + (e.endedAt || '') + '"></span>';
+      }
+
       function turnHead(turn) {
         if (maxTurn < 2 || turn === shownTurn) return '';
         shownTurn = turn;
@@ -704,8 +765,26 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
         return '<div class="turn-hd' + (folded ? ' folded' : '') + '" data-tfold="' + esc(fkey) + '">' +
                  '<span class="turn-fold">▾</span>' +
                  '<span class="turn-no">' + esc(t('cx.turnHeader', turn)) + '</span>' +
+                 turnTime(turn) +
                  turnLinks(turn) +
                '</div>';
+      }
+
+      // Codex's own time across all turns, for the card clock. Only when every turn is timed:
+      // a sum with a turn missing would be wrong, and it is shown as a fact. The turn in flight
+      // is passed as its start so the ticker can keep the sum moving.
+      function workClock() {
+        const docs = run.turnDocs;
+        if (!docs || docs.length < 2) return null;
+        let sum = 0, live = 0;
+        for (let i = 0; i < docs.length; i++) {
+          const d = docs[i];
+          if (!d.startedAt) return null;
+          if (d.endedAt) sum += d.endedAt - d.startedAt;
+          else if (i === docs.length - 1 && !runOver) live = d.startedAt;
+          else return null;
+        }
+        return { sum: sum, live: live };
       }
 
       function renderNode(node) {
@@ -763,8 +842,12 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
         ? '<div class="warn">' + esc(t('cx.staleHint', Math.round((run.staleForMs||0)/1000))) + '</div>' : '';
 
       const finished = (phase==='done'||phase==='failed'||phase==='stopped');
+      // The work attributes appear on multi-turn runs only, so a single-turn card's markup is
+      // unchanged.
+      const wc = workClock();
       const timeHtml = run.startedAt
-        ? '<span class="run-time" data-started="' + run.startedAt + '" data-done="' + (finished && run.endedAt ? run.endedAt : '') + '"></span>'
+        ? '<span class="run-time" data-started="' + run.startedAt + '" data-done="' + (finished && run.endedAt ? run.endedAt : '') + '"' +
+          (wc ? ' data-work="' + wc.sum + '" data-wlive="' + (wc.live || '') + '"' : '') + '></span>'
         : '';
 
       return '<div class="run' + (isExpanded(run.stamp)?'':' collapsed') + '" data-id="' + esc(run.stamp) + '">' +
@@ -778,6 +861,10 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
           '<span class="run-name" title="' + esc(run.subject ? run.subject + '\\n' + run.slug : run.slug) + '">' +
             esc(run.subject || run.slug) + '</span>' +
           (run.mode ? '<span class="mode-chip">' + esc(run.mode.toUpperCase()) + '</span>' : '') +
+          // How many turns a follow-up run took, readable with the card folded. Single-turn
+          // cards get nothing, so their header is unchanged.
+          (maxTurn >= 2 ? '<span class="mode-chip">' + esc(t('cx.turnCount', maxTurn)) + '</span>' : '') +
+          (run.tag ? '<span class="mode-chip tree-chip" title="' + esc(run.tagPath || run.tag) + '">⎇ ' + esc(run.tag) + '</span>' : '') +
           (run.docsOnly ? '<span class="mode-chip docs-chip">' + esc(t('cx.docsOnly.badge')) + '</span>' : '') +
           timeHtml + '<span class="spacer"></span>' + badge +
           // Only finished runs get a delete button — deleting mid-write would race send.sh.
@@ -955,10 +1042,13 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
     }
   }, true);
 
+  // The panel opens before any scan finishes, on its loading line. Rendering the empty initial
+  // list when the language arrives would swap that line for "no runs" while they are still coming.
+  let gotRuns = false;
   window.addEventListener('message', e => {
     const m = e.data;
-    if (m && m.type === 'i18n') { dict = m.dict || {}; applyI18n(); render(lastRuns, true); }
-    else if (m && m.type === 'runs') render(m.runs);
+    if (m && m.type === 'i18n') { dict = m.dict || {}; applyI18n(); if (gotRuns) render(lastRuns, true); }
+    else if (m && m.type === 'runs') { gotRuns = true; render(m.runs); }
     else if (m && m.type === 'trash') renderTrash(m.items || []);
   });
   vscodeApi.postMessage({ type: 'ready' });

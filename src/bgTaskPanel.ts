@@ -61,8 +61,8 @@ export interface BgTaskPanelCallbacks {
 let panel: vscode.WebviewPanel | null = null;
 let callbacks: BgTaskPanelCallbacks | null = null;
 let lastPushedSignature: string | null = null;
-const emptyGroup = (): BgTaskGroup => ({ running: [], finished: [], finishedTotal: 0 });
-let lastData: BgTaskPanelData = { background: emptyGroup(), long: emptyGroup(), longMinutes: 0 };
+// Null until the first scan: the panel then opens on its loading line (see createOrShow).
+let lastData: BgTaskPanelData | null = null;
 const openCards = new Set<string>();
 
 export function isBgTaskPanelOpen(): boolean { return panel !== null; }
@@ -82,16 +82,20 @@ function panelTitle(): string {
     return ws ? `${base} · ${ws.short}` : base;
 }
 
+/**
+ * Opens without waiting for a scan (user's call, 2026-09-25: panels must never open late). Pass
+ * what is already known, or null; the caller scans and `pushBgTasks` fills the panel in.
+ */
 export function createOrShowBgTaskPanel(
     context: vscode.ExtensionContext,
-    data: BgTaskPanelData,
+    data: BgTaskPanelData | null,
     cb: BgTaskPanelCallbacks
 ): void {
     callbacks = cb;
-    lastData = data;
+    if (data) lastData = data;
     if (panel) {
         panel.reveal(vscode.ViewColumn.Active);
-        pushBgTasks(data);
+        if (lastData) pushBgTasks(lastData);
         return;
     }
     const mediaUri = vscode.Uri.joinPath(context.extensionUri, 'media');
@@ -109,7 +113,7 @@ export function createOrShowBgTaskPanel(
             case 'ready':
                 panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
                 lastPushedSignature = null;
-                pushBgTasks(lastData);
+                if (lastData) pushBgTasks(lastData);
                 break;
             case 'clearFinished':
                 if (msg?.group === 'background' || msg?.group === 'long') callbacks?.onClearFinished(msg.group);
@@ -166,7 +170,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   <h1 data-i18n="bg.title">⏳ Claude Background Tasks</h1>
 ${wsRow}  <div class="scope" id="scope"></div>
   <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
-  <div id="list"></div>
+  <div id="list"><div class="empty" data-i18n="wf.loading">Loading…</div></div>
 <script nonce="${nonce}" src="${jsUri}"></script>
 </body>
 </html>`;

@@ -65,7 +65,8 @@ let callbacks: WorkflowPanelCallbacks | null = null;
 // Last payload actually posted. Polling re-pushes the same data every refresh; skipping an
 // identical one keeps the webview from rebuilding under the user's hands for nothing.
 let lastPushedSignature: string | null = null;
-let lastWorkflows: WorkflowView[] = [];
+// Null until the first project scan: the panel then opens on its loading line (see createOrShow).
+let lastWorkflows: WorkflowView[] | null = null;
 // Agents the user has open. Their rows are re-read while they run, so the host needs to know.
 const openAgents = new Set<string>();
 
@@ -86,16 +87,20 @@ function panelTitle(): string {
     return ws ? `${base} · ${ws.short}` : base;
 }
 
+/**
+ * Opens without waiting for the project scan (user's call, 2026-09-25: panels must never open
+ * late). Pass what is already known, or null; the caller scans and `pushWorkflows` fills it in.
+ */
 export function createOrShowWorkflowPanel(
     context: vscode.ExtensionContext,
-    workflows: WorkflowView[],
+    workflows: WorkflowView[] | null,
     cb: WorkflowPanelCallbacks
 ): void {
     callbacks = cb;
-    lastWorkflows = workflows;
+    if (workflows) lastWorkflows = workflows;
     if (panel) {
         panel.reveal(vscode.ViewColumn.Active);
-        pushWorkflows(workflows);
+        if (lastWorkflows) pushWorkflows(lastWorkflows);
         return;
     }
     const mediaUri = vscode.Uri.joinPath(context.extensionUri, 'media');
@@ -114,7 +119,7 @@ export function createOrShowWorkflowPanel(
             case 'ready':
                 panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
                 lastPushedSignature = null;
-                pushWorkflows(lastWorkflows);
+                if (lastWorkflows) pushWorkflows(lastWorkflows);
                 break;
             case 'delete': if (k) callbacks?.onDelete(k); break;
             case 'trashOpen': callbacks?.onTrashOpen(); break;
@@ -190,7 +195,7 @@ ${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshin
     </div>
     <div id="trash-list"></div>
   </div>
-  <div id="list"></div>
+  <div id="list"><div class="empty" data-i18n="wf.loading">Loading…</div></div>
 <script nonce="${nonce}" src="${jsUri}"></script>
 </body>
 </html>`;

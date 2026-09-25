@@ -28,10 +28,11 @@ import { createOrShowChatPanel, pushChats, pushChatTrash, pushChatLanguage, isCh
 import { discoverChats, trashChat, listChatTrash, restoreChat, purgeChat, emptyChatTrash } from './providers/codexRescue/chatDiscovery';
 import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runCacheKey, RunPhase,
          trashRun, listTrash, restoreTrashed, purgeTrashed, emptyTrash } from './providers/codexRescue/runDiscovery';
+import { codexRoots, CodexRoot } from './providers/codexRescue/repoRoots';
 import { getDict, Lang } from './i18n';
 import { readTextFile } from './core/fs';
 import { readAutoUpdateState, enableAutoUpdate, AutoUpdateState, installedPluginLabels } from './providers/codex/pluginAutoUpdate';
-import { beginRefreshShare, endRefreshShare, readShared, recordPass, recordFolded, recordTickLag, recordMenu, takeRefreshSummary } from './core/refreshPerf';
+import { beginRefreshShare, endRefreshShare, readShared, readParsed, statShared, pruneParsed, recordPass, recordFolded, recordTickLag, recordMenu, recordMenuFill, takeRefreshSummary } from './core/refreshPerf';
 import { parseTaskNotices } from './workflowNotices';
 import { log, setLogChannel, getLogChannel } from './core/logger';
 import { getLatestTokenCount } from './providers/claude/tokenParser';
@@ -427,7 +428,6 @@ export function activate(context: vscode.ExtensionContext) {
     const menuCommand = vscode.commands.registerCommand('claudeContextBar.showSessionMenu', async (sessionFile: string) => {
         const menuStarted = Date.now();
         type Item = vscode.QuickPickItem & { action?: 'hide' | 'restoreAll' | 'restoreOne' | 'settings' | 'workflows' | 'bgTasks' | 'codexRuns' | 'codexChats' | 'cleanupGhosts' | 'claudeStatus' | 'refreshNow' | 'codexAutoUpdate'; sessionFile?: string };
-        const items: Item[] = [];
 
         const clickedEntry = sessionFile ? statusBarItems.get(sessionFile) : undefined;
 
@@ -450,6 +450,22 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         const clickedLabel = clickedEntry?.item.text || (sessionFile ? path.basename(sessionFile) : 'this session');
+
+        // 🔴 The menu never waits on a read. It used to fetch the workflow list, the Codex runs and
+        // the Codex conversations before showing, and over Remote-SSH those reads queue behind the
+        // status-bar refresh's own transfers — measured 16.6s and 21s right after a window started,
+        // when nothing had been read yet (2026-09-25). It now opens on whatever is already known;
+        // a count not known yet reads "checking…", and fresh counts are put into the open menu as
+        // they arrive (user's call). The item under the cursor stays under the cursor.
+        const showWorkflowItems = capabilitiesFor(clickedEntry?.provider ?? 'claude').workflows;
+        const showCodexItems = codexRescueSkillInstalled();
+        const known = {
+            workflows: projectWorkflowsKnown ? lastProjectWorkflows : undefined as WorkflowInfo[] | undefined,
+            cxRuns: lastCodexRuns ?? undefined,
+            cxChats: lastCodexChats ?? menuCodexChats ?? undefined,
+        };
+        const buildItems = (): Item[] => {
+        const items: Item[] = [];
 
         if (sessionFile) {
             items.push({
@@ -484,10 +500,16 @@ export function activate(context: vscode.ExtensionContext) {
         // here no longer depends on which session was clicked.
         // Skipped for providers without workflow journals (Codex): offering a workflow entry there
         // would promise a feature that provider does not have.
-        if (capabilitiesFor(clickedEntry?.provider ?? 'claude').workflows) {
-            const workflows = await findWorkflowsForProject(lastWorkflowsBySession);
+        if (showWorkflowItems) {
+            const workflows = known.workflows;
             items.push({ label: planT('menu.sepWorkflows'), kind: vscode.QuickPickItemKind.Separator });
-            if (workflows.length > 0) {
+            if (!workflows) {
+                items.push({
+                    label: '$(circuit-board) ' + planT('menu.noWorkflows'),
+                    description: planT('menu.checking'),
+                    action: 'workflows'
+                });
+            } else if (workflows.length > 0) {
                 const runningWf = workflows.filter(w => w.agents.some(a => a.status === 'running')).length;
                 const icon = runningWf > 0 ? '$(sync~spin)' : '$(circuit-board)';
                 items.push({
@@ -520,25 +542,41 @@ export function activate(context: vscode.ExtensionContext) {
         // codex_rescue 진행 상황. 스킬이 깔린 머신에서만 나타난다 — 안 쓰는 사용자에게는
         // 항목 자체가 없다. 실행 기록이 아직 없어도(0건) 항목은 보여준다: 패널을 열어
         // "여기서 볼 수 있다"는 걸 알 수 있어야 하기 때문이다.
-        if (codexRescueSkillInstalled()) {
-            const cxRuns = lastCodexRuns ?? await collectCodexRuns();
-            const cxLive = cxRuns.filter(r => !isTerminalPhase(r.phase)).length;
+        if (showCodexItems) {
+            const cxRuns = known.cxRuns;
             items.push({ label: planT('menu.sepCodex'), kind: vscode.QuickPickItemKind.Separator });
-            items.push({
-                label: (cxLive > 0 ? '$(sync~spin) ' : '$(flame) ') + planT('menu.viewCodexRuns', cxRuns.length),
-                description: cxLive > 0 ? planT('menu.running', cxLive) : planT('menu.allDone'),
-                action: 'codexRuns'
-            });
+            if (!cxRuns) {
+                items.push({
+                    label: '$(flame) ' + planT('menu.codexRunsPanel'),
+                    description: planT('menu.checking'),
+                    action: 'codexRuns'
+                });
+            } else {
+                const cxLive = cxRuns.filter(r => !isTerminalPhase(r.phase)).length;
+                items.push({
+                    label: (cxLive > 0 ? '$(sync~spin) ' : '$(flame) ') + planT('menu.viewCodexRuns', cxRuns.length),
+                    description: cxLive > 0 ? planT('menu.running', cxLive) : planT('menu.allDone'),
+                    action: 'codexRuns'
+                });
+            }
             // 핑퐁 대화. 진행 상황 바로 아래에 둔다 (2026-08-22 사용자 지시) — 같은 스킬의
             // 두 얼굴이라 나란히 있어야 어느 쪽을 볼지 고르기 쉽다.
-            const cxChats = lastCodexChats ?? await collectCodexChats();
-            const cxTalking = cxChats.filter(c => c.live).length;
-            items.push({
-                label: (cxTalking > 0 ? '$(sync~spin) ' : '$(comment-discussion) ')
-                       + planT('menu.viewCodexChats', cxChats.length),
-                description: cxTalking > 0 ? planT('cxc.live') : '',
-                action: 'codexChats'
-            });
+            const cxChats = known.cxChats;
+            if (!cxChats) {
+                items.push({
+                    label: '$(comment-discussion) ' + planT('menu.codexChatsPanel'),
+                    description: planT('menu.checking'),
+                    action: 'codexChats'
+                });
+            } else {
+                const cxTalking = cxChats.filter(c => c.live).length;
+                items.push({
+                    label: (cxTalking > 0 ? '$(sync~spin) ' : '$(comment-discussion) ')
+                           + planT('menu.viewCodexChats', cxChats.length),
+                    description: cxTalking > 0 ? planT('cxc.live') : '',
+                    action: 'codexChats'
+                });
+            }
         }
         // Always-available way in for the auto-update switch, shown only while it is off on this
         // window's host. The state comes from the startup check (the notice may have been closed),
@@ -584,11 +622,51 @@ export function activate(context: vscode.ExtensionContext) {
             description: planT('menu.refreshNowDesc'),
             action: 'refreshNow'
         });
+        return items;
+        };
 
+        const qp = vscode.window.createQuickPick<Item>();
+        qp.placeholder = planT('menu.placeholder');
+        qp.items = buildItems();
         recordMenu(Date.now() - menuStarted);
-        const picked = await vscode.window.showQuickPick(items, {
-            placeHolder: planT('menu.placeholder')
+        const picked = await new Promise<Item | undefined>(resolve => {
+            let closed = false;
+            const finish = (v: Item | undefined) => { if (!closed) { closed = true; resolve(v); } };
+            qp.onDidAccept(() => { finish(qp.selectedItems[0] ?? qp.activeItems[0]); qp.hide(); });
+            qp.onDidHide(() => finish(undefined));
+            qp.show();
+
+            // Swap each count in as it lands. Rebuilding replaces the item objects, so the cursor
+            // is put back on the item with the same action (and session) it was on.
+            const repaint = () => {
+                if (closed) return;
+                const cur = qp.activeItems[0];
+                qp.items = buildItems();
+                const again = cur && qp.items.find(i => i.action === cur.action && i.sessionFile === cur.sessionFile && i.label !== '');
+                if (again) qp.activeItems = [again];
+            };
+            const fillStarted = Date.now();
+            const fills: Promise<void>[] = [];
+            const failed = (what: string) => (e: unknown) => log(`[menu] ${what} count failed: ${e}`);
+            if (showWorkflowItems) {
+                fills.push(menuProjectWorkflows()
+                    .then(w => { known.workflows = w; repaint(); }, failed('workflow')));
+            }
+            if (showCodexItems) {
+                // The runs are rescanned on every status-bar refresh, so only a missing list is read.
+                if (!known.cxRuns) {
+                    fills.push(collectCodexRuns()
+                        .then(r => { known.cxRuns = r; repaint(); }, failed('codex run')));
+                }
+                // Conversations are not (with their panel closed): read each time the menu opens.
+                fills.push(collectCodexChats()
+                    .then(c => { menuCodexChats = c; known.cxChats = c; repaint(); }, failed('codex chat')));
+            }
+            if (fills.length) {
+                void Promise.all(fills).then(() => recordMenuFill(Date.now() - fillStarted));
+            }
         });
+        qp.dispose();
         if (!picked) return;
 
         switch (picked.action) {
@@ -701,7 +779,9 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push({ dispose: () => ensureBgFastPolling(false) });
 
     const codexRunsCmd = vscode.commands.registerCommand('claudeContextBar.showCodexRuns', async () => {
-        createOrShowCodexPanel(context, await collectCodexRuns(), {
+        // Opens on the last scan (or its loading line); the sync after it fills it in. The panel
+        // must never wait on a remote read to appear (user's call, 2026-09-25).
+        createOrShowCodexPanel(context, lastCodexRuns, {
             // A URI string, not a path: `Uri.file` would send a remote workspace's document
             // to a non-existent local path. `Uri.parse` round-trips the remote authority.
             onOpenDoc: (docUri: string, anchor?: string) => {
@@ -731,7 +811,10 @@ export function activate(context: vscode.ExtensionContext) {
                 // and an action they can undo. The questions live at the irreversible end
                 // instead — purging one run, or emptying the trash.
                 let moved = false;
-                for (const f of vscode.workspace.workspaceFolders || []) {
+                // The card's own tree first: another working tree could hold the same stamp.
+                const roots = (await codexRoots()).sort((a, b) =>
+                    Number(b.uri.toString() === target.root) - Number(a.uri.toString() === target.root));
+                for (const f of roots) {
                     if (await trashRun(f.uri, stamp, target.slug, true, target.subject,
                                        target.mode || undefined, Date.now())) { moved = true; break; }
                 }
@@ -748,7 +831,7 @@ export function activate(context: vscode.ExtensionContext) {
             },
             onTrashOpen: () => { void pushCodexTrash(); },
             onRestore: async (stamp: string) => {
-                for (const f of vscode.workspace.workspaceFolders || []) {
+                for (const f of await codexRoots()) {
                     const res = await restoreTrashed(f.uri, stamp);
                     if (!res.restored && !res.conflicts.length) continue;
                     if (res.conflicts.length) {
@@ -793,7 +876,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 if (choice !== logsOnly && choice !== withDocs && choice !== purgeNow) return;
                 const takeDocs = choice !== logsOnly;
-                for (const f of vscode.workspace.workspaceFolders || []) {
+                for (const f of await codexRoots()) {
                     if (await purgeTrashed(f.uri, stamp, takeDocs)) {
                         log(`[codex-rescue] purged ${stamp} (docs: ${takeDocs})`);
                         break;
@@ -817,7 +900,7 @@ export function activate(context: vscode.ExtensionContext) {
                 if (choice !== logsOnly && choice !== withDocs && choice !== purgeNow) return;
                 const takeDocs = choice !== logsOnly;
                 let n = 0;
-                for (const f of vscode.workspace.workspaceFolders || []) {
+                for (const f of await codexRoots()) {
                     n += await emptyTrash(f.uri, takeDocs);
                 }
                 log(`[codex-rescue] emptied trash: ${n} run(s), docs: ${takeDocs}`);
@@ -825,12 +908,14 @@ export function activate(context: vscode.ExtensionContext) {
                 void pushCodexTrash();
             }
         });
+        void syncCodexRuns();
     });
     context.subscriptions.push(codexRunsCmd);
 
     // Codex chat (핑퐁) panel. Same visibility gate as the runs panel above.
     const codexChatsCmd = vscode.commands.registerCommand('claudeContextBar.showCodexChats', async () => {
-        createOrShowChatPanel(context, await collectCodexChats(), {
+        // Same as the runs panel: open on what is known, then scan.
+        createOrShowChatPanel(context, lastCodexChats ?? menuCodexChats, {
             onOpenDoc: (docUri: string) => {
                 vscode.workspace.openTextDocument(vscode.Uri.parse(docUri)).then(
                     doc => vscode.window.showTextDocument(doc, { preview: false }),
@@ -843,7 +928,7 @@ export function activate(context: vscode.ExtensionContext) {
             // already follows.
             onDelete: async (stamp: string) => {
                 let moved = false;
-                for (const f of vscode.workspace.workspaceFolders || []) {
+                for (const f of await codexRoots()) {
                     if (await trashChat(f.uri, stamp, Date.now())) { moved = true; break; }
                 }
                 if (moved) {
@@ -855,7 +940,7 @@ export function activate(context: vscode.ExtensionContext) {
             },
             onTrashOpen: () => { void pushChatTrashNow(); },
             onRestore: async (stamp: string) => {
-                for (const f of vscode.workspace.workspaceFolders || []) {
+                for (const f of await codexRoots()) {
                     const res = await restoreChat(f.uri, stamp);
                     if (res.conflict) {
                         vscode.window.showWarningMessage(planT('cxc.restoreConflict'));
@@ -875,7 +960,7 @@ export function activate(context: vscode.ExtensionContext) {
                 const choice = await vscode.window.showWarningMessage(
                     planT('cxc.purgeConfirm'), { modal: true }, yes);
                 if (choice !== yes) return;
-                for (const f of vscode.workspace.workspaceFolders || []) {
+                for (const f of await codexRoots()) {
                     if (await purgeChat(f.uri, stamp)) {
                         log(`[codex-chat] purged ${stamp}`);
                         break;
@@ -891,13 +976,14 @@ export function activate(context: vscode.ExtensionContext) {
                     planT('cxc.emptyConfirm', items.length), { modal: true }, yes);
                 if (choice !== yes) return;
                 let n = 0;
-                for (const f of vscode.workspace.workspaceFolders || []) {
+                for (const f of await codexRoots()) {
                     n += await emptyChatTrash(f.uri);
                 }
                 log(`[codex-chat] emptied trash: ${n} conversation(s)`);
                 void pushChatTrashNow();
             },
         });
+        void syncCodexChats();
     });
     context.subscriptions.push(codexChatsCmd);
 
@@ -1907,7 +1993,7 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
     const unsettled = wfList.filter(x => x.wf.agents.some(a => a.status === 'running'));
     if (unsettled.length > 0) {
         try {
-            const notices = parseTaskNotices(await readShared(vscode.Uri.parse(sessionFileUri)));
+            const notices = await readParsed(vscode.Uri.parse(sessionFileUri), 'notices', parseTaskNotices);
             const ended = (s: string | undefined) => s === 'stopped' || s === 'killed' || s === 'failed';
             for (const { wf } of unsettled) {
                 if (wf.wfId.startsWith('wf_')) {
@@ -1943,13 +2029,16 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
 // collect the task-ids whose notification says completed. The returned set is the wfIds we
 // can safely beep for; anything all-done-in-journal but absent here is a mid-run batch gap.
 async function getCompletedWorkflowIds(sessionFileUri: string): Promise<Set<string>> {
-    const completed = new Set<string>();
-    let content: string;
     try {
-        content = await readShared(vscode.Uri.parse(sessionFileUri));
+        // Kept while the conversation is unchanged, like the token parser's result.
+        return await readParsed(vscode.Uri.parse(sessionFileUri), 'wf-completed', parseCompletedWorkflowIds);
     } catch {
-        return completed;  // session unreadable → treat as "nothing confirmed done"
+        return new Set<string>();  // session unreadable → treat as "nothing confirmed done"
     }
+}
+
+function parseCompletedWorkflowIds(content: string): Set<string> {
+    const completed = new Set<string>();
     const taskToWf = new Map<string, string>();   // task-id → wfId (from launch tool_result)
     const completedTasks = new Set<string>();      // task-ids whose notification = completed
     // Both the launch result and the task-notification are single JSONL lines, so the
@@ -2194,6 +2283,23 @@ async function purgeWorkflow(sessionFileUri: string, wfId: string): Promise<bool
 const PROJECT_WF_LIMIT = 20;
 const projectWfCache = new Map<string, { sig: string; workflows: WorkflowInfo[] }>();
 let lastProjectWorkflows: WorkflowInfo[] = [];
+/** Whether `lastProjectWorkflows` came from a finished scan — an empty list could mean "none" or "not read yet". */
+let projectWorkflowsKnown = false;
+let projectWfScan: Promise<WorkflowInfo[]> | null = null;
+/** The session menu's own copy of the Codex conversations, for when their panel is closed. */
+let menuCodexChats: CodexChatView[] | null = null;
+
+/**
+ * The project scan for the session menu, joined rather than restarted when one is already
+ * running: opening the menu twice in a row over a slow remote would otherwise run it twice.
+ */
+function menuProjectWorkflows(): Promise<WorkflowInfo[]> {
+    if (!projectWfScan) {
+        projectWfScan = findWorkflowsForProject(lastWorkflowsBySession)
+            .finally(() => { projectWfScan = null; });
+    }
+    return projectWfScan;
+}
 
 async function mtimeOf(uri: vscode.Uri): Promise<number> {
     try { return (await vscode.workspace.fs.stat(uri)).mtime; } catch { return 0; }
@@ -2264,6 +2370,7 @@ async function findWorkflowsForProject(liveSessions: Map<string, WorkflowInfo[]>
     for (const k of [...projectWfCache.keys()]) if (!known.has(k)) projectWfCache.delete(k);
     all.sort((a, b) => (b.activityAt || 0) - (a.activityAt || 0));
     lastProjectWorkflows = all.slice(0, PROJECT_WF_LIMIT);
+    projectWorkflowsKnown = true;
     return lastProjectWorkflows;
 }
 
@@ -2418,8 +2525,14 @@ function workflowPanelCallbacks(): WorkflowPanelCallbacks {
 }
 
 async function openWorkflowPanel(context: vscode.ExtensionContext): Promise<void> {
-    const wfs = await findWorkflowsForProject(lastWorkflowsBySession);
-    createOrShowWorkflowPanel(context, wfs.map(w => toWorkflowView(w, lastWorkflowsBySession)), workflowPanelCallbacks());
+    // Open on the last project scan (or the loading line) and fill in when this one lands — over
+    // Remote-SSH the scan can queue behind the status-bar refresh for many seconds, and the panel
+    // used to appear only after it (user's call, 2026-09-25: never open late).
+    const known = projectWorkflowsKnown
+        ? lastProjectWorkflows.map(w => toWorkflowView(w, lastWorkflowsBySession)) : null;
+    createOrShowWorkflowPanel(context, known, workflowPanelCallbacks());
+    const wfs = await menuProjectWorkflows();
+    pushWorkflows(wfs.map(w => toWorkflowView(w, lastWorkflowsBySession)));
 }
 
 type ProjectTrashItem = TrashedWorkflow & { sessionFile: string };
@@ -2653,7 +2766,8 @@ function bgTaskPanelCallbacks(): BgTaskPanelCallbacks {
 }
 
 async function openBgTaskPanel(context: vscode.ExtensionContext): Promise<void> {
-    createOrShowBgTaskPanel(context, await buildBgPanelData(), bgTaskPanelCallbacks());
+    // Open first (on the last list, or the loading line), then scan — never wait to appear.
+    createOrShowBgTaskPanel(context, null, bgTaskPanelCallbacks());
     await pushBgTaskPanel();
 }
 
@@ -2702,6 +2816,8 @@ function refreshActivityDots(): void {
 async function findActiveSessions(): Promise<SessionInfo[]> {
     const sessions: SessionInfo[] = [];
     let fallbackCandidate: { uri: vscode.Uri, mtime: Date, projectDir: string } | null = null;
+    // Every conversation this scan parsed; parsed results for anything else are dropped at the end.
+    const scannedFiles = new Set<string>();
     const projectsUri = await getClaudeProjectsUri();
     if (!projectsUri) return sessions;
 
@@ -2778,7 +2894,8 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
             const fileStats = await Promise.all(allJsonl.map(async (n) => {
                 const uri = vscode.Uri.joinPath(projectUri, n);
                 let mtime = new Date(0);
-                try { mtime = new Date((await vscode.workspace.fs.stat(uri)).mtime); } catch { /* skip unreadable */ }
+                // Shared with the token parser, which checks its cache against this same stat.
+                try { mtime = new Date((await statShared(uri)).mtime); } catch { /* skip unreadable */ }
                 return { name: n, uri, mtime };
             }));
             // Track the newest file across all projects regardless of hideThreshold (fallback use)
@@ -2800,6 +2917,7 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
 
             // Get token count from EACH active session file (1 per Claude Code tab)
             for (const file of files) {
+                scannedFiles.add(file.uri.toString());
                 const usage = await getLatestTokenCount(file.uri);
 
                 if (usage.totalTokens > 0) {
@@ -2983,6 +3101,8 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
         }
     }
 
+    if (fallbackCandidate) scannedFiles.add(fallbackCandidate.uri.toString());
+    pruneParsed(scannedFiles);
     return visibleSessions.slice(0, 5);
 }
 
@@ -3973,9 +4093,13 @@ async function deleteLegacyCodexCopy(dir: string, stillApplies: () => boolean): 
     updateCodexContext(codexRescueSkillInstalled());
 }
 
-/** True when any workspace folder has codex_rescue run records to display. */
-async function workspaceUsesCodexRescue(): Promise<boolean> {
-    for (const f of vscode.workspace.workspaceFolders || []) {
+/**
+ * True when any folder the Codex panels scan has codex_rescue run records to display — the
+ * open folders and the other working trees of their repositories (see repoRoots.ts), since a
+ * repository may only ever have run the skill from a worktree.
+ */
+async function workspaceUsesCodexRescue(roots?: CodexRoot[]): Promise<boolean> {
+    for (const f of roots ?? await codexRoots()) {
         // Remote folders included: reads go through vscode.workspace.fs, which VS Code
         // routes to the remote host even though this extension itself runs locally
         // (extensionKind "ui"). Restricting this to scheme 'file' is what made the panel
@@ -3989,7 +4113,7 @@ async function workspaceUsesCodexRescue(): Promise<boolean> {
 /** Everything in the trash across all open folders, newest deletion first. */
 async function collectCodexTrash(): Promise<CodexTrashView[]> {
     const out: CodexTrashView[] = [];
-    for (const f of vscode.workspace.workspaceFolders || []) {
+    for (const f of await codexRoots()) {
         out.push(...await listTrash(f.uri));
     }
     return out.sort((a, b) => b.deletedAt - a.deletedAt);
@@ -4010,12 +4134,13 @@ async function pushCodexTrash(): Promise<void> {
 
 async function collectCodexChats(): Promise<CodexChatView[]> {
     const out: CodexChatView[] = [];
-    for (const f of vscode.workspace.workspaceFolders || []) {
+    for (const f of await codexRoots()) {
         for (const c of await discoverChats(f.uri)) {
             out.push({
                 stamp: c.stamp, slug: c.slug, subject: c.subject, origin: c.origin,
                 threadId: c.threadId, docUri: c.docUri, lastAtMs: c.lastAtMs,
                 live: c.live, entries: c.entries as CodexChatView['entries'],
+                tag: f.tag, tagPath: f.tagPath,
             });
         }
     }
@@ -4025,7 +4150,7 @@ async function collectCodexChats(): Promise<CodexChatView[]> {
 
 async function collectChatTrash(): Promise<ChatTrashView[]> {
     const out: ChatTrashView[] = [];
-    for (const f of vscode.workspace.workspaceFolders || []) {
+    for (const f of await codexRoots()) {
         out.push(...await listChatTrash(f.uri));
     }
     return out.sort((a, b) => b.deletedAt - a.deletedAt);
@@ -4074,13 +4199,13 @@ async function codexRunModel(threadId: string, turns: number, finished: boolean)
     return entry;
 }
 
-async function collectCodexRuns(): Promise<CodexRunView[]> {
+async function collectCodexRuns(roots?: CodexRoot[]): Promise<CodexRunView[]> {
     const now = Date.now();
     const out: CodexRunView[] = [];
     const keepKeys = new Set<string>();
     const keepThreads = new Set<string>();
 
-    for (const f of vscode.workspace.workspaceFolders || []) {
+    for (const f of roots ?? await codexRoots()) {
         const docsDir = await codexRescueDocsDir(f.uri);
         if (!docsDir) continue;
         const logDir = vscode.Uri.joinPath(docsDir, '.log');
@@ -4095,6 +4220,9 @@ async function collectCodexRuns(): Promise<CodexRunView[]> {
                 stamp: run.stamp,
                 slug: run.slug,
                 subject: run.subject,
+                root: f.uri.toString(),
+                tag: f.tag,
+                tagPath: f.tagPath,
                 mode: run.mode,
                 phase: run.phase,
                 startedAt: run.startedAtMs,
@@ -4107,7 +4235,10 @@ async function collectCodexRuns(): Promise<CodexRunView[]> {
                 docsOnly: run.docsOnly,
                 requestUri: run.requestUri,
                 resultUri: run.resultUri,
-                turnDocs: run.turnDocs,
+                turnDocs: run.turnDocs?.map(d => ({
+                    turn: d.turn, requestUri: d.requestUri, resultAnchor: d.resultAnchor,
+                    startedAt: d.startedAtMs, endedAt: d.endedAtMs,
+                })),
                 totalTokens: usage ? usage.inputTokens + usage.outputTokens : undefined,
                 items: run.events.items.map(i => ({
                     id: i.id,
@@ -4177,12 +4308,14 @@ async function syncCodexRuns(): Promise<void> {
 }
 
 async function syncCodexRunsInner(): Promise<void> {
-    // Scanning only makes sense where run records actually exist.
-    if (!await workspaceUsesCodexRescue()) { lastCodexRuns = []; return; }
+    // Scanning only makes sense where run records actually exist. The roots are resolved once
+    // here and shared, since over SSH each resolution is a few round trips.
+    const roots = await codexRoots();
+    if (!await workspaceUsesCodexRescue(roots)) { lastCodexRuns = []; return; }
 
     let runs: CodexRunView[];
     try {
-        runs = await collectCodexRuns();
+        runs = await collectCodexRuns(roots);
         lastCodexRuns = runs;
     } catch (e) {
         log(`[codex-rescue] scan error: ${e}`);

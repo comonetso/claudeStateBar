@@ -35,6 +35,7 @@
 
   function emptyGroup() { return { running: [], finished: [], finishedTotal: 0 }; }
   let last = { background: emptyGroup(), long: emptyGroup(), longMinutes: 0 };
+  let gotTasks = false;
   let lastSig = null;
   // Open/closed is remembered only while the panel is open, as in the other panels. A card in the
   // upper list starts open (the remote-control view shows a running task's output at once); one in
@@ -246,8 +247,10 @@
   window.addEventListener('message', function (e) {
     const m = e.data;
     if (!m) return;
-    if (m.type === 'i18n') { dict = m.dict || {}; applyI18n(); render(last, true); }
-    else if (m.type === 'tasks') render(m.data);
+    // Before the first list lands the panel shows its loading line; re-rendering the empty initial
+    // groups here would swap it for "nothing here" while the tasks are still being read.
+    if (m.type === 'i18n') { dict = m.dict || {}; applyI18n(); if (gotTasks) render(last, true); }
+    else if (m.type === 'tasks') { gotTasks = true; render(m.data); }
   });
 
   applyFont();

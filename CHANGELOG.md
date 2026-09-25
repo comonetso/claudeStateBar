@@ -19,6 +19,27 @@ resting colour as a session item, and its glyph the light blue of a Codex sessio
 A workflow whose end notice arrived while Claude was answering could stay listed as running in the
 workflow panel. That kind of notice is now read too.
 
+In the Codex panel, a run with follow-ups was timed by its last turn only: the card clock restarted with
+every follow-up, so a six-turn run that took 43 minutes showed 1:20. The card clock now runs from the
+first turn to the end of the last, with Codex's own working time beside it, and each turn header shows
+when that turn started and how long it took. Single-turn cards are unchanged. A follow-up card also
+shows how many turns it took, in a chip beside its mode, so it reads with the card folded.
+
+The Codex panels now also list runs and conversations from the other working trees of the open
+repository. codex_rescue writes its records under the tree it ran in, so a run started in a
+`git worktree` never showed in a window opened on the main folder, and the other way round. A card from
+a tree other than the window's own carries a `⎇` chip with that tree's folder name. The status-bar
+Codex dot and the finish chime follow those runs too.
+
+In a Remote-SSH window the session menu could take 16–21 seconds to appear, most of all right after the
+window started, and the workflow panel could be slow to open. The menu and the workflow, background-task
+and both Codex panels now open at once with what is already known and fill in as the reads finish: a
+count not read yet shows as `checking…`, and a panel shows `Loading…` until its first list arrives.
+Separately, each refresh used to re-read every Claude conversation touched in the last 24 hours, so a
+window kept open while sessions were started and closed moved more on every refresh (roughly
+70–220 MB a minute measured over SSH). A conversation whose size and modification time have not
+changed is now read once.
+
 ## [1.17.0] - 2026-09-22
 
 A background task panel lists, for the sessions on the status bar, the commands and monitors Claude

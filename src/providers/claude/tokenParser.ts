@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { readShared, recordParse } from '../../core/refreshPerf';
+import { readShared, recordParse, statShared, cachedParse, storeParse } from '../../core/refreshPerf';
 
 export interface TokenUsage {
     inputTokens: number;
@@ -22,10 +22,15 @@ export interface TokenUsage {
 export async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUsage> {
     const empty: TokenUsage = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, model: '', speed: '', firstMessage: '', sessionCreated: null, lastRealTimestamp: null, lastActivityAt: null, wasCleared: false, lastAssistantEndTurnAt: null, pendingQuestionAt: null, pendingToolUseAt: null, pendingToolUseName: null };
     try {
-        const stat = await vscode.workspace.fs.stat(jsonlUri);
+        const stat = await statShared(jsonlUri);
         if (stat.size === 0) {
             return empty;
         }
+        // Unchanged since the last parse: nothing below depends on the current time, so the earlier
+        // result stands. Without this every refresh re-transferred every conversation of the last
+        // 24 hours over Remote-SSH (see refreshPerf.ts).
+        const cached = cachedParse<TokenUsage>(jsonlUri, 'tokens', stat);
+        if (cached) return cached;
 
         // Read the file (routed to the remote host by VS Code when running over Remote-SSH)
         // Shared within one refresh pass: the workflow panel reads this same file for task
@@ -211,7 +216,7 @@ export async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUs
             }
 
             recordParse(Date.now() - parseStarted);
-            return {
+            return storeParse<TokenUsage>(jsonlUri, 'tokens', stat, {
                 inputTokens: finalUsage.inputTokens,
                 cacheReadTokens: finalUsage.cacheReadTokens,
                 cacheCreationTokens: finalUsage.cacheCreationTokens,
@@ -227,7 +232,7 @@ export async function getLatestTokenCount(jsonlUri: vscode.Uri): Promise<TokenUs
                 pendingQuestionAt,
                 pendingToolUseAt,
                 pendingToolUseName
-            };
+            });
     } catch (e) {
         return empty;
     }

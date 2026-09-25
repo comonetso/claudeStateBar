@@ -145,7 +145,9 @@ In a Remote‑SSH window you see **remote session token usage and your plan usag
 
 **Codex is covered too.** With `scope: all`, the extension reads the **remote** host's recent rollout files through `vscode.workspace.fs`; the remote home is found by probing `/root` and `/home/*` for a directory that actually contains `.codex/sessions`. With the default `scope: workspace`, it first resolves the exact conversation shown by this VS Code window and looks for that UUID on the remote host. If no explicit `codex.home` is set, it can then check the local UI host's Codex home because the Codex webview may own a local conversation even inside a Remote‑SSH window.
 
-**One read‑path difference (performance note):** locally the extension reads only the byte range it needs, so even a 14.1 MB rollout takes a few milliseconds. Over Remote‑SSH the VS Code file API has no range read, so the **whole file** is read. This is the same thing Claude already does remotely (the largest Claude session file on this dev machine is 9.2 MB), and Codex adds an optimisation Claude doesn't have: **if a rollout's mtime and size are unchanged, the read is skipped entirely**. As a safeguard, remote rollout files **larger than 32 MB are skipped and logged**.
+**One read‑path difference (performance note):** locally the extension reads only the byte range it needs, so even a 14.1 MB rollout takes a few milliseconds. Over Remote‑SSH the VS Code file API has no range read, so the **whole file** is read. This is the same thing Claude already does remotely (the largest Claude session file on this dev machine is 9.2 MB). For both, **a file whose mtime and size are unchanged is not read again** — for Claude conversations since 1.17.1. Before that, every refresh re-read every conversation touched in the last `hideAfter` (24 hours by default), so a window kept open while sessions were started and closed moved more data on each refresh: roughly 70–220 MB a minute was measured in one Remote‑SSH window. Only a conversation still being written is transferred again now.
+
+**The session menu and the panels open without waiting on these reads.** Since 1.17.1 they appear at once with what the extension already knows and fill in as fresh numbers arrive: a count not read yet shows as `checking…`, and a panel opened before its first scan shows `Loading…` until the list lands. Over Remote‑SSH those reads could queue behind the status bar's own, and the menu took 16–21 seconds to appear right after a window started. As a safeguard, remote rollout files **larger than 32 MB are skipped and logged**.
 
 Local and remote read paths were verified to produce identical parsed results — 5 sessions × 12 fields, all matching, on the same rollout data.
 
@@ -219,6 +221,7 @@ With the skill installed, open it from the status-bar menu or `claudeStateBar: S
 - **Commands, searches, file changes, MCP calls** — colour-coded by kind, commands with their exit code. Runs of consecutive successful commands or searches fold into one line you can expand; **failures never fold**, so they stay visible
 - **Clipped rows open in place** — a row too wide for the panel expands where it is, wrapped, when you click it. One row stays open at a time. What you get is what the panel kept: messages up to 4,000 characters, a command's wrapped form up to 600. Past that, read the raw event log
 - **Runs with documents but no log still show** — marked `documents only`, with no activity list but the request/response links intact. That covers a run whose raw logs you purged, and documents a teammate committed and you pulled in
+- **Runs from the repository's other worktrees** — the skill writes its records under the working tree it ran in, so a run started in a linked worktree (`git worktree add`) used to be missing from a window opened on the main folder, and the other way round. The panel now lists runs from every working tree of the repository the window's folder belongs to, whichever of them the window has open. A card from a tree other than the window's own carries a `⎇ <folder name>` chip; hover it for the full path. The Codex chat panel does the same, and the status bar's Codex dot and the finish chime follow those runs too
 - **A title you can read** — the request's subject heads the card, not the English slug. Runs recorded by an older skill show the slug instead
 - **Model and effort** — the line with the stamp and thread id also shows the model and reasoning effort Codex actually ran with. After a follow-up, it shows the latest turn's. A review run the old way (Codex's dedicated review command) may not record one, and then nothing is shown
 - **Plan** — shown as `2/5`, but only when Codex actually produced one
@@ -288,11 +291,19 @@ file per turn: turn 1 has the original request, turn 2 onward the rebuttal that 
 not — every turn appends to the same response document — so a turn's result link opens that document and
 jumps to that turn's section rather than dropping you at the top.
 
+Each header also shows **when that turn started and how long it took**. The card's own clock runs from
+the first turn to the end of the last, with the time Codex actually spent working beside it —
+`took 43:11 (work 12:47)`. The difference is the time between turns, while Claude read the answer and
+wrote the next question. Before 1.17.1 the card clock restarted with every follow-up, so a six-turn run
+that took 43 minutes showed only its last turn's 1:20. From turn 2 on, a turn's start is when the
+rebuttal that opened it was saved, so it can be a few seconds early. The number of turns also sits in
+a chip beside the mode (`FOLLOWUP` `6 turns`), so it can be read with the card folded.
+
 **Clicking a turn header collapses it.** A long consultation can put fifty activities in one card, and
 folding the turns you have already read leaves the one you care about on screen. The state survives the
 refresh, and turns start open: you opened the card to read it.
 
-**Single-turn runs look exactly as they did.** Headers, per-turn links and folding appear only on cards
+**Single-turn runs look exactly as they did.** Headers, per-turn links and times, and folding appear only on cards
 that actually have a follow-up.
 
 One bug went with it. `codex exec resume` numbers each turn's activities from `item_0` again, and the

@@ -69,8 +69,11 @@ export interface CodexRun {
      * The *result* is not: every turn appends to the one response document, so each entry
      * points at the same `resultUri` and carries an anchor instead. The panel hands that
      * anchor back on click and the opener scrolls to it.
+     *
+     * Each entry also carries that turn's own clock — see the per-turn clock in discoverRuns.
+     * Either bound is absent when it could not be read or did not add up.
      */
-    turnDocs?: { turn: number; requestUri?: string; resultAnchor?: string }[];
+    turnDocs?: { turn: number; requestUri?: string; resultAnchor?: string; startedAtMs?: number; endedAtMs?: number }[];
     /** Diagnostic surface for a run whose heartbeat went cold. */
     staleForMs?: number;
     /**
@@ -127,6 +130,14 @@ interface SettledEntry {
     mtime: number;
 }
 const settled = new Map<string, SettledEntry>();
+
+/**
+ * Per-turn clock of a follow-up run, keyed like `tails`, read from file mtimes. A bound once
+ * read never moves again, so it is kept: over SSH every stat is a round trip, and a six-turn
+ * run would otherwise cost twelve of them on each 2s poll while it is live. A bound not yet
+ * on disk (the turn in flight) stays unset and is looked for again next poll.
+ */
+const turnClock = new Map<string, Map<number, { startedAtMs?: number; endedAtMs?: number }>>();
 
 /** Heartbeat older than this ⇒ the run is reported stale rather than promoted to done.
  *  send.sh refreshes it every 5s, so this is the 6× margin — generous because long model
@@ -416,6 +427,7 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
             // frozen verdict and the parser offset with it; the new stream starts at 0.
             settled.delete(cacheKey);
             tails.delete(cacheKey);
+            turnClock.delete(cacheKey);
         }
 
         // Status first: when it already carries a terminal verdict there is no reason to
@@ -475,15 +487,70 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
         // hand, so this costs no extra I/O.
         let maxTurn = 1;
         for (const it of events.items) { const n = it.turn || 1; if (n > maxTurn) { maxTurn = n; } }
-        const turnDocs = maxTurn < 2 ? undefined : Array.from({ length: maxTurn }, (_, i) => {
-            const turn = i + 1;
-            const name = turn === 1 ? requestName : `${stamp}_followup${turn}_${slug}.md`;
-            return {
-                turn,
-                requestUri: docSet.has(name) ? vscode.Uri.joinPath(docsDir, name).toString() : undefined,
-                resultAnchor: turn === 1 ? undefined : `<!-- codex_rescue:consult-turn ${turn} -->`,
-            };
-        });
+
+        // Per-turn clock. status.json is rewritten by every follow-up, so its started_at is the
+        // LAST turn's start — read as the run's start, it made a 43-minute, six-turn run report
+        // 1m20s (2026-09-25). Each turn is timed from the files it left behind instead:
+        //   start — turn 1: the stamp, minted as the run begins. Turn N: its `_followup<N>_`
+        //           rebuttal, written just before send.sh is called, so a few seconds early
+        //           (6s in that run; the user chose this over changing the plugin).
+        //   end   — `_stderr.log` / `_t<N>_stderr.log`, which send.sh copies into .log the
+        //           moment Codex exits, every turn, whether or not it said anything.
+        // The newest turn swaps in status.json's exact start — but only when it fits between
+        // the neighbouring bounds, because before that turn's first event arrives, maxTurn
+        // still names the previous one. A bound that is missing or out of order (a doc edited
+        // afterwards) leaves the turn untimed rather than wrong.
+        let turnDocs: CodexRun['turnDocs'];
+        if (maxTurn < 2) {
+            // Also how a stamp re-run from turn 1 sheds the old clock before it follows up again.
+            turnClock.delete(cacheKey);
+        } else {
+            let clock = turnClock.get(cacheKey);
+            if (!clock) { clock = new Map(); turnClock.set(cacheKey, clock); }
+            turnDocs = [];
+            let prevEnd: number | undefined;
+            for (let turn = 1; turn <= maxTurn; turn++) {
+                const name = turn === 1 ? requestName : `${stamp}_followup${turn}_${slug}.md`;
+                const errName = turn === 1 ? `${stamp}_stderr.log` : `${stamp}_t${turn}_stderr.log`;
+                const known = clock.get(turn) ?? {};
+                const fileStart = known.startedAtMs ?? (turn === 1
+                    ? parseStamp(stamp)
+                    : docSet.has(name) ? (await statOf(vscode.Uri.joinPath(docsDir, name)))?.mtime : undefined);
+                const fileEnd = known.endedAtMs ?? (present.has(errName)
+                    ? (await statOf(vscode.Uri.joinPath(logDir, errName)))?.mtime : undefined);
+                clock.set(turn, { startedAtMs: fileStart, endedAtMs: fileEnd });
+
+                let turnStart = fileStart;
+                let turnEnd = fileEnd;
+                if (turn === maxTurn) {
+                    const exact = parseIso(status?.started_at);
+                    if (exact !== undefined && exact >= (prevEnd ?? 0)
+                        && (turnEnd === undefined || exact <= turnEnd)) {
+                        turnStart = exact;
+                    }
+                    // An interrupted turn can stop before send.sh copies its stderr.
+                    if (turnEnd === undefined && isTerminalPhase(phase)) turnEnd = endedAtMs;
+                }
+                if (turnStart !== undefined
+                    && ((prevEnd !== undefined && turnStart < prevEnd)
+                        || (turnEnd !== undefined && turnStart > turnEnd))) {
+                    turnStart = undefined;
+                }
+                prevEnd = turnEnd;
+
+                turnDocs.push({
+                    turn,
+                    requestUri: docSet.has(name) ? vscode.Uri.joinPath(docsDir, name).toString() : undefined,
+                    resultAnchor: turn === 1 ? undefined : `<!-- codex_rescue:consult-turn ${turn} -->`,
+                    startedAtMs: turnStart,
+                    endedAtMs: turnEnd,
+                });
+            }
+        }
+        // A follow-up run starts where its first turn did. The rebuttal doc marks one even in the
+        // seconds before the new turn's first event — and the live-steer path writes
+        // kind "consult" into status.json while a turn runs, so the sidecar cannot say it.
+        const isFollowup = maxTurn >= 2 || docSet.has(`${stamp}_followup2_${slug}.md`);
 
         const run: CodexRun = {
             stamp,
@@ -493,7 +560,9 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
             scope: status?.scope,
             phase,
             staleForMs,
-            startedAtMs: parseIso(status?.started_at) ?? parseStamp(stamp),
+            startedAtMs: isFollowup
+                ? (parseStamp(stamp) ?? parseIso(status?.started_at))
+                : (parseIso(status?.started_at) ?? parseStamp(stamp)),
             endedAtMs,
             events,
             requestUri: docSet.has(requestName)
@@ -520,6 +589,9 @@ export function pruneTailCache(keepKeys: Set<string>): void {
     }
     for (const key of Array.from(settled.keys())) {
         if (!keepKeys.has(key)) settled.delete(key);
+    }
+    for (const key of Array.from(turnClock.keys())) {
+        if (!keepKeys.has(key)) turnClock.delete(key);
     }
 }
 

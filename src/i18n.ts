@@ -298,6 +298,10 @@ const EN: Dict = {
     'cx.kind.claude_steer': 'Claude',
     /** Only rendered when a run actually has more than one turn — see the panel. */
     'cx.turnHeader': 'Turn {0}',
+    /** Multi-turn card clock: Codex's own time across turns, beside the wall-clock total. */
+    'cx.workSum': 'work ',
+    /** Card header chip on a follow-up run: how many turns it took. Only shown from 2 up. */
+    'cx.turnCount': '{0} turns',
 
     // Status-bar click QuickPick menu (the "Q-Panel")
     'menu.hide': 'Hide this session',
@@ -310,6 +314,8 @@ const EN: Dict = {
     'menu.allDone': 'all done',
     'menu.noWorkflows': 'Workflow panel',
     'menu.noneRunning': 'none running',
+    /** Session menu: a count not read yet. The menu opens at once and fills it in when it lands. */
+    'menu.checking': 'checking…',
     // Status-bar dots for running work (core/activityDots.ts).
     'dots.workflow.title': 'Workflows and sub-agents running: {0}',
     'dots.background.title': 'Background tasks running: {0}',
@@ -357,6 +363,9 @@ const EN: Dict = {
     'menu.sepCodex': 'Codex',
     'menu.viewCodexRuns': 'Codex progress panel ({0})',
     'menu.viewCodexChats': 'Codex chat panel ({0})',
+    /** The two entries above while their count is still being read. */
+    'menu.codexRunsPanel': 'Codex progress panel',
+    'menu.codexChatsPanel': 'Codex chat panel',
     'menu.cleanupGhosts': 'Clean up stale/zombie items',
     'menu.cleanupGhostsDesc': 'grayed-out leftovers — reloads the window',
     'menu.openSettings': 'Open settings…',
@@ -796,6 +805,10 @@ const KO: Dict = {
     'cx.kind.claude_steer': '클로드',
     /** 턴이 둘 이상인 실행에서만 그려진다 — 패널 참조. */
     'cx.turnHeader': '{0}턴',
+    /** 멀티턴 카드 시계: 턴 사이 대기를 뺀 Codex 자체 작업 시간 합계. */
+    'cx.workSum': '작업 ',
+    /** 되묻기 카드 머리의 턴 수 칩. 2턴 이상일 때만 나온다. */
+    'cx.turnCount': '{0}턴',
 
     // 상태바 클릭 QuickPick 메뉴 ("Q-Panel")
     'menu.hide': '이 세션 숨기기',
@@ -808,6 +821,8 @@ const KO: Dict = {
     'menu.allDone': '모두 완료',
     'menu.noWorkflows': '워크플로우 패널',
     'menu.noneRunning': '진행 중 없음',
+    /** 세션 메뉴: 아직 못 읽은 건수. 메뉴는 바로 뜨고, 읽히면 그 자리에 채운다. */
+    'menu.checking': '확인 중…',
     'dots.workflow.title': '워크플로·서브에이전트 실행 중 {0}건',
     'dots.background.title': '백그라운드 작업 실행 중 {0}건',
     'dots.codex.title': 'Codex 실행 중 {0}건',
@@ -853,6 +868,9 @@ const KO: Dict = {
     'menu.sepCodex': 'Codex',
     'menu.viewCodexRuns': 'Codex 진행 상황 패널 ({0}건)',
     'menu.viewCodexChats': 'Codex 채팅 패널 ({0}개 대화)',
+    /** 위 두 항목의 건수를 아직 읽는 중일 때. */
+    'menu.codexRunsPanel': 'Codex 진행 상황 패널',
+    'menu.codexChatsPanel': 'Codex 채팅 패널',
     'menu.cleanupGhosts': '오래된/좀비 항목 정리',
     'menu.cleanupGhostsDesc': '회색으로 남은 항목 제거 — 창을 다시 로드합니다',
     'menu.openSettings': '설정 열기…',
