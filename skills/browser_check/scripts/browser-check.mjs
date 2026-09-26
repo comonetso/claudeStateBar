@@ -2,6 +2,9 @@
 /*
  * browser-check — single CLI entry point used by the `browser_check` skill.
  *
+ *   node browser-check.mjs setup [--remote-host <name>] [--json]
+ *                                               first run: look this machine over and write the private config
+ *                                               (never overwrites; reports what went in and what a person must do)
  *   node browser-check.mjs doctor [--json]      config + capability probe (read-only, never opens a tab)
  *   node browser-check.mjs run <body.js> [--host] [--out <dir>] [--label <txt>]
  *                                               one-shot Aside repl call: kit/head.js + body, 50 s guard, single-flight lock,
@@ -18,7 +21,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
-import { load, siteFor } from './lib/config.mjs';
+import { load, siteFor, configPath } from './lib/config.mjs';
 import { probe, table } from './lib/capabilities.mjs';
 import { acquire, release, reclaimStale, heartbeat } from './lib/lock.mjs';
 import { redactText, redactUrl } from './lib/redact.mjs';
@@ -34,12 +37,27 @@ function die(msg, code = 2) { console.error('[browser-check] ' + msg); process.e
 const cfgRes = load();
 const dataDir = process.env.CLAUDE_PLUGIN_DATA || (cfgRes.path ? dirname(cfgRes.path) : null);
 
+if (cmd === 'setup') {
+  // First run: look the machine over and write the private config (never overwrites). See scripts/lib/setup.mjs.
+  const { setup } = await import('./lib/setup.mjs');
+  const r = await setup({ configFile: configPath(), remoteHost: opt('--remote-host', null) });
+  if (flag('--json')) { console.log(JSON.stringify(r, null, 1)); process.exit(r.status === 'created' || r.status === 'exists' ? 0 : 1); }
+  console.log(`setup        ${r.status} ${r.path || ''}`);
+  for (const n of r.notes || []) console.log('   ' + n);
+  for (const c of r.candidates || []) console.log(`   candidate: ${c.name} (${c.state}) — rerun with --remote-host "${c.name}"`);
+  for (const t of r.todo || []) console.log('!  ' + t);
+  if (r.errors && r.errors.length) for (const e of r.errors) console.log('!  written config: ' + e);
+  process.exit(r.status === 'created' || r.status === 'exists' ? 0 : 1);
+}
+
 if (cmd === 'doctor' || cmd === undefined) {
   const report = { config: { path: cfgRes.path, ok: cfgRes.ok, errors: cfgRes.errors } };
   if (cfgRes.ok) report.capabilities = await probe(cfgRes.config);
+  if (!cfgRes.ok && cfgRes.errors.includes('config file not found')) report.next = 'run `browser-check.mjs setup` — it looks this machine over and writes the config';
   if (flag('--json')) { console.log(JSON.stringify(report, null, 1)); process.exit(cfgRes.ok ? 0 : 1); }
   console.log(`config       ${cfgRes.ok ? 'ok' : 'INVALID'} ${cfgRes.path || ''}`);
   for (const e of cfgRes.errors) console.log('!  ' + e);
+  if (report.next) console.log('→  ' + report.next);
   if (report.capabilities) console.log(table(report.capabilities));
   process.exit(cfgRes.ok ? 0 : 1);
 }

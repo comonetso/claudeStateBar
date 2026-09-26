@@ -1,6 +1,6 @@
 {
   "name": "browser-check",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Inspect, operate, and diagnose the user's own real browser (Aside/Chromium) through policy-gated transports — Aside remote repl, raw CDP inside repl, and SSH-tunneled CDP. Korean natural-language trigger: \"화면 확인해 봐\", \"CSS 깨졌는지 봐\", \"콘솔 에러 봐\".",
   "author": { "name": "Blueming" },
   "repository": "https://github.com/comonetso/claudeStateBar",

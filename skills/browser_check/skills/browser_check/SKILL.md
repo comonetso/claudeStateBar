@@ -10,6 +10,9 @@ description: 사용자 PC 의 실제 웹 브라우저(Aside/Chromium) 화면을 
 
 ## 0. 시작 — 매번, 순서대로
 1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/browser-check.mjs" doctor --json` — 설정·통로(A/B/C)를 읽는다. **설정을 바꾸거나 브라우저·Aside 를 켜지 않는다.** 통로가 없으면 표를 그대로 보고하고 멈춘다(원격이 `disabled`·`offline` 이면 사용자가 PC 에서 켜야 한다).
+   - **설정이 없으면(`config file not found`) 먼저 `setup --json`** — 이 기기를 살펴(Aside CLI · 실행 중인 Aside 의 포트 · 터널 소켓 · `aside host list`) 설정 파일을 만들고 넣은 값(`notes`)을 돌려준다. **넣은 값을 사용자에게 보여 준 뒤** 진행한다. 이미 있는 설정은 건드리지 않는다.
+   - `choose-host` 면 `candidates`(원격 PC 목록)를 보여 주고, 사용자가 고른 이름으로 `setup --remote-host "<이름>"`. 네가 고르지 마라.
+   - `not-ready` 면 `todo`(Aside 설치·로그인, 터널, Aside 브라우저 켜기 등 사람이 할 일)를 그대로 전하고 멈춘다.
 2. 대상을 분류한다: 주소(개발/운영) · **로그인된 사이트인가**(설정 `sites[].login`) · 데이터를 바꾸는 일인가 · 어느 레시피인가.
 3. 로그인 사이트면 §1 의 토큰 규칙을 먼저 읽는다. 데이터 변경이면 **먼저 계획(무엇을·어디에·정리 방법)을 보이고 승인**을 받는다.
 
@@ -30,6 +33,7 @@ description: 사용자 PC 의 실제 웹 브라우저(Aside/Chromium) 화면을 
 - DeepL·Aside 주입 요소(`deepl-*`, `aside-inline-menu`, `bro-*`)는 숨기고 결과에 `detected` 로 남긴다. axe 는 `exclude`.
 - 통로 C 녹화(`client.record`)에서 **확장 프로그램이 낸 오류**는 `ext-exception`·`ext-console`(확장 이름 포함)로 따로 남고 `summary().problems` 에서 빠진다. 페이지 오류로 보고하지 마라(example.com 실측: 예외 3건 중 2건이 DeepL 확장).
 - 통로 C 의 자기 탭은 보이지 않는 탭이라, 한 번도 그려지지 않은 문서는 **클릭·키 입력을 오류 없이 버린다**(실측: 캡처 1장 전 왼쪽·오른쪽 클릭 0회). 클라이언트가 문서마다 첫 `Input.dispatch*` 전에 캡처 1장으로 자동으로 깨운다(70~550ms, 페이지 이동 뒤엔 다시). 깨우기에 실패하면 입력을 보내지 않고 `input not sent` 오류를 낸다 — 다시 시도한다.
+- 🔴 **통로 C 는 PC 의 Aside 창이 다른 창에 가려져 있으면 캡처가 멈춘다**(실측 2026-09-26: 가려진 동안 PC·터널 모두 `cdp timeout Page.captureScreenshot`/`input not sent`, 창을 앞에 두자 모두 성공). 이 오류가 나면 이것부터 의심하고 사용자에게 알린다. A/B(Aside)는 영향 없다.
 - 측정·색·애니메이션을 볼 때는 `K.wake`(에이전트 탭은 초당 2~4프레임으로 스로틀 — 캡처 1장이 풀고, 이동하면 다시 걸림).
 - 통로는 doctor 결과대로 자동 선택 — snapshot/조작=A · 명령형 CDP(첫 로딩 주입·기기 폭·다크모드·CSS 캐스케이드·AX 트리)=B(`K.hasX` 확인) · 이벤트·백그라운드 탭·긴 작업=C. 선택 이유와 fallback 을 보고한다. **같은 조작을 두 통로로 자동 재시도하지 않는다.**
 

@@ -330,7 +330,7 @@ Remote‑SSH에서도 동작합니다. 실행 기록은 `vscode.workspace.fs`로
 
 이 레포에서 함께 배포하는 세 번째 플러그인이며, 이것도 확장 기능은 아닙니다. 서버 로그와 소스만 보고 "시험 통과"라고 보고하는 대신, Claude Code가 사용자의 실제 브라우저(Chromium 기반인 Aside)를 열어 화면, 콘솔 오류, 실패한 요청, CSS, 반응형·다크 화면, 접근성, 성능을 직접 확인합니다. 서버 세션이 PC의 브라우저를 원격으로 다룰 수도 있고, PC에서 바로 돌 수도 있습니다. "화면 확인해 봐", "콘솔 에러 봐" 같은 한국어 말로 시작합니다.
 
-Claude와 브라우저 사이에는 정책층이 있습니다. 자기가 연 탭에서만 작업하고, 데이터 변경은 그 변경 하나를 승인받았을 때만 하며, 비밀 값은 읽지도 남기지도 않습니다. 다른 머신의 브라우저를 다루려면 Aside Pro의 원격 호스트나 PC에서 서버로 여는 SSH 터널이 필요합니다. 설치는 `/plugin install browser-check@comonetso` 이고, 비공개 설정 파일·터널·전체 안전 규칙은 [browser_check README](skills/browser_check/README.ko.md) ([English](skills/browser_check/README.md))에 있습니다. 아직 초기 버전이라, Windows PC 에서는 실측했지만 PC 에서 서버로 여는 실제 SSH 터널은 아직 실측 전입니다. 확장의 자동 업데이트 알림이 이 플러그인에도 적용됩니다.
+Claude와 브라우저 사이에는 정책층이 있습니다. 자기가 연 탭에서만 작업하고, 데이터 변경은 그 변경 하나를 승인받았을 때만 하며, 비밀 값은 읽지도 남기지도 않습니다. 다른 머신의 브라우저를 다루려면 Aside Pro의 원격 호스트나 PC에서 서버로 여는 SSH 터널이 필요합니다. 설치는 `/plugin install browser-check@comonetso` 입니다. 처음 쓸 때 기기를 살펴 비공개 설정 파일을 만들고 무엇을 넣었는지 보여 줍니다. 터널·전체 안전 규칙은 [browser_check README](skills/browser_check/README.ko.md) ([English](skills/browser_check/README.md))에 있습니다. 아직 초기 버전이며, Windows PC 와 실제 PC → 서버 터널에서 실측했습니다. 확장의 자동 업데이트 알림이 이 플러그인에도 적용됩니다.
 
 ## 🎚️ Effort 레벨 표시
 

@@ -35,7 +35,7 @@ try {
   const configPath = process.env.BROWSER_CHECK_CONFIG || (dataDir ? resolve(dataDir, 'config.json') : '');
 
   if (!configPath || !existsSync(configPath)) {
-    notes.push('비공개 설정 없음 — `browser_check` 를 쓰려면 `${CLAUDE_PLUGIN_DATA}/config.json` 을 만들어야 합니다 (예시: config/example.json)');
+    notes.push('비공개 설정 없음 — 처음 `browser_check` 를 쓸 때 `scripts/browser-check.mjs setup` 이 이 기기를 살펴 만듭니다 (직접 쓰려면 config/example.json)');
     emit();
     process.exit(0);
   }

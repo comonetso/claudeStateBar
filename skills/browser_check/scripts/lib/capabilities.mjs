@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 
 const execFileP = promisify(execFile);
 
-function httpGet(endpointOrSocket, path, timeoutMs) {
+export function httpGet(endpointOrSocket, path, timeoutMs) {
   return new Promise((resolve) => {
     const opts = endpointOrSocket.startsWith('/')
       ? { socketPath: endpointOrSocket, path, method: 'GET', headers: { Host: '127.0.0.1' } }
@@ -29,7 +29,7 @@ function httpGet(endpointOrSocket, path, timeoutMs) {
   });
 }
 
-async function probeCdp(endpointOrSocket, timeoutMs) {
+export async function probeCdp(endpointOrSocket, timeoutMs) {
   const r = await httpGet(endpointOrSocket, '/json/version', timeoutMs);
   if (r.error) return { ok: false, reason: r.error };
   try {
