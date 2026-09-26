@@ -3,9 +3,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseHostList, parseDebugPort, decide, setup, asideCandidates, loopback, TUNNEL_SOCKET } from '../scripts/lib/setup.mjs';
 import { validate } from '../scripts/lib/config.mjs';
+
+// An absolute path on whichever OS runs the tests (config validation checks it against the running platform)
+const ABS_BIN = resolve('/opt/aside/aside');
 
 test('setup: DevTools port from the main Aside process, not its helpers', () => {
   assert.equal(parseDebugPort(['"C:\\A\\Aside.exe" --remote-debugging-port=9333 --restart --user-data-dir="C:\\u"']), 9333);
@@ -34,13 +37,13 @@ test('setup: decisions — PC, server with one/several/no remote host, nothing u
   const ok = { ok: true, browser: 'Chrome/153' };
   const ports = { cdp: 9333, daemon: 30100 };
   // PC: the browser is here — direct, ports as found, no remote host
-  const pc = decide({ asideBin: 'C:/A/aside.exe', ports, localCdp: ok, daemon: { ok: true }, isWindows: true });
+  const pc = decide({ asideBin: ABS_BIN, ports, localCdp: ok, daemon: { ok: true }, isWindows: true });
   assert.equal(pc.status, 'created');
   assert.deepEqual(pc.config.cdp.local, { endpoint: loopback(9333), daemonEndpoint: loopback(30100) });
   assert.equal(pc.config.aside.remoteHost, undefined);
   assert.equal(validate(pc.config).ok, true);
   // PC with the Aside browser closed: its own Aside shows up as a remote host — must not become "server"
-  const pcClosed = decide({ asideBin: 'C:/A/aside.exe', ports: { cdp: null, daemon: null }, localCdp: { ok: false, reason: 'no running Aside' }, isWindows: true, hosts: { ok: true, remotes: [{ name: 'MyPc', state: 'online' }] } });
+  const pcClosed = decide({ asideBin: ABS_BIN, ports: { cdp: null, daemon: null }, localCdp: { ok: false, reason: 'no running Aside' }, isWindows: true, hosts: { ok: true, remotes: [{ name: 'MyPc', state: 'online' }] } });
   assert.equal(pcClosed.status, 'not-ready'); assert.equal(pcClosed.config, undefined);
   // server, one remote PC, tunnel up
   const server = { asideBin: '/home/user/.local/bin/aside', ports: { cdp: null, daemon: null }, localCdp: { ok: false }, isWindows: false };
