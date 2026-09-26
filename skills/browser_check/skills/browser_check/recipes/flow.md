@@ -7,7 +7,7 @@
 2. 준비: 영구 세션(`scripts/session/drv.py`) · 첫 줄로 `kit/head.js` 전송(`K` 가 globalThis 에 남음) · 로그인 앱이면 기록기 v2.1 · `K.prep` · `K.wake`.
 3. 단계마다: `__diag.mark(단계)` → 조작 → 같은 옵션 스냅샷 `diff` → `dump({since})` → 필요하면 `K.img`. 입력 규칙(action.md) 준수. **한 줄 50초 이내**(영구 세션도 60초 절단이면 세션·탭·변수 전부 잃음).
 4. 화면 이동은 SPA 링크 click 또는 `pushState`(회전 없음). 주소는 `K.href`.
-5. 정리: 만든 데이터 삭제(승인 범위) · 흉내 되돌림(폭·미디어·CPU) · `K.safeClose` · `listBrowserTabs()` 에서 자기 탭 0.
+5. 정리: 만든 데이터 삭제(승인 범위) · 흉내 되돌림(폭·미디어·CPU) · `K.safeClose` · `listBrowserTabs()` 에서 자기 탭 0(연 탭의 `targetId` 로 센다).
 
 ## 판정
 단계마다 기대 = 실제 · 오류·실패 요청 0 · 다른 탭 동기화(해당 시).

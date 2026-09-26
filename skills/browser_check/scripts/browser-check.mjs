@@ -16,7 +16,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { load, siteFor } from './lib/config.mjs';
 import { probe, table } from './lib/capabilities.mjs';
@@ -110,7 +110,8 @@ if (cmd === 'run') {
     else if (cfg.mode !== 'remote' && cfg.cdp.local.endpoint) { client = await connectTcp(cfg.cdp.local.endpoint, opts); how = 'C tcp-local'; }
     else if (cfg.cdp.remote.transport === 'tcp' && cfg.cdp.remote.tcpEndpoint) { client = await connectTcp(cfg.cdp.remote.tcpEndpoint, opts); how = 'C tcp (test-only)'; }
     else die('no C transport configured (cdp.remote.socketPath or cdp.local.endpoint)');
-    const mod = await import(resolve(scriptPath));
+    // A bare Windows path ("C:\…") is not a valid ESM specifier; a file:// URL works on every OS
+    const mod = await import(pathToFileURL(resolve(scriptPath)).href);
     if (typeof mod.default !== 'function') die('script must export default async (client, helpers) => result');
     const helpers = {
       outDir,

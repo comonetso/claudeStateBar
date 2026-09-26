@@ -1,7 +1,8 @@
 // Example script for `browser-check.mjs cdp test/cdp-example.mjs --url https://example.com/`.
 // Runs through the policy-gated CdpClient (transport C). No global WebSocket / fetch — works on Node 18+.
-// Exercises: own background target · first-load injection · console/exception/network events · device + media
-// emulation · real right-click · screenshot · cleanup (the entry point disposes every owned target in finally).
+// Exercises: own background target · first-load injection · environment prep (Dark Reader / injected UI) ·
+// console/exception/network events · device + media emulation · real right-click · screenshot · cleanup (the entry
+// point disposes every owned target in finally).
 export default async function (client, h) {
   const url = h.url || 'https://example.com/';
   const R = { browser: client.browser };
@@ -13,6 +14,8 @@ export default async function (client, h) {
   await client.send('Page.navigate', { url }, sessionId); // allowed only because sessionId belongs to a target this run created
   await new Promise((r) => setTimeout(r, 2500));
   R.injectedAt = await client.evaluate(sessionId, 'window.__injected');
+  const prep = await client.prep(sessionId); // detect → warn → lock Dark Reader / hide DeepL etc. before emulation and capture
+  R.prep = { warnings: prep.warnings, darkReaderAfter: prep.after.darkReader };
   await client.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }, sessionId);
   await client.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] }, sessionId);
   R.emulated = await client.evaluate(sessionId, 'JSON.stringify({ w: innerWidth, dark: matchMedia("(prefers-color-scheme: dark)").matches, dpr: devicePixelRatio })');

@@ -8,6 +8,28 @@ import { connect } from './cdp-ws.mjs';
 import { cdpAllowed } from './policy.mjs';
 import { redact } from './redact.mjs';
 
+// The same page-side scan and lock as kit/head.js K.scan / K.prep. Transport C has no repl, so they go over as
+// Runtime.evaluate expressions. Keep the two in step.
+const INJECTED_TEST = "t.startsWith('deepl-') || t === 'aside-inline-menu' || (e.classList && e.classList.contains('bro-field-icon'))";
+const SCAN_JS = `(() => {
+  const inj = [];
+  for (const e of document.querySelectorAll('*')) { const t = e.tagName.toLowerCase(); if (${INJECTED_TEST}) inj.push(t); }
+  return {
+    darkReader: document.documentElement.hasAttribute('data-darkreader-mode') || !!document.querySelector('style.darkreader'),
+    injected: Array.from(new Set(inj)),
+    vis: performance.getEntriesByType('visibility-state').map((x) => x.name + '@' + Math.round(x.startTime)),
+    dpr: devicePixelRatio, iw: innerWidth, ih: innerHeight, cw: document.documentElement.clientWidth, href: location.href,
+  };
+})()`;
+const LOCK_JS = `(async () => {
+  if (!document.querySelector('meta[name="darkreader-lock"]')) { const m = document.createElement('meta'); m.name = 'darkreader-lock'; document.head.appendChild(m); }
+  for (const e of document.querySelectorAll('*')) { const t = e.tagName.toLowerCase(); if (${INJECTED_TEST}) e.style.setProperty('display', 'none', 'important'); }
+  const t0 = Date.now();
+  while (document.documentElement.hasAttribute('data-darkreader-mode') && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 50));
+  return true;
+})()`;
+const WARN_DARK = 'DARK_READER_ON: Dark Reader is active on this site — colours and captures are altered. The owner keeps it OFF on sites under development; report this before trusting any colour/contrast result.';
+
 export class CdpClient {
   /** target: { socketPath } | { host, port } · browserWsPath from /json/version · opts.commandTimeoutMs */
   constructor(ws, opts = {}) {
@@ -17,6 +39,7 @@ export class CdpClient {
     this.listeners = new Map(); // method → Set<fn>
     this.owned = new Set();     // targetIds this run created
     this.sessions = new Map();  // targetId → sessionId
+    this.awake = new Map();     // sessionId → Promise of the capture that painted its current document (see send)
     this.commandTimeoutMs = opts.commandTimeoutMs || 10000;
     this.transport = opts.transport || 'C';
     this.log = opts.log || (() => {});
@@ -55,6 +78,8 @@ export class CdpClient {
       return;
     }
     if (d.method) {
+      // A new top-level document is unpainted again (see send). Both events arrive for script and page navigations.
+      if (d.sessionId && ((d.method === 'Page.frameNavigated' && !(d.params && d.params.frame && d.params.frame.parentId)) || d.method === 'Runtime.executionContextsCleared')) this.awake.delete(d.sessionId);
       const set = this.listeners.get(d.method); const any = this.listeners.get('*');
       const ev = { method: d.method, sessionId: d.sessionId, params: d.params };
       if (set) for (const fn of set) { try { fn(ev); } catch (e) { this.log('listener error ' + e.message); } }
@@ -69,6 +94,34 @@ export class CdpClient {
     const ownSession = sessionId !== undefined && [...this.sessions.values()].includes(sessionId);
     const gate = (method === 'Page.navigate' || method === 'Page.close') && this.transport === 'C' && ownSession ? { ok: true } : cdpAllowed(method, this.transport, params, this.owned);
     if (!gate.ok) return Promise.reject(new Error('policy: ' + gate.why + ' (' + method + ')'));
+    if (this.closed) return Promise.reject(new Error('cdp connection closed'));
+    if (sessionId !== undefined) {
+      // Our targets are background tabs, and one that has never painted drops mouse and key input without an error.
+      // Measured 2026-09-26 (Windows, Chrome 153): clicks and keyDown were lost until one capture, insertText and
+      // mouseMoved got through; one capture (70–90 ms) painted it, and that held across emulation changes and 8 s idle
+      // but not across a navigation. So input waits for one capture per document; later input reuses it, in order.
+      if (method === 'Page.navigate' || method === 'Page.reload') this.awake.delete(sessionId);
+      if (/^Input\.dispatch(Mouse|Key|Touch|Drag)Event$/.test(method)) {
+        if (!this.awake.has(sessionId)) this._markAwake(sessionId, this._dispatch('Page.captureScreenshot', { format: 'jpeg', quality: 1 }, sessionId));
+        // If the capture failed (one timed out once in the 2026-09-26 runs), sending would be dropped silently — fail loudly.
+        return this.awake.get(sessionId).then((painted) => painted ? this._dispatch(method, params, sessionId) : Promise.reject(new Error('input not sent: could not paint the background target first (wake capture failed), so the browser would have dropped it — retry')));
+      }
+      if (method === 'Page.captureScreenshot') {
+        const p = this._dispatch(method, params, sessionId);
+        if (!this.awake.has(sessionId)) this._markAwake(sessionId, p);
+        return p;
+      }
+    }
+    return this._dispatch(method, params, sessionId);
+  }
+
+  /** Record that `capture` paints this session's document (resolves true/false). A failed one is forgotten, so the next input retries. */
+  _markAwake(sessionId, capture) {
+    const w = capture.then(() => true, (e) => { if (this.awake.get(sessionId) === w) this.awake.delete(sessionId); this.log('wake capture failed: ' + e.message); return false; });
+    this.awake.set(sessionId, w);
+  }
+
+  _dispatch(method, params, sessionId) {
     if (this.closed) return Promise.reject(new Error('cdp connection closed'));
     const id = ++this.id;
     const msg = { id, method, params, ...(sessionId ? { sessionId } : {}) };
@@ -111,8 +164,29 @@ export class CdpClient {
     const events = [];
     const offs = [];
     const keep = (type, data) => events.push({ ...redact(data), t: Date.now(), type }); // type last so payload keys never override it
-    offs.push(this.on('Runtime.consoleAPICalled', (e) => { if (e.sessionId === sessionId) keep('console', { level: e.params.type, args: (e.params.args || []).map((a) => a.value !== undefined ? a.value : a.description).slice(0, 8), stack: (e.params.stackTrace && e.params.stackTrace.callFrames || []).slice(0, 1).map((f) => f.url + ':' + f.lineNumber) }); }));
-    offs.push(this.on('Runtime.exceptionThrown', (e) => { if (e.sessionId === sessionId) { const d = e.params.exceptionDetails || {}; keep('exception', { text: d.text, description: d.exception && d.exception.description, url: d.url, line: d.lineNumber }); } }));
+    // Extensions run content scripts in isolated worlds of the same page, so their errors arrive with the page's.
+    // Measured 2026-09-26 on example.com: 2 of 3 exceptions came from the DeepL extension. They are kept as
+    // ext-console / ext-exception with the extension's name and stay out of summary().problems. A context created
+    // before record() started is not in the map, so a chrome-extension:// (or chrome://) top frame also counts.
+    const isolated = new Map(); // executionContextId → extension name or origin
+    const extOf = (ctxId, frames) => {
+      if (isolated.has(ctxId)) return isolated.get(ctxId);
+      const u = (frames && frames[0] && frames[0].url) || '';
+      return /^chrome(-extension)?:\/\//.test(u) ? u.split('/').slice(0, 3).join('/') : null;
+    };
+    offs.push(this.on('Runtime.executionContextCreated', (e) => { if (e.sessionId === sessionId) { const c = e.params.context || {}; if (c.auxData && c.auxData.type === 'isolated') isolated.set(c.id, c.name || c.origin); } }));
+    offs.push(this.on('Runtime.consoleAPICalled', (e) => {
+      if (e.sessionId !== sessionId) return;
+      const frames = (e.params.stackTrace && e.params.stackTrace.callFrames) || [];
+      const ext = extOf(e.params.executionContextId, frames);
+      keep(ext ? 'ext-console' : 'console', { ...(ext ? { extension: ext } : {}), level: e.params.type, args: (e.params.args || []).map((a) => a.value !== undefined ? a.value : a.description).slice(0, 8), stack: frames.slice(0, 1).map((f) => f.url + ':' + f.lineNumber) });
+    }));
+    offs.push(this.on('Runtime.exceptionThrown', (e) => {
+      if (e.sessionId !== sessionId) return;
+      const d = e.params.exceptionDetails || {};
+      const ext = extOf(d.executionContextId, d.stackTrace && d.stackTrace.callFrames);
+      keep(ext ? 'ext-exception' : 'exception', { ...(ext ? { extension: ext } : {}), text: d.text, description: d.exception && d.exception.description, url: d.url, line: d.lineNumber });
+    }));
     offs.push(this.on('Log.entryAdded', (e) => { if (e.sessionId === sessionId) keep('log', { level: e.params.entry.level, source: e.params.entry.source, text: e.params.entry.text, url: e.params.entry.url }); }));
     if (network) {
       offs.push(this.on('Network.requestWillBeSent', (e) => { if (e.sessionId === sessionId) keep('request', { id: e.params.requestId, method: e.params.request.method, url: e.params.request.url, resourceType: e.params.type, headers: e.params.request.headers, body: body ? e.params.request.postData : undefined }); }));
@@ -126,6 +200,23 @@ export class CdpClient {
       events: () => events.slice(),
       summary: () => { const c = {}; for (const e of events) c[e.type] = (c[e.type] || 0) + 1; return { counts: c, problems: events.filter((e) => e.type === 'exception' || e.type === 'failed' || (e.type === 'console' && /error|warning/.test(e.level)) || (e.type === 'response' && e.status >= 400)).slice(-30) }; },
     };
+  }
+
+  /**
+   * Environment prep for transport C, in the owner's fixed order (same as kit/head.js K.prep): DETECT → WARN → only
+   * then lock Dark Reader in OUR target and hide injected UI (DeepL, Aside, password-manager icons), so captures show
+   * the page and not the extensions. opts.darkReader: 'must-be-off-warn' (default) | 'tolerate' | 'lock-silently'.
+   * Returns { before, after, warnings[] } — report the warnings; `before.injected` lists what was hidden.
+   */
+  async prep(sessionId, opts = {}) {
+    const mode = opts.darkReader || 'must-be-off-warn';
+    const before = await this.evaluate(sessionId, SCAN_JS);
+    const warnings = [];
+    if (before.darkReader && mode === 'must-be-off-warn') warnings.push(WARN_DARK);
+    if (before.injected.length) warnings.push('INJECTED_UI: ' + before.injected.join(',') + ' (hidden for capture; excluded from axe)');
+    if (mode !== 'tolerate') await this.evaluate(sessionId, LOCK_JS);
+    const after = await this.evaluate(sessionId, SCAN_JS);
+    return { before, after, warnings };
   }
 
   /** Enable the usual domains for a session. */

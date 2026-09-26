@@ -23,11 +23,13 @@ description: 사용자 PC 의 실제 웹 브라우저(Aside/Chromium) 화면을 
 - **금지 입력**: Ctrl+V·Shift+Insert(사용자 실제 클립보드가 붙음) · Ctrl+C·clipboard API · 브라우저 단축키(F5·F11·F12·Ctrl+W…) · `<select>`·date·color·파일 input **클릭**(OS 창) · draggable 요소를 `mouse.*` 로 끌기(OS 끌기) · 다운로드 시험(사용자 다운로드 폴더에 남고 지울 수 없음).
 - **금지 CDP**: `fromSurface:false`(사용자 화면이 찍힘 — 실제 발생) · `Target.*`(C 에서 자기 target 세 동작만 예외) · `Browser.*` · 쿠키/스토리지 · `Fetch.enable` · `Debugger.pause` · `Page.navigate/close`. `K.X` 가 allow-list 로 막는다.
 - **비밀은 읽지도 남기지도 않는다**: 비밀번호 값 금지(길이만) · 모든 출력은 중앙 redactor 를 거친다 · Aside 메모리·설정값·auth 파일 내용 기록 금지.
-- **동시성 1**: 같은 PC 브라우저를 여러 서버·에이전트가 나눠 쓴다. 자기 탭 동시 2개 이하, 끝나면 목록에서 자기 탭 0 확인. `Too many Remote Control RPCs` 면 몇 초 뒤 1회만 재시도.
+- **동시성 1**: 같은 PC 브라우저를 여러 서버·에이전트가 나눠 쓴다. 자기 탭 동시 2개 이하, 끝나면 목록에서 자기 탭 0 확인 — 주소가 아니라 `tab.targetId` 로 센다(같은 주소를 사용자도 열어 둘 수 있다). `Too many Remote Control RPCs` 면 몇 초 뒤 1회만 재시도.
 
 ## 2. 환경 준비 — 모든 판정 앞에
-- `K.prep(tab, {darkReader: site.darkReader})`: **변경 전에 감지** → 경고 → 자기 탭에만 Dark Reader 잠금·주입 UI 숨김. `@@WARN DARK_READER_ON` 이 나오면 **반드시 사용자에게 알린다** — 사용자는 개발 사이트에선 일부러 꺼 두므로 켜져 있으면 색·캡처 판정을 믿을 수 없다.
+- `K.prep(tab, {darkReader: site.darkReader})`: **변경 전에 감지** → 경고 → 자기 탭에만 Dark Reader 잠금·주입 UI 숨김. `@@WARN DARK_READER_ON` 이 나오면 **반드시 사용자에게 알린다** — 사용자는 개발 사이트에선 일부러 꺼 두므로 켜져 있으면 색·캡처 판정을 믿을 수 없다. 통로 C(`browser-check.mjs cdp`)는 `client.prep(sessionId, {darkReader})` — 순서가 같고, 반환된 `warnings` 를 똑같이 알린다.
 - DeepL·Aside 주입 요소(`deepl-*`, `aside-inline-menu`, `bro-*`)는 숨기고 결과에 `detected` 로 남긴다. axe 는 `exclude`.
+- 통로 C 녹화(`client.record`)에서 **확장 프로그램이 낸 오류**는 `ext-exception`·`ext-console`(확장 이름 포함)로 따로 남고 `summary().problems` 에서 빠진다. 페이지 오류로 보고하지 마라(example.com 실측: 예외 3건 중 2건이 DeepL 확장).
+- 통로 C 의 자기 탭은 보이지 않는 탭이라, 한 번도 그려지지 않은 문서는 **클릭·키 입력을 오류 없이 버린다**(실측: 캡처 1장 전 왼쪽·오른쪽 클릭 0회). 클라이언트가 문서마다 첫 `Input.dispatch*` 전에 캡처 1장으로 자동으로 깨운다(70~550ms, 페이지 이동 뒤엔 다시). 깨우기에 실패하면 입력을 보내지 않고 `input not sent` 오류를 낸다 — 다시 시도한다.
 - 측정·색·애니메이션을 볼 때는 `K.wake`(에이전트 탭은 초당 2~4프레임으로 스로틀 — 캡처 1장이 풀고, 이동하면 다시 걸림).
 - 통로는 doctor 결과대로 자동 선택 — snapshot/조작=A · 명령형 CDP(첫 로딩 주입·기기 폭·다크모드·CSS 캐스케이드·AX 트리)=B(`K.hasX` 확인) · 이벤트·백그라운드 탭·긴 작업=C. 선택 이유와 fallback 을 보고한다. **같은 조작을 두 통로로 자동 재시도하지 않는다.**
 
@@ -44,7 +46,7 @@ description: 사용자 PC 의 실제 웹 브라우저(Aside/Chromium) 화면을 
 | 실시간 동기화 · 두 탭 | `realtime.md` |
 | 로그인 풀렸어 | `login-incident.md`(🔴 새 탭을 열지 마라 — 증거가 바뀐다) |
 | 전체 흐름 시험 | `flow.md` |
-호출 형태: 1회성은 `scripts/browser-check.mjs run <본문.js> --url <주소>`(공통 머리 자동 결합·50초 가드·잠금·@@IMG 저장·가림). 여러 단계·로그인 앱은 영구 세션 구동기 `scripts/session/drv.py`(한 줄 = 한 실행, 줄마다 50초 이내, `ASIDE_BIN`·`ASIDE_HOST` 환경변수는 설정에서).
+호출 형태: 1회성은 `scripts/browser-check.mjs run <본문.js> --url <주소>`(공통 머리 자동 결합·50초 가드·잠금·@@IMG 저장·가림). 여러 단계·로그인 앱은 영구 세션 구동기 `scripts/session/drv.py`(한 줄 = 한 실행, 줄마다 50초 이내, `ASIDE_BIN`·`ASIDE_HOST` 환경변수는 설정에서). 파이썬 스크립트(`drv.py`·`image/*.py`)는 doctor 가 찾은 명령(`pythonCmd` — 예: `python3`, Windows 는 `py -3`)으로 실행한다. 없으면 그 기능만 빠진다.
 
 ## 4. Asidewright 함정 — "된다"고 믿기 전에
 자동 대기 없음(없으면 1ms 에 실패, `waitFor` 기본 3초) · strict 없음(여러 개면 첫 것) · `page.url()` 은 SPA 이동 미반영(`K.href`) · `reload()` 는 load 전 반환 · `waitForLoadState` 는 요청 0 을 보장 못 함 · `clip` 원점 무시·`fullPage` 첫 화면 반복·`locator.screenshot` 불가(전체 캡처 후 서버 `image/crop.py`·`stitch.py`) · 정규식 인자는 오류 없이 0건 · `keyboard.press('Space')` 는 key 빈 문자열(CDP `Input.dispatchKeyEvent`) · `locator.hover` 는 mouse 위치를 안 옮김 · `dragTo` 는 drop 2번 · 오른쪽 클릭 정석 `page.mouse.click(x,y,{button:'right'})` · `page.evaluate` 만 main world(locator.evaluate 는 격리 세계) · Resource Timing 250 상한(`setResourceTimingBufferSize`) · 코드 어디든 `import(`·`require(` 모양이 있으면 실행 전 거절.

@@ -42,7 +42,8 @@ try {
 
   const st = lstatSync(configPath);
   if (st.isSymbolicLink()) notes.push('설정 파일이 심볼릭 링크입니다 (거부)');
-  if ((st.mode & 0o077) !== 0) notes.push('설정 파일 권한이 0600 이 아닙니다');
+  // No POSIX mode bits on Windows (always reads 0o666) — skipped there, same as scripts/lib/config.mjs
+  if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) notes.push('설정 파일 권한이 0600 이 아닙니다');
 
   let cfg = null;
   try {

@@ -74,7 +74,12 @@ export async function probe(config) {
   const t = config.cdp.connectTimeoutMs || 1000;
 
   // 2. runtime capabilities (no side effects)
-  try { const { stdout } = await execFileP('python3', ['-c', 'import PIL,sys;print(PIL.__version__)'], { timeout: 3000 }); out.python = true; out.pillow = stdout.trim(); } catch { out.python = false; out.pillow = null; }
+  // Windows usually has `python` or the `py` launcher rather than `python3`. The first name that imports Pillow wins;
+  // pythonCmd tells the caller which command to run scripts/image/*.py with.
+  out.python = false; out.pillow = null; out.pythonCmd = null;
+  for (const cmd of [['python3'], ['python'], ['py', '-3']]) {
+    try { const { stdout } = await execFileP(cmd[0], [...cmd.slice(1), '-c', 'import PIL,sys;print(PIL.__version__)'], { timeout: 3000 }); out.python = true; out.pillow = stdout.trim(); out.pythonCmd = cmd.join(' '); break; } catch { /* try the next name */ }
+  }
 
   // 3. local browser (only meaningful when mode is local/auto and we are on the browser machine)
   out.cdpLocal = { ok: false, reason: 'not configured' };
@@ -117,7 +122,7 @@ export async function probe(config) {
 export function table(p) {
   const row = (cap, r) => `${cap.padEnd(12)} ${r.ok ? 'ok ' : 'NO '} ${r.ok ? Object.entries(r).filter(([k]) => k !== 'ok').map(([k, v]) => k + '=' + v).join(' ') : (r.reason || '')}`;
   return [
-    `platform     ${p.platform} node=${p.node} python=${p.python} pillow=${p.pillow || '-'}`,
+    `platform     ${p.platform} node=${p.node} python=${p.pythonCmd || false} pillow=${p.pillow || '-'}`,
     row('cdp.local', p.cdpLocal), row('daemon.local', p.daemonLocal), row('cdp.remote', p.cdpRemote), row('aside', p.aside),
     `transports   A=${p.transports.A} B=${p.transports.B} C=${p.transports.C}  → mode=${p.mode} chosen=${p.chosen}`,
     ...p.reasons.map((r) => '!  ' + r),

@@ -78,6 +78,18 @@ test('cdp client: policy gate, ownership, response/event routing, timeout', asyn
   assert.equal(ev[1].url, 'https://h/a?ticket=***'); assert.equal(ev[1].headers['set-cookie'], '***'); assert.equal(ev[1].headers.server, 'nginx');
   assert.equal(rec.summary().problems.length, 2);
   rec.stop();
+  // extension errors: by isolated execution context, or by a chrome-extension:// top frame; kept, but not problems
+  const rec2 = c.record('S1');
+  ws.emit('message', JSON.stringify({ method: 'Runtime.executionContextCreated', sessionId: 'S1', params: { context: { id: 13, origin: 'chrome-extension://abc', name: 'SomeExt', auxData: { type: 'isolated' } } } }));
+  ws.emit('message', JSON.stringify({ method: 'Runtime.exceptionThrown', sessionId: 'S1', params: { exceptionDetails: { executionContextId: 13, text: 'Uncaught (in promise)' } } }));
+  ws.emit('message', JSON.stringify({ method: 'Runtime.exceptionThrown', sessionId: 'S1', params: { exceptionDetails: { executionContextId: 99, text: 'x', stackTrace: { callFrames: [{ url: 'chrome-extension://def/build/content.js' }] } } } }));
+  ws.emit('message', JSON.stringify({ method: 'Runtime.consoleAPICalled', sessionId: 'S1', params: { type: 'error', executionContextId: 13, args: [{ value: 'ext says' }] } }));
+  ws.emit('message', JSON.stringify({ method: 'Runtime.exceptionThrown', sessionId: 'S1', params: { exceptionDetails: { executionContextId: 3, text: 'page error' } } }));
+  const ev2 = rec2.events();
+  assert.deepEqual(ev2.map((e) => e.type), ['ext-exception', 'ext-exception', 'ext-console', 'exception']);
+  assert.equal(ev2[0].extension, 'SomeExt'); assert.equal(ev2[1].extension, 'chrome-extension://def');
+  assert.deepEqual(rec2.summary().problems.map((e) => e.text), ['page error']);
+  rec2.stop();
   // timeout
   await assert.rejects(c.send('Runtime.evaluate', { expression: '2' }, 'S1'), /timeout/);
   // closeTarget only for owned; dispose closes and clears
@@ -85,6 +97,52 @@ test('cdp client: policy gate, ownership, response/event routing, timeout', asyn
   const m5 = ws.sent.find((m) => m.method === 'Target.closeTarget'); assert.equal(m5.params.targetId, 'T1');
   ws.emit('message', JSON.stringify({ id: m5.id, result: {} }));
   await d; assert.equal(c.owned.size, 0); assert.equal(c.closed, true);
+});
+
+// Replies to every command on the next tick; failCaptures = how many Page.captureScreenshot replies are errors.
+function autoWs(failCaptures = 0) {
+  const em = fakeWs();
+  em.send = (t) => {
+    const m = JSON.parse(t); em.sent.push(m);
+    const fail = m.method === 'Page.captureScreenshot' && failCaptures-- > 0;
+    setImmediate(() => em.emit('message', JSON.stringify(fail ? { id: m.id, error: { message: 'capture failed' } } : { id: m.id, result: {} })));
+  };
+  return em;
+}
+
+test('cdp client: input on a background target waits for one capture per document, in order', async () => {
+  const ws = autoWs();
+  const c = new CdpClient(ws, { commandTimeoutMs: 500, transport: 'C' });
+  c.sessions.set('T1', 'S1'); c.owned.add('T1');
+  const methods = () => ws.sent.map((m) => m.method === 'Input.dispatchMouseEvent' ? m.params.type : m.method);
+  await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1, y: 1, button: 'right' }, 'S1');
+  await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1, y: 1, button: 'right' }, 'S1');
+  assert.deepEqual(methods(), ['Page.captureScreenshot', 'mousePressed', 'mouseReleased']);
+  // sent without awaiting in between: still one capture per document and still in order
+  ws.sent.length = 0;
+  ws.emit('message', JSON.stringify({ method: 'Page.frameNavigated', sessionId: 'S1', params: { frame: { id: 'f', url: 'https://x/' } } }));
+  await Promise.all([c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1, y: 1 }, 'S1'), c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1, y: 1 }, 'S1'), c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a' }, 'S1')]);
+  assert.deepEqual(methods(), ['Page.captureScreenshot', 'mousePressed', 'mouseReleased', 'Input.dispatchKeyEvent']);
+  // an iframe navigation does not unpaint the page; a navigation we send does; a capture of our own counts as a wake
+  ws.sent.length = 0;
+  ws.emit('message', JSON.stringify({ method: 'Page.frameNavigated', sessionId: 'S1', params: { frame: { id: 'c', parentId: 'f', url: 'https://x/i' } } }));
+  await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'b' }, 'S1');
+  assert.deepEqual(methods(), ['Input.dispatchKeyEvent']);
+  await c.send('Page.navigate', { url: 'https://x/2' }, 'S1');
+  await c.send('Page.captureScreenshot', { format: 'png' }, 'S1');
+  await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 2, y: 2 }, 'S1');
+  assert.deepEqual(methods(), ['Input.dispatchKeyEvent', 'Page.navigate', 'Page.captureScreenshot', 'mouseMoved']);
+  // insertText is not dropped (measured) and browser-level commands have no session: no capture
+  ws.sent.length = 0;
+  ws.emit('message', JSON.stringify({ method: 'Runtime.executionContextsCleared', sessionId: 'S1', params: {} }));
+  await c.send('Input.insertText', { text: 'x' }, 'S1');
+  assert.deepEqual(methods(), ['Input.insertText']);
+  // a failed wake capture: that input is refused (not sent to be dropped silently), and the next input tries again
+  const ws2 = autoWs(1);
+  const c2 = new CdpClient(ws2, { commandTimeoutMs: 500, transport: 'C' });
+  await assert.rejects(c2.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a' }, 'S9'), /input not sent/);
+  await c2.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a' }, 'S9');
+  assert.deepEqual(ws2.sent.map((m) => m.method), ['Page.captureScreenshot', 'Page.captureScreenshot', 'Input.dispatchKeyEvent']);
 });
 
 test('cdp-tcp: loopback only · cdp-unix: socket checks', () => {

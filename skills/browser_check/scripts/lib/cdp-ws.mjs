@@ -118,7 +118,9 @@ export function connect(target, wsPath, { timeoutMs = 3000, hostHeader = '127.0.
         else if (f.opcode === 8) { closed = true; try { sock.write(encodeFrame(8, f.payload)); } catch { /* peer already gone */ } sock.end(); }
       }
     }
-    sock.on('error', (e) => { if (!upgraded) { clearTimeout(timer); reject(e); } else em.emit('error', e); });
+    // After we (or the peer) started closing, the browser often resets the socket (ECONNRESET). That is the normal end
+    // of a session, not a failure, so it is not reported.
+    sock.on('error', (e) => { if (!upgraded) { clearTimeout(timer); reject(e); } else if (!closed) em.emit('error', e); });
     sock.on('close', () => { closed = true; em.emit('close'); });
     em.send = (text) => { if (closed) throw new Error('ws closed'); sock.write(encodeFrame(1, text)); };
     em.close = () => { if (closed) return; closed = true; try { sock.write(encodeFrame(8, Buffer.from([0x03, 0xe8]))); } catch { /* ignore */ } setTimeout(() => sock.destroy(), 200); };

@@ -5,7 +5,7 @@
 ## 콘솔 에러
 1. **로그인 없는 사이트**: `openTab` → `K.X(tab,'Page.addScriptToEvaluateOnNewDocument',{source: DIAG_V21})` → `reload()` → (사용자가 말한 조작) → `page.evaluate(() => __diag.dump({types:['error','rejection','resource-error','resource-status','csp','ws-error','worker-error','sse-error','console']}))`.
    🔴 `summary().problems` 는 잘린다 — 개수(`problemCount`·`truncated`)만 보고 내용은 `dump`.
-2. **로그인 앱**: Vite 기록기(v2.1)가 첫 로딩부터 깔려 있는 개발 서버면 탭을 연 뒤 `dump`. 없으면 (조립·미실측) 앱 없는 같은 출처 주소를 먼저 열고 → 주입 → `goto(앱)` 로 회전 1번에 첫 로딩부터. C 통로가 있으면 `Runtime.consoleAPICalled`·`exceptionThrown` 이벤트를 직접 받는다.
+2. **로그인 앱**: Vite 기록기(v2.1)가 첫 로딩부터 깔려 있는 개발 서버면 탭을 연 뒤 `dump`. 없으면 (조립·미실측) 앱 없는 같은 출처 주소를 먼저 열고 → 주입 → `goto(앱)` 로 회전 1번에 첫 로딩부터. C 통로가 있으면 `Runtime.consoleAPICalled`·`exceptionThrown` 이벤트를 직접 받는다. 확장 프로그램이 낸 것은 `ext-console`·`ext-exception` 으로 따로 온다 — 페이지 오류가 아니다.
 3. **운영(기록기 없음)**: 사후 회수 — `new ReportingObserver(cb,{buffered:true})`(사용 중단·CSP) + resource 실패 + 이후 조작분은 `page.evaluate` 로 console/error/unhandledrejection 감싸기.
 4. 오류를 일부러 내야 하면 **인라인 `<script>`** 로(evaluate 발 거절은 안 잡힘).
 5. 구간 표시: 조작 전 `__diag.mark('단계')` → `dump({since})`.

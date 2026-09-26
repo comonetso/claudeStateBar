@@ -112,9 +112,13 @@ export function load() {
   try {
     const st = lstatSync(p);
     if (st.isSymbolicLink()) errors.push('config is a symlink (refused)');
-    if ((st.mode & 0o077) !== 0) errors.push('config mode must be 0600');
-    const pst = lstatSync(dirname(p));
-    if ((pst.mode & 0o077) !== 0) errors.push('config parent dir mode must be 0700');
+    // Windows has no POSIX mode bits: Node reports 0o666 whatever the ACL says, so this check could only ever fail
+    // there and the plugin never ran on a PC. Owner decision (2026-09-26): skip it on Windows; POSIX keeps it.
+    if (process.platform !== 'win32') {
+      if ((st.mode & 0o077) !== 0) errors.push('config mode must be 0600');
+      const pst = lstatSync(dirname(p));
+      if ((pst.mode & 0o077) !== 0) errors.push('config parent dir mode must be 0700');
+    }
   } catch (e) { errors.push('stat failed: ' + e.message); }
   let raw;
   try { raw = JSON.parse(readFileSync(p, 'utf8')); } catch (e) { return { ok: false, path: p, errors: [...errors, 'JSON parse: ' + e.message] }; }
