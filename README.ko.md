@@ -213,7 +213,7 @@ Claude Code가 막힌 문제를 Codex에 넘겨 2차 의견을 받는 동안, Co
 
 동작하려면 Claude Code용 [`codex_rescue`](skills/codex_rescue/) 스킬이 필요합니다. 확장에는 포함돼 있지 않습니다 — 워크스페이스에 쓰기 권한을 가진 `codex exec`를 실행하는 도구라, 상태바 확장을 깔았다고 따라와서는 안 되는 물건입니다. 설치 방법과 사용법은 [가이드](docs/codex-rescue-guide.ko.md)([English](docs/codex-rescue-guide.md))에 있습니다.
 
-1.16.0부터 이 스킬은 Claude Code 플러그인으로도 설치할 수 있고, 이 방법을 권합니다. Claude Code 안에서 `/plugin marketplace add comonetso/claudeStateBar` 를 실행한 뒤 `/plugin install codex-rescue@comonetso` 를 실행하면 됩니다. 확장은 두 설치 방식을 모두 알아봅니다. 예전에 `~/.claude/skills/codex_rescue/` 로 복사해 두셨다면 그 사본은 계속 동작하지만 업데이트가 자동으로 오지 않습니다. 그래서 창을 열 때마다 플러그인 전환을 권하는 알림이 뜨며, "다시 보지 않기"를 누르면 멈춥니다. 플러그인을 설치하고 나면 같은 알림에서 옛 사본을 휴지통으로 옮길 수 있습니다. Anthropic 공식 마켓이 아닌 마켓은 자동 업데이트가 기본으로 꺼져 있습니다. 그래서 확장이 창이 가리키는 곳(로컬 창이면 이 PC, Remote-SSH 창이면 그 서버)에서 `comonetso` 자동 업데이트가 켜져 있는지 확인합니다. 꺼져 있으면 알림에서 **켜기**를 누르면 됩니다. 그곳의 `~/.claude/settings.json` 을 백업한 뒤 `"autoUpdate": true` 를 넣습니다(마켓 항목이 없으면 새로 만듭니다). **여기서 다시 보지 않기**는 곳마다 따로 기억합니다. 꺼져 있는 동안에는 세션 메뉴의 Codex 구역에도 같은 동작을 하는 항목이 있습니다. Claude Code를 다시 시작하면 적용됩니다. 이 설정은 마켓 단위라서, 아래의 peer_req 만 설치해도 같은 알림이 뜨고 두 플러그인이 함께 최신으로 유지됩니다.
+1.16.0부터 이 스킬은 Claude Code 플러그인으로도 설치할 수 있고, 이 방법을 권합니다. Claude Code 안에서 `/plugin marketplace add comonetso/claudeStateBar` 를 실행한 뒤 `/plugin install codex-rescue@comonetso` 를 실행하면 됩니다. 확장은 두 설치 방식을 모두 알아봅니다. 예전에 `~/.claude/skills/codex_rescue/` 로 복사해 두셨다면 그 사본은 계속 동작하지만 업데이트가 자동으로 오지 않습니다. 그래서 창을 열 때마다 플러그인 전환을 권하는 알림이 뜨며, "다시 보지 않기"를 누르면 멈춥니다. 플러그인을 설치하고 나면 같은 알림에서 옛 사본을 휴지통으로 옮길 수 있습니다. Anthropic 공식 마켓이 아닌 마켓은 자동 업데이트가 기본으로 꺼져 있습니다. 그래서 확장이 창이 가리키는 곳(로컬 창이면 이 PC, Remote-SSH 창이면 그 서버)에서 `comonetso` 자동 업데이트가 켜져 있는지 확인합니다. 꺼져 있으면 알림에서 **켜기**를 누르면 됩니다. 그곳의 `~/.claude/settings.json` 을 백업한 뒤 `"autoUpdate": true` 를 넣습니다(마켓 항목이 없으면 새로 만듭니다). **여기서 다시 보지 않기**는 곳마다 따로 기억합니다. 꺼져 있는 동안에는 세션 메뉴의 Codex 구역에도 같은 동작을 하는 항목이 있습니다. Claude Code를 다시 시작하면 적용됩니다. 이 설정은 마켓 단위라서, 아래의 peer_req 나 browser_check 만 설치해도 같은 알림이 뜨고 세 플러그인이 함께 최신으로 유지됩니다.
 
 스킬이 설치돼 있으면 상태바 메뉴와 `claudeStateBar: Show Codex Runs`로 열립니다. 실행 한 건이 카드 하나입니다:
 
@@ -325,6 +325,12 @@ Remote‑SSH에서도 동작합니다. 실행 기록은 `vscode.workspace.fs`로
 이 레포에서 함께 배포하는 별도의 Claude Code 플러그인이며, 확장 기능은 아닙니다. 열려 있는 세션끼리 — 같은 PC의 두 저장소든, PC와 서버든, 서버와 서버든 — 직접 묻고 알리게 해 줍니다. 요청마다 번호·접수 확인·양쪽 기록이 붙어서 "보냈다" 와 "읽었다" 를 헷갈리지 않고, 같은 요청을 두 번 실행하지도 않습니다. 상대 세션이 열려 있지 않으면 여쭌 뒤 그 저장소에서 무인으로 처리할 수도 있습니다.
 
 **짝을 맺을 모든 세션에서 Remote Control 이 켜져 있어야 합니다.** 다른 머신의 세션은 그것으로만 닿습니다. 설치는 `/plugin marketplace add comonetso/claudeStateBar` 후 `/plugin install peer-req@comonetso` 이고, 설정·주소록·Remote Control 켜는 법은 [peer_req README](skills/peer_req/README.ko.md) ([English](skills/peer_req/README.md))에 있습니다. 확장의 자동 업데이트 알림(위 codex_rescue 절)이 이 플러그인에도 적용됩니다.
+
+## 🔍 browser_check — Claude가 실제 브라우저를 직접 확인 (플러그인)
+
+이 레포에서 함께 배포하는 세 번째 플러그인이며, 이것도 확장 기능은 아닙니다. 서버 로그와 소스만 보고 "시험 통과"라고 보고하는 대신, Claude Code가 사용자의 실제 브라우저(Chromium 기반인 Aside)를 열어 화면, 콘솔 오류, 실패한 요청, CSS, 반응형·다크 화면, 접근성, 성능을 직접 확인합니다. 서버 세션이 PC의 브라우저를 원격으로 다룰 수도 있고, PC에서 바로 돌 수도 있습니다. "화면 확인해 봐", "콘솔 에러 봐" 같은 한국어 말로 시작합니다.
+
+Claude와 브라우저 사이에는 정책층이 있습니다. 자기가 연 탭에서만 작업하고, 데이터 변경은 그 변경 하나를 승인받았을 때만 하며, 비밀 값은 읽지도 남기지도 않습니다. 다른 머신의 브라우저를 다루려면 Aside Pro의 원격 호스트나 PC에서 서버로 여는 SSH 터널이 필요합니다. 설치는 `/plugin install browser-check@comonetso` 이고, 비공개 설정 파일·터널·전체 안전 규칙은 [browser_check README](skills/browser_check/README.ko.md) ([English](skills/browser_check/README.md))에 있습니다. 아직 초기 버전(0.1.0)이라 PC 안에서만 도는 경로와 실제 SSH 터널은 실측 전입니다. 확장의 자동 업데이트 알림이 이 플러그인에도 적용됩니다.
 
 ## 🎚️ Effort 레벨 표시
 

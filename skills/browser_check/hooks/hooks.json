@@ -1,0 +1,16 @@
+{
+  "description": "browser-check: validate the private runtime config and local file/socket permissions on session start — stat-only, never contacts the browser, Aside, or the network",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

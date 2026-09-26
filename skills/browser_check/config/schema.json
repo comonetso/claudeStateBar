@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "browser-check/config/schema.json",
+  "title": "browser-check private runtime config",
+  "description": "Lives OUTSIDE the public plugin: ${CLAUDE_PLUGIN_DATA}/config.json (0600, parent 0700) or the path in BROWSER_CHECK_CONFIG. Holds every machine-specific value (host names, absolute paths, ports, socket paths, site classifications). Unknown keys are rejected so a typo cannot silently disable a policy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "mode"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "mode": {
+      "type": "string",
+      "enum": ["auto", "local", "remote"],
+      "description": "auto = probe capabilities in the documented order; local = this machine runs the browser; remote = the browser is on another machine reached via Aside remote host and/or SSH-tunneled CDP"
+    },
+    "aside": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "bin": { "type": "string", "description": "absolute path of the aside CLI (non-interactive shells may not have it on PATH)" },
+        "remoteHost": { "type": "string", "description": "Aside remote host device name or remote:<id>; omit in local mode" },
+        "maxConcurrent": { "type": "integer", "minimum": 1, "maximum": 4, "default": 1, "description": "single-flight by default: CLI auth refresh has no lock and the relay rate-limits per account" },
+        "evaluateTimeoutMs": { "type": "integer", "minimum": 1000, "maximum": 30000, "default": 25000, "description": "one page.evaluate ≤ ~30 s (CDP timeout inside the daemon)" },
+        "callTimeoutMs": { "type": "integer", "minimum": 5000, "maximum": 55000, "default": 50000, "description": "one remote repl call ≤ ~60 s or the whole output is lost" }
+      }
+    },
+    "cdp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "remote": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "transport": { "type": "string", "enum": ["unix", "tcp"], "default": "unix" },
+            "socketPath": { "type": "string", "description": "absolute path of the reverse-forwarded Unix socket (0600, parent 0700)" },
+            "tcpEndpoint": { "type": "string", "description": "http://127.0.0.1:<port> — test-only; every local process can reach a TCP listener" }
+          }
+        },
+        "local": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": { "type": "string", "description": "http://127.0.0.1:<remote-debugging-port> of the local Aside/Chromium" },
+            "daemonEndpoint": { "type": "string", "description": "http://127.0.0.1:<aside-daemon-port> — probed for a health line only" }
+          }
+        },
+        "policyProfile": { "type": "string", "enum": ["safe-v1"], "default": "safe-v1" },
+        "connectTimeoutMs": { "type": "integer", "minimum": 200, "maximum": 10000, "default": 1000 },
+        "commandTimeoutMs": { "type": "integer", "minimum": 1000, "maximum": 60000, "default": 10000 }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": { "type": "string", "description": "absolute dir under the plugin data dir; screenshots, dumps, metrics (redacted) go here" },
+        "retentionDays": { "type": "integer", "minimum": 1, "maximum": 90, "default": 7 },
+        "storeRawProtocol": { "type": "boolean", "default": false },
+        "storeScreenshots": { "type": "boolean", "default": true }
+      }
+    },
+    "sites": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["match"],
+        "properties": {
+          "match": { "type": "string", "description": "origin glob, e.g. https://dev.example.invalid:* — matched on normalized origin+path only, never query/hash" },
+          "login": { "type": "string", "enum": ["none", "rotating-refresh", "session-cookie"], "default": "none", "description": "rotating-refresh = closing a tab mid-request can revoke the whole session family" },
+          "diag": { "type": "string", "enum": ["none", "vite-v2.1", "cdp-inject"], "default": "none" },
+          "darkReader": { "type": "string", "enum": ["must-be-off-warn", "tolerate", "lock-silently"], "default": "must-be-off-warn" },
+          "deepL": { "type": "string", "enum": ["hide-and-report", "tolerate"], "default": "hide-and-report" },
+          "allowDataMutation": { "type": "boolean", "default": false },
+          "authPathPrefixes": { "type": "array", "items": { "type": "string" }, "description": "request paths the plugin must never call via repl fetch (login/refresh/logout)" }
+        }
+      }
+    }
+  }
+}

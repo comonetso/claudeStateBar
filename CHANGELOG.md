@@ -40,6 +40,13 @@ window kept open while sessions were started and closed moved more on every refr
 70–220 MB a minute measured over SSH). A conversation whose size and modification time have not
 changed is now read once.
 
+The repository's plugin marketplace (`comonetso`) has a third plugin, `browser_check` (0.1.0). It lets
+Claude Code open the user's real browser (Aside) from a server or the PC and check the screen, console,
+network, CSS, responsive layout, accessibility and performance itself, behind a policy layer. Like the
+other two it is a separate install, not part of the extension; setup is in
+`skills/browser_check/README.md`. The auto-update notice now recognises it as well, so it also appears
+when browser_check is the only plugin from the marketplace on that machine.
+
 ## [1.17.0] - 2026-09-22
 
 A background task panel lists, for the sessions on the status bar, the commands and monitors Claude

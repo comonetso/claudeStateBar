@@ -12,6 +12,11 @@
       "name": "peer-req",
       "source": "./skills/peer_req",
       "description": "Let open Claude Code sessions ask and notify each other across repositories and machines over Remote Control, with IDs, acknowledgements and records."
+    },
+    {
+      "name": "browser-check",
+      "source": "./skills/browser_check",
+      "description": "Let Claude look at, click through and diagnose your real browser (Aside/Chromium) from a server or the PC, behind a policy layer."
     }
   ]
 }
