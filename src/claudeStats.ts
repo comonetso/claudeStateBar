@@ -92,64 +92,74 @@ export interface ClaudeStatsResult {
 
 // ── API price list ──────────────────────────────────────────────────────────
 //
-// USD per 1M tokens, first-party Anthropic API rates (source: the bundled
-// claude-api reference, priced 2026-06-24). These convert token counts into
-// "what this would have cost on the API".
+// USD per 1M tokens, first-party Anthropic API rates, copied from the official price table
+// (platform.claude.com/docs/en/about-claude/pricing, read 2026-09-30). These convert token counts
+// into "what this would have cost on the API".
 //
 // On a subscription nothing here is billed — Claude Code's own cost-state record
 // writes totalCostUSD: 0 for exactly that reason. The panel labels the number as
 // a conversion so it is never mistaken for an invoice.
 //
-// Cache rates follow the documented multipliers: a cache write costs ~1.25x the
-// input rate, a cache read ~0.1x. Fable is the exception — its cache reads are
-// documented at a flat $0.25/MTok rather than a tenth of its $10 input rate.
+// Only the versions listed are priced (user's call, 2026-09-30). The table used to say "Opus 4 and
+// later at $5 / $25", which priced Opus 5.5 — $4 / $20 — 25% too high and Opus 4 / 4.1 — $15 / $75 —
+// at a third. An id that matches nothing is reported rather than guessed (see hasUnknownRate), the
+// same distinction Claude Code draws with its hasUnknownModelCost flag.
 //
-// An id that matches nothing is reported rather than guessed (see hasUnknownRate),
-// the same distinction Claude Code draws with its hasUnknownModelCost flag.
+// Cache writes have two rates: 1.25x input for the 5-minute TTL, 2x for the 1-hour TTL. Claude Code
+// writes almost everything with the 1-hour TTL (99.76% of cache-write tokens on the maintainer's PC
+// over 30 days, measured 2026-09-30). A conversation log names the TTL per request
+// (`usage.cache_creation`); where it does not — Claude Code's stats cache keeps only a total — the
+// write is priced at the 1-hour rate (user's call, 2026-09-30). The old code priced every write at
+// 1.25x. Cache reads are 0.1x input except Fable / Mythos 5.1 (0.025x) and Opus 5.5 (0.05x).
 interface ModelRate {
     input: number;
     output: number;
-    cacheWrite: number;
+    cacheWrite5m: number;
+    cacheWrite1h: number;
     cacheRead: number;
 }
 
-const RATE_TABLE: { test: (m: string) => boolean; rate: ModelRate }[] = [
-    // Fable / Mythos — $10 / $50, cache read documented flat at $0.25
-    {
-        test: m => m.includes('fable') || m.includes('mythos'),
-        rate: { input: 10, output: 50, cacheWrite: 12.5, cacheRead: 0.25 }
+/** Arguments in the price table's column order: input · 5m write · 1h write · cache hit · output. */
+const R = (input: number, cacheWrite5m: number, cacheWrite1h: number, cacheRead: number, output: number): ModelRate =>
+    ({ input, output, cacheWrite5m, cacheWrite1h, cacheRead });
+
+/** family → "major.minor" → rate. `claude-opus-4-20250514` is Opus 4.0 (a release date is not a version). */
+const RATES: Record<string, Record<string, ModelRate>> = {
+    fable:  { '5.1': R(10, 12.5, 20, 0.25, 50), '5.0': R(10, 12.5, 20, 1, 50) },
+    mythos: { '5.1': R(10, 12.5, 20, 0.25, 50), '5.0': R(10, 12.5, 20, 1, 50) },
+    opus: {
+        '5.5': R(4, 5, 8, 0.2, 20),
+        '5.0': R(5, 6.25, 10, 0.5, 25), '4.8': R(5, 6.25, 10, 0.5, 25), '4.7': R(5, 6.25, 10, 0.5, 25),
+        '4.6': R(5, 6.25, 10, 0.5, 25), '4.5': R(5, 6.25, 10, 0.5, 25),
+        '4.1': R(15, 18.75, 30, 1.5, 75), '4.0': R(15, 18.75, 30, 1.5, 75),
     },
-    // Opus 4 and later — $5 / $25
-    {
-        test: m => { const v = m.match(/opus[-_]?(\d{1,2})(?!\d)/); return !!v && parseInt(v[1], 10) >= 4; },
-        rate: { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 }
+    sonnet: {
+        '5.5': R(2, 2.5, 4, 0.2, 10), '5.0': R(2, 2.5, 4, 0.2, 10),
+        '4.6': R(3, 3.75, 6, 0.3, 15), '4.5': R(3, 3.75, 6, 0.3, 15), '4.0': R(3, 3.75, 6, 0.3, 15),
     },
-    // Sonnet 5 and later — $2 / $10
-    {
-        test: m => { const v = m.match(/sonnet[-_](\d{1,2})(?!\d)/); return !!v && parseInt(v[1], 10) >= 5; },
-        rate: { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 }
-    },
-    // Sonnet 4.6 — $3 / $15
-    {
-        test: m => /sonnet[-_]4(?!\d)[-_]6(?!\d)/.test(m),
-        rate: { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 }
-    },
-    // Haiku 4.5 — $1 / $5
-    {
-        test: m => { const v = m.match(/haiku[-_](\d{1,2})(?!\d)/); return !!v && parseInt(v[1], 10) >= 4; },
-        rate: { input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 }
-    }
-];
+    haiku: { '4.5': R(1, 1.25, 2, 0.1, 5) },
+};
+/** Haiku 3.5 predates the family-first id (`claude-3-5-haiku-20241022`). */
+const HAIKU_3_5 = R(0.8, 1, 1.6, 0.08, 4);
 
 function rateFor(model: string): ModelRate | null {
     const m = (model || '').toLowerCase();
     if (!m) return null;
-    for (const entry of RATE_TABLE) {
-        try {
-            if (entry.test(m)) return entry.rate;
-        } catch { /* a malformed id just falls through to unknown */ }
+    if (/claude[-_]3[-_]5[-_]haiku/.test(m)) return HAIKU_3_5;
+    for (const family of Object.keys(RATES)) {
+        // Each part is at most two digits followed by a non-digit, so a trailing release date
+        // (claude-sonnet-4-5-20250929) is never read as a minor version.
+        const v = m.match(new RegExp(family + '[-_](\\d{1,2})(?!\\d)(?:[-_](\\d{1,2})(?!\\d))?'));
+        if (!v) continue;
+        return RATES[family][parseInt(v[1], 10) + '.' + (v[2] ? parseInt(v[2], 10) : 0)] || null;
     }
     return null;
+}
+
+/** Cache-write cost of `total` tokens, `fiveMin` of them on the 5-minute TTL and the rest on the 1-hour TTL. */
+function cacheWriteCost(total: number, fiveMin: number, rate: ModelRate): number {
+    const m5 = Math.min(Math.max(fiveMin, 0), total);
+    return (m5 / 1e6) * rate.cacheWrite5m + ((total - m5) / 1e6) * rate.cacheWrite1h;
 }
 
 /** Token counts for one model within a conversation. */
@@ -159,6 +169,8 @@ export interface ModelTokens {
     output: number;
     cacheRead: number;
     cacheWrite: number;
+    /** The part of cacheWrite the log names as 5-minute TTL; the rest is priced as 1-hour. */
+    cacheWrite5m: number;
     costUSD: number;
     /** True when no published rate matched this model id. */
     unknownRate: boolean;
@@ -548,6 +560,9 @@ export function summarizeSession(filePath: string): SessionSummary | null {
                     const outp = u.output_tokens || 0;
                     const cr = u.cache_read_input_tokens || 0;
                     const cw = u.cache_creation_input_tokens || 0;
+                    // Only the 5-minute share is taken from the split; anything unnamed is 1-hour (see RATES).
+                    const cc = u.cache_creation;
+                    const cw5m = cc && typeof cc.ephemeral_5m_input_tokens === 'number' ? cc.ephemeral_5m_input_tokens : 0;
                     out.input += inp;
                     out.output += outp;
                     out.cacheRead += cr;
@@ -558,7 +573,7 @@ export function summarizeSession(filePath: string): SessionSummary | null {
                     if (!bucket) {
                         bucket = {
                             model,
-                            input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+                            input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite5m: 0,
                             costUSD: 0, unknownRate: rateFor(model) === null
                         };
                         perModel.set(model, bucket);
@@ -567,6 +582,7 @@ export function summarizeSession(filePath: string): SessionSummary | null {
                     bucket.output += outp;
                     bucket.cacheRead += cr;
                     bucket.cacheWrite += cw;
+                    bucket.cacheWrite5m += Math.min(cw5m, cw);
                 }
             }
         }
@@ -580,7 +596,7 @@ export function summarizeSession(filePath: string): SessionSummary | null {
             const cIn = (bucket.input / 1e6) * rate.input;
             const cOut = (bucket.output / 1e6) * rate.output;
             const cRead = (bucket.cacheRead / 1e6) * rate.cacheRead;
-            const cWrite = (bucket.cacheWrite / 1e6) * rate.cacheWrite;
+            const cWrite = cacheWriteCost(bucket.cacheWrite, bucket.cacheWrite5m, rate);
             bucket.costUSD = cIn + cOut + cRead + cWrite;
             out.costParts.input += cIn;
             out.costParts.output += cOut;
@@ -654,7 +670,8 @@ export function collectClaudeStats(force = false): ClaudeStatsResult {
                     ((v.inputTokens || 0) / 1e6) * rate.input +
                     ((v.outputTokens || 0) / 1e6) * rate.output +
                     ((v.cacheReadInputTokens || 0) / 1e6) * rate.cacheRead +
-                    ((v.cacheCreationInputTokens || 0) / 1e6) * rate.cacheWrite;
+                    // The stats cache keeps no TTL split — every write is priced as 1-hour (see RATES).
+                    cacheWriteCost(v.cacheCreationInputTokens || 0, 0, rate);
                 stats.costUSD += costUSD;
             }
             shares.push({ model, label: getShortModelName(model, false) || model, tokens, percent: 0, costUSD });

@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.17.1] - 2026-09-22
+## [1.17.1] - 2026-09-30
 
 Sub-agents launched with the Agent tool are now handled the same way as workflows. The orange dot
 lights while one runs, and its tooltip lists each running batch by the name the workflow panel gives
@@ -54,12 +54,31 @@ window kept open while sessions were started and closed moved more on every refr
 70–220 MB a minute measured over SSH). A conversation whose size and modification time have not
 changed is now read once.
 
+The API-rate conversion in Claude Status priced several models wrongly. Opus 5.5 was charged at
+$5/$25 instead of $4/$20 with $0.20 cache reads, Opus 4 and 4.1 at a third of their $15/$75, and
+Fable 5 and Mythos 5 cache reads at the $0.25 that applies only from 5.1 (they are $1); Sonnet 4 and
+4.5 and Haiku 3.5 had no rate at all. Every cache write was charged at the 5-minute rate, 1.25× input,
+though Claude Code writes nearly all of them to the 1-hour cache, which costs 2×. Rates now come from
+the official price list model by model, a session prices each cache write by the cache its log records,
+and the Stats tab, whose totals don't record it, uses the 1-hour rate. A model that isn't on the list,
+such as one released later, now shows as unpriced instead of borrowing an older model's rate. Most
+totals go up; those for Opus 5.5 go down.
+
 The repository's plugin marketplace (`comonetso`) has a third plugin, `browser_check`. It lets
 Claude Code open the user's real browser (Aside) from a server or the PC and check the screen, console,
 network, CSS, responsive layout, accessibility and performance itself, behind a policy layer. Like the
 other two it is a separate install, not part of the extension; setup is in
 `skills/browser_check/README.md`. The auto-update notice now recognises it as well, so it also appears
 when browser_check is the only plugin from the marketplace on that machine.
+
+The three plugins were updated on 2026-09-29 (codex-rescue 1.17.1, peer-req 0.2.3, browser-check
+0.1.4). Their instructions to Claude, and the script output only Claude reads, are now in English;
+Claude still answers in the user's language, and the text people read stays as it was: conversation
+records, response headings, request templates, the first line of a peer message. codex_rescue's
+instructions were split into a short core and per-mode reference files that Claude reads only when it
+needs them, so invoking it loads far less, about 21k tokens for a consultation and 5.6k for help, down
+from about 76k. peer_req's message header was reworded (header version 2); an older install still
+accepts it. Instructions that described things the scripts don't do were corrected on the way.
 
 ## [1.17.0] - 2026-09-22
 

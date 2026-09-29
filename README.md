@@ -439,7 +439,7 @@ Click for menu (hide / restore / settings)
 
 It also puts a price on it. **Cost (API rate)** shows what the conversation's tokens would have cost on the Anthropic API. It is an estimate, not your bill. Hover the figure for the rates and the per-model split. A model whose rate the extension doesn't know is left out of the total and flagged. The Stats tab carries the same conversion for your whole history.
 
-Rates used, per 1M tokens in/out: Opus $5/$25, Sonnet 5 $2/$10, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5, Fable $10/$50. Cache writes cost 1.25× the input rate and cache reads 0.1× (Fable's cache reads are a flat $0.25).
+Rates used are the official price list, per 1M tokens in/out: Opus 5.5 $4/$20, Opus 4.5 to 5 $5/$25, Opus 4 and 4.1 $15/$75, Sonnet 5 and 5.5 $2/$10, Sonnet 4 to 4.6 $3/$15, Haiku 4.5 $1/$5, Haiku 3.5 $0.80/$4, Fable and Mythos 5 and 5.1 $10/$50. A cache write costs 1.25× the input rate on the 5-minute cache and 2× on the 1-hour cache, which is the one Claude Code nearly always uses; a conversation's log says which one each request used. The Stats tab reads Claude Code's own totals, which don't make that split, so it prices every cache write at the 1-hour rate. A cache read costs 0.1× the input rate, except on Opus 5.5 (0.05×) and on Fable and Mythos 5.1 (0.025×). A model that isn't on the list, including one released after this version, is left out of the total rather than priced by guess.
 
 Each token figure shows its share of the amount beside it.
 

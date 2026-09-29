@@ -476,7 +476,7 @@ const EN: Dict = {
     'cs.sess.api': 'API time',
     'cs.sess.apiHint': 'Recorded by Claude Code itself when this session ended. This one is real API time, not an estimate.',
     'cs.sess.cost': 'Cost (API rate)',
-    'cs.sess.costHint': 'What these tokens would have cost on the Anthropic API, at published rates (Opus $5/$25, Sonnet 5 $2/$10, Sonnet 4.6 $3/$15, Haiku $1/$5, Fable $10/$50 per 1M in/out; cache writes 1.25x input, cache reads 0.1x). On a subscription none of it is billed - Claude Code records $0 for that reason.',
+    'cs.sess.costHint': 'What these tokens would have cost on the Anthropic API, at the published rates per 1M in/out (Opus 5.5 $4/$20, Opus 4.5-5 $5/$25, Opus 4-4.1 $15/$75, Sonnet 5-5.5 $2/$10, Sonnet 4-4.6 $3/$15, Haiku 4.5 $1/$5, Haiku 3.5 $0.80/$4, Fable and Mythos 5-5.1 $10/$50). Cache writes cost 1.25x input on the 5-minute cache and 2x on the 1-hour cache Claude Code mostly uses; cache reads 0.1x (Opus 5.5 0.05x, Fable and Mythos 5.1 0.025x). A model missing from that list is left out of the total. On a subscription none of it is billed - Claude Code records $0 for that reason.',
     'cs.sess.costUnknown': 'Some model in this conversation has no published rate, so it is left out of the total.',
     'cs.sess.idle': 'idle',
 
@@ -979,7 +979,7 @@ const KO: Dict = {
     'cs.sess.api': 'API 시간',
     'cs.sess.apiHint': '세션이 끝날 때 Claude Code 가 직접 기록한 값입니다. 이것은 추정치가 아니라 실제 API 시간입니다.',
     'cs.sess.cost': '비용 (API 환산)',
-    'cs.sess.costHint': '이 토큰을 Anthropic API 로 썼다면 들었을 금액입니다. 공식 단가 기준(100만 토큰당 입력/출력 — Opus $5/$25, Sonnet 5 $2/$10, Sonnet 4.6 $3/$15, Haiku $1/$5, Fable $10/$50, 캐시 쓰기는 입력의 1.25배, 캐시 읽기는 0.1배)입니다. 구독이라 실제로 청구되는 금액은 없으며, Claude Code 도 그 이유로 $0 을 기록합니다.',
+    'cs.sess.costHint': '이 토큰을 Anthropic API 로 썼다면 들었을 금액입니다. 공식 단가 기준(100만 토큰당 입력/출력 — Opus 5.5 $4/$20, Opus 4.5~5 $5/$25, Opus 4~4.1 $15/$75, Sonnet 5~5.5 $2/$10, Sonnet 4~4.6 $3/$15, Haiku 4.5 $1/$5, Haiku 3.5 $0.80/$4, Fable·Mythos 5~5.1 $10/$50)입니다. 캐시 쓰기는 5분 캐시가 입력의 1.25배, Claude Code 가 주로 쓰는 1시간 캐시가 2배이고, 캐시 읽기는 0.1배(Opus 5.5 는 0.05배, Fable·Mythos 5.1 은 0.025배)입니다. 이 목록에 없는 모델은 합계에서 뺍니다. 구독이라 실제로 청구되는 금액은 없으며, Claude Code 도 그 이유로 $0 을 기록합니다.',
     'cs.sess.costUnknown': '이 대화에 공식 단가가 없는 모델이 섞여 있어 그만큼은 합계에서 빠졌습니다.',
     'cs.sess.idle': '대기',
 
