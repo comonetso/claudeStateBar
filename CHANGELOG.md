@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.17.2] - 2026-09-30
+
+The workflow, background-task, Codex progress and Codex chat panels are now tabs of one panel, Claude
+Activity, and the session menu lists a single Activity entry where it used to list four. A tab with
+something running shows a spinning icon and a count, in the colour of its status-bar dot. For
+workflows the count is the number of agents running, sub-agents included, so three sub-agents
+launched together read 3 where the menu used to say 1. The menu entry sums up the same counts and
+opens the first tab with something running, or else the tab last looked at in that workspace.
+`claudeStateBar: Show Claude Activity` does the same from the command palette; the older commands and
+the status-bar dots open their own tab. The Codex tabs appear only when `codex_rescue` is installed,
+as their menu entries did. "Clean up stale/zombie items" moved to the bottom of the menu.
+
+While the panel is open all four tabs are kept up to date, so each tab's count matches what it lists.
+The background tab's 2-second output refresh now runs only while that tab is showing.
+
+With the panel in front, Ctrl+Tab and Ctrl+Shift+Tab switch to the next and previous tab, also when
+keybindings.json binds Ctrl+Tab to something else, as long as the focus is in the panel's content;
+elsewhere Ctrl+Tab still switches editors. In the Codex chat tab, conversations with no turn since this
+session began fold into one "from earlier sessions" row, and the conversation that opens by default is
+the newest one of this session. A chat document does not record which Claude conversation wrote it, so
+this session is taken to start with the earliest Claude conversation the status bar shows for the
+workspace.
+
 ## [1.17.1] - 2026-09-30
 
 Sub-agents launched with the Agent tool are now handled the same way as workflows. The orange dot

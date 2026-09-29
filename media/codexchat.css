@@ -1,0 +1,84 @@
+  /* media/codexchat.css — the Codex chat tab of the Activity panel (codexChatPanel.ts).
+     Moved out of the panel's html template unchanged except for scoping: every selector is
+     prefixed with #pane-codexChats (the old body rule now targets the pane itself) and the
+     keyframes carry the tab's cc- prefix, so nothing leaks into the other tabs. */
+  #pane-codexChats { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 16px; }
+  #pane-codexChats .toolbar { display:flex; align-items:center; gap:6px; justify-content:flex-end; margin-bottom:10px; }
+  #pane-codexChats .fbtn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; padding:2px 11px; cursor:pointer; font-size:1em; line-height:1.4; }
+  #pane-codexChats .fbtn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+  #pane-codexChats .sub { color: var(--vscode-descriptionForeground); font-size:.85em; margin-bottom:16px; }
+  #pane-codexChats .empty { color: var(--vscode-descriptionForeground); padding:24px 0; text-align:center; }
+
+  #pane-codexChats .chat { border:1px solid var(--vscode-panel-border); border-radius:6px; padding:10px 14px; margin-bottom:12px; }
+  #pane-codexChats .chat-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+  #pane-codexChats .arrow { flex-shrink:0; width:12px; color: var(--vscode-descriptionForeground); transition: transform .12s; }
+  #pane-codexChats .chat.collapsed .arrow { transform: rotate(-90deg); }
+  #pane-codexChats .chat-name { font-weight:600; font-size:1.05em; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #pane-codexChats .chip { font-size:.72em; padding:1px 7px; border-radius:4px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); flex-shrink:0; letter-spacing:.3px; }
+  /* Started on another machine: the thread cannot be resumed here, so it reads as a note,
+     not as a state. Outlined rather than filled. */
+  #pane-codexChats .chip.origin { background:transparent; color: var(--vscode-descriptionForeground); border:1px solid var(--vscode-panel-border); }
+  #pane-codexChats .chat-time { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; font-variant-numeric: tabular-nums; }
+  #pane-codexChats .spacer { flex:1 1 auto; }
+  #pane-codexChats .badge { font-size:.8em; padding:2px 9px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
+  #pane-codexChats .badge.live { background: var(--vscode-statusBarItem-warningBackground); color: var(--vscode-statusBarItem-warningForeground); }
+  #pane-codexChats .badge.dead { background: var(--vscode-descriptionForeground, #8b949e); color: var(--vscode-editor-background, #1e1e1e); }
+  #pane-codexChats .del-btn { flex-shrink:0; background:transparent; border:none; color: var(--vscode-descriptionForeground); cursor:pointer; font-size:1em; padding:2px 6px; border-radius:4px; }
+  #pane-codexChats .del-btn:hover { background: var(--vscode-statusBarItem-errorBackground, #f85149); color:#fff; }
+  #pane-codexChats .chat-body { margin-top:8px; }
+  #pane-codexChats .chat.collapsed .chat-body { display:none; }
+  /* Conversations from before this session fold into one row — the Codex progress tab's
+     finished-runs row, same look (2026-09-30). */
+  #pane-codexChats .done-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
+               padding:6px 14px; margin-bottom:12px; border:1px dashed var(--vscode-panel-border);
+               border-radius:6px; color: var(--vscode-descriptionForeground); }
+  #pane-codexChats .done-group.collapsed .done-head .arrow { transform: rotate(-90deg); }
+  #pane-codexChats .done-group.collapsed .done-body { display:none; }
+  #pane-codexChats .meta { color: var(--vscode-descriptionForeground); font-size:.78em; font-family: var(--vscode-editor-font-family); margin-bottom:10px; line-height:1.6; }
+  #pane-codexChats .doclink { color: var(--vscode-textLink-foreground); cursor:pointer; text-decoration:none; }
+  #pane-codexChats .doclink:hover { text-decoration:underline; }
+
+  #pane-codexChats .turn { margin:0 0 14px 0; }
+  /* The whole header line is the fold handle, not just the arrow — a 12px target for something
+     used this often is a nuisance. */
+  #pane-codexChats .turn-head { display:flex; align-items:baseline; gap:7px; cursor:pointer; user-select:none; margin-bottom:5px; }
+  #pane-codexChats .turn-head:hover .turn-no { color: var(--vscode-foreground); }
+  #pane-codexChats .tarrow { flex-shrink:0; width:9px; font-size:.6em; color: var(--vscode-descriptionForeground); transition: transform .12s; }
+  #pane-codexChats .turn.folded .tarrow { transform: rotate(-90deg); }
+  #pane-codexChats .turn-no { color: var(--vscode-descriptionForeground); font-size:.75em; font-variant-numeric: tabular-nums; flex-shrink:0; }
+  /* Only shown while folded: the first line of the question, so a folded turn still says what
+     it was about. Clipped rather than wrapped — the fold exists to keep it to one line. */
+  #pane-codexChats .turn-peek { color: var(--vscode-descriptionForeground); font-size:.8em; flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.8; }
+  #pane-codexChats .turn.folded .say { display:none; }
+  #pane-codexChats .say { display:flex; gap:8px; margin-bottom:7px; align-items:flex-start; }
+  #pane-codexChats .who { flex-shrink:0; font-size:.85em; font-weight:600; width:66px; padding-top:1px; }
+  /* Same colours as the status bar provider glyphs and the chat-window prefixes:
+     orange is Claude, blue is Codex. Reading who spoke should not need the label. */
+  #pane-codexChats .who.claude { color:#d98b45; }
+  #pane-codexChats .who.codex  { color:#5aa9e6; }
+  #pane-codexChats .msg { flex:1 1 auto; min-width:0; white-space:pre-wrap; word-break:break-word; line-height:1.55; font-size:.93em; }
+  /* The answer that has not arrived yet. Dimmed and italic so it never reads as something
+     Codex actually said. */
+  #pane-codexChats .say.waiting .msg { color: var(--vscode-descriptionForeground); font-style:italic; }
+  #pane-codexChats .dots { display:inline-block; animation: cc-blink 1.2s steps(1,end) infinite; }
+  @keyframes cc-blink { 0%,60% { opacity:1; } 61%,100% { opacity:.25; } }
+
+  /* Only appears when a new turn landed while the reader was scrolled up. Clicking it is the
+     only thing that moves the viewport in that case. */
+  #pane-codexChats .jump { position:fixed; right:22px; bottom:22px; z-index:20; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border:none; border-radius:14px; padding:6px 15px; cursor:pointer; font-size:.85em; box-shadow:0 2px 8px rgba(0,0,0,.35); }
+  #pane-codexChats .jump:hover { background: var(--vscode-button-hoverBackground); }
+
+  #pane-codexChats .brk { margin:0 0 14px 0; padding:8px 11px; border-left:2px solid #d29922; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); border-radius:0 4px 4px 0; font-size:.85em; line-height:1.5; white-space:pre-wrap; }
+  #pane-codexChats .brk.superseded { border-left-color: var(--vscode-descriptionForeground); }
+  #pane-codexChats .brk-title { font-weight:600; margin-bottom:3px; }
+
+  #pane-codexChats .drawer { border:1px solid var(--vscode-panel-border); border-radius:6px; padding:10px 14px; margin-bottom:14px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.06)); }
+  #pane-codexChats .drawer-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  #pane-codexChats .drawer-title { font-weight:600; }
+  #pane-codexChats .trow { display:flex; align-items:center; gap:8px; padding:5px 0; border-top:1px solid var(--vscode-panel-border); font-size:.9em; }
+  #pane-codexChats .trow:first-of-type { border-top:none; }
+  #pane-codexChats .tname { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #pane-codexChats .tinfo { color: var(--vscode-descriptionForeground); font-size:.8em; flex-shrink:0; }
+  #pane-codexChats .tbtn { flex-shrink:0; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; padding:2px 9px; cursor:pointer; font-size:.85em; }
+  #pane-codexChats .tbtn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+  #pane-codexChats .tbtn.danger:hover { background: var(--vscode-statusBarItem-errorBackground, #f85149); color:#fff; }

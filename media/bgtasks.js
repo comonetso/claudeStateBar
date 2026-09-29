@@ -1,12 +1,18 @@
-// media/bgtasks.js — the background task panel's webview script.
+// media/bgtasks.js — the Background tab's script in the activity panel.
 //
 // Two groups, by the user's call (2026-09-22): what Claude ran in the background (commands and
 // monitors), and ordinary commands that ran long. Inside each, laid out like the remote-control
 // view's background list, which the user pointed at: a running task shows its command and output
 // straight away; finished ones fold into one row with a trash button. Group headers are the
 // workflow panel's phase headers; the cards are its cards.
+//
+// Since 2026-09-30 this runs as one tab of the activity panel (media/activity.js loads first and
+// provides window.ActivityHost). The other tabs' scripts share this document, so everything is
+// looked up inside this tab's pane (root) and every id carries the 'bg-' prefix.
 (function () {
-  const vscodeApi = acquireVsCodeApi();
+  'use strict';
+  const vscodeApi = window.ActivityHost.api('background');
+  const root = window.ActivityHost.root('background');
   let dict = {};
   function t(key) {
     let v = dict[key];
@@ -18,10 +24,10 @@
     return v;
   }
   function applyI18n() {
-    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+    root.querySelectorAll('[data-i18n]').forEach(function (el) {
       const v = dict[el.getAttribute('data-i18n')]; if (typeof v === 'string') el.textContent = v;
     });
-    document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
+    root.querySelectorAll('[data-i18n-title]').forEach(function (el) {
       const v = dict[el.getAttribute('data-i18n-title')]; if (typeof v === 'string') el.title = v;
     });
   }
@@ -29,7 +35,7 @@
   const savedState = vscodeApi.getState() || {};
   let fontPx = savedState.fontPx || 15;
   function applyFont() {
-    document.body.style.fontSize = fontPx + 'px';
+    root.style.fontSize = fontPx + 'px';
     vscodeApi.setState(Object.assign({}, vscodeApi.getState(), { fontPx: fontPx }));
   }
 
@@ -65,7 +71,7 @@
 
   function tick() {
     const now = Date.now();
-    document.querySelectorAll('.run-time[data-started]').forEach(function (el) {
+    root.querySelectorAll('.run-time[data-started]').forEach(function (el) {
       const started = Number(el.getAttribute('data-started'));
       if (!started) return;
       const doneEnd = el.getAttribute('data-done');
@@ -130,20 +136,30 @@
 
   // An output box keeps its place across repaints: at the bottom it follows new lines, as the
   // remote-control view does; scrolled up, it stays where the reader left it.
+  // A hidden tab measures every box as zero, which would read as "at the bottom". So while another
+  // tab is in front a repaint does not re-read the positions; the ones recorded as the reader last
+  // scrolled are kept, and put back each time this tab comes back.
+  function readScroll(el) {
+    outScroll[el.getAttribute('data-okey')] = {
+      top: el.scrollTop,
+      atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 4
+    };
+  }
   function captureScroll() {
-    document.querySelectorAll('pre.out[data-okey]').forEach(function (el) {
-      outScroll[el.getAttribute('data-okey')] = {
-        top: el.scrollTop,
-        atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 4
-      };
-    });
+    if (!window.ActivityHost.isActive('background')) return;
+    root.querySelectorAll('pre.out[data-okey]').forEach(readScroll);
   }
   function restoreScroll() {
-    document.querySelectorAll('pre.out[data-okey]').forEach(function (el) {
+    root.querySelectorAll('pre.out[data-okey]').forEach(function (el) {
       const s = outScroll[el.getAttribute('data-okey')];
       el.scrollTop = (!s || s.atBottom) ? el.scrollHeight : s.top;
     });
   }
+  root.addEventListener('scroll', function (e) {
+    const el = e.target;
+    if (el && el.matches && el.matches('pre.out[data-okey]') && window.ActivityHost.isActive('background')) readScroll(el);
+  }, true);
+  window.ActivityHost.onShow('background', restoreScroll);
 
   function renderGroup(id, title, g, doneKey, shown) {
     const upper = [], lower = [];
@@ -192,9 +208,9 @@
     lastSig = sig;
     captureScroll();
     last = incoming;
-    const list = document.getElementById('list');
-    const sub = document.getElementById('sub');
-    document.getElementById('scope').textContent = last.longMinutes ? t('bg.scope', last.longMinutes) : '';
+    const list = document.getElementById('bg-list');
+    const sub = document.getElementById('bg-sub');
+    document.getElementById('bg-scope').textContent = last.longMinutes ? t('bg.scope', last.longMinutes) : '';
     const bg = last.background, lg = last.long;
     if (!bg.running.length && !bg.finished.length && !lg.running.length && !lg.finished.length) {
       list.innerHTML = '<div class="empty">' + esc(t('bg.empty')) + '</div>';
@@ -217,7 +233,7 @@
     askOutputs(shown);
   }
 
-  document.addEventListener('click', function (e) {
+  root.addEventListener('click', function (e) {
     const fb = e.target.closest('[data-font]');
     if (fb) {
       fontPx = fb.getAttribute('data-font') === 'inc' ? Math.min(28, fontPx + 1) : Math.max(10, fontPx - 1);
@@ -244,8 +260,7 @@
     render(last, true);
   });
 
-  window.addEventListener('message', function (e) {
-    const m = e.data;
+  window.ActivityHost.onMessage('background', function (m) {
     if (!m) return;
     // Before the first list lands the panel shows its loading line; re-rendering the empty initial
     // groups here would swap it for "nothing here" while the tasks are still being read.

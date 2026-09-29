@@ -1,0 +1,151 @@
+/* media/activity.css — the "Claude Activity" panel shell (2026-09-30): the tab bar, the
+   workspace caption beside it, and the panes the four tabs live in.
+
+   Each tab's own stylesheet scopes every rule under #pane-<tab>, and its old `body` rule became
+   `#pane-<tab>`, so its padding/font overrides the .act-pane defaults below by id specificity.
+   Nothing here reaches into a pane. No nesting or @scope: the minimum VS Code (1.74) is Chromium 102. */
+
+body {
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ── Tab bar ─────────────────────────────────────────────────────────────── */
+
+.act-top {
+    flex: none;
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+.act-tabs {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+.act-tabs::-webkit-scrollbar { display: none; }
+
+.act-tab {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    padding: 7px 12px 6px;
+    color: var(--vscode-panelTitle-inactiveForeground, var(--vscode-descriptionForeground));
+    font-family: var(--vscode-font-family);
+    font-size: 13px;
+    line-height: 18px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.act-tab[hidden] { display: none; }
+.act-tab:hover { color: var(--vscode-panelTitle-activeForeground, var(--vscode-foreground)); }
+.act-tab[aria-selected="true"] {
+    color: var(--vscode-panelTitle-activeForeground, var(--vscode-foreground));
+    border-bottom-color: var(--vscode-panelTitle-activeBorder, var(--vscode-focusBorder));
+}
+.act-tab:focus { outline: none; }
+.act-tab:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
+
+.act-ico {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+    flex: none;
+}
+.act-ico-idle,
+.act-ico-run {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+}
+.act-ico svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+}
+
+/* Running: the sync glyph replaces the tab's own icon and turns. */
+.act-ico-run { display: none; transform-origin: 50% 50%; }
+.act-tab.running .act-ico-idle { display: none; }
+.act-tab.running .act-ico-run {
+    display: inline-flex;
+    animation: act-spin 1.4s linear infinite;
+}
+@keyframes act-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .act-tab.running .act-ico-run { animation: none; }
+}
+
+.act-count {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+.act-count:empty { display: none; }
+
+/* The same colours as the status-bar dots, so a tab and its dot read as one thing. */
+.act-tab[data-tab="workflows"].running .act-ico,
+.act-tab[data-tab="workflows"].running .act-count {
+    color: var(--vscode-claudeContextBar-workflowDot, var(--vscode-editorWarning-foreground));
+}
+.act-tab[data-tab="background"].running .act-ico,
+.act-tab[data-tab="background"].running .act-count {
+    color: var(--vscode-claudeContextBar-backgroundDot, var(--vscode-descriptionForeground));
+}
+.act-tab[data-tab="codexRuns"].running .act-ico,
+.act-tab[data-tab="codexRuns"].running .act-count,
+.act-tab[data-tab="codexChats"].running .act-ico,
+.act-tab[data-tab="codexChats"].running .act-count {
+    color: var(--vscode-claudeContextBar-codexDot, var(--vscode-charts-blue));
+}
+
+.act-ws {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 40%;
+    padding: 0 0 8px;
+    color: var(--vscode-descriptionForeground);
+    font-family: var(--vscode-font-family);
+    font-size: 12px;
+    opacity: 0.85;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── Panes ───────────────────────────────────────────────────────────────── */
+
+/* Each pane is its own scroll container. 0 20px matches VS Code's default webview body padding,
+   so a tab whose stylesheet never padded body looks as it did as a separate panel. */
+.act-pane {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 20px;
+    box-sizing: border-box;
+}
+/* !important: a tab's #pane-<tab> rule outranks this selector, and must not un-hide the pane. */
+.act-pane[hidden] { display: none !important; }
+/* Panes take the focus only so keyboard scrolling reaches them (see activity.js); no ring. */
+.act-pane:focus { outline: none; }

@@ -1,0 +1,163 @@
+  #pane-codexRuns { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 16px; }
+  #pane-codexRuns .toolbar { display:flex; align-items:center; gap:6px; justify-content:flex-end; margin-bottom:10px; }
+  #pane-codexRuns .flabel { color: var(--vscode-descriptionForeground); font-size:.8em; margin-right:2px; }
+  #pane-codexRuns .fbtn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; padding:2px 11px; cursor:pointer; font-size:1em; line-height:1.4; }
+  #pane-codexRuns .fbtn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+  #pane-codexRuns .sub { color: var(--vscode-descriptionForeground); font-size:.85em; margin-bottom:16px; }
+
+  #pane-codexRuns .run { border:1px solid var(--vscode-panel-border); border-radius:6px; padding:10px 14px; margin-bottom:12px; }
+  #pane-codexRuns .run-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+  #pane-codexRuns .arrow { flex-shrink:0; width:12px; color: var(--vscode-descriptionForeground); transition: transform .12s; }
+  #pane-codexRuns .run.collapsed .arrow { transform: rotate(-90deg); }
+  #pane-codexRuns .run-name { font-weight:600; font-size:1.05em; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #pane-codexRuns .mode-chip { font-size:.72em; padding:1px 7px; border-radius:4px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); flex-shrink:0; letter-spacing:.3px; }
+  /* A card with no run behind it. Outlined rather than filled, so it reads as "less than a
+     normal card" instead of competing with the mode chip beside it. */
+  #pane-codexRuns .mode-chip.docs-chip { background:transparent; color: var(--vscode-descriptionForeground);
+    border:1px solid var(--vscode-panel-border); }
+  /* Ran in another working tree of this repository. Outlined for the same reason as the chip
+     above: it says where the run lives, not what state it is in. */
+  #pane-codexRuns .mode-chip.tree-chip { background:transparent; color: var(--vscode-descriptionForeground);
+    border:1px solid var(--vscode-panel-border); letter-spacing:0; }
+  #pane-codexRuns .run-time { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; font-variant-numeric: tabular-nums; }
+  #pane-codexRuns .spacer { flex:1 1 auto; }
+  #pane-codexRuns .badge { font-size:.8em; padding:2px 9px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
+  #pane-codexRuns .badge.running, #pane-codexRuns .badge.starting, #pane-codexRuns .badge.finalizing { background: var(--vscode-statusBarItem-warningBackground); color: var(--vscode-statusBarItem-warningForeground); }
+  #pane-codexRuns .badge.done    { background: var(--vscode-testing-iconPassed, #3fb950); color:#fff; }
+  #pane-codexRuns .badge.failed  { background: var(--vscode-statusBarItem-errorBackground, #f85149); color:#fff; }
+  #pane-codexRuns .badge.stopped { background: var(--vscode-descriptionForeground, #8b949e); color: var(--vscode-editor-background, #1e1e1e); }
+  #pane-codexRuns .badge.stale   { background:#d29922; color:#1e1e1e; }
+  #pane-codexRuns .del-btn { flex-shrink:0; background:transparent; border:none; color: var(--vscode-descriptionForeground); cursor:pointer; font-size:1em; padding:2px 6px; border-radius:4px; }
+  #pane-codexRuns .del-btn:hover { background: var(--vscode-statusBarItem-errorBackground, #f85149); color:#fff; }
+  #pane-codexRuns .run-body { margin-top:8px; }
+  #pane-codexRuns .run.collapsed .run-body { display:none; }
+  /* Finished runs fold into one row. Twenty done cards, even collapsed, pushed the live ones
+     and the ones that need a look off the first screen. */
+  #pane-codexRuns .done-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
+               padding:6px 14px; margin-bottom:12px; border:1px dashed var(--vscode-panel-border);
+               border-radius:6px; color: var(--vscode-descriptionForeground); }
+  #pane-codexRuns .done-group.collapsed .done-head .arrow { transform: rotate(-90deg); }
+  #pane-codexRuns .done-group.collapsed .done-body { display:none; }
+  #pane-codexRuns .meta { color: var(--vscode-descriptionForeground); font-size:.78em; font-family: var(--vscode-editor-font-family); margin-bottom:8px; line-height:1.6; }
+  #pane-codexRuns .doclink { color: var(--vscode-textLink-foreground); cursor:pointer; text-decoration:none; }
+  #pane-codexRuns .doclink:hover { text-decoration:underline; }
+  #pane-codexRuns .now { margin:2px 0 10px 0; padding:8px 11px; border-left:2px solid var(--vscode-textLink-foreground); background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); border-radius:0 4px 4px 0; line-height:1.5; font-size:.93em; white-space:pre-wrap; word-break:break-word; }
+  /* The last word in a turn was Claude cutting in, not Codex. Same orange the row uses, so
+     the reader does not have to parse the text to know who spoke. */
+  #pane-codexRuns .now.steer { border-left-color:#d98b45; }
+  /* A turn's says-block leads its body, right under the header, so it loses the top gap. */
+  #pane-codexRuns .turn-body > .now:first-child { margin-top:6px; }
+  /* The body carries the same column layout the items container has, since it sits between
+     them — without this the activities inside a turn lose their spacing. */
+  #pane-codexRuns .turn-body { display:flex; flex-direction:column; gap:6px; }
+  #pane-codexRuns .turn-body.folded { display:none; }
+  #pane-codexRuns .turn-fold { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; }
+  #pane-codexRuns .turn-hd.folded .turn-fold { transform: rotate(-90deg); display:inline-block; }
+  /* Each turn owns its documents: the request really is a separate file per turn, and the
+     result link jumps into that turn's section of the one response document. */
+  #pane-codexRuns .turn-links { flex-shrink:0; display:flex; gap:12px; font-size:.82em; }
+  /* A turn's own start and duration, right after its number. The card clock above spans every
+     turn plus the gaps between them, so it cannot say how long any one question took. */
+  #pane-codexRuns .turn-time { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.82em; white-space:nowrap; font-variant-numeric: tabular-nums; }
+  #pane-codexRuns .plan { font-size:.82em; color: var(--vscode-descriptionForeground); margin-bottom:8px; }
+  #pane-codexRuns .plan-chip { display:inline-block; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border-radius:4px; padding:1px 7px; margin:0 4px 3px 0; }
+  #pane-codexRuns .plan-chip.on { opacity:.55; text-decoration:line-through; }
+
+  #pane-codexRuns .items { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+  /* Turn boundary in a multi-turn (follow-up) run. Twenty activities in one column give no
+     hint where one question ended and the next began, so the seam is drawn as a boxed,
+     oversized number with a rule running off it — it has to survive a long scroll, which a
+     text row of the same weight as its neighbours would not. Neutral colours on purpose:
+     orange already means "Claude spoke" one row below. */
+  #pane-codexRuns .turn-hd { display:flex; align-items:center; gap:8px; margin:12px 0 3px 0; cursor:pointer; }
+  #pane-codexRuns .turn-hd:first-child { margin-top:2px; }
+  #pane-codexRuns .turn-hd::after { content:''; flex:1 1 auto; height:1px; background: var(--vscode-panel-border); }
+  #pane-codexRuns .turn-no { flex-shrink:0; padding:1px 12px; border-radius:5px;
+    border:1.5px solid var(--vscode-focusBorder, var(--vscode-panel-border));
+    background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.12));
+    color: var(--vscode-foreground); font-size:1.2em; font-weight:700; letter-spacing:.5px; }
+  #pane-codexRuns .it { font-size:.9em; }
+  #pane-codexRuns .it-head { display:flex; align-items:baseline; gap:8px; }
+  #pane-codexRuns .dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; position:relative; top:1px; }
+  #pane-codexRuns .dot.running { background:#e3b341; animation: cx-pulse 1.2s ease-in-out infinite; }
+  #pane-codexRuns .dot.done { background:#3fb950; }
+  #pane-codexRuns .dot.failed { background:#f85149; }
+  /* Advisory notice — visible but clearly not a failure. */
+  #pane-codexRuns .dot.warn { background:#d29922; }
+  #pane-codexRuns .kind { font-size:.78em; padding:0 6px; border-radius:3px; flex-shrink:0; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+  #pane-codexRuns .kind.k-agent_message, #pane-codexRuns .kind.k-reasoning { background:#3a3f5c; color:#c3caff; }
+  #pane-codexRuns .kind.k-command_execution { background:#4a4030; color:#f0d9a8; }
+  #pane-codexRuns .kind.k-web_search { background:#2f4a3a; color:#a8e6bf; }
+  #pane-codexRuns .kind.k-file_change { background:#4a3050; color:#e6b3f0; }
+  #pane-codexRuns .kind.k-error { background:#4a3f22; color:#f0d9a8; }
+  /* Claude steering the run mid-turn. Orange, matching the chat panel's Claude colour
+     (#d98b45) so the same speaker reads the same in both panels — and deliberately far from
+     k-error's amber, because that chip carries Codex CLI advisories and the two were
+     confused for each other on screen. */
+  #pane-codexRuns .kind.k-claude_steer { background:#4a2b16; color:#e8a86a; font-weight:600; }
+  /* The chip alone gets lost in a fifty-row list, so the whole row carries a rail in the
+     same colour — an interjection is the row a user scans back for. */
+  #pane-codexRuns .it.steer { border-left:2px solid #d98b45; padding-left:7px; margin-left:-9px; }
+  #pane-codexRuns .lbl { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family: var(--vscode-editor-font-family); font-size:.92em; }
+  #pane-codexRuns .dur { color: var(--vscode-descriptionForeground); font-size:.82em; flex-shrink:0; }
+  #pane-codexRuns details.cmdgroup { margin:0; }
+  /* The summary lines up with ordinary rows — no leading marker, no indent on the rows it
+     reveals — so a collapsed group reads as one of the list rather than a nested block. */
+  #pane-codexRuns details.cmdgroup > summary { display:flex; align-items:center; gap:7px; cursor:pointer;
+    padding:3px 0; list-style:none; color: var(--vscode-descriptionForeground); }
+  #pane-codexRuns details.cmdgroup > summary::-webkit-details-marker { display:none; }
+  #pane-codexRuns details.cmdgroup > summary:hover { color: var(--vscode-foreground); }
+  #pane-codexRuns details.cmdgroup .gcount { font-size:.9em; }
+  #pane-codexRuns details.cmdgroup > .it { margin-left:0; }
+  /* Affordance sits after the count, where the eye already is. */
+  #pane-codexRuns .ghint { font-size:.82em; opacity:.8; padding:0 6px; border-radius:4px;
+    border:1px solid var(--vscode-panel-border); white-space:nowrap; }
+  #pane-codexRuns details.cmdgroup > summary:hover .ghint { opacity:1; border-color: var(--vscode-focusBorder); }
+  #pane-codexRuns .ghint::before { content:'▸'; display:inline-block; margin-right:4px; font-size:.9em;
+    transition:transform .12s; }
+  #pane-codexRuns details.cmdgroup[open] .ghint::before { transform:rotate(90deg); }
+  #pane-codexRuns details.cmdgroup[open] .gh-open { display:none; }
+  #pane-codexRuns details.cmdgroup:not([open]) .gh-close { display:none; }
+  /* A row whose label doesn't fit opens in place: the one-line summary is replaced by the
+     wrapped full text. '.plain' marks rows with nothing more to show — see markClipped(). */
+  #pane-codexRuns details.row { margin:0; }
+  #pane-codexRuns details.row > summary { list-style:none; }
+  #pane-codexRuns details.row > summary::-webkit-details-marker { display:none; }
+  #pane-codexRuns details.row:not(.plain) > summary { cursor:pointer; }
+  #pane-codexRuns details.row:not(.plain) > summary:hover { background: var(--vscode-list-hoverBackground); border-radius:4px; }
+  #pane-codexRuns details.row.plain > summary { cursor:default; }
+  /* No body block: unwrap the label itself so the tail that was clipped becomes readable. */
+  #pane-codexRuns details.row[open] > summary .lbl { white-space:pre-wrap; word-break:break-word; overflow:visible; text-overflow:clip; }
+  /* With a body block the label would just repeat its first line. */
+  #pane-codexRuns details.row.hasfull[open] > summary .lbl { display:none; }
+  #pane-codexRuns .full { margin:6px 0 2px 17px; padding:8px 10px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.1)); border-radius:4px; white-space:pre-wrap; word-break:break-word; font-family: var(--vscode-editor-font-family); font-size:.88em; line-height:1.5; max-height:420px; overflow:auto; }
+  #pane-codexRuns .empty { color: var(--vscode-descriptionForeground); font-style:italic; }
+
+  /* Trash drawer. Sits above the list rather than replacing it: what you deleted only makes
+     sense next to what you kept, and restoring is usually a comparison, not a lookup. */
+  #pane-codexRuns .trash { border:1px dashed var(--vscode-panel-border); border-radius:6px;
+    padding:10px 14px; margin-bottom:14px; background: var(--vscode-textCodeBlock-background, rgba(127,127,127,.06)); }
+  #pane-codexRuns .trash-head { display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
+  #pane-codexRuns .trash-note { color: var(--vscode-descriptionForeground); font-size:.8em; }
+  #pane-codexRuns .trash-row { display:flex; align-items:baseline; gap:8px; padding:5px 0;
+    border-top:1px solid var(--vscode-panel-border); }
+  #pane-codexRuns .trash-row:first-child { border-top:none; }
+  #pane-codexRuns .trash-name { font-weight:600; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #pane-codexRuns .trash-meta { color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; }
+  #pane-codexRuns .tbtn { background:transparent; color: var(--vscode-textLink-foreground); border:1px solid var(--vscode-panel-border);
+    border-radius:4px; padding:1px 9px; cursor:pointer; font-size:.85em; flex-shrink:0; }
+  #pane-codexRuns .tbtn:hover { background: var(--vscode-list-hoverBackground); }
+  /* How much is at stake, in the button itself. Red means the documents are all that's left —
+     this click ends the record. Amber means the logs are bulk and the documents can still be
+     kept back. Neutral means only logs remain, so nothing irreplaceable is going. */
+  #pane-codexRuns .tbtn.danger { color:#f85149; border-color: rgba(248,81,73,.55); font-weight:600; }
+  #pane-codexRuns .tbtn.danger:hover { background: rgba(248,81,73,.15); border-color:#f85149; }
+  #pane-codexRuns .tbtn.warn { color:#d29922; border-color: rgba(210,153,34,.55); }
+  #pane-codexRuns .tbtn.warn:hover { background: rgba(210,153,34,.15); border-color:#d29922; }
+  /* Same three-way coding on the contents label, so the row and its button agree. */
+  #pane-codexRuns .what { font-size:.8em; padding:0 6px; border-radius:3px; white-space:nowrap;
+    border:1px solid transparent; }
+  #pane-codexRuns .what.docs-only { color:#f85149; border-color: rgba(248,81,73,.45); font-weight:600; }
+  #pane-codexRuns .what.both { color:#d29922; border-color: rgba(210,153,34,.45); }
+  #pane-codexRuns .warn { color:#d29922; font-size:.85em; margin-top:6px; }
+  @keyframes cx-pulse { 0%,100%{opacity:1} 50%{opacity:.35} }

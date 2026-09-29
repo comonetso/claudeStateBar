@@ -1,8 +1,8 @@
 {
   "name": "claude-state-bar",
   "displayName": "Claude Code & Codex Status Bar",
-  "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly usage read live from the Codex app-server and kept identical across every window. Includes live Workflow/Agent and background-task panels, status-bar dots for work still running, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
-  "version": "1.17.1",
+  "description": "Claude Code and OpenAI Codex in one status bar. Per-session context usage, model and effort, and task-complete beeps for both — plus account limits: Claude.ai 5-hour session & weekly, and Codex weekly usage read live from the Codex app-server and kept identical across every window. Includes a live activity panel for workflows, agents, background tasks and Codex runs, status-bar dots for work still running, Remote-SSH support, Telegram reset alerts, and a bilingual settings panel. Reads local logs only — no network calls for the context monitor.",
+  "version": "1.17.2",
   "extensionKind": [
     "ui"
   ],
@@ -173,6 +173,10 @@
         "title": "claudeStateBar: Codex Chat Panel"
       },
       {
+        "command": "claudeContextBar.showActivity",
+        "title": "claudeStateBar: Show Claude Activity"
+      },
+      {
         "command": "claudeContextBar.showWorkflows",
         "title": "claudeStateBar: Show Claude Workflows"
       },
@@ -187,6 +191,14 @@
       {
         "command": "claudeContextBar.setupCodexRescue",
         "title": "claudeStateBar: Set Up Codex Progress Panel (codex_rescue)"
+      },
+      {
+        "command": "claudeContextBar.activityNextTab",
+        "title": "claudeStateBar: Next Activity Tab"
+      },
+      {
+        "command": "claudeContextBar.activityPrevTab",
+        "title": "claudeStateBar: Previous Activity Tab"
       }
     ],
     "menus": {
@@ -214,6 +226,14 @@
         {
           "command": "claudeContextBar.restoreHiddenSession",
           "when": "false"
+        },
+        {
+          "command": "claudeContextBar.activityNextTab",
+          "when": "activeWebviewPanelId == 'claudeContextBarActivity'"
+        },
+        {
+          "command": "claudeContextBar.activityPrevTab",
+          "when": "activeWebviewPanelId == 'claudeContextBarActivity'"
         }
       ]
     },
@@ -463,7 +483,21 @@
           "description": "How many recent day folders under ~/.codex/sessions/YYYY/MM/DD to scan when scope is all. Current-chat mode locates the selected UUID directly, including older reopened conversations. Codex history is never walked in full. Default: 3."
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "claudeContextBar.activityNextTab",
+        "key": "ctrl+tab",
+        "mac": "ctrl+tab",
+        "when": "activeWebviewPanelId == 'claudeContextBarActivity'"
+      },
+      {
+        "command": "claudeContextBar.activityPrevTab",
+        "key": "ctrl+shift+tab",
+        "mac": "ctrl+shift+tab",
+        "when": "activeWebviewPanelId == 'claudeContextBarActivity'"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

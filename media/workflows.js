@@ -1,4 +1,4 @@
-// media/workflows.js — the workflow panel's webview script.
+// media/workflows.js — the Workflows tab's script in the activity panel.
 //
 // It reads like the Codex panel on purpose (user's call, 2026-09-19): the card, the rows, the
 // folding of routine commands, the finished-runs group and the trash all follow
@@ -6,8 +6,14 @@
 // several agents working at once — so an agent opens the way the Codex panel's command group
 // does, and holds its own rows. Those rows are fetched only when the agent is opened: an agent
 // log runs to hundreds of KB, and over Remote-SSH every read crosses the wire.
+//
+// Since 2026-09-30 this runs as one tab of the activity panel (media/activity.js loads first and
+// provides window.ActivityHost). The other tabs' scripts share this document, so everything is
+// looked up inside this tab's pane (root) and every id carries the 'wf-' prefix.
 (function () {
-  const vscodeApi = acquireVsCodeApi();
+  'use strict';
+  const vscodeApi = window.ActivityHost.api('workflows');
+  const root = window.ActivityHost.root('workflows');
   let dict = {};
   let lang = 'en';
   function t(key) {
@@ -20,10 +26,10 @@
     return v;
   }
   function applyI18n() {
-    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+    root.querySelectorAll('[data-i18n]').forEach(function (el) {
       const v = dict[el.getAttribute('data-i18n')]; if (typeof v === 'string') el.textContent = v;
     });
-    document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
+    root.querySelectorAll('[data-i18n-title]').forEach(function (el) {
       const v = dict[el.getAttribute('data-i18n-title')]; if (typeof v === 'string') el.title = v;
     });
   }
@@ -31,7 +37,7 @@
   const savedState = vscodeApi.getState() || {};
   let fontPx = savedState.fontPx || 15;
   function applyFont() {
-    document.body.style.fontSize = fontPx + 'px';
+    root.style.fontSize = fontPx + 'px';
     markClipped();
     vscodeApi.setState(Object.assign({}, vscodeApi.getState(), { fontPx: fontPx }));
   }
@@ -83,7 +89,7 @@
 
   function tick() {
     const now = Date.now();
-    document.querySelectorAll('.run-time[data-started]').forEach(function (el) {
+    root.querySelectorAll('.run-time[data-started]').forEach(function (el) {
       const started = Number(el.getAttribute('data-started'));
       if (!started) return;
       const doneEnd = el.getAttribute('data-done');
@@ -91,7 +97,7 @@
       const label = doneEnd ? t('wf.took') : t('wf.elapsed');
       el.textContent = '🕘 ' + fmtClock(started) + ' · ' + label + fmtElapsed(elapsed);
     });
-    document.querySelectorAll('.dur[data-astart]').forEach(function (el) {
+    root.querySelectorAll('.dur[data-astart]').forEach(function (el) {
       el.textContent = t('wf.elapsed') + fmtDur(runningMs(Number(el.getAttribute('data-astart')), Number(el.getAttribute('data-span')), now));
     });
   }
@@ -104,7 +110,7 @@
   setInterval(tick, 1000);
 
   function captureOpenDetails() {
-    document.querySelectorAll('details[data-dkey]').forEach(function (d) {
+    root.querySelectorAll('details[data-dkey]').forEach(function (d) {
       openDetails[d.getAttribute('data-dkey')] = d.open;
     });
   }
@@ -307,8 +313,8 @@
     lastRenderedSig = sig;
     captureOpenDetails();
     lastWfs = incoming;
-    const list = document.getElementById('list');
-    const sub = document.getElementById('sub');
+    const list = document.getElementById('wf-list');
+    const sub = document.getElementById('wf-sub');
     if (!lastWfs.length) {
       list.innerHTML = '<div class="empty">' + esc(t('wf.empty')) + '</div>';
       sub.textContent = '';
@@ -350,7 +356,7 @@
   // Same as the Codex panel: a row is only worth opening if its label is actually cut off, and
   // that can only be measured after layout.
   function markClipped() {
-    document.querySelectorAll('details.row').forEach(function (d) {
+    root.querySelectorAll('details.row').forEach(function (d) {
       if (d.open) return;
       const lbl = d.querySelector('.lbl');
       const clipped = !!lbl && lbl.scrollWidth > lbl.clientWidth + 1;
@@ -358,16 +364,19 @@
     });
   }
   window.addEventListener('resize', markClipped);
+  // A hidden tab measures every label as zero wide, so what was marked while another tab was in
+  // front is redone each time this one comes back.
+  window.ActivityHost.onShow('workflows', markClipped);
 
   // --- Trash ----------------------------------------------------------------------------
   let trashOpen = false;
   function toggleTrash() {
     trashOpen = !trashOpen;
-    document.getElementById('trash').style.display = trashOpen ? '' : 'none';
+    document.getElementById('wf-trash').style.display = trashOpen ? '' : 'none';
     if (trashOpen) vscodeApi.postMessage({ type: 'trashOpen' });
   }
   function renderTrash(items) {
-    const box = document.getElementById('trash-list');
+    const box = document.getElementById('wf-trash-list');
     if (!items.length) {
       box.innerHTML = '<div class="empty">' + esc(t('wf.trash.none')) + '</div>';
       return;
@@ -384,7 +393,7 @@
     }).join('');
   }
 
-  document.addEventListener('click', function (e) {
+  root.addEventListener('click', function (e) {
     const fb = e.target.closest('[data-font]');
     if (fb) {
       fontPx = fb.getAttribute('data-font') === 'inc' ? Math.min(28, fontPx + 1) : Math.max(10, fontPx - 1);
@@ -424,7 +433,7 @@
     }
   });
 
-  document.addEventListener('toggle', function (e) {
+  root.addEventListener('toggle', function (e) {
     const d = e.target;
     if (!d || !d.matches) return;
     if (d.matches('details.agent[data-akey]')) {
@@ -446,7 +455,7 @@
     if (d.open) {
       // Accordion, as in the Codex panel: two opened rows side by side leave no list to read by.
       if (d.matches('details.row')) {
-        document.querySelectorAll('details.row[open]').forEach(function (other) {
+        root.querySelectorAll('details.row[open]').forEach(function (other) {
           if (other === d) return;
           other.open = false;
           openDetails[other.getAttribute('data-dkey')] = false;
@@ -457,8 +466,7 @@
     }
   }, true);
 
-  window.addEventListener('message', function (e) {
-    const m = e.data;
+  window.ActivityHost.onMessage('workflows', function (m) {
     if (!m) return;
     // Before the first list lands the panel shows its loading line; re-rendering the empty initial
     // list here would swap it for "no workflows" while they are still being read.

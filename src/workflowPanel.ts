@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
 import { getDict } from './i18n';
 import * as creds from './credentials';
-import { workspaceLabel } from './codexRescuePanel';
+import { registerActivityTab, showActivityPanel, isActivityPanelOpen, postToActivityTab } from './activityPanel';
 import type { AgentActivityItem } from './providers/claude/agentActivity';
 
-// The workflow panel. Since 2026-09-19 it lists the whole project's workflows and reads like the
-// Codex panel — same cards, same rows, same finished-group and trash — by the user's call. The
+// The Workflows tab of the activity panel (activityPanel.ts, 2026-09-30 — it was a panel of its
+// own until then). Since 2026-09-19 it lists the whole project's workflows and reads like the
+// Codex tab — same cards, same rows, same finished-group and trash — by the user's call. The
 // webview's script and stylesheet live in media/workflows.{js,css}, as with the status panel:
 // a script inside a host template literal is invisible to tsc, and one stray backtick there has
 // broken a panel at runtime four times (see project memory).
@@ -62,32 +63,18 @@ export interface WorkflowPanelCallbacks {
     onAgentOpen: (akey: string) => void;
 }
 
-let panel: vscode.WebviewPanel | null = null;
 let callbacks: WorkflowPanelCallbacks | null = null;
 // Last payload actually posted. Polling re-pushes the same data every refresh; skipping an
 // identical one keeps the webview from rebuilding under the user's hands for nothing.
 let lastPushedSignature: string | null = null;
-// Null until the first project scan: the panel then opens on its loading line (see createOrShow).
+// Null until the first project scan: the tab then opens on its loading line (see createOrShow).
 let lastWorkflows: WorkflowView[] | null = null;
 // Agents the user has open. Their rows are re-read while they run, so the host needs to know.
 const openAgents = new Set<string>();
 
-export function isWorkflowPanelOpen(): boolean { return panel !== null; }
+/** Whether the activity panel (which holds this tab) is open, whichever tab it shows. */
+export function isWorkflowPanelOpen(): boolean { return isActivityPanelOpen(); }
 export function getOpenAgentKeys(): string[] { return [...openAgents]; }
-
-function getNonce(): string {
-    let text = '';
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 32; i++) text += chars.charAt(Math.floor(Math.random() * chars.length));
-    return text;
-}
-
-function panelTitle(): string {
-    const v = getDict(creds.getLanguage())['wf.panelTitle'];
-    const base = typeof v === 'string' ? v : 'Claude Workflows';
-    const ws = workspaceLabel();
-    return ws ? `${base} · ${ws.short}` : base;
-}
 
 /**
  * Opens without waiting for the project scan (user's call, 2026-09-25: panels must never open
@@ -98,107 +85,90 @@ export function createOrShowWorkflowPanel(
     workflows: WorkflowView[] | null,
     cb: WorkflowPanelCallbacks
 ): void {
+    attachWorkflowTab(workflows, cb);
+    showActivityPanel(context, 'workflows');
+}
+
+/**
+ * Sets the callbacks and data without creating, revealing or switching to the panel; pushes the
+ * data if the panel is already open. The host calls this for every tab when the panel is created.
+ */
+export function attachWorkflowTab(workflows: WorkflowView[] | null, cb: WorkflowPanelCallbacks): void {
     callbacks = cb;
     if (workflows) lastWorkflows = workflows;
-    if (panel) {
-        panel.reveal(vscode.ViewColumn.Active);
-        if (lastWorkflows) pushWorkflows(lastWorkflows);
-        return;
+    if (lastWorkflows) pushWorkflows(lastWorkflows);
+}
+
+function handleMessage(msg: any): void {
+    const k = typeof msg?.key === 'string' ? msg.key : '';
+    const ak = typeof msg?.akey === 'string' ? msg.akey : '';
+    switch (msg?.type) {
+        case 'ready':
+            postToActivityTab('workflows', { type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
+            lastPushedSignature = null;
+            if (lastWorkflows) pushWorkflows(lastWorkflows);
+            break;
+        case 'delete': if (k) callbacks?.onDelete(k); break;
+        case 'trashOpen': callbacks?.onTrashOpen(); break;
+        case 'restore': if (k) callbacks?.onRestore(k); break;
+        case 'purge': if (k) callbacks?.onPurge(k); break;
+        case 'emptyTrash': callbacks?.onEmptyTrash(); break;
+        case 'agentOpen': if (ak) { openAgents.add(ak); callbacks?.onAgentOpen(ak); } break;
+        case 'agentClose': if (ak) openAgents.delete(ak); break;
     }
-    const mediaUri = vscode.Uri.joinPath(context.extensionUri, 'media');
-    panel = vscode.window.createWebviewPanel(
-        'claudeContextBarWorkflows', panelTitle(), vscode.ViewColumn.Active,
-        { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [mediaUri] }
-    );
+}
+
+function handleDispose(): void {
     lastPushedSignature = null;
     openAgents.clear();
-    panel.webview.html = getHtml(panel.webview, context.extensionUri);
-    panel.onDidDispose(() => { panel = null; lastPushedSignature = null; openAgents.clear(); }, null, context.subscriptions);
-    panel.webview.onDidReceiveMessage((msg) => {
-        const k = typeof msg?.key === 'string' ? msg.key : '';
-        const ak = typeof msg?.akey === 'string' ? msg.akey : '';
-        switch (msg?.type) {
-            case 'ready':
-                panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
-                lastPushedSignature = null;
-                if (lastWorkflows) pushWorkflows(lastWorkflows);
-                break;
-            case 'delete': if (k) callbacks?.onDelete(k); break;
-            case 'trashOpen': callbacks?.onTrashOpen(); break;
-            case 'restore': if (k) callbacks?.onRestore(k); break;
-            case 'purge': if (k) callbacks?.onPurge(k); break;
-            case 'emptyTrash': callbacks?.onEmptyTrash(); break;
-            case 'agentOpen': if (ak) { openAgents.add(ak); callbacks?.onAgentOpen(ak); } break;
-            case 'agentClose': if (ak) openAgents.delete(ak); break;
-        }
-    }, null, context.subscriptions);
 }
 
 export function pushWorkflows(workflows: WorkflowView[]): void {
     lastWorkflows = workflows;
-    if (!panel) return;
+    if (!isActivityPanelOpen()) return;
     const sig = JSON.stringify(workflows);
     if (sig === lastPushedSignature) return;
     lastPushedSignature = sig;
-    panel.webview.postMessage({ type: 'workflows', workflows });
+    postToActivityTab('workflows', { type: 'workflows', workflows });
 }
 
 export function pushWorkflowTrash(items: WorkflowTrashView[]): void {
-    panel?.webview.postMessage({ type: 'trash', items });
+    postToActivityTab('workflows', { type: 'trash', items });
 }
 
 export function pushAgentActivity(akey: string, items: AgentActivityItem[], report: string): void {
-    panel?.webview.postMessage({ type: 'activity', akey, items, report });
+    postToActivityTab('workflows', { type: 'activity', akey, items, report });
 }
 
-export function pushLanguage(): void {
-    if (!panel) return;
-    panel.title = panelTitle();
-    panel.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
-}
-
-function escHtml(s: string): string {
-    return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
-}
-
-function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
-    const nonce = getNonce();
-    const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'workflows.css'));
-    const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'workflows.js'));
-    const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';`;
-    const ws = workspaceLabel();
-    const wsRow = ws
-        ? `  <div class="wspath" title="${escHtml(ws.full)}">${escHtml(ws.full.replace(/\n/g, '   ·   '))}</div>\n`
-        : '';
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="${csp}">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="stylesheet" href="${cssUri}">
-</head>
-<body>
-  <div class="toolbar">
+// The pane's markup. The title and workspace-path rows are gone: the shell shows the path once,
+// above the tabs. Every id carries the tab's prefix (ids are document-wide across the four tabs).
+function bodyHtml(): string {
+    return `  <div class="toolbar">
     <button class="fbtn" data-trash="toggle"><span data-i18n="wf.trash.btn">🗑 Trash</span></button>
     <span class="spacer"></span>
     <span class="flabel" data-i18n="wf.fontSize">Font size</span>
     <button class="fbtn" data-font="dec" data-i18n-title="wf.fontSmaller" title="Smaller">A−</button>
     <button class="fbtn" data-font="inc" data-i18n-title="wf.fontLarger" title="Larger">A+</button>
   </div>
-  <h1 data-i18n="wf.title">⚡ Claude Workflows</h1>
-${wsRow}  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
-  <div id="trash" class="trash" style="display:none">
+  <div class="sub" id="wf-sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
+  <div id="wf-trash" class="trash" style="display:none">
     <div class="trash-head">
       <strong data-i18n="wf.trash.title">Trash</strong>
       <span class="trash-note" data-i18n="wf.trash.note">Deleted workflows stay here until you empty it.</span>
       <span class="spacer"></span>
       <button class="fbtn" data-trash="empty" data-i18n="wf.trash.empty">Empty trash</button>
     </div>
-    <div id="trash-list"></div>
+    <div id="wf-trash-list"></div>
   </div>
-  <div id="list"><div class="empty" data-i18n="wf.loading">Loading…</div></div>
-<script nonce="${nonce}" src="${jsUri}"></script>
-</body>
-</html>`;
+  <div id="wf-list"><div class="empty" data-i18n="wf.loading">Loading…</div></div>
+`;
 }
+
+registerActivityTab({
+    id: 'workflows',
+    css: 'workflows.css',
+    js: 'workflows.js',
+    bodyHtml,
+    onMessage: handleMessage,
+    onDispose: handleDispose,
+});

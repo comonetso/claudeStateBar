@@ -1,6 +1,6 @@
 # Claude Code & Codex Status Bar
 
-**Claude Code and OpenAI Codex, side by side in your VS Code status bar** — per‑session context usage, model and effort, task‑complete beeps, and account limits (Claude.ai 5‑hour session & weekly, Codex 5‑hour & weekly usage), with live Workflow/Agent and background‑task panels, status‑bar dots for work still running, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.
+**Claude Code and OpenAI Codex, side by side in your VS Code status bar** — per‑session context usage, model and effort, task‑complete beeps, and account limits (Claude.ai 5‑hour session & weekly, Codex 5‑hour & weekly usage), with a live activity panel for workflows, agents, background tasks and Codex runs, status‑bar dots for work still running, Remote‑SSH support, Telegram reset alerts, and a bilingual settings panel.
 
 [![GitHub stars](https://img.shields.io/github/stars/comonetso/claudeStateBar?style=social)](https://github.com/comonetso/claudeStateBar)
 
@@ -157,9 +157,22 @@ Local and remote read paths were verified to produce identical parsed results �
 
 ---
 
+## 🗂 Activity panel
+
+Since 1.17.2 the views of work going on behind the conversation — workflows and sub-agents, background tasks, Codex progress and Codex chat — are tabs of one panel, **Claude Activity**, instead of four separate panels. The session menu has a single **Activity** entry where it used to list four.
+
+- **What is running shows on each tab** — a tab with something running shows a spinning icon and a count, in the colour of its status-bar dot. A tab with nothing running shows its usual icon. The Workflows count is the number of agents running, sub-agents included, so three sub-agents launched together count as 3. Background counts running tasks, long ordinary commands included; Codex progress counts runs that have not finished; Codex chat counts conversations waiting on an answer
+- **The menu entry** — sums up the same counts, for example `Workflows 3 · Codex 1 running`, and reads `all done` when nothing is running (`none running` when there is nothing to list at all). Choosing it opens the first tab with something running, or else the tab you last looked at in this workspace
+- **Other ways in** — `claudeStateBar: Show Claude Activity` in the command palette does the same. The older commands (`Show Claude Workflows`, `Show Claude Background Tasks`, `Show Codex Runs`, `Codex Chat Panel`) still work and open their own tab, and clicking a status-bar dot opens its tab
+- **Ctrl+Tab** — while the panel is in front, Ctrl+Tab and Ctrl+Shift+Tab move to the next and previous tab. With the focus in the panel's content (it moves there when the panel opens or a tab is clicked) this works even if your keybindings.json binds Ctrl+Tab to something else; with the focus elsewhere, such a binding of your own wins. Anywhere else Ctrl+Tab switches editors as usual; with the panel in front, Ctrl+PageUp/PageDown still does
+- **Codex tabs** — shown only when `codex_rescue` is installed, as the menu entries they replace were
+- **Each tab keeps its own state** — font size, scroll position and open cards. The tabs work as the sections below describe. While the panel is open all four tabs are kept up to date, so a tab's count matches what it lists
+
+---
+
 ## 🎬 Workflow & Task Agent viewer panel
 
-Open it from the session menu, or with `claudeStateBar: Show Claude Workflows` in the command palette. It lists this project's Claude Code workflows and Task (Agent tool) sub‑agents — every session, not only the one you clicked — newest first, up to 20. Since 1.16.8 it looks and behaves like the [Codex progress panel](#-codex-progress-panel-optional) below:
+This is the first tab of the [activity panel](#-activity-panel); `claudeStateBar: Show Claude Workflows` in the command palette opens the panel on it. It lists this project's Claude Code workflows and Task (Agent tool) sub‑agents — every session, not only the one you clicked — newest first, up to 20. Since 1.16.8 it looks and behaves like the [Codex progress panel](#-codex-progress-panel-optional) below:
 
 - **Cards** — each workflow is a card with its name, start date and time, elapsed or total time, and a status badge. Everything starts folded. Finished workflows go into a single "N finished" row, itself folded, which also says how many were stopped; one you watched while it ran stays outside that row until you close the panel
 - **Earlier sessions too** — a workflow from yesterday's conversation is still there. The card says which session it ran in, and whether that session is open right now. If a session has been idle past `hideAfter`, any agent it left marked as running is shown as stopped
@@ -176,14 +189,14 @@ Open it from the session menu, or with `claudeStateBar: Show Claude Workflows` i
 
 ## ⏳ Background task panel
 
-Open it from the session menu, right under the workflows, or with `claudeStateBar: Show Claude Background Tasks` in the command palette. It answers two questions about the sessions shown on the status bar (those active within `hideAfter`, 24 hours by default) — what Claude ran in the background, and which commands took long — as two groups:
+This is the activity panel's second tab; `claudeStateBar: Show Claude Background Tasks` in the command palette opens the panel on it. It answers two questions about the sessions shown on the status bar (those active within `hideAfter`, 24 hours by default) — what Claude ran in the background, and which commands took long — as two groups:
 
 - **Background** — commands Claude Code ran with `run_in_background`, and the monitors it started. An ordinary command that Claude Code moved to the background after its time limit is listed here too, from its start. A chip tells a command from a monitor
 - **Long commands** — ordinary commands that ran for more than 2 minutes. On the machines checked that was about 1 command in 250
 
-Each group folds under a header that shows how many are running and finished. The phone's remote-control view mixes workflows into its background list; here they keep their own panel above, and commands started by a workflow's agents are left out. So is the background command Claude uses to hand a problem to Codex through `codex_rescue` — the Codex progress panel shows that run.
+Each group folds under a header that shows how many are running and finished. The phone's remote-control view mixes workflows into its background list; here they keep their own tab, and commands started by a workflow's agents are left out. So is the background command Claude uses to hand a problem to Codex through `codex_rescue` — the Codex progress panel shows that run.
 
-- **Running tasks** — each card shows the task's description, how long it has been running and the command. A background task also shows its output so far: the box follows new lines while you are scrolled to the bottom, and while the panel is open the output is re-read every 2 seconds. An ordinary command appears once it passes 2 minutes and has no output to show yet — Claude Code only records it when the command ends — so its card says Claude is waiting for it
+- **Running tasks** — each card shows the task's description, how long it has been running and the command. A background task also shows its output so far: the box follows new lines while you are scrolled to the bottom, and while this tab is showing the output is re-read every 2 seconds. An ordinary command appears once it passes 2 minutes and has no output to show yet — Claude Code only records it when the command ends — so its card says Claude is waiting for it
 - **Finished tasks** — each group folds its finished tasks into one row, newest first, up to 10 per group. Each says whether it completed, failed (with the exit code) or was stopped; open one to see its command and output. A task you watched while it ran stays outside that row until you close the panel. 🗑 on a row clears that group's finished tasks from the list without touching any file; this is remembered per workspace
 - **When a task counts as finished** — a background task, when Claude Code's notice that it ended is in the conversation, when Claude stopped it with TaskStop (which sends no such notice; the task then shows as completed, without the finish chime), or when its output file already ends with `[exited with code N]`; with none of these it stays "running", so one whose session ended before it did can read as running until that session drops off the status bar. An ordinary command, when its result is in the conversation
 - **Output that is gone** — Claude Code keeps a background task's output in a temporary folder that is often cleared later, and the card then says so. A monitor still shows the events it reported. An ordinary command's output lives in the conversation itself, so it stays
@@ -201,7 +214,7 @@ Up to three coloured dots at the front of this extension's status-bar items, jus
 - **Grey** — a background task in those sessions is running: a `run_in_background` command or a monitor. Long ordinary commands don't light it, and neither does Claude's own background call to Codex — that run shows as blue
 - **Blue** — a run in the [Codex progress panel](#-codex-progress-panel-optional) is running. One the panel shows as not responding, such as a run cut off when the window reloaded mid-run, doesn't light it
 - **Only while running** — a dot appears when its kind starts and disappears when it ends. When all three run they sit side by side in that order, as close together as the status bar allows
-- **Hover and click** — the tooltip lists what is running: each workflow's or sub-agent batch's name and how many of its agents are done, each command's description and start time, each Codex run's subject and mode. Clicking a dot opens that panel
+- **Hover and click** — the tooltip lists what is running: each workflow's or sub-agent batch's name and how many of its agents are done, each command's description and start time, each Codex run's subject and mode. Clicking a dot opens its tab in the [activity panel](#-activity-panel)
 - **How quickly they follow** — orange and grey follow the status-bar refresh (a changed conversation file, or every 30 seconds by default); blue follows the Codex scan, which runs every 2 seconds while a run is live
 - **Colours** — each dot has a shade per theme kind (dark, light, high contrast) chosen to stand out on the status bar: all three measure at least 5:1 against the status bar on VS Code's six default themes. To change one, set `claudeContextBar.workflowDot`, `claudeContextBar.backgroundDot` or `claudeContextBar.codexDot` under `workbench.colorCustomizations`, for example `"workbench.colorCustomizations": { "claudeContextBar.workflowDot": "#FF8800" }`
 
@@ -213,9 +226,9 @@ When Claude Code hands a problem to Codex for a second opinion, Codex runs for m
 
 It needs the [`codex_rescue`](skills/codex_rescue/) skill for Claude Code, which is not bundled with this extension — the skill runs `codex exec` with write access to your workspace, and that shouldn't arrive as a side effect of installing a status-bar extension. Installation and usage are in [the guide](docs/codex-rescue-guide.md) ([한국어](docs/codex-rescue-guide.ko.md)).
 
-Since 1.16.0 the skill is also a Claude Code plugin, and that is the recommended way to install it: run `/plugin marketplace add comonetso/claudeStateBar`, then `/plugin install codex-rescue@comonetso` inside Claude Code. The extension finds either kind of install. If you copied the skill into `~/.claude/skills/codex_rescue/` earlier, that copy keeps working but no longer updates by itself, so each new window shows a notice recommending the switch until you pick "Don't show again". Once the plugin is installed, the same notice offers to move the old copy to the trash. Marketplaces outside Anthropic's own don't auto-update by default, so the extension checks whether auto-update is on for `comonetso` on the machine a window points at — this PC in a local window, the server in a Remote-SSH window. If it is off, a notice offers **Turn on**, which adds `"autoUpdate": true` to that machine's `~/.claude/settings.json` (creating the marketplace entry if needed) after backing the file up; **Don't show again here** is remembered per machine. While it stays off, the session menu's Codex section has an entry that does the same. The change takes effect when Claude Code restarts. The setting belongs to the marketplace, so the notice also appears when only peer_req or browser_check (below) is installed, and it keeps all three plugins current.
+Since 1.16.0 the skill is also a Claude Code plugin, and that is the recommended way to install it: run `/plugin marketplace add comonetso/claudeStateBar`, then `/plugin install codex-rescue@comonetso` inside Claude Code. The extension finds either kind of install. If you copied the skill into `~/.claude/skills/codex_rescue/` earlier, that copy keeps working but no longer updates by itself, so each new window shows a notice recommending the switch until you pick "Don't show again". Once the plugin is installed, the same notice offers to move the old copy to the trash. Marketplaces outside Anthropic's own don't auto-update by default, so the extension checks whether auto-update is on for `comonetso` on the machine a window points at — this PC in a local window, the server in a Remote-SSH window. If it is off, a notice offers **Turn on**, which adds `"autoUpdate": true` to that machine's `~/.claude/settings.json` (creating the marketplace entry if needed) after backing the file up; **Don't show again here** is remembered per machine. While it stays off, the session menu has an entry that does the same, right below Activity. The change takes effect when Claude Code restarts. The setting belongs to the marketplace, so the notice also appears when only peer_req or browser_check (below) is installed, and it keeps all three plugins current.
 
-With the skill installed, open it from the status-bar menu or `claudeStateBar: Show Codex Runs`. Each run is one card:
+With the skill installed, it is the Codex progress tab of the [activity panel](#-activity-panel); `claudeStateBar: Show Codex Runs` opens the panel on it. Each run is one card:
 
 - **What Codex just said** — its own narration of what it's about to do, far more useful than a spinner
 - **Commands, searches, file changes, MCP calls** — colour-coded by kind, commands with their exit code. Runs of consecutive successful commands or searches fold into one line you can expand; **failures never fold**, so they stay visible
@@ -342,14 +355,15 @@ Works over Remote-SSH. Run records are read from the remote workspace through `v
 
 `codex_rescue` also has a short back-and-forth mode. Unlike the one above — write a request, wait a few minutes — you throw a line at Codex mid-conversation and get an answer in about ten seconds. That answer lands straight in the Claude Code chat window, but once a conversation runs a few turns those turns end up scattered between everything else that was said. This panel puts one conversation back on **one screen**.
 
-It sits directly below the progress panel. One conversation is one card, and the newest opens expanded — re-reading almost always means the one that just happened.
+It is the activity panel's tab next to Codex progress. One conversation is one card, and the newest of this session opens expanded — re-reading almost always means the one that just happened.
 
+- **Earlier conversations fold away** — a conversation with no turn since this session began folds into one "N from earlier sessions" row, closed each time the panel opens. This session starts when the earliest Claude conversation the status bar shows for this workspace started, since a chat document does not record which conversation wrote it. With no such conversation on the status bar, every chat counts as an earlier one
 - **Who spoke reads as colour first** — Claude in orange, Codex in blue, matching the provider glyphs in the status bar
 - **Turn count and the machine it started on** — conversation documents travel through git; Codex sessions do not. A conversation started on another PC cannot be resumed here, so the card names that machine
 - **Breaks stay visible** — where a run died and the thread was discarded, or where a new conversation replaced the old one. Without those markers there is no way to tell why the context suddenly changed
 - **The question shows first** — during the 7–13 seconds a turn is in flight, the line just thrown appears on the card immediately and Codex's side reads as waiting for an answer. The answer fills that slot when it lands. A card is created even on a conversation's first turn, before the document exists
 - **It follows new turns down** — if you are at the bottom, the view keeps up on its own. If you have scrolled up to reread an older turn it does not move the page; a **New reply ↓** button appears instead, so you keep your place and still know something arrived
-- **One turn reads as the current one** — the rest fold down to the first line of their question. Which turn that is depends on why you are looking: opening the panel, or a conversation you have not looked at this session, opens its **first** turn, because you read a past conversation from the top. A turn arriving in a conversation you are already watching opens that **last** turn instead. Turns you opened or folded by hand are left exactly as you set them
+- **One turn reads as the current one** — the rest fold down to the first line of their question. Which turn that is depends on why you are looking: the first time the tab shows, or a conversation you have not looked at this session, opens its **first** turn, because you read a past conversation from the top. A turn arriving in a conversation you are already watching opens that **last** turn instead. Turns you opened or folded by hand are left exactly as you set them
 - Click the document name to open the original in an editor
 
 Ping-pong turns never appear in the progress panel. That one is for watching work that takes minutes, and ten-second exchanges piling up there would only get in the way.
@@ -528,7 +542,7 @@ Afterwards it verifies a window actually opened by watching `resetsAt` come to a
 When VS Code updates the extension while a window is open, the old instance's status‑bar items can remain as unresponsive "zombie" pixels. Claude Code & Codex Status Bar handles this two ways:
 
 1. **Version‑change detection** — on activation, if the version changed since last run, a one‑time "Reload window to clear stale items?" notice appears.
-2. **QuickPick cleanup** — the session menu always contains a **🗑 Clean up stale/zombie items (Reload Window)** option.
+2. **QuickPick cleanup** — the session menu always ends with a **🗑 Clean up stale/zombie items (Reload Window)** option.
 
 ---
 

@@ -1,13 +1,14 @@
 import * as vscode from 'vscode';
 import { getDict } from './i18n';
 import * as creds from './credentials';
-import { workspaceLabel } from './codexRescuePanel';
+import { registerActivityTab, showActivityPanel, isActivityPanelOpen, postToActivityTab } from './activityPanel';
 
-// The background task panel, in the sessions the status bar shows: commands Claude ran with
+// The Background tab of the activity panel (activityPanel.ts, 2026-09-30 — it was a panel of its
+// own until then), in the sessions the status bar shows: commands Claude ran with
 // `run_in_background` and monitors in one group, ordinary commands that ran long in another. The
 // point, in the user's words (2026-09-22), is to see what ran in the background and which commands
 // took long. Modelled on the remote-control view's background list minus what that list mixes
-// in — workflows keep their own panel, and commands a workflow's agents started are left out. It
+// in — workflows keep their own tab, and commands a workflow's agents started are left out. It
 // only watches: nothing on disk records a process id, so there is no safe way to stop a task from
 // here. The script and stylesheet live in media/bgtasks.{js,css}, for the reason workflowPanel.ts gives.
 
@@ -58,120 +59,89 @@ export interface BgTaskPanelCallbacks {
     onClose: (key: string) => void;
 }
 
-let panel: vscode.WebviewPanel | null = null;
 let callbacks: BgTaskPanelCallbacks | null = null;
 let lastPushedSignature: string | null = null;
-// Null until the first scan: the panel then opens on its loading line (see createOrShow).
+// Null until the first scan: the tab then opens on its loading line (see createOrShow).
 let lastData: BgTaskPanelData | null = null;
 const openCards = new Set<string>();
 
-export function isBgTaskPanelOpen(): boolean { return panel !== null; }
+/** Whether the activity panel (which holds this tab) is open, whichever tab it shows. */
+export function isBgTaskPanelOpen(): boolean { return isActivityPanelOpen(); }
 export function getOpenBgTaskKeys(): string[] { return [...openCards]; }
-
-function getNonce(): string {
-    let text = '';
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 32; i++) text += chars.charAt(Math.floor(Math.random() * chars.length));
-    return text;
-}
-
-function panelTitle(): string {
-    const v = getDict(creds.getLanguage())['bg.panelTitle'];
-    const base = typeof v === 'string' ? v : 'Claude Background Tasks';
-    const ws = workspaceLabel();
-    return ws ? `${base} · ${ws.short}` : base;
-}
 
 /**
  * Opens without waiting for a scan (user's call, 2026-09-25: panels must never open late). Pass
- * what is already known, or null; the caller scans and `pushBgTasks` fills the panel in.
+ * what is already known, or null; the caller scans and `pushBgTasks` fills the tab in.
  */
 export function createOrShowBgTaskPanel(
     context: vscode.ExtensionContext,
     data: BgTaskPanelData | null,
     cb: BgTaskPanelCallbacks
 ): void {
+    attachBgTaskTab(data, cb);
+    showActivityPanel(context, 'background');
+}
+
+/**
+ * Sets the callbacks and data without creating, revealing or switching to the panel; pushes the
+ * data if the panel is already open. The host calls this for every tab when the panel is created.
+ */
+export function attachBgTaskTab(data: BgTaskPanelData | null, cb: BgTaskPanelCallbacks): void {
     callbacks = cb;
     if (data) lastData = data;
-    if (panel) {
-        panel.reveal(vscode.ViewColumn.Active);
-        if (lastData) pushBgTasks(lastData);
-        return;
+    if (lastData) pushBgTasks(lastData);
+}
+
+function handleMessage(msg: any): void {
+    const k = typeof msg?.key === 'string' ? msg.key : '';
+    switch (msg?.type) {
+        case 'ready':
+            postToActivityTab('background', { type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
+            lastPushedSignature = null;
+            if (lastData) pushBgTasks(lastData);
+            break;
+        case 'clearFinished':
+            if (msg?.group === 'background' || msg?.group === 'long') callbacks?.onClearFinished(msg.group);
+            break;
+        case 'open': if (k) { openCards.add(k); callbacks?.onOpen(k); } break;
+        case 'close': if (k) { openCards.delete(k); callbacks?.onClose(k); } break;
     }
-    const mediaUri = vscode.Uri.joinPath(context.extensionUri, 'media');
-    panel = vscode.window.createWebviewPanel(
-        'claudeContextBarBgTasks', panelTitle(), vscode.ViewColumn.Active,
-        { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [mediaUri] }
-    );
+}
+
+function handleDispose(): void {
     lastPushedSignature = null;
     openCards.clear();
-    panel.webview.html = getHtml(panel.webview, context.extensionUri);
-    panel.onDidDispose(() => { panel = null; lastPushedSignature = null; openCards.clear(); }, null, context.subscriptions);
-    panel.webview.onDidReceiveMessage((msg) => {
-        const k = typeof msg?.key === 'string' ? msg.key : '';
-        switch (msg?.type) {
-            case 'ready':
-                panel?.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
-                lastPushedSignature = null;
-                if (lastData) pushBgTasks(lastData);
-                break;
-            case 'clearFinished':
-                if (msg?.group === 'background' || msg?.group === 'long') callbacks?.onClearFinished(msg.group);
-                break;
-            case 'open': if (k) { openCards.add(k); callbacks?.onOpen(k); } break;
-            case 'close': if (k) { openCards.delete(k); callbacks?.onClose(k); } break;
-        }
-    }, null, context.subscriptions);
 }
 
 export function pushBgTasks(data: BgTaskPanelData): void {
     lastData = data;
-    if (!panel) return;
+    if (!isActivityPanelOpen()) return;
     const sig = JSON.stringify(data);
     if (sig === lastPushedSignature) return;
     lastPushedSignature = sig;
-    panel.webview.postMessage({ type: 'tasks', data });
+    postToActivityTab('background', { type: 'tasks', data });
 }
 
-export function pushBgTaskLanguage(): void {
-    if (!panel) return;
-    panel.title = panelTitle();
-    panel.webview.postMessage({ type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
-}
-
-function escHtml(s: string): string {
-    return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
-}
-
-function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
-    const nonce = getNonce();
-    const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'bgtasks.css'));
-    const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'bgtasks.js'));
-    const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';`;
-    const ws = workspaceLabel();
-    const wsRow = ws
-        ? `  <div class="wspath" title="${escHtml(ws.full)}">${escHtml(ws.full.replace(/\n/g, '   ·   '))}</div>\n`
-        : '';
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="${csp}">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="stylesheet" href="${cssUri}">
-</head>
-<body>
-  <div class="toolbar">
+// The pane's markup. The title and workspace-path rows are gone: the shell shows the path once,
+// above the tabs. Every id carries the tab's prefix (ids are document-wide across the four tabs).
+function bodyHtml(): string {
+    return `  <div class="toolbar">
     <span class="spacer"></span>
     <span class="flabel" data-i18n="wf.fontSize">Font size</span>
     <button class="fbtn" data-font="dec" data-i18n-title="wf.fontSmaller" title="Smaller">A−</button>
     <button class="fbtn" data-font="inc" data-i18n-title="wf.fontLarger" title="Larger">A+</button>
   </div>
-  <h1 data-i18n="bg.title">⏳ Claude Background Tasks</h1>
-${wsRow}  <div class="scope" id="scope"></div>
-  <div class="sub" id="sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
-  <div id="list"><div class="empty" data-i18n="wf.loading">Loading…</div></div>
-<script nonce="${nonce}" src="${jsUri}"></script>
-</body>
-</html>`;
+  <div class="scope" id="bg-scope"></div>
+  <div class="sub" id="bg-sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
+  <div id="bg-list"><div class="empty" data-i18n="wf.loading">Loading…</div></div>
+`;
 }
+
+registerActivityTab({
+    id: 'background',
+    css: 'bgtasks.css',
+    js: 'bgtasks.js',
+    bodyHtml,
+    onMessage: handleMessage,
+    onDispose: handleDispose,
+});
