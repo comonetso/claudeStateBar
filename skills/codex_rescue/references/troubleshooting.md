@@ -55,7 +55,7 @@ sandbox = "unelevated"
 
 ## The response was saved as `author: codex-via-stdout`
 
-The plumbing worked but Codex couldn't write the file — the sandbox issue above or a path permission (check the owner item first). Read the content to tell a failure report from a real analysis.
+The plumbing worked but Codex couldn't write the file — the sandbox issue above or a path permission (on Windows, check the folder-owner item first; that item is Windows-only). Read the content to tell a failure report from a real analysis.
 
 ## The response was reported as `stale`
 
