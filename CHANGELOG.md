@@ -19,6 +19,10 @@ resting colour as a session item, and its glyph the light blue of a Codex sessio
 A workflow whose end notice arrived while Claude was answering could stay listed as running in the
 workflow panel. That kind of notice is now read too.
 
+A running agent's time in the workflow panel stood still while the agent waited on a command or was
+thinking, because it was measured to the agent's last log entry. It now counts from the agent's start
+to now and ticks every second. Finished agents still show how long they took.
+
 In the Codex panel, a run with follow-ups was timed by its last turn only: the card clock restarted with
 every follow-up, so a six-turn run that took 43 minutes showed 1:20. The card clock now runs from the
 first turn to the end of the last, with Codex's own working time beside it, and each turn header shows

@@ -1,16 +1,16 @@
-# 「이 기능 전체 흐름 시험해」 · 「처음부터 끝까지 해 봐」
+# "Test this feature's whole flow" · "Run it from start to finish"
 
-전제: SKILL.md §0~§2.
+Prerequisite: SKILL.md §0–§2.
 
-## 절차
-1. **계획서 먼저**: 단계 목록 · 단계마다 기대 결과 · **데이터를 바꾸는 단계 표시** → 승인(시험 계정·시험 데이터·정리 방법까지).
-2. 준비: 영구 세션(`scripts/session/drv.py`) · 첫 줄로 `kit/head.js` 전송(`K` 가 globalThis 에 남음) · 로그인 앱이면 기록기 v2.1 · `K.prep` · `K.wake`.
-3. 단계마다: `__diag.mark(단계)` → 조작 → 같은 옵션 스냅샷 `diff` → `dump({since})` → 필요하면 `K.img`. 입력 규칙(action.md) 준수. **한 줄 50초 이내**(영구 세션도 60초 절단이면 세션·탭·변수 전부 잃음).
-4. 화면 이동은 SPA 링크 click 또는 `pushState`(회전 없음). 주소는 `K.href`.
-5. 정리: 만든 데이터 삭제(승인 범위) · 흉내 되돌림(폭·미디어·CPU) · `K.safeClose` · `listBrowserTabs()` 에서 자기 탭 0(연 탭의 `targetId` 로 센다).
+## Steps
+1. **Plan first**: the step list · the expected result of each step · **which steps change data** → approval (test account, test data and how to clean up included).
+2. Setup: persistent session (`session/drv.py`; not on Windows — SKILL.md §3) · send `kit/head.js` as the first line (`K` stays on globalThis) · recorder v2.1 for logged-in apps · `K.prep` · `K.wake`.
+3. Each step: `__diag.mark(step)` → action → a snapshot with the same options + `diff` → `dump({since})` → `K.img` if needed. Follow the input rules in action.md. **≤ 50 s per line** (a 60 s cut kills the persistent session too — session, tabs and variables are all lost).
+4. Move between screens with SPA link clicks or `pushState` (no rotation). Read the URL with `K.href`.
+5. Clean up: delete the data created (within the approval) · revert emulation (width/media/CPU) · `K.safeClose` · confirm 0 own tabs in `listBrowserTabs()` (count by the opened tabs' `targetId`).
 
-## 판정
-단계마다 기대 = 실제 · 오류·실패 요청 0 · 다른 탭 동기화(해당 시).
+## Verdict
+Expected = actual at every step · 0 errors and failed requests · other tabs in sync (where it applies).
 
-## 보고
-단계표(`행동 · 기대 · 실제 · 증거(diff·rid·캡처)`) + 발견 결함 + 정리 확인.
+## Report
+Step table (`action · expected · actual · evidence (diff · rid · capture)`) + defects found + cleanup confirmed.

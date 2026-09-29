@@ -91,6 +91,15 @@
       const label = doneEnd ? t('wf.took') : t('wf.elapsed');
       el.textContent = '🕘 ' + fmtClock(started) + ' · ' + label + fmtElapsed(elapsed);
     });
+    document.querySelectorAll('.dur[data-astart]').forEach(function (el) {
+      el.textContent = t('wf.elapsed') + fmtDur(runningMs(Number(el.getAttribute('data-astart')), Number(el.getAttribute('data-span')), now));
+    });
+  }
+  // A running agent's clock counts from its first log entry to now. The first→last entry span
+  // stands still while the agent waits on a command or thinks, since nothing is written then.
+  // The span is the floor, so a host clock a little ahead of this one never runs it backwards.
+  function runningMs(started, span, now) {
+    return Math.max(span || 0, started ? now - started : 0);
   }
   setInterval(tick, 1000);
 
@@ -196,8 +205,10 @@
   }
 
   function renderAgent(a, label, title) {
-    const dur = fmtDur(a.durationMs);
-    const durStr = dur ? '<span class="dur">' + (a.status === 'running' ? esc(t('wf.elapsed')) : '') + dur + '</span>' : '';
+    const running = a.status === 'running';
+    const dur = fmtDur(running ? runningMs(a.startedAt, a.durationMs, Date.now()) : a.durationMs);
+    const clock = running && a.startedAt ? ' data-astart="' + a.startedAt + '" data-span="' + (a.durationMs || 0) + '"' : '';
+    const durStr = dur ? '<span class="dur"' + clock + '>' + (running ? esc(t('wf.elapsed')) : '') + dur + '</span>' : '';
     const stoppedTag = a.status === 'stopped' ? '<span class="stopped-tag">' + esc(t('wf.stopped')) + '</span>' : '';
     const model = a.model ? '<span class="a-model">' + esc(a.model) + '</span>' : '';
     const tok = a.tokens

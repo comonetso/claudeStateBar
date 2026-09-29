@@ -1,11 +1,11 @@
-# 「로그인 풀렸어」 · 「왜 튕겨」
+# "I got logged out" · "Why did it kick me out"
 
-🔴 **로그인 앱 탭을 새로 열지 마라** — 여는 것 자체가 토큰 회전이라 증거를 바꾼다. 재로그인은 사람이(채우기 메뉴 자동 제출 위험).
+🔴 **Don't open a new tab on the logged-in app** — opening one rotates the token and changes the evidence. Logging back in is the human's job (autofill auto-submit risk).
 
-## 절차
-1. 서버 증거: 세션 표에서 그 가족의 행 — `revoke_reason`(`reuse_detected` 면 응답 유실형) · `rotated_at IS NULL` 인 마지막 회전 행 · 회수 시각. API 로그의 401·소켓 종료 코드. 우리 쪽 에이전트 작업 기록(그 시각에 탭을 닫았는지 · 60초 절단 · repl fetch 인증 창구 호출 · 채우기 메뉴 클릭).
-2. PC 쪽은 `listBrowserTabs()` **목록만**(붙지 않음) — 어떤 탭이 열려 있었나.
-3. 원인 분류: ① 응답 유실(에이전트 탭 조기 닫힘 · 60초 절단 · repl fetch) ② 새 로그인으로 옛 세션 회수(채우기 자동 제출 · 다른 기기) ③ 만료·서버 정책.
+## Steps
+1. Server evidence: the server's session / refresh-token records for that token family — the revocation reason (e.g. `revoke_reason = 'reuse_detected'` ⇒ a lost response) · the last rotation row (e.g. `rotated_at IS NULL`) · the revocation time. 401s and socket close codes in the API logs. Our own agent activity (a tab closed at that moment · a 60 s cut · a repl fetch to an auth endpoint · an autofill menu click).
+2. On the PC, `listBrowserTabs()` **list only** (don't attach) — which tabs were open.
+3. Classify: ① lost response (agent tab closed early · 60 s cut · repl fetch) ② old session revoked by a new login (autofill auto-submit · another device) ③ expiry or server policy.
 
-## 보고
-시각표(회전·회수·탭 닫힘) · 원인 · 재발 방지(SKILL.md §1 어느 규칙이 깨졌나) · 사람에게 재로그인 요청.
+## Report
+Timeline (rotation · revocation · tab closed) · cause · prevention (which SKILL.md §1 rule was broken) · ask the human to log in again.

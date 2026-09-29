@@ -1,68 +1,76 @@
 ---
 name: browser_check
-description: 사용자 PC 의 실제 웹 브라우저(Aside/Chromium) 화면을 직접 열어 보고·눌러 보고·진단한다 — 서버에서든 PC 자체에서든. "브라우저 체크/브라우저 첵/브라우저 책", "화면 확인해 봐/화면 좀 봐/실제 화면 봐 줘/페이지 봐 봐", "CSS 깨졌는지 봐/씨에스에스 오류/스타일 깨짐/레이아웃 이상해", "콘솔 에러 봐/컨솔 오류/자바스크립트 에러", "API 실패 봐/에이피아이 오류/요청 실패/네트워크 봐", "반응형 봐/모바일에서 어떻게 보여/좁은 화면", "다크모드 확인/테마 봐", "접근성 점검/접근성 봐", "성능 봐/느린지 봐/느려", "이 버튼 눌러 봐/클릭해 봐/눌러서 확인", "실시간 동기화 확인/두 탭 같이 바뀌나", "로그인 풀렸어/로그아웃 됐어/왜 튕겨", "전체 흐름 시험해/처음부터 끝까지 해 봐" 같은 한국어 자연어(STT 받아쓰기 변형 포함)에 발동한다. 웹 페이지·화면·브라우저의 실제 동작을 보라는 뜻일 때만 — 소스나 서버 로그만 보는 코드 리뷰, 일반 질문에는 발동하지 않는다.
+description: Look at, click through and diagnose the user's real browser (Aside/Chromium) on their PC, from a server or the PC — screen, CSS, console/network errors, responsive/dark mode, accessibility, performance, realtime sync, logouts, whole flows. Only when a page's real behaviour must be checked, not for source or logs alone. Korean triggers (incl. speech-to-text variants): "브라우저 체크/브라우저 첵/브라우저 책", "화면 확인해 봐/화면 좀 봐/실제 화면 봐 줘/페이지 봐 봐", "CSS 깨졌는지 봐/씨에스에스 오류/스타일 깨짐/레이아웃 이상해", "콘솔 에러 봐/컨솔 오류/자바스크립트 에러", "API 실패 봐/에이피아이 오류/요청 실패/네트워크 봐", "반응형 봐/모바일에서 어떻게 보여/좁은 화면", "다크모드 확인/테마 봐", "접근성 점검/접근성 봐", "성능 봐/느린지 봐/느려", "이 버튼 눌러 봐/클릭해 봐/눌러서 확인", "실시간 동기화 확인/두 탭 같이 바뀌나", "로그인 풀렸어/로그아웃 됐어/왜 튕겨", "전체 흐름 시험해/처음부터 끝까지 해 봐".
 ---
 
-# browser_check — 실제 브라우저를 직접 보고 누르고 진단한다
+# browser_check — look at, operate and diagnose the real browser
 
-> 이 스킬의 이유: 서버 로그와 소스만 보고 "시험 통과"라고 보고하면 화면의 구멍은 사용자가 찾게 된다. 사용자 대신 **실제 브라우저에서 직접 확인**한 것만 "확인했다"고 말한다.
-> 근거는 전부 실측이다(2026-09-26, 서버→PC 원격 12마리 전수 시험 + Codex 컨설팅). 매뉴얼과 실측이 다르면 실측을 따른다.
+> Why: a "tests pass" report built from server logs and source leaves the holes on screen for the user to find. Say "verified" only for what you checked **in the real browser**.
+> Every rule here comes from measurement (2026-09-26: 12 remote server→PC runs plus a Codex consult). Where a manual and a measurement disagree, follow the measurement.
 
-## 0. 시작 — 매번, 순서대로
-1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/browser-check.mjs" doctor --json` — 설정·통로(A/B/C)를 읽는다. **설정을 바꾸거나 브라우저·Aside 를 켜지 않는다.** 통로가 없으면 표를 그대로 보고하고 멈춘다(원격이 `disabled`·`offline` 이면 사용자가 PC 에서 켜야 한다).
-   - **설정이 없으면(`config file not found`) 먼저 `setup --json`** — 이 기기를 살펴(Aside CLI · 실행 중인 Aside 의 포트 · 터널 소켓 · `aside host list`) 설정 파일을 만들고 넣은 값(`notes`)을 돌려준다. **넣은 값을 사용자에게 보여 준 뒤** 진행한다. 이미 있는 설정은 건드리지 않는다.
-   - `choose-host` 면 `candidates`(원격 PC 목록)를 보여 주고, 사용자가 고른 이름으로 `setup --remote-host "<이름>"`. 네가 고르지 마라.
-   - `not-ready` 면 `todo`(Aside 설치·로그인, 터널, Aside 브라우저 켜기 등 사람이 할 일)를 그대로 전하고 멈춘다.
-2. 대상을 분류한다: 주소(개발/운영) · **로그인된 사이트인가**(설정 `sites[].login`) · 데이터를 바꾸는 일인가 · 어느 레시피인가.
-3. 로그인 사이트면 §1 의 토큰 규칙을 먼저 읽는다. 데이터 변경이면 **먼저 계획(무엇을·어디에·정리 방법)을 보이고 승인**을 받는다.
+Language: talk to the user in the user's language, report labels in §5 included.
 
-## 1. 🔴 절대 안전 규칙 — 어기면 사용자 작업이 망가진다(전부 실사고·실측 근거)
-- **자기 탭만**: `openTab` 으로 연 탭만 쓴다. `attachBrowserTab`·`attachActiveBrowserTab` 금지(사용자 탭). `page.close()` 대신 `closeTab(tab)`.
-- **로그인 사이트 탭은 진행 중 요청 0 을 확인한 뒤에만 닫는다**(`K.safeClose`). 탭을 요청 도중 닫아 refresh 응답이 유실되면 서버가 도난으로 보고 **사용자 로그인 전체를 끊는다**(실사고). 새로고침·새 탭·같은 출처 iframe 은 전부 토큰 회전을 부른다 — 화면 이동은 SPA 이동으로, 반응형은 CDP 에뮬레이션으로.
-- **한 호출 50초 · evaluate 25초 이내**(원격 한도 약 60초 — 넘기면 출력 전부 유실, 영구 세션은 통째로 죽음). 단계마다 `K.G` 시간 가드.
-- **Aside 채우기 메뉴(`aside-inline-menu`)를 누르지 마라** — 채운 뒤 로그인 버튼을 **스스로 눌러** 기존 세션을 회수한다. 로그인·비밀번호는 사람이.
-- **데이터 변경 금지**(보내기·저장·삭제·초대·결제·설정) — 승인받은 그 대상·그 동작만. 자동화 함정: `trial:true` 가 실제로 누름 · 가려진 요소도 합성 클릭으로 "성공" · **숨은 입력칸에 fill 하면 초점 있는 다른 칸(채팅 입력기)에 글자가 들어가고 Enter 면 전송** · `type('…\n')` 이 전송 · repl `fetch` POST 가 실제 전송 · 없는 값 `selectOption` 이 첫 항목 선택. 입력 전 `K.canAct`, 입력 뒤 `document.activeElement` 확인, 전송/줄바꿈은 `keyboard.press('Enter'|'Shift+Enter')` 로 명시.
-- **브라우저 기본 confirm 은 Aside 가 무조건 "확인"** — 파괴 버튼은 누르기 직전 `K.denyConfirm`(이동하면 풀림).
-- **금지 입력**: Ctrl+V·Shift+Insert(사용자 실제 클립보드가 붙음) · Ctrl+C·clipboard API · 브라우저 단축키(F5·F11·F12·Ctrl+W…) · `<select>`·date·color·파일 input **클릭**(OS 창) · draggable 요소를 `mouse.*` 로 끌기(OS 끌기) · 다운로드 시험(사용자 다운로드 폴더에 남고 지울 수 없음).
-- **금지 CDP**: `fromSurface:false`(사용자 화면이 찍힘 — 실제 발생) · `Target.*`(C 에서 자기 target 세 동작만 예외) · `Browser.*` · 쿠키/스토리지 · `Fetch.enable` · `Debugger.pause` · `Page.navigate/close`. `K.X` 가 allow-list 로 막는다.
-- **비밀은 읽지도 남기지도 않는다**: 비밀번호 값 금지(길이만) · 모든 출력은 중앙 redactor 를 거친다 · Aside 메모리·설정값·auth 파일 내용 기록 금지.
-- **동시성 1**: 같은 PC 브라우저를 여러 서버·에이전트가 나눠 쓴다. 자기 탭 동시 2개 이하, 끝나면 목록에서 자기 탭 0 확인 — 주소가 아니라 `tab.targetId` 로 센다(같은 주소를 사용자도 열어 둘 수 있다). `Too many Remote Control RPCs` 면 몇 초 뒤 1회만 재시도.
+## 0. Start — every time, in order
+1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/browser-check.mjs" doctor --json` — reads the config and transports (A/B/C). **Do not change the config or start the browser/Aside.** If no transport is usable, report the table as is and stop (remote `disabled`/`offline` ⇒ the user must enable it on the PC).
+   - **No config (`config file not found`) ⇒ run `setup --json` first.** It inspects this machine (Aside CLI · the running Aside's port · tunnel socket · `aside host list`), writes the config and returns what it set (`notes`). **Show those values to the user** before going on. It never touches an existing config.
+   - `choose-host` ⇒ show `candidates` (remote PCs) and run `setup --remote-host "<name>"` with the name the user picks. Don't pick for them.
+   - `not-ready` ⇒ relay `todo` as is (install/log in to Aside, open the tunnel, start the Aside browser — human tasks) and stop.
+2. Classify the target: URL (dev/prod) · **logged-in site?** (config `sites[].login`) · does it change data? · which recipe.
+3. Logged-in site ⇒ read the token rules in §1 first. Data change ⇒ **show a plan first (what · where · how to clean up) and get approval.**
 
-## 2. 환경 준비 — 모든 판정 앞에
-- `K.prep(tab, {darkReader: site.darkReader})`: **변경 전에 감지** → 경고 → 자기 탭에만 Dark Reader 잠금·주입 UI 숨김. `@@WARN DARK_READER_ON` 이 나오면 **반드시 사용자에게 알린다** — 사용자는 개발 사이트에선 일부러 꺼 두므로 켜져 있으면 색·캡처 판정을 믿을 수 없다. 통로 C(`browser-check.mjs cdp`)는 `client.prep(sessionId, {darkReader})` — 순서가 같고, 반환된 `warnings` 를 똑같이 알린다.
-- DeepL·Aside 주입 요소(`deepl-*`, `aside-inline-menu`, `bro-*`)는 숨기고 결과에 `detected` 로 남긴다. axe 는 `exclude`.
-- 통로 C 녹화(`client.record`)에서 **확장 프로그램이 낸 오류**는 `ext-exception`·`ext-console`(확장 이름 포함)로 따로 남고 `summary().problems` 에서 빠진다. 페이지 오류로 보고하지 마라(example.com 실측: 예외 3건 중 2건이 DeepL 확장).
-- 통로 C 의 자기 탭은 보이지 않는 탭이라, 한 번도 그려지지 않은 문서는 **클릭·키 입력을 오류 없이 버린다**(실측: 캡처 1장 전 왼쪽·오른쪽 클릭 0회). 클라이언트가 문서마다 첫 `Input.dispatch*` 전에 캡처 1장으로 자동으로 깨운다(70~550ms, 페이지 이동 뒤엔 다시). 깨우기에 실패하면 입력을 보내지 않고 `input not sent` 오류를 낸다 — 다시 시도한다.
-- 🔴 **통로 C 는 PC 의 Aside 창이 다른 창에 가려져 있으면 캡처가 멈춘다**(실측 2026-09-26: 가려진 동안 PC·터널 모두 `cdp timeout Page.captureScreenshot`/`input not sent`, 창을 앞에 두자 모두 성공). 이 오류가 나면 이것부터 의심하고 사용자에게 알린다. A/B(Aside)는 영향 없다.
-- 측정·색·애니메이션을 볼 때는 `K.wake`(에이전트 탭은 초당 2~4프레임으로 스로틀 — 캡처 1장이 풀고, 이동하면 다시 걸림).
-- 통로는 doctor 결과대로 자동 선택 — snapshot/조작=A · 명령형 CDP(첫 로딩 주입·기기 폭·다크모드·CSS 캐스케이드·AX 트리)=B(`K.hasX` 확인) · 이벤트·백그라운드 탭·긴 작업=C. 선택 이유와 fallback 을 보고한다. **같은 조작을 두 통로로 자동 재시도하지 않는다.**
+## 1. 🔴 Hard safety rules — breaking one damages the user's work (each comes from a real incident or measurement)
+- **Own tabs only**: use only tabs opened with `openTab`. Never `attachBrowserTab`/`attachActiveBrowserTab` (the user's tabs). Close with `closeTab(tab)`, not `page.close()`.
+- **Close a logged-in site's tab only after confirming 0 in-flight requests** (`K.safeClose`). Closing mid-request loses the refresh response; the server reads it as token theft and **logs the user out of the whole session family** (real incident). Reload, a new tab and a same-origin iframe all rotate the token — move between screens by SPA navigation, emulate widths with CDP.
+- **≤ 50 s per call · ≤ 25 s per evaluate** (the remote limit is about 60 s — past it all output is lost and a persistent session dies whole). Guard every step with `K.G`.
+- **Never click Aside's autofill menu (`aside-inline-menu`)** — after filling it **presses the login button itself** and revokes the existing session. Logins and passwords are the human's job.
+- **No data changes** (send · save · delete · invite · pay · settings) — only the approved target and action. Automation traps: `trial:true` really clicks · a covered element "succeeds" through a synthetic click · **`fill` on a hidden input types into whichever field has focus (a chat box), and Enter sends it** · `type('…\n')` sends · a repl `fetch` POST really sends · `selectOption` with a missing value picks the first option. Check `K.canAct` before input and `document.activeElement` after; send or break lines explicitly with `keyboard.press('Enter'|'Shift+Enter')`.
+- **Aside always answers "OK" to a native `confirm`** — call `K.denyConfirm` right before a destructive button (navigation clears it).
+- **Forbidden input**: Ctrl+V / Shift+Insert (pastes the user's real clipboard) · Ctrl+C / clipboard API · browser shortcuts (F5 · F11 · F12 · Ctrl+W …) · **clicking** `<select>`, date, color or file inputs (OS dialogs) · dragging draggable elements with `mouse.*` (OS drag) · download tests (the file stays in the user's download folder and can't be removed).
+- **Forbidden CDP**: `fromSurface:false` (captures the user's screen — this happened) · `Target.*` (on C only the three own-target calls) · `Browser.*` · cookies/storage · `Fetch.enable` · `Debugger.pause` · `Page.navigate/close`. `K.X` enforces an allow-list.
+- **Never read or keep secrets**: no password values (length only) · all output goes through the central redactor · never record Aside memory, settings values or auth file contents.
+- **Concurrency 1**: several servers and agents share one PC browser. At most 2 own tabs at once; when done, confirm 0 own tabs in the list — count by `tab.targetId`, not URL (the user may have the same URL open). On `Too many Remote Control RPCs`, retry once after a few seconds.
 
-## 3. 지시 → 레시피 (`recipes/`)
-| 사용자 말 | 레시피 |
+## 2. Environment prep — before any verdict
+- `K.prep(tab, {darkReader: site.darkReader})`: **detect before changing** → warn → lock Dark Reader and hide injected UI in your own tab only. On `@@WARN DARK_READER_ON`, **always tell the user** — with it on, colour and capture verdicts can't be trusted (which is why it is often kept off on sites under development). On transport C (`browser-check.mjs cdp`) use `client.prep(sessionId, {darkReader})` — same order; relay its `warnings` the same way.
+- Hide DeepL/Aside injected elements (`deepl-*`, `aside-inline-menu`, `bro-*`) and record them as `detected`. Pass them to axe as `exclude`.
+- In C recordings (`client.record`), **errors raised by browser extensions** are kept apart as `ext-exception`/`ext-console` (with the extension name) and left out of `summary().problems`. Don't report them as page errors (example.com: 2 of 3 exceptions came from DeepL).
+- C's own tab is a hidden tab: a document that was never painted **drops clicks and keys without an error** (measured: 0 left/right clicks before one capture). The client wakes each document with one capture before its first `Input.dispatch*` (70–550 ms; again after navigation). If waking fails it sends nothing and raises `input not sent` — retry.
+- 🔴 **C stops capturing while the PC's Aside window is covered by another window** (measured on Windows 2026-09-26: `cdp timeout Page.captureScreenshot` / `input not sent` on the PC and over the tunnel while covered; everything succeeded once the window was in front. macOS is likely the same through Chromium's occlusion tracking — not measured). On those errors suspect this first and tell the user. A/B (Aside) are unaffected.
+- Before measurements, colours or animation, `K.wake` (agent tabs are throttled to 2–4 fps — one capture lifts it; navigation brings it back).
+- Pick the transport from the doctor result: snapshot/interaction = A · imperative CDP (first-load injection, device width, dark mode, CSS cascade, AX tree) = B (check `K.hasX`) · events, background tabs, long jobs = C. Report the choice and the fallback. **Never auto-retry the same action on another transport.**
+
+## 3. Request → recipe
+| The user asks to… | Recipe |
 |---|---|
-| 화면 확인해 봐 · 어디 봐 봐 | `screen.md` |
-| CSS 깨졌는지 · 레이아웃 · 넘침 · 잘림 | `css.md` |
-| 콘솔 에러 · API 실패 · 네트워크 | `console-network.md` |
-| 반응형 · 모바일 · 다크모드 · 인쇄 | `responsive-theme.md` |
-| 접근성 | `accessibility.md` |
-| 성능 · 느린지 | `performance.md` |
-| 이 버튼 눌러 봐 · 입력해 봐 | `action.md` |
-| 실시간 동기화 · 두 탭 | `realtime.md` |
-| 로그인 풀렸어 | `login-incident.md`(🔴 새 탭을 열지 마라 — 증거가 바뀐다) |
-| 전체 흐름 시험 | `flow.md` |
-호출 형태: 1회성은 `scripts/browser-check.mjs run <본문.js> --url <주소>`(공통 머리 자동 결합·50초 가드·잠금·@@IMG 저장·가림). 여러 단계·로그인 앱은 영구 세션 구동기 `scripts/session/drv.py`(한 줄 = 한 실행, 줄마다 50초 이내, `ASIDE_BIN`·`ASIDE_HOST` 환경변수는 설정에서). 파이썬 스크립트(`drv.py`·`image/*.py`)는 doctor 가 찾은 명령(`pythonCmd` — 예: `python3`, Windows 는 `py -3`)으로 실행한다. 없으면 그 기능만 빠진다.
+| look at a screen or an element | `screen.md` |
+| check broken CSS · layout · overflow · clipping | `css.md` |
+| check console errors · API failures · network | `console-network.md` |
+| check responsive · mobile · dark mode · print | `responsive-theme.md` |
+| check accessibility | `accessibility.md` |
+| check performance · slowness | `performance.md` |
+| click or type something | `action.md` |
+| check realtime sync · two tabs | `realtime.md` |
+| find out why they got logged out | `login-incident.md` (🔴 don't open a new tab — it changes the evidence) |
+| test a whole flow | `flow.md` |
 
-## 4. Asidewright 함정 — "된다"고 믿기 전에
-자동 대기 없음(없으면 1ms 에 실패, `waitFor` 기본 3초) · strict 없음(여러 개면 첫 것) · `page.url()` 은 SPA 이동 미반영(`K.href`) · `reload()` 는 load 전 반환 · `waitForLoadState` 는 요청 0 을 보장 못 함 · `clip` 원점 무시·`fullPage` 첫 화면 반복·`locator.screenshot` 불가(전체 캡처 후 서버 `image/crop.py`·`stitch.py`) · 정규식 인자는 오류 없이 0건 · `keyboard.press('Space')` 는 key 빈 문자열(CDP `Input.dispatchKeyEvent`) · `locator.hover` 는 mouse 위치를 안 옮김 · `dragTo` 는 drop 2번 · 오른쪽 클릭 정석 `page.mouse.click(x,y,{button:'right'})` · `page.evaluate` 만 main world(locator.evaluate 는 격리 세계) · Resource Timing 250 상한(`setResourceTimingBufferSize`) · 코드 어디든 `import(`·`require(` 모양이 있으면 실행 전 거절.
+Recipes are in `${CLAUDE_PLUGIN_ROOT}/skills/browser_check/recipes/`. In them, `kit/`, `image/` and `session/` mean `${CLAUDE_PLUGIN_ROOT}/scripts/kit/` and so on.
 
-## 5. 공통 보고 형식
+How to run code:
+- One-shot: `node "${CLAUDE_PLUGIN_ROOT}/scripts/browser-check.mjs" run <body.js> --url <url>` (adds the common head, 50 s guard, lock, `@@IMG` saving, redaction). 🔴 On Windows the code travels as one command-line argument (limit about 32,767 characters) and the head plus the v2.1 recorder already exceed it — for work that injects the recorder, use C (`cdp`), which loads scripts from files.
+- Several steps / logged-in apps: the persistent session driver `session/drv.py` (one line = one run, each line ≤ 50 s; `ASIDE_BIN`/`ASIDE_HOST` come from the config). 🔴 `drv.py` does not run on Windows (Python `select()` fails on pipes) — on a Windows host use C, or report that a persistent session isn't available there.
+- Python scripts (`session/drv.py`, `image/*.py`) run with the command doctor found (`pythonCmd` — e.g. `python3`, or `py -3` on Windows). Without one, only those features are missing.
+
+## 4. Asidewright traps — before believing "it works"
+No auto-wait (fails in 1 ms when absent; `waitFor` defaults to 3 s) · no strict mode (several matches ⇒ the first) · `page.url()` misses SPA navigation (use `K.href`) · `reload()` returns before load · `waitForLoadState` doesn't guarantee 0 requests · `clip` ignores the origin, `fullPage` repeats the first screen, `locator.screenshot` is unavailable (take a full capture and crop it on the server; stitch scrolled tiles with `image/stitch.py`) · regex arguments silently match nothing · `keyboard.press('Space')` sends an empty key (use CDP `Input.dispatchKeyEvent`) · `locator.hover` doesn't move the mouse · `dragTo` drops twice · right-click is `page.mouse.click(x,y,{button:'right'})` · only `page.evaluate` runs in the main world (`locator.evaluate` is isolated) · Resource Timing stops at 250 entries (`setResourceTimingBufferSize`) · code containing an `import(` or `require(` shape anywhere is rejected before it runs.
+
+## 5. Report format (write the labels in the user's language)
 ```
-[대상] 실제 주소(K.href) · 개발/운영 · 로그인 여부 · 통로(A/B/C 와 이유)
-[조건] 창 크기·DPR · fps(깨운 뒤) · Dark Reader 감지/잠금 · 주입 UI · visibility · 캐시 · 쓴 흉내(폭/미디어/CPU) — 되돌림 여부
-[결과] 항목 | 판정(✅/❌/부분) | 값·기준 | 증거(캡처 파일 · dump 줄 · rid · 시트:줄)
-[못 본 것] 이유와 사람이 할 일
-[남긴 것] 연 탭 0 확인 · 만든 데이터(승인 근거) · 정리 완료
+[Target] real URL (K.href) · dev/prod · logged in? · transport (A/B/C and why)
+[Conditions] window size · DPR · fps (after wake) · Dark Reader detected/locked · injected UI · visibility · cache · emulation used (width/media/CPU) — reverted?
+[Results] item | verdict (✅/❌/partial) | value · threshold | evidence (capture file · dump line · rid · sheet:line)
+[Not checked] why, and what a person must do
+[Left behind] 0 open tabs confirmed · data created (approval) · cleanup done
 ```
 
-## 6. 사람만 할 수 있는 것 — 요청하지 말고 넘긴다
-에이전트 탭이 사용자 화면 앞에 뜨는지 · 프레임 스로틀 원인 · 실제 클립보드 · OS 파일/날짜/색 창·기본 오른쪽 클릭 메뉴·권한 팝업 · 실제 마우스 끌기 · 로그인/재로그인 · 데이터 변경 승인 · 실기기(모바일 Safari 등) · OS IME 고유 동작 최종 확인 · PC 설정(원격 켜기·확장·업데이트) · 터널 열기 · 다운로드 폴더 정리 · 디자인 판단.
+## 6. Only a person can do these — hand them over, don't ask for them
+Whether agent tabs pop up in front of the user's screen · the cause of frame throttling · the real clipboard · OS file/date/colour pickers, the native context menu, permission prompts · real mouse drags · logging in or back in · approving data changes · real devices (mobile Safari etc.) · the final check of OS IME behaviour · PC settings (enabling remote, extensions, updates) · opening tunnels · cleaning the download folder · design judgement.

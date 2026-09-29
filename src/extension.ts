@@ -73,6 +73,7 @@ interface WorkflowAgentInfo {
     summary: string;  // final result (done) or current activity (running/stopped) — 160-char preview
     fullSummary?: string;  // the final report, done agents only. Kept host-side: the panel receives it with the agent's rows
     durationMs: number;  // first→last message span from the agent log; 0 if unknown
+    startedAt?: number;  // epoch ms of the agent log's first entry — the panel runs a running agent's clock from it
     name?: string;  // display label (Task agents: meta.json description); workflow agents leave undefined → "에이전트 N"
     fullName?: string;  // untruncated role/task text (name is capped at 50 chars) — panel shows it as a hover tooltip
     tokens?: number;  // last usage record's in+cache_creation+cache_read+out — matches Claude Code's own totalTokens
@@ -1670,6 +1671,7 @@ async function parseTaskAgent(
         // fetched row by row when the panel opens this agent (agentActivity.ts).
         ...(status === 'done' && fullText ? { fullSummary: fullText } : {}),
         durationMs,
+        ...(firstTs ? { startedAt: firstTs } : {}),
         name: displayName || 'agent',
         ...(tokens ? { tokens } : {}),
         ...(model ? { model: getShortModelName(model, false) } : {}),
@@ -1894,6 +1896,7 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                     const fullName = role && role.full !== role.label ? role.full : undefined;
                     agents.push({
                         agentId: id, status, summary, ...(fullSummary ? { fullSummary } : {}), durationMs: timing.durationMs,
+                        ...(timing.firstTs ? { startedAt: timing.firstTs } : {}),
                         ...(name ? { name } : {}), ...(fullName ? { fullName } : {}),
                         ...(timing.tokens ? { tokens: timing.tokens } : {}),
                         // Displayed name, resolved here so the webview stays free of model
@@ -2393,7 +2396,7 @@ function toWorkflowView(wf: WorkflowInfo, liveSessions: Map<string, WorkflowInfo
         sessionLive: !!wf.sessionFile && liveSessions.has(wf.sessionFile),
         agents: wf.agents.map(a => ({
             akey: agentKey(wf, a.agentId), agentId: a.agentId, status: a.status, summary: a.summary,
-            durationMs: a.durationMs, name: a.name, fullName: a.fullName, tokens: a.tokens,
+            durationMs: a.durationMs, startedAt: a.startedAt, name: a.name, fullName: a.fullName, tokens: a.tokens,
             model: a.model, phase: a.phase, hasReport: !!a.fullSummary,
         })),
     };

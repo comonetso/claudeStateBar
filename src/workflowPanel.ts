@@ -17,6 +17,8 @@ export interface WorkflowAgentView {
     status: 'running' | 'done' | 'stopped';
     summary: string;
     durationMs: number;
+    /** Epoch ms of the agent's first log entry: a running agent's clock counts from here. */
+    startedAt?: number;
     name?: string;
     fullName?: string;
     tokens?: number;

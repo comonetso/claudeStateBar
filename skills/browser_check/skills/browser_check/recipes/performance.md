@@ -1,16 +1,16 @@
-# 「성능 봐」 · 「느린지 봐」
+# "Check performance" · "Is it slow"
 
-전제: SKILL.md §0~§2. 에이전트 탭은 스로틀돼 있다 — 그리기 기반 지표는 `K.wake` 뒤에만.
+Prerequisite: SKILL.md §0–§2. Agent tabs are throttled — paint-based metrics only after `K.wake`.
 
-## 절차
-1. `openTab(url)`(콜드 값은 첫 로딩에서만 — `goto` 재로드는 캐시 적중) → 즉시 `page.evaluate(VITALS_INSTALL)`(`kit/vitals-install.js`, 조작 **전에**).
-2. `performance.getEntriesByType('visibility-state')` 에 `hidden` 이 있으면 FCP·LCP 에 "무효" 표시.
-3. `K.wake` → fps ≥ 30 확인(INP 측정 전제).
-4. 사용자가 말한 조작(없으면 데이터 변경 없는 대표 클릭 2~3회) → `page.evaluate(VITALS_REPORT)`(`kit/vitals-report.js`: LCP·FCP·TTFB·CLS 세션 창·INP·LCP 분해·TBT·LoAF 상위) + `kit/perfdiag.js`(렌더 차단·DOM 크기·자원·Server-Timing).
-5. 원인: `K.X(tab,'Profiler.enable')`·`setSamplingInterval({interval:100})`·`start` → 조작 → `stop`(함수별) · `Performance.getMetrics` · 저사양 흉내 `Emulation.setCPUThrottlingRate({rate:4})`(끝나면 1) · `performance.memory` 반복 표본(추세만).
+## Steps
+1. `openTab(url)` (cold values come only from the first load — a `goto` reload hits the cache) → immediately `page.evaluate(VITALS_INSTALL)` (contents of `kit/vitals-install.js`, **before** any action).
+2. If `performance.getEntriesByType('visibility-state')` contains `hidden`, mark FCP/LCP "invalid".
+3. `K.wake` → confirm fps ≥ 30 (required for INP).
+4. The user's action (if none, 2–3 representative clicks that change no data) → `page.evaluate(VITALS_REPORT)` (`kit/vitals-report.js`: LCP · FCP · TTFB · CLS session window · INP · LCP breakdown · TBT · top LoAF) + `kit/perfdiag.js` (render-blocking · DOM size · resources · Server-Timing).
+5. Cause: `K.X(tab,'Profiler.enable')` · `setSamplingInterval({interval:100})` · `start` → action → `stop` (per function) · `Performance.getMetrics` · low-end emulation `Emulation.setCPUThrottlingRate({rate:4})` (back to 1 afterwards) · repeated `performance.memory` samples (trend only).
 
-## 판정
-web-vitals 임계: LCP ≤ 2.5s · INP ≤ 200ms · CLS ≤ 0.1 · FCP ≤ 1.8s · TTFB ≤ 0.8s. 🔴 fps < 30 이었으면 INP 는 `processingEnd - processingStart` 로만 · CLS 는 숫자 하나가 아니라 **이동 목록**(`node null`/DeepL 제외).
+## Verdict
+web-vitals thresholds: LCP ≤ 2.5 s · INP ≤ 200 ms · CLS ≤ 0.1 · FCP ≤ 1.8 s · TTFB ≤ 0.8 s. 🔴 If fps was below 30, judge INP only by `processingEnd - processingStart` · report CLS as a **list of shifts**, not one number (drop `node null` and DeepL).
 
-## 보고
-조건(콜드/캐시·fps·visibility·CPU 배율) + 지표·등급 + 원인(LCP 분해·LoAF 스크립트·프로파일 상위 함수). URL 은 query/hash 없이.
+## Report
+Conditions (cold/cached · fps · visibility · CPU rate) + metrics and ratings + cause (LCP breakdown · LoAF scripts · top profiled functions). URLs without query or hash.

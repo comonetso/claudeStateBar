@@ -1,18 +1,18 @@
-# 「실시간 동기화 확인해」 · 「두 탭 같이 바뀌나」
+# "Check realtime sync" · "Do two tabs update together"
 
-전제: SKILL.md §0~§2. 시험 글 전송·수정·삭제는 **데이터 변경** — 시험 계정·시험 방·건수를 승인받는다.
+Prerequisite: SKILL.md §0–§2. Sending, editing or deleting test messages is a **data change** — get the test account, test room and count approved.
 
-## 절차
-1. 계획·승인: 어느 방에 몇 건, 정리 방법(삭제)까지.
-2. **영구 세션**(`scripts/session/drv.py`)으로 탭 A·B 를 연다(각각 로그인 앱이면 회전 1번 — 여는 동안 다른 탭 소켓이 잠깐 끊겼다 재연결될 수 있음). 두 탭에 기록기 v2.1.
-3. 탭 B 에 감시기: `MutationObserver` 로 대상(`[data-message-id]` 등) 첫 등장·변경 시각을 `Date.now()` 로 기록. 탭 A 는 기록기의 요청 시작 시각(`t + performance.timeOrigin`).
-4. A 에서 동작(입력기 `click` → `keyboard.type` → **보내기 버튼 click** — Enter 는 사용자 설정에 따라 줄바꿈일 수 있다) → B 반영 시각 − A 시작 시각. 수정·삭제도 같은 방식(앱 모달은 스냅샷으로 문구 읽고 확인 버튼).
-5. 재연결: 앱 소켓을 게터 가로채기로 얻어(`__diag.sockets()`) `close(3000,'test')` → 상태 띠·재연결 시각. 🔴 앱이 특별히 쓰는 종료 코드(로그아웃·업데이트 화면용)는 쓰지 마라.
-6. 정리: 시험 글 삭제(승인 범위) → 두 탭 `K.safeClose`.
+## Steps
+1. Plan and approval: which room, how many items, how to clean up (delete).
+2. Open tabs A and B in a **persistent session** (`session/drv.py`; not on Windows — SKILL.md §3). In a logged-in app each open is one rotation — the other tab's socket may drop briefly and reconnect. Recorder v2.1 in both tabs.
+3. Watcher in tab B: a `MutationObserver` records `Date.now()` when the target (e.g. `[data-message-id]`) first appears or changes. In tab A, take the request start from the recorder (`t + performance.timeOrigin`).
+4. Act in A (click the input → `keyboard.type` → **click the send button** — Enter may insert a newline depending on the user's setting) → B's update time − A's start time. Edit and delete the same way (read an app modal's text from a snapshot, then click its confirm button).
+5. Reconnect: get the app's socket by intercepting its getter (`__diag.sockets()`) → `close(3000,'test')` → the status banner and reconnect time. 🔴 Never use close codes the app reserves (logout, update screens).
+6. Clean up: delete the test messages (within the approval) → `K.safeClose` both tabs.
 
-## 판정
-B 반영 ≤ 1초(실측 예: 보내기 62ms·수정 175ms·삭제 38ms) · 재연결 ≈ 1초 · 에러 0. 🔴 폴링으로 재면 1초 가까이 부풀려진다 — 페이지 안 감시기 + epoch 로.
-한계: 에이전트 탭은 늘 visible·focus 로 보고된다 → "보고 있는 창에서만" 동작(읽음 보고)은 검증 불가.
+## Verdict
+B updates within 1 s (measured example: send 62 ms · edit 175 ms · delete 38 ms) · reconnect ≈ 1 s · 0 errors. 🔴 Polling inflates this by up to 1 s — measure with an in-page watcher and epoch times.
+Limit: agent tabs always report visible and focused → behaviour tied to "the window being looked at" (read receipts) can't be verified.
 
-## 보고
-동작별 `A 시작 → B ws-recv → B 화면` 시각표 + 재연결 표 + 정리 확인.
+## Report
+Per action, a timeline `A start → B ws-recv → B screen` + reconnect table + cleanup confirmed.

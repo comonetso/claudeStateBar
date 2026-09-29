@@ -1,20 +1,20 @@
-# 「화면 확인해 봐」 · 「어디 봐 봐」 — 특정 화면·요소가 지금 어떤가
+# "Check the screen" · "Take a look at this" — what a screen or element looks like right now
 
-전제: SKILL.md §0~§2 (doctor · 분류 · `K.prep` · 로그인 규칙).
+Prerequisite: SKILL.md §0–§2 (doctor · classification · `K.prep` · login rules).
 
-## 절차
-1. `openTab(url)` → `K.prep(tab, {darkReader: site.darkReader})` → 애니메이션·지연 로딩이 있으면 `K.wake(tab)`.
-2. `snapshot(page, {interactive: true})` 로 대상 ref 를 찾는다.
-   - 🔴 문서를 스크롤했다면 먼저 `scrollTo(0,0)` — **위로 지나간 입력칸·이미지·iframe 은 스냅샷에서 빠진다**(아래·오른쪽만 포함). 스크롤 상자(채팅 타임라인)는 `showHidden: true`.
-   - 큰 페이지는 `maxDepth: 2` 로 윤곽 → `selector`(첫 일치 하나만) · `ref` 로 좁힌다.
-3. 번호 붙은 그림이 필요하면 `annotatedScreenshot(page)` → `@@IMG`(번호 N = ref `eN`).
-4. 요소 사진: `page.locator('eN').scrollIntoViewIfNeeded()` → `boundingBox()` → `page.screenshot()` 전체 → 서버 `image/crop.py`(좌표 × DPR). 🔴 `clip`·`locator.screenshot()`·`fullPage` 는 깨져 있다.
-5. 사용자가 실제로 누를 수 있는지: `K.canAct(tab, loc)` — 유일·보임·가려지지 않음.
-6. SPA 주소는 `K.href(tab)`.
-7. 로그인 사이트면 `K.safeClose(tab)`, 아니면 `closeTab(tab)`.
+## Steps
+1. `openTab(url)` → `K.prep(tab, {darkReader: site.darkReader})` → `K.wake(tab)` if there is animation or lazy loading.
+2. Find the target ref with `snapshot(page, {interactive: true})`.
+   - 🔴 If the document was scrolled, `scrollTo(0,0)` first — **inputs, images and iframes scrolled past above drop out of the snapshot** (only what is below and to the right is included). For scroll boxes (chat timelines) use `showHidden: true`.
+   - On a large page, outline with `maxDepth: 2`, then narrow with `selector` (first match only) · `ref`.
+3. For a numbered picture: `annotatedScreenshot(page)` → `@@IMG` (number N = ref `eN`).
+4. Element photo: `page.locator('eN').scrollIntoViewIfNeeded()` → `boundingBox()` → a full `page.screenshot()` → crop it on the server at box × DPR (e.g. Pillow `Image.crop`; `image/crop.py` only handles `responsive-iframe.js` output). 🔴 `clip`, `locator.screenshot()` and `fullPage` are broken.
+5. Whether the user can actually click it: `K.canAct(tab, loc)` — unique · visible · not covered.
+6. SPA URL: `K.href(tab)`.
+7. Logged-in site ⇒ `K.safeClose(tab)`, otherwise `closeTab(tab)`.
 
-## 판정
-요소가 있다(count ≥ 1) · 보인다(boundingBox 있음·가려지지 않음) · 글자·상태(AX 트리의 expanded·checked·disabled — `K.X(tab,'Accessibility.getFullAXTree')`).
+## Verdict
+The element exists (count ≥ 1) · is visible (has a boundingBox and isn't covered) · its text and state (expanded · checked · disabled from the AX tree — `K.X(tab,'Accessibility.getFullAXTree')`).
 
-## 보고
-요소 캡처 + 스냅샷 발췌(ref 줄) + 상태값. Dark Reader 경고가 있었으면 맨 앞에.
+## Report
+Element capture + snapshot excerpt (ref lines) + state values. Any Dark Reader warning goes first.
