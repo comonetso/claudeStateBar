@@ -83,7 +83,7 @@
    **Confirm on stderr that live steering is on.** This line must appear:
 
    ```
-   → 실행 중 끼어들기 경로(app-server) 로 돈다 — 대화키: <stamp>
+   → running on the live-steer path (app-server) — conversation key: <stamp>
    ```
 
    **If it is missing, the run went the old way.** Tell the user as soon as you notice — nothing they say mid-run can be passed on.

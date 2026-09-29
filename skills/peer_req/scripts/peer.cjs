@@ -72,14 +72,14 @@ function opt(args, key) {
 
 function need(args, key) {
   const v = opt(args, key);
-  if (v === null) throw new UsageError('--' + key + ' 가 필요하다');
+  if (v === null) throw new UsageError('--' + key + ' is required');
   return v;
 }
 
 function readFileArg(args, key) {
   const f = need(args, key);
   if (f === '-') return fs.readFileSync(0, 'utf8');
-  if (!fs.existsSync(f)) throw new UsageError('--' + key + ' 파일이 없다: ' + f);
+  if (!fs.existsSync(f)) throw new UsageError('--' + key + ' file not found: ' + f);
   return fs.readFileSync(f, 'utf8');
 }
 
@@ -108,12 +108,12 @@ function receiveContext(cwd) {
 
 function requireBook(b) {
   if (!b.found) {
-    const e = new Error('이 저장소에 주소록(.peer_req.json)이 없다');
+    const e = new Error('this repository has no address book (.peer_req.json)');
     e.exitCode = 3;
     throw e;
   }
   if (!b.ok) {
-    const e = new Error('주소록 오류:\n- ' + b.errors.join('\n- '));
+    const e = new Error('address book errors:\n- ' + b.errors.join('\n- '));
     e.exitCode = 3;
     throw e;
   }
@@ -164,7 +164,7 @@ function cmdDoctor(args, cwd) {
       report.peers.push(row);
     });
     report.problem_count = problems;
-    if (report.peers.length === 0) report.note = '짝이 없다 — 받기만 하는 저장소다';
+    if (report.peers.length === 0) report.note = 'no peers — this repository only receives';
     if (b.book.groups) report.groups = b.book.groups;
   }
   print(report);
@@ -178,25 +178,25 @@ function crossCheck(myBook, peer) {
   const theirs = ab.loadBookAt(peer.location.root);
   out.peer_book = theirs.found ? theirs.file : null;
   if (!theirs.found) {
-    out.problems.push({ code: 'peer_book_missing', message: '짝 폴더에 주소록이 없다 — 보내면 받는 쪽이 대상을 확인하지 못해 WRONG_TARGET 으로 돌려보낸다' });
+    out.problems.push({ code: 'peer_book_missing', message: 'the peer folder has no address book — the recipient cannot check the target and will send back WRONG_TARGET' });
     return out;
   }
   if (!theirs.ok) {
-    out.problems.push({ code: 'peer_book_invalid', message: '짝 주소록이 깨져 있다: ' + theirs.errors[0] });
+    out.problems.push({ code: 'peer_book_invalid', message: 'the peer address book is broken: ' + theirs.errors[0] });
     return out;
   }
   const s = theirs.book.self;
   if (s.endpoint_id !== peer.endpoint_id) {
-    out.problems.push({ code: 'endpoint_mismatch', message: '짝 주소록의 self 는 "' + s.endpoint_id + '" 인데 내 주소록엔 "' + peer.endpoint_id + '" 로 적혀 있다 — 보내면 WRONG_TARGET' });
+    out.problems.push({ code: 'endpoint_mismatch', message: 'the peer address book has self "' + s.endpoint_id + '" but mine lists "' + peer.endpoint_id + '" — sending would get WRONG_TARGET' });
   }
   if (!util.sameMachine(s.machine_id, peer.machine_id)) {
-    out.problems.push({ code: 'machine_mismatch', message: '짝 주소록의 기기 이름은 "' + s.machine_id + '" 인데 내 주소록엔 "' + peer.machine_id + '"' });
+    out.problems.push({ code: 'machine_mismatch', message: 'the peer address book has machine name "' + s.machine_id + '" but mine has "' + peer.machine_id + '"' });
   }
   const back = Object.keys(ab.peersOf(theirs.book)).map((a) => ({ alias: a, p: theirs.book.peers[a] })).filter((x) => x.p.endpoint_id === myBook.self.endpoint_id);
   if (back.length === 0) {
-    out.notes.push('짝은 나를 짝으로 적어 두지 않았다 — 짝이 나에게 먼저 보낼 수는 없다(받기·답장은 된다)');
+    out.notes.push('the peer does not list me as a peer — it cannot send to me first (receiving and replying still work)');
   } else if (!util.samePath(back[0].p.location.root, myBook.self.root)) {
-    out.problems.push({ code: 'reverse_root_mismatch', message: '짝 주소록이 나를 다른 폴더(' + back[0].p.location.root + ')로 적어 두었다' });
+    out.problems.push({ code: 'reverse_root_mismatch', message: 'the peer address book lists me with a different folder (' + back[0].p.location.root + ')' });
   }
   return out;
 }
@@ -232,23 +232,23 @@ function resolvePicked(o) {
   const m = o.pick.match(/^(.*?)(?: \[([0-9a-z]+)\])?$/);
   const rows = o.agents.rows.filter((r) => r.name === m[1] && (!m[2] || r.ref === m[2]));
   const base = { alias: o.alias, endpoint_id: peer.endpoint_id, same_machine: same };
-  if (rows.length !== 1) return Object.assign(base, { status: 'ask', reason: '--pick "' + o.pick + '" 가 목록에서 하나로 특정되지 않는다(' + rows.length + '개)', candidates: [] });
+  if (rows.length !== 1) return Object.assign(base, { status: 'ask', reason: '--pick "' + o.pick + '" does not match exactly one entry in the list (' + rows.length + ')', candidates: [] });
   const row = rows[0];
   const sendTo = sessions.addressFor(o.agents.rows, row);
   // 다른 머신은 고른 세션(제목·참조 번호)을 적어 둔다 — 다음부터 묻지 않는다(D27)
   if (!same) {
-    if (row.where !== 'remote') return Object.assign(base, { status: 'ask', reason: '"' + row.name + '" 는 다른 머신(Remote Control) 세션이 아니다', candidates: [] });
+    if (row.where !== 'remote') return Object.assign(base, { status: 'ask', reason: '"' + row.name + '" is not a session on another machine (Remote Control)', candidates: [] });
     return Object.assign(base, { status: 'ready', via: 'user_pick', send_to: sendTo, row: row, remember: true });
   }
   // 같은 머신은 세션 번호가 있어야 받는 쪽이 "내 앞으로 온 게 맞나" 를 확인할 수 있다 — 모르면 보내지 않는다(2차 리뷰 P2 · 사용자 결정)
   if (row.where !== 'local' && sessions.localRowsOf(o.agents, o.registry).indexOf(row) === -1) {
-    return Object.assign(base, { status: 'ask', reason: '"' + row.name + '" 는 이 머신의 세션이 아니다(' + row.kind + ')', candidates: [] });
+    return Object.assign(base, { status: 'ask', reason: '"' + row.name + '" is not a session on this machine (' + row.kind + ')', candidates: [] });
   }
   const hits = o.registry.readable ? o.registry.sessions.filter((s) => s.name === row.name) : [];
   if (hits.length === 1) return Object.assign(base, { status: 'ready', via: 'user_pick', send_to: sendTo, row: row, session_id: hits[0].sessionId, bind: true });
   return Object.assign(base, {
     status: 'ask',
-    reason: o.registry.readable ? '"' + row.name + '" 의 세션 번호를 찾지 못했다(' + hits.length + '개) — 받는 쪽에서 here 로 선언해 달라고 한다' : '세션 등록 파일을 읽을 수 없어 세션 번호를 확인할 수 없다 — 같은 머신 전송을 하지 않는다',
+    reason: o.registry.readable ? '"' + row.name + '": session id not found (' + hits.length + ' matches) — ask the recipient to declare itself with here' : 'cannot read the session registry, so the session id cannot be confirmed — not sending on the same machine',
     candidates: [],
   });
 }
@@ -265,10 +265,10 @@ function cmdPrepare(args, cwd) {
   const book = requireBook(ctx.b);
   const root = ctx.root;
   const peers = ab.peersOf(book);
-  if (Object.keys(peers).length === 0) throw new UsageError('주소록에 짝(peers)이 없다 — 받기만 하는 저장소에서는 보낼 수 없다');
+  if (Object.keys(peers).length === 0) throw new UsageError('the address book has no peers — a receive-only repository cannot send');
   const target = need(args, 'to');
   const aliases = ab.expandTarget(book, target);
-  if (!aliases) throw new UsageError('주소록에 "' + target + '" 라는 짝·그룹이 없다. 있는 것: ' + Object.keys(peers).concat(Object.keys(book.groups || {})).join(', '));
+  if (!aliases) throw new UsageError('no peer or group named "' + target + '" in the address book. Available: ' + Object.keys(peers).concat(Object.keys(book.groups || {})).join(', '));
   const agents = sessions.parseAgents(readFileArg(args, 'agents-file'));
   const selfSessionId = process.env.CLAUDE_CODE_SESSION_ID || null;
   // 지난 요청의 ACK 를 같은 머신 짝 기록에서 먼저 따라잡는다 — 그래야 확인된 짝 세션이 기억에 올라와 있다
@@ -283,13 +283,13 @@ function cmdPrepare(args, cwd) {
   if (requestId) {
     // 재시도: 같은 request_id·본문으로 새 attempt 만 만든다(C6)
     const rec = store.readRequestRecord(store.requestDir(root, requestId));
-    if (!rec || rec.direction !== 'outbound') throw new UsageError('보낸 기록에 ' + requestId + ' 가 없다');
+    if (!rec || rec.direction !== 'outbound') throw new UsageError('no sent record for ' + requestId);
     // 처음 기록한 대상과 같을 때만 — 그사이 주소록이 바뀌었으면 같은 요청을 다른 곳에 보내지 않는다(2차 리뷰 P1)
     aliases.forEach((a) => {
       const snap = rec.targets[a];
-      if (!snap) throw new UsageError(a + ' 는 이 요청의 처음 받는 쪽이 아니다 — 새 요청으로 보내야 한다');
+      if (!snap) throw new UsageError(a + ' was not a first recipient of this request — send it as a new request');
       if (snap.endpoint_id !== peers[a].endpoint_id || snap.root !== peers[a].location.root) {
-        throw new UsageError('주소록의 ' + a + ' 가 처음 보낸 대상(' + snap.endpoint_id + ' · ' + snap.root + ')과 달라졌다 — 새 요청으로 보내야 한다');
+        throw new UsageError(a + ' in the address book no longer matches the first target (' + snap.endpoint_id + ' · ' + snap.root + ') — send it as a new request');
       }
     });
     intent = rec.intent;
@@ -297,9 +297,9 @@ function cmdPrepare(args, cwd) {
     conversationId = rec.conversation_id;
   } else {
     intent = need(args, 'intent');
-    if (!envl.INTENTS[intent]) throw new UsageError('--intent 는 ' + Object.keys(envl.INTENTS).join('·') + ' 중 하나');
+    if (!envl.INTENTS[intent]) throw new UsageError('--intent must be one of ' + Object.keys(envl.INTENTS).join('·'));
     body = readFileArg(args, 'body-file').replace(/\s+$/, '');
-    if (!body) throw new UsageError('본문이 비어 있다');
+    if (!body) throw new UsageError('the body is empty');
     requestId = util.uuid();
     conversationId = conversationId || util.uuid();
   }
@@ -321,7 +321,7 @@ function cmdPrepare(args, cwd) {
 
   const registry = sessions.readRegistry();
   const pick = opt(args, 'pick');
-  if (pick && aliases.length !== 1) throw new UsageError('--pick 은 짝 하나에게 보낼 때만 쓴다');
+  if (pick && aliases.length !== 1) throw new UsageError('--pick works only when sending to a single peer');
   // 그룹으로 보낼 때 앞 짝에게 배정한 세션 — 기억은 ACK 뒤라 기록에 아직 없으니 여기서 넘겨 준다
   const claimed = { refs: {}, sessions: {} };
   const results = aliases.map((alias) => {
@@ -376,23 +376,23 @@ function cmdRecord(args, cwd) {
   const root = repoContext(cwd).root;
   const id = need(args, 'id');
   const type = need(args, 'event');
-  if (RECORDABLE.indexOf(type) === -1) throw new UsageError('--event 는 ' + RECORDABLE.join('·') + ' 중 하나');
+  if (RECORDABLE.indexOf(type) === -1) throw new UsageError('--event must be one of ' + RECORDABLE.join('·'));
   const dir = store.requestDir(root, id);
   const rec = store.readRequestRecord(dir);
-  if (!rec) throw new UsageError('기록에 ' + id + ' 가 없다');
+  if (!rec) throw new UsageError('no record for ' + id);
   if (rec.direction === 'inbound' && RECORDABLE_INBOUND.indexOf(type) === -1) {
-    throw new UsageError('받은 요청에는 ' + RECORDABLE_INBOUND.join('·') + ' 만 기록한다 — ' + type + ' 는 보낸 쪽이 적는 것이다');
+    throw new UsageError('a received request records only ' + RECORDABLE_INBOUND.join('·') + ' — ' + type + ' is written by the sender');
   }
   const who = rec.direction === 'inbound' ? 'self' : need(args, 'to');
-  if (rec.direction === 'outbound' && !rec.targets[who]) throw new UsageError(id + ' 의 받는 쪽에 ' + who + ' 가 없다');
+  if (rec.direction === 'outbound' && !rec.targets[who]) throw new UsageError(who + ' is not a recipient of ' + id);
   store.appendEvent(dir, { type: type, recipient: who, detail: opt(args, 'detail') });
   print({ ok: true, request_id: id, recipient: who, state: state.fold(store.listEvents(dir))[who] });
 }
 
 function sameMachinePeer(book, alias) {
   const peer = ab.peersOf(book)[alias];
-  if (!peer) throw new UsageError('주소록에 짝 "' + alias + '" 가 없다');
-  if (!util.sameMachine(peer.machine_id, book.self.machine_id)) throw new UsageError(alias + ' 는 다른 머신 짝이다 — 세션 기록은 같은 머신 짝에만 쓴다');
+  if (!peer) throw new UsageError('no peer "' + alias + '" in the address book');
+  if (!util.sameMachine(peer.machine_id, book.self.machine_id)) throw new UsageError(alias + ' is a peer on another machine — session records are kept only for same-machine peers');
   return peer;
 }
 
@@ -410,7 +410,7 @@ function cmdForget(args, cwd) {
   const book = requireBook(repoContext(cwd).b);
   const alias = need(args, 'to');
   const peer = ab.peersOf(book)[alias];
-  if (!peer) throw new UsageError('주소록에 짝 "' + alias + '" 가 없다');
+  if (!peer) throw new UsageError('no peer "' + alias + '" in the address book');
   const same = util.sameMachine(peer.machine_id, book.self.machine_id);
   print({ ok: true, alias: alias, same_machine: same, removed: same ? sessions.forget(peer.endpoint_id) : sessions.forgetTitle(peer.endpoint_id) });
 }
@@ -419,7 +419,7 @@ function cmdHere(args, cwd) {
   const ctx = repoContext(cwd);
   const book = requireBook(ctx.b);
   const sid = process.env.CLAUDE_CODE_SESSION_ID;
-  if (!sid) throw new UsageError('CLAUDE_CODE_SESSION_ID 가 없다 — Claude Code 세션 안에서 실행해야 한다');
+  if (!sid) throw new UsageError('CLAUDE_CODE_SESSION_ID is not set — run this inside a Claude Code session');
   const s = sessions.readRegistry().sessions.filter((x) => x.sessionId === sid)[0];
   print({ ok: true, endpoint_id: book.self.endpoint_id, declared: sessions.declare(book.self.endpoint_id, { sessionId: sid, root: ctx.root, name: s ? s.name : null, source: 'here' }) });
 }
@@ -433,15 +433,15 @@ function cmdHere(args, cwd) {
 //   · recipient_session_id 가 있으면 이 세션이어야 한다 — 이 세션 번호를 모르면 확인 불가
 function targetMismatch(b, root, env) {
   const out = [];
-  if (!b.found) return ['이 저장소에 주소록(.peer_req.json)이 없어 대상을 확인할 수 없다'];
-  if (!b.ok) return ['이 저장소의 주소록이 깨져 있어 대상을 확인할 수 없다: ' + b.errors[0]];
+  if (!b.found) return ['this repository has no address book (.peer_req.json), so the target cannot be checked'];
+  if (!b.ok) return ['the address book of this repository is broken, so the target cannot be checked: ' + b.errors[0]];
   const me = b.book.self;
-  if (env.recipient_endpoint !== me.endpoint_id) out.push('recipient_endpoint(' + env.recipient_endpoint + ') ≠ 이 저장소(' + me.endpoint_id + ')');
-  if (!util.samePath(env.recipient_root, root)) out.push('recipient_root(' + env.recipient_root + ') ≠ 이 저장소(' + root + ')');
+  if (env.recipient_endpoint !== me.endpoint_id) out.push('recipient_endpoint(' + env.recipient_endpoint + ') ≠ this repository (' + me.endpoint_id + ')');
+  if (!util.samePath(env.recipient_root, root)) out.push('recipient_root(' + env.recipient_root + ') ≠ this repository (' + root + ')');
   if (env.recipient_session_id) {
     const selfSid = process.env.CLAUDE_CODE_SESSION_ID || '';
-    if (!selfSid) out.push('recipient_session_id 가 지정됐는데 이 세션 번호를 알 수 없다');
-    else if (env.recipient_session_id !== selfSid) out.push('recipient_session_id 가 이 세션이 아니다');
+    if (!selfSid) out.push('recipient_session_id is set but the id of this session is unknown');
+    else if (env.recipient_session_id !== selfSid) out.push('recipient_session_id is not this session');
   }
   return out;
 }
@@ -456,11 +456,11 @@ function cmdReceive(args, cwd) {
     env = envl.extractEnvelope(readFileArg(args, 'message-file'));
   } catch (e) {
     if (e.usage) throw e;
-    return print({ verdict: 'invalid', problems: [e.message], hint: '메시지 끝의 ```peer_req 블록을 그대로 파일에 옮겼는지 확인하라' });
+    return print({ verdict: 'invalid', problems: [e.message], hint: 'check that the ```peer_req block at the end of the message was copied to the file unchanged' });
   }
   const problems = envl.checkEnvelope(env);
   if (problems.length) return print({ verdict: 'invalid', problems: problems, request_id: env && env.request_id });
-  if (env.type !== 'request') return print({ verdict: 'not_a_request', type: env.type, hint: '응답(ack·result)은 ingest 로 기록한다. 회신하지 않는다' });
+  if (env.type !== 'request') return print({ verdict: 'not_a_request', type: env.type, hint: 'replies (ack, result) are recorded with ingest. Do not reply' });
 
   const mismatch = targetMismatch(b, root, env);
   if (mismatch.length) {
@@ -469,7 +469,7 @@ function cmdReceive(args, cwd) {
     const ack = envl.makeReply({ type: 'ack', request: env, responder: responder, status: 'wrong_target', body: 'WRONG_TARGET — ' + mismatch.join(' / ') });
     const f = path.join(util.stateDir(), 'wrong_target', env.request_id + '-' + env.attempt_id + '.txt');
     util.writeFileAtomic(f, envl.renderMessage(ack));
-    return print({ verdict: 'wrong_target', request_id: env.request_id, mismatch: mismatch, reply_file: f, reply_to: from, instruction: '이 파일 내용을 from 주소로 SendMessage 하고 조사하지 않는다' });
+    return print({ verdict: 'wrong_target', request_id: env.request_id, mismatch: mismatch, reply_file: f, reply_to: from, instruction: 'SendMessage the contents of this file to the from address and do not investigate' });
   }
 
   const responder = b.book.self.endpoint_id;
@@ -480,32 +480,32 @@ function cmdReceive(args, cwd) {
 
   if (!made.created && !made.existing) {
     // 다른 처리가 막 같은 요청을 게시하는 중이다(하드링크를 못 쓰는 파일시스템) — 처리하지 않고 알린다
-    return print(Object.assign({}, base, { verdict: 'in_progress', instruction: '같은 요청을 이미 처리하기 시작했다. 다시 실행하지 않는다. 보낸 쪽에는 회신하지 않는다' }));
+    return print(Object.assign({}, base, { verdict: 'in_progress', instruction: 'this request is already being handled. Do not run it again. Do not reply to the sender' }));
   }
   if (!made.created) {
     const prev = made.existing.envelope || {};
     if (prev.body_sha256 !== env.body_sha256) {
-      const ack = envl.makeReply({ type: 'ack', request: env, responder: responder, status: 'conflict', body: 'CONFLICT — 같은 request_id 로 다른 본문이 왔다. 처리하지 않는다.' });
+      const ack = envl.makeReply({ type: 'ack', request: env, responder: responder, status: 'conflict', body: 'CONFLICT — a different body arrived with the same request_id. Not handling it.' });
       store.appendEvent(dir, { type: 'conflict', recipient: 'self', attempt_id: env.attempt_id, detail: 'new body ' + env.body_sha256.slice(0, 12) + ' ≠ ' + String(prev.body_sha256).slice(0, 12) });
       const f = store.writeText(dir, 'outbox', 'ack-conflict-' + env.attempt_id + '.txt', envl.renderMessage(ack));
-      return print(Object.assign({}, base, { verdict: 'conflict', reply_file: f, instruction: '이 파일 내용을 from 으로 보내고 처리하지 않는다' }));
+      return print(Object.assign({}, base, { verdict: 'conflict', reply_file: f, instruction: 'send the contents of this file to from and do not handle the request' }));
     }
     store.appendEvent(dir, { type: 'duplicate', recipient: 'self', attempt_id: env.attempt_id, detail: from ? 'from=' + from : null });
     const st = state.fold(store.listEvents(dir)).self;
-    const ack = envl.makeReply({ type: 'ack', request: env, responder: responder, status: 'duplicate', body: '이미 받은 요청이다. 현재 상태: ' + (st ? st.state : '알 수 없음') + '. 다시 실행하지 않는다.' });
+    const ack = envl.makeReply({ type: 'ack', request: env, responder: responder, status: 'duplicate', body: 'Already received. Current state: ' + (st ? st.state : 'unknown') + '. Not running it again.' });
     const f = store.writeText(dir, 'outbox', 'ack-duplicate-' + env.attempt_id + '.txt', envl.renderMessage(ack));
-    return print(Object.assign({}, base, { verdict: 'duplicate', state: st, reply_file: f, result_file: store.resultMessageFile(dir), instruction: '다시 실행하지 않는다. reply_file 을 보내고, result_file 이 있으면 그것도 보낸다' }));
+    return print(Object.assign({}, base, { verdict: 'duplicate', state: st, reply_file: f, result_file: store.resultMessageFile(dir), instruction: 'do not run it again. Send reply_file, and result_file too if there is one' }));
   }
 
   store.appendEvent(dir, { type: 'received', recipient: 'self', attempt_id: env.attempt_id, detail: from ? 'from=' + from : null });
-  const ack = envl.makeReply({ type: 'ack', request: env, responder: responder, status: 'received', body: '접수했다 (' + envl.INTENTS[env.intent].label + ').' });
+  const ack = envl.makeReply({ type: 'ack', request: env, responder: responder, status: 'received', body: 'Received (' + env.intent + ').' });
   const f = store.writeText(dir, 'outbox', 'ack.txt', envl.renderMessage(ack));
   const next = {
-    query: '물어본 것만 조사해 답을 쓴 뒤 reply --status completed 로 결과를 만든다',
-    notice: '이 저장소에 미치는 영향 범위만 확인해 reply --status completed 로 보고한다. 고치지 않는다',
-    change_request: '조사·수정에 착수하지 않는다. 바로 reply --status awaiting_user 로 "접수, 사용자 지시 대기" 결과를 만들고 사용자에게 알린다',
+    query: 'investigate only what was asked, write the answer, then make the result with reply --status completed',
+    notice: 'check only the impact on this repository and report it with reply --status completed. Do not fix anything',
+    change_request: 'do not start investigating or fixing. Immediately make the result with reply --status awaiting_user ("Received; waiting for the user on this side") and tell the user',
   }[env.intent];
-  print(Object.assign({}, base, { verdict: 'new', reply_file: f, instruction: '먼저 reply_file 을 from 으로 보낸다(ACK). 그다음: ' + next }));
+  print(Object.assign({}, base, { verdict: 'new', reply_file: f, instruction: 'first send reply_file to from (ACK). Then: ' + next }));
 }
 
 // ───────────────────────── reply (받는 쪽 결과) ─────────────────────────
@@ -518,9 +518,9 @@ function currentReplyTo(dir, rec) {
 
 function replyInstruction(replyTo) {
   if (String(replyTo || '').indexOf('unattended:') === 0) {
-    return '무인 경로로 온 요청이다 — SendMessage 할 곳이 없다. 결과는 이 기록에 남고, 보낸 쪽이 무인 "다시 확인" 으로 가져간다';
+    return 'this request came by the unattended path — there is nowhere to SendMessage. The result stays in this record and the sender collects it with an unattended recheck';
   }
-  return 'reply_file 내용을 reply_to 로 SendMessage 한다. 실패하면 reroute';
+  return 'SendMessage the contents of reply_file to reply_to. If that fails, reroute';
 }
 
 // completed·failed 는 한 번만 쓴다. 확정 결과는 publishOnce 로 게시해 **동시에 두 번 불러도 승자는 하나**다
@@ -531,22 +531,22 @@ function cmdReply(args, cwd) {
   const root = ctx.root;
   const id = need(args, 'id');
   const status = need(args, 'status');
-  if (['completed', 'awaiting_user', 'failed'].indexOf(status) === -1) throw new UsageError('--status 는 completed·awaiting_user·failed 중 하나');
+  if (['completed', 'awaiting_user', 'failed'].indexOf(status) === -1) throw new UsageError('--status must be one of completed·awaiting_user·failed');
   const dir = store.requestDir(root, id);
   const rec = store.readRequestRecord(dir);
-  if (!rec || rec.direction !== 'inbound') throw new UsageError('받은 기록에 ' + id + ' 가 없다');
+  if (!rec || rec.direction !== 'inbound') throw new UsageError('no received record for ' + id);
   const body = readFileArg(args, 'body-file').replace(/\s+$/, '');
   const finFile = path.join(dir, 'outbox', store.RESULT_FINAL);
   const replyTo = currentReplyTo(dir, rec);
 
   const idempotentOrRefuse = () => {
-    if (util.publishPending(finFile)) throw new UsageError('이 요청의 결과를 다른 처리가 지금 확정하는 중이다 — 덮어쓰지 않는다');
+    if (util.publishPending(finFile)) throw new UsageError('another process is finalizing the result of this request right now — not overwriting it');
     const prev = ingest.readReply(finFile);
     const cur = state.fold(store.listEvents(dir)).self;
     if (prev && prev.status === status && prev.body_sha256 === util.sha256(body)) {
-      return print({ ok: true, idempotent: true, request_id: id, status: status, reply_file: finFile, reply_to: replyTo, instruction: '같은 결과다. 아직 못 보냈으면 ' + replyInstruction(replyTo) });
+      return print({ ok: true, idempotent: true, request_id: id, status: status, reply_file: finFile, reply_to: replyTo, instruction: 'same result. If it has not been sent yet: ' + replyInstruction(replyTo) });
     }
-    throw new UsageError('이 요청의 결과는 이미 "' + (prev ? prev.status : cur ? cur.state : '?') + '" 로 확정됐다 — 덮어쓰지 않는다');
+    throw new UsageError('the result of this request is already final as "' + (prev ? prev.status : cur ? cur.state : '?') + '" — not overwriting it');
   };
   if (fs.existsSync(finFile) || util.publishPending(finFile)) return idempotentOrRefuse();
 
@@ -571,13 +571,13 @@ function cmdReroute(args, cwd) {
   const id = need(args, 'id');
   const dir = store.requestDir(root, id);
   const rec = store.readRequestRecord(dir);
-  if (!rec || rec.direction !== 'inbound') throw new UsageError('받은 기록에 ' + id + ' 가 없다');
+  if (!rec || rec.direction !== 'inbound') throw new UsageError('no received record for ' + id);
   store.appendEvent(dir, { type: 'reply_undelivered', recipient: 'self', detail: opt(args, 'detail') });
   // 같은 머신에서 온 요청인가는 **처음 받은 주소**로 가른다. 한 번 다시 찾은 뒤의 답장 주소는 세션 이름이라
   // 'uds:' 로 시작하지 않는다 — 그걸로 가르면 두 번째 reroute 가 늘 "다른 머신" 으로 끝났다(C04).
   const first = String(rec.from || '');
   if (first.indexOf('uds:') !== 0) {
-    return print({ status: 'unreachable', reason: '다른 머신에서 온 요청이다. Remote Control 주소는 다시 찾지 않는다 — 결과는 이 저장소 기록에 남아 있다', reply_to: currentReplyTo(dir, rec) || first, record_dir: dir });
+    return print({ status: 'unreachable', reason: 'this request came from another machine. Remote Control addresses are not searched again — the result is kept in the records of this repository', reply_to: currentReplyTo(dir, rec) || first, record_dir: dir });
   }
   const agents = sessions.parseAgents(readFileArg(args, 'agents-file'));
   let r = sessions.findReplyTarget({ senderRoot: rec.envelope.sender_root, agents: agents, selfSessionId: process.env.CLAUDE_CODE_SESSION_ID || null });
@@ -585,11 +585,11 @@ function cmdReroute(args, cwd) {
   const pick = opt(args, 'pick');
   if (pick && r.status === 'ask') {
     const c = (r.candidates || []).filter((x) => x.send_to && (x.send_to === pick || x.name === pick || x.session_id === pick));
-    r = c.length === 1 ? { status: 'ready', send_to: c[0].send_to, session_id: c[0].session_id } : Object.assign({}, r, { reason: '--pick "' + pick + '" 가 후보에서 하나로 특정되지 않는다. ' + r.reason });
+    r = c.length === 1 ? { status: 'ready', send_to: c[0].send_to, session_id: c[0].session_id } : Object.assign({}, r, { reason: '--pick "' + pick + '" does not match exactly one candidate. ' + r.reason });
   }
   if (r.status === 'ready') store.appendEvent(dir, { type: 'rerouted', recipient: 'self', reply_to: r.send_to, detail: 'session=' + r.session_id });
   const pending = [path.join(dir, 'outbox', 'ack.txt'), store.resultMessageFile(dir)].filter((f) => f && fs.existsSync(f));
-  print(Object.assign({}, r, { request_id: id, record_dir: dir, files: pending, instruction: r.status === 'ready' ? 'files 중 아직 못 보낸 것을 send_to 로 다시 보낸다' : r.status === 'ask' ? '후보를 사용자에게 보여 주고 고르게 한 뒤 reroute --pick "<send_to>" 로 다시 부른다' : '보내지 않는다. 결과는 이 저장소 기록에 남아 있다고 사용자에게 알린다' }));
+  print(Object.assign({}, r, { request_id: id, record_dir: dir, files: pending, instruction: r.status === 'ready' ? 'resend to send_to the files not sent yet' : r.status === 'ask' ? 'show the candidates to the user, let them choose, then call reroute --pick "<send_to>" again' : 'do not send. Tell the user the result is kept in the records of this repository' }));
 }
 
 // ───────────────────────── ingest · sync (보낸 쪽이 응답을 받음) ─────────────────────────
@@ -606,9 +606,9 @@ function cmdIngest(args, cwd) {
   }
   const problems = envl.checkEnvelope(env);
   if (problems.length) return print({ ok: false, problems: problems, request_id: env && env.request_id });
-  if (env.type === 'request') return print({ ok: false, hint: '이건 요청이다 — receive 로 처리한다' });
+  if (env.type === 'request') return print({ ok: false, hint: 'this is a request — handle it with receive' });
   const r = ingest.ingestEnvelope(root, env, from);
-  print(r.ok ? Object.assign({}, r, { instruction: '기록만 한다. 이 메시지에 회신하지 않는다' }) : r);
+  print(r.ok ? Object.assign({}, r, { instruction: 'record only. Do not reply to this message' }) : r);
 }
 
 // 같은 머신 짝 기록에서 응답을 따라잡는다 (status·inbox 앞에서 자동으로 돈다)
@@ -634,7 +634,7 @@ function cmdUnattended(args, cwd) {
   const ctx = repoContext(cwd);
   const book = requireBook(ctx.b);
   // D10: 자동 전환 없음. --confirmed 는 "사용자에게 물어서 승인받았다" 는 표시다 — 승인 없이 붙이지 마라
-  if (!args.confirmed) throw new UsageError('무인 전송은 사용자 승인 뒤에만 한다 — 승인을 받았으면 --confirmed 를 붙인다');
+  if (!args.confirmed) throw new UsageError('unattended sending only after the user approves — add --confirmed once approved');
   const r = unattended.runUnattended({ root: ctx.root, book: book, requestId: need(args, 'id'), alias: need(args, 'to'), peerScript: __filename });
   print(r);
   if (!r.ok) process.exitCode = 1;
@@ -665,7 +665,7 @@ function cmdStatus(args, cwd) {
   const id = opt(args, 'id');
   if (id) {
     const s = summarize(ctx.root, id);
-    if (!s) throw new UsageError('기록에 ' + id + ' 가 없다');
+    if (!s) throw new UsageError('no record for ' + id);
     s.events = store.listEvents(store.requestDir(ctx.root, id)).map((e) => {
       const copy = Object.assign({}, e);
       delete copy.file;
@@ -728,7 +728,7 @@ function main() {
   if (sd) process.env.PEER_REQ_STATE = sd;
   const cwd = opt(args, 'cwd') ? path.resolve(opt(args, 'cwd')) : process.cwd();
   if (!cmd || cmd === '--help' || cmd === 'help' || !COMMANDS[cmd]) {
-    process.stderr.write('사용법: node peer.cjs <' + Object.keys(COMMANDS).join('|') + '> [--state-dir <폴더>] [옵션]\n');
+    process.stderr.write('usage: node peer.cjs <' + Object.keys(COMMANDS).join('|') + '> [--state-dir <folder>] [options]\n');
     process.exit(cmd && cmd !== 'help' && cmd !== '--help' ? 2 : 0);
   }
   try {

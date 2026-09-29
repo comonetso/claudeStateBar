@@ -39,7 +39,7 @@
   const drOn = !!(document.querySelector('style.darkreader, meta[name="darkreader"]') || de.hasAttribute('data-darkreader-mode') || de.hasAttribute('data-darkreader-scheme'));
   out.env = {
     darkReader: drOn,
-    darkReaderHint: drOn ? '색·대비 결과 무효 — 자기 탭에 <meta name="darkreader-lock"> 를 넣고 다시 돌려라' : undefined,
+    darkReaderHint: drOn ? 'colour/contrast results are invalid — add <meta name="darkreader-lock"> to your own tab and run again' : undefined,
     colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
     reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
     window: { outerW: outerWidth, innerW: innerWidth, screenW: screen.width }, // 🔴 배율로 해석하지 마라(R5 D1)
@@ -65,15 +65,15 @@
     fcp: paints['first-contentful-paint'] ?? null,
     lcp: lcp && lcp.length ? { ms: Math.round(lcp[lcp.length - 1].startTime), el: describe(lcp[lcp.length - 1].element) } : null,
     cls: shifts ? clsOf(shifts) : null,
-    longTasks: lt ? { count: lt.length, maxMs: Math.round(Math.max(0, ...lt.map((e) => e.duration))) } : '미지원',
+    longTasks: lt ? { count: lt.length, maxMs: Math.round(Math.max(0, ...lt.map((e) => e.duration))) } : 'unsupported',
     resources: {
       count: res.length,
-      bufferFull: res.length === 250 ? '🔴 기본 상한 250 에 닿았다 — 이후 요청은 안 보인다(기록기가 setResourceTimingBufferSize 를 올려야 함)' : undefined,
+      bufferFull: res.length === 250 ? '🔴 hit the default cap of 250 — later requests are invisible (the recorder must raise setResourceTimingBufferSize)' : undefined,
       transferKB: Math.round(res.reduce((s, e) => s + (e.transferSize || 0), 0) / 1024),
       failed: res.filter((e) => e.responseStatus >= 400).map((e) => e.responseStatus + ' ' + e.initiatorType + ' ' + e.name.replace(location.origin, '')).slice(0, MAX),
     },
     slowest: res.slice().sort((a, b) => b.duration - a.duration).slice(0, 5).map((e) => Math.round(e.duration) + 'ms ' + e.name.replace(location.origin, '').slice(0, 70)),
-    memoryMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : '미지원',
+    memoryMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : 'unsupported',
     domNodes: document.getElementsByTagName('*').length,
   };
 
@@ -110,18 +110,18 @@
   }
   const focusables = [...document.querySelectorAll('a[href], button, input:not([type=hidden]), select, textarea, [tabindex]:not([tabindex="-1"]), [contenteditable=""], [contenteditable=true], summary')].filter((e) => !e.disabled && e.tabIndex >= 0);
   out.a11y = {
-    docLang: de.lang || '(없음)',
+    docLang: de.lang || '(none)',
     title: document.title,
     imgNoAlt: imgs.filter((i) => !i.hasAttribute('alt')).map(describe).slice(0, MAX),
     fieldsNoLabel: unlabeled.map(describe).slice(0, MAX),
     controlsNoName: btns.filter((b) => !nameOf(b)).map(describe).slice(0, MAX),
-    controlsNoNameNote: '정본은 Aside snapshot(접근성 트리) — 여기 목록은 후보',
+    controlsNoNameNote: 'the Aside snapshot (accessibility tree) is authoritative — this list is only candidates',
     headings: heads.join(','),
     headingLevelJumps: heads.filter((lv, i) => i > 0 && lv - heads[i - 1] > 1).length,
     h1Count: heads.filter((l) => l === 1).length,
     lowContrast: { count: lowCount, samples: lowContrast.slice(0, MAX), onBackgroundImage: onImage, canvas: canvasDark ? 'dark' : 'light' },
     // Tab 으로 실제로 갈 수 있는데(렌더됨) 눈에는 안 보이는 것 — display:none 조상 안 요소는 Tab 불가라 제외
-    focusableHidden: focusables.filter((e) => rendered(e) && !visible(e) && !e.closest('[aria-hidden=true],[inert]')).map((e) => describe(e) + (e.matches('a[href^="#"]') ? ' (건너뛰기 링크일 수 있음)' : '')).slice(0, MAX),
+    focusableHidden: focusables.filter((e) => rendered(e) && !visible(e) && !e.closest('[aria-hidden=true],[inert]')).map((e) => describe(e) + (e.matches('a[href^="#"]') ? ' (may be a skip link)' : '')).slice(0, MAX),
     pointerNotButton: all.filter((e) => visible(e) && getComputedStyle(e).cursor === 'pointer' && !(e.parentElement && getComputedStyle(e.parentElement).cursor === 'pointer') && !e.closest('a,button,[role=button],label,summary,input,select,[role=menuitem],[role=tab],[role=option],[role=link],[role=checkbox],[role=switch]')).map(describe).slice(0, MAX),
   };
 
@@ -151,12 +151,12 @@
 
   // ── 저장소 ──
   const size = (s) => Object.keys(s).reduce((n, k) => n + k.length + (s.getItem(k) || '').length, 0);
-  let idb = '미지원';
-  try { idb = indexedDB.databases ? (await indexedDB.databases()).map((d) => d.name) : '미지원'; } catch (e) { idb = '오류 ' + e.message; }
-  let sw = '미지원';
-  try { sw = navigator.serviceWorker ? (await navigator.serviceWorker.getRegistrations()).map((r) => r.scope) : '미지원'; } catch (e) { sw = '오류'; }
-  let cacheKeys = '미지원';
-  try { cacheKeys = self.caches ? await caches.keys() : '미지원'; } catch (e) { cacheKeys = '오류'; }
+  let idb = 'unsupported';
+  try { idb = indexedDB.databases ? (await indexedDB.databases()).map((d) => d.name) : 'unsupported'; } catch (e) { idb = 'error ' + e.message; }
+  let sw = 'unsupported';
+  try { sw = navigator.serviceWorker ? (await navigator.serviceWorker.getRegistrations()).map((r) => r.scope) : 'unsupported'; } catch (e) { sw = 'error'; }
+  let cacheKeys = 'unsupported';
+  try { cacheKeys = self.caches ? await caches.keys() : 'unsupported'; } catch (e) { cacheKeys = 'error'; }
   out.storage = { localKeys: Object.keys(localStorage), localBytes: size(localStorage), sessionKeys: Object.keys(sessionStorage), cookieNames: document.cookie ? document.cookie.split(';').map((c) => c.split('=')[0].trim()) : [], indexedDB: idb, serviceWorkers: sw, cacheStorage: cacheKeys };
 
   // ── 메타 · 보안 ──
@@ -168,10 +168,10 @@
     mixedContent: res.filter((e) => e.name.startsWith('http:')).map((e) => e.name).slice(0, MAX),
     thirdPartyScripts: [...new Set(scripts.filter((s) => { try { return new URL(s).origin !== location.origin; } catch { return false; } }).map((s) => new URL(s).origin))],
     cspMeta: document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content || null,
-    cspNote: '응답 헤더 CSP 는 여기서 안 보인다 — 필요하면 repl 의 fetch(location.href,{method:"HEAD"}) 헤더로',
+    cspNote: 'a response-header CSP is not visible here — if needed, read the headers of fetch(location.href,{method:"HEAD"}) in the repl',
     formsOverHttp: [...document.forms].filter((f) => f.action && f.action.startsWith('http:')).length,
     passwordAutocomplete: [...document.querySelectorAll('input[type=password]')].map((i) => i.getAttribute('autocomplete')),
   };
-  out.diag = window.__diag && window.__diag.summary ? (({ counts, pendingRequests, problems, failedRequests, firstProblems }) => ({ counts, pendingRequests, problems: problems.length, firstProblems: firstProblems ? firstProblems.length : '(v1)', failedRequests: failedRequests.length }))(window.__diag.summary()) : '기록기 없음';
+  out.diag = window.__diag && window.__diag.summary ? (({ counts, pendingRequests, problems, failedRequests, firstProblems }) => ({ counts, pendingRequests, problems: problems.length, firstProblems: firstProblems ? firstProblems.length : '(v1)', failedRequests: failedRequests.length }))(window.__diag.summary()) : 'no recorder';
   return out;
 })()

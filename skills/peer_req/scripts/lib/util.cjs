@@ -225,7 +225,7 @@ function safeEnv(env) {
 // spawnSync 와 같은 모양의 결과를 돌려준다. 못 찾으면 { error:{code:'ENOENT'} }.
 function runExe(name, args, opts) {
   const exe = findOnPath(name);
-  if (!exe) return { status: null, stdout: '', stderr: '', error: { code: 'ENOENT', message: 'PATH 에서 ' + name + ' 를 찾지 못했다' } };
+  if (!exe) return { status: null, stdout: '', stderr: '', error: { code: 'ENOENT', message: name + ' not found in PATH' } };
   const o = Object.assign({}, opts || {});
   o.env = safeEnv(o.env);
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(exe)) {

@@ -51,7 +51,7 @@ const WIN_SANDBOX_DEFAULT = 'unelevated';
 /** 서버가 JSON-RPC error 를 돌려준 경우. code/message/data 를 그대로 보존한다. */
 export class RpcError extends Error {
     constructor(code, message, data, method) {
-        super(`JSON-RPC 에러 (${method || '?'}): ${message} [code=${code}]`);
+        super(`JSON-RPC error (${method || '?'}): ${message} [code=${code}]`);
         this.name = 'RpcError';
         this.code = code;
         this.rpcMessage = message;
@@ -143,13 +143,13 @@ function quoteForShell(a) {
 export function findFreePort() {
     return new Promise((resolve, reject) => {
         const srv = net.createServer();
-        srv.once('error', (e) => reject(new AppServerError(`빈 포트를 잡지 못했다: ${e.message}`)));
+        srv.once('error', (e) => reject(new AppServerError(`could not get a free port: ${e.message}`)));
         srv.listen(0, '127.0.0.1', () => {
             const addr = srv.address();
             const port = addr && typeof addr === 'object' ? addr.port : null;
             srv.close((err) => {
-                if (err) reject(new AppServerError(`포트 탐색용 소켓을 닫지 못했다: ${err.message}`));
-                else if (!port) reject(new AppServerError('포트 번호를 읽지 못했다'));
+                if (err) reject(new AppServerError(`could not close the port-probe socket: ${err.message}`));
+                else if (!port) reject(new AppServerError('could not read the port number'));
                 else resolve(port);
             });
         });
@@ -219,7 +219,7 @@ export class Conn {
             emit(this.logSink, { kind: 'rpc-recv', conn: this.name, raw: line });
             let msg;
             try { msg = JSON.parse(line); }
-            catch { emit(this.logSink, { kind: 'warn', conn: this.name, message: 'JSON 파싱 실패', raw: line.slice(0, 400) }); continue; }
+            catch { emit(this.logSink, { kind: 'warn', conn: this.name, message: 'JSON parse failed', raw: line.slice(0, 400) }); continue; }
             this._route(msg);
         }
     }
@@ -245,14 +245,14 @@ export class Conn {
                 this.unhandledServerRequests.push(req);
                 emit(this.logSink, {
                     kind: 'warn', conn: this.name,
-                    message: `🔴 서버 요청 ${msg.method} 을(를) 받을 핸들러가 없다 — 응답하지 않으면 턴이 영구 대기한다`,
+                    message: `🔴 no handler for server request ${msg.method} — without a response the turn waits forever`,
                     id: msg.id
                 });
                 return;
             }
             for (const fn of this._serverRequestHandlers) {
                 try { fn(req); }
-                catch (e) { emit(this.logSink, { kind: 'warn', conn: this.name, message: `onServerRequest 핸들러 예외: ${e && e.message}` }); }
+                catch (e) { emit(this.logSink, { kind: 'warn', conn: this.name, message: `onServerRequest handler threw: ${e && e.message}` }); }
             }
             return;
         }
@@ -262,19 +262,19 @@ export class Conn {
             const note = { method: msg.method, params: msg.params || {}, emittedAtMs: msg.emittedAtMs };
             for (const fn of this._notificationHandlers) {
                 try { fn(note); }
-                catch (e) { emit(this.logSink, { kind: 'warn', conn: this.name, message: `onNotification 핸들러 예외: ${e && e.message}` }); }
+                catch (e) { emit(this.logSink, { kind: 'warn', conn: this.name, message: `onNotification handler threw: ${e && e.message}` }); }
             }
             return;
         }
 
-        emit(this.logSink, { kind: 'warn', conn: this.name, message: '해석 불가 메시지', raw: JSON.stringify(msg).slice(0, 400) });
+        emit(this.logSink, { kind: 'warn', conn: this.name, message: 'unparseable message', raw: JSON.stringify(msg).slice(0, 400) });
     }
 
     _resolveResponse(msg) {
         const p = this._pending.get(msg.id);
         if (!p) {
             // 타임아웃으로 이미 버린 요청의 늦은 응답. 버리되 사실은 남긴다.
-            emit(this.logSink, { kind: 'warn', conn: this.name, message: `모르는 id 의 응답 ${msg.id} (타임아웃 뒤 도착했을 가능성)` });
+            emit(this.logSink, { kind: 'warn', conn: this.name, message: `response for unknown id ${msg.id} (possibly arrived after a timeout)` });
             return;
         }
         this._pending.delete(msg.id);
@@ -294,7 +294,7 @@ export class Conn {
         // 🔴 대기 중인 요청을 그냥 두면 호출자가 영원히 await 한다. 전부 깨운다.
         for (const [, p] of this._pending) {
             clearTimeout(p.timer);
-            p.reject(new AppServerError(`${this.name} 연결이 끊겼다 (${reason}) — 요청 ${p.method} 이(가) 미완으로 끝났다`, { connClosed: true }));
+            p.reject(new AppServerError(`${this.name} connection closed (${reason}) — request ${p.method} ended incomplete`, { connClosed: true }));
         }
         this._pending.clear();
         emit(this.logSink, { kind: 'conn-close', conn: this.name, reason });
@@ -314,7 +314,7 @@ export class Conn {
             // ws 는 프레임 경계가 있으므로 NDJSON 의 개행이 필요 없다.
             this.ws.send(raw);
         } catch (e) {
-            throw new AppServerError(`${this.name} 전송 실패: ${e && e.message}`);
+            throw new AppServerError(`${this.name} send failed: ${e && e.message}`);
         }
     }
 
@@ -329,14 +329,14 @@ export class Conn {
         // 🔴 상한 없는 대기는 조용한 hang 이 된다. 지어낸 기본값을 넣는 대신 대놓고 실패시킨다.
         if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
             return Promise.reject(new AppServerError(
-                `request('${method}') 에 timeoutMs 가 없다. ` +
-                `호출부에서 request(m, p, {timeoutMs}) 로 주거나 ` +
-                `startAppServer({defaultRequestTimeoutMs}) / connect({defaultRequestTimeoutMs}) 로 정해라. ` +
-                `기본값을 임의로 정하지 않는다.`
+                `request('${method}') has no timeoutMs. ` +
+                `Pass it at the call site as request(m, p, {timeoutMs}), or ` +
+                `set it with startAppServer({defaultRequestTimeoutMs}) / connect({defaultRequestTimeoutMs}). ` +
+                `No default is invented.`
             ));
         }
         if (this._closed) {
-            return Promise.reject(new AppServerError(`${this.name} 이(가) 이미 닫혔다 (${this._closeReason}) — ${method} 를 보낼 수 없다`));
+            return Promise.reject(new AppServerError(`${this.name} is already closed (${this._closeReason}) — cannot send ${method}`));
         }
 
         const id = this._nextId++;
@@ -345,7 +345,7 @@ export class Conn {
             const timer = setTimeout(() => {
                 this._pending.delete(id);
                 reject(new AppServerError(
-                    `${method} 응답이 ${timeoutMs}ms 안에 오지 않았다 (id=${id})`,
+                    `no ${method} response within ${timeoutMs}ms (id=${id})`,
                     { timedOut: true, method, timeoutMs }
                 ));
             }, timeoutMs);
@@ -368,7 +368,7 @@ export class Conn {
     /** 응답이 없는 알림. `initialized` 처럼 id 를 붙이면 안 되는 것에 쓴다. */
     notify(method, params) {
         if (this._closed) {
-            emit(this.logSink, { kind: 'warn', conn: this.name, message: `닫힌 연결에 notify(${method}) — 버린다` });
+            emit(this.logSink, { kind: 'warn', conn: this.name, message: `notify(${method}) on a closed connection — dropped` });
             return;
         }
         this._send({ method, params: params === undefined ? {} : params });
@@ -389,7 +389,7 @@ export class Conn {
             const backlog = this.unhandledServerRequests.splice(0);
             for (const req of backlog) {
                 try { fn(req); }
-                catch (e) { emit(this.logSink, { kind: 'warn', conn: this.name, message: `밀린 서버 요청 처리 중 예외: ${e && e.message}` }); }
+                catch (e) { emit(this.logSink, { kind: 'warn', conn: this.name, message: `exception while handling queued server requests: ${e && e.message}` }); }
             }
         }
     }
@@ -403,7 +403,7 @@ export class Conn {
     /** 서버 요청에 성공 응답. 실측 형식: {id, result} */
     respond(id, result) {
         if (this._closed) {
-            emit(this.logSink, { kind: 'warn', conn: this.name, message: `닫힌 연결에 respond(${id}) — 서버 쪽 턴이 멈춰 있을 수 있다` });
+            emit(this.logSink, { kind: 'warn', conn: this.name, message: `respond(${id}) on a closed connection — the server-side turn may be stuck` });
             return;
         }
         this._send({ id, result: result === undefined ? {} : result });
@@ -412,7 +412,7 @@ export class Conn {
     /** 서버 요청에 에러 응답. 실측 형식: {id, error:{code,message}} */
     respondError(id, code, message) {
         if (this._closed) {
-            emit(this.logSink, { kind: 'warn', conn: this.name, message: `닫힌 연결에 respondError(${id}) — 서버 쪽 턴이 멈춰 있을 수 있다` });
+            emit(this.logSink, { kind: 'warn', conn: this.name, message: `respondError(${id}) on a closed connection — the server-side turn may be stuck` });
             return;
         }
         this._send({ id, error: { code, message: String(message) } });
@@ -435,7 +435,7 @@ export class Conn {
     close() {
         // _onClosed 는 ws 의 close 이벤트로도 불리므로 여기서는 소켓만 닫고 상태 정리는 맡긴다.
         try { this.ws.close(); } catch { /* 이미 닫힘 */ }
-        this._onClosed('close() 호출');
+        this._onClosed('close() called');
     }
 }
 
@@ -448,18 +448,18 @@ export class Conn {
 function openWs(url, timeoutMs) {
     return new Promise((resolve, reject) => {
         if (typeof WebSocket === 'undefined') {
-            reject(new AppServerError('이 Node 에는 전역 WebSocket 이 없다 (Node 22+ 필요)'));
+            reject(new AppServerError('this Node has no global WebSocket (Node 22+ needed)'));
             return;
         }
         let ws;
         try { ws = new WebSocket(url); }
-        catch (e) { reject(new AppServerError(`ws 생성 실패 (${url}): ${e && e.message}`)); return; }
+        catch (e) { reject(new AppServerError(`ws creation failed (${url}): ${e && e.message}`)); return; }
         let settled = false;
         const t = setTimeout(() => {
             if (settled) return;
             settled = true;
             try { ws.close(); } catch { /* 무시 */ }
-            reject(new AppServerError(`ws 연결 타임아웃 ${timeoutMs}ms (${url})`));
+            reject(new AppServerError(`ws connection timeout ${timeoutMs}ms (${url})`));
         }, timeoutMs);
         ws.addEventListener('open', () => {
             if (settled) return;
@@ -468,7 +468,7 @@ function openWs(url, timeoutMs) {
         ws.addEventListener('error', () => {
             if (settled) return;
             settled = true; clearTimeout(t);
-            reject(new AppServerError(`ws 연결 실패 (${url})`));
+            reject(new AppServerError(`ws connection failed (${url})`));
         });
     });
 }
@@ -492,7 +492,7 @@ export async function connectRpc(url, opts = {}) {
         // 🔴 프로세스가 이미 죽었으면 상한까지 기다리지 않는다. 조용한 hang 을 만드는 지점이다.
         const dead = typeof opts.isDead === 'function' ? opts.isDead() : null;
         if (dead) {
-            throw new AppServerError(`app-server 가 먼저 죽었다 (${dead}) — ws 에 붙을 수 없다`, { processDead: true });
+            throw new AppServerError(`app-server died first (${dead}) — cannot attach to ws`, { processDead: true });
         }
         try {
             const ws = await openWs(url, WS_ATTEMPT_TIMEOUT_MS);
@@ -507,7 +507,7 @@ export async function connectRpc(url, opts = {}) {
         }
         if (Date.now() >= deadline) {
             throw new AppServerError(
-                `${readyTimeoutMs}ms 안에 ws 리슨에 붙지 못했다 (${url}): ${lastErr && lastErr.message}`,
+                `could not attach to the ws listener within ${readyTimeoutMs}ms (${url}): ${lastErr && lastErr.message}`,
                 { url }
             );
         }
@@ -548,7 +548,7 @@ export class AppServer {
         if (child.stdout) child.stdout.on('data', (d) => emit(this.logSink, { kind: 'stdout', text: d.toString('utf8') }));
 
         // spawn 실패(파일 없음 등)를 콜백에서 throw 하면 uncaughtException 으로 샌다. 상태로만 남긴다.
-        child.on('error', (e) => this._markExit(`spawn 실패: ${e.message}`));
+        child.on('error', (e) => this._markExit(`spawn failed: ${e.message}`));
         child.on('exit', (code, sig) => {
             this._markExit(`code=${code} sig=${sig}`);
             emit(this.logSink, { kind: 'exit', pid: child.pid, code, sig, stderrBytes: this.stderrBytes });
@@ -566,7 +566,7 @@ export class AppServer {
      * @returns {Promise<Conn>}
      */
     async connect(opts = {}) {
-        if (this._closed) throw new AppServerError('이미 close() 된 AppServer 다');
+        if (this._closed) throw new AppServerError('AppServer already closed');
         const name = opts.name || `conn${++this._connSeq}`;
         const conn = await connectRpc(this.url, {
             name,
@@ -575,7 +575,7 @@ export class AppServer {
             readyTimeoutMs: opts.readyTimeoutMs !== undefined ? opts.readyTimeoutMs : this.readyTimeoutMs,
             retryIntervalMs: opts.retryIntervalMs !== undefined ? opts.retryIntervalMs : this.retryIntervalMs,
             // stderr 내용은 버렸지만 "얼마나 나왔는지"는 원인 추적에 도움이 된다.
-            isDead: () => (this.exitInfo === null ? null : `${this.exitInfo}, stderr ${this.stderrBytes}바이트(내용은 계정 정보 우려로 버렸다)`)
+            isDead: () => (this.exitInfo === null ? null : `${this.exitInfo}, stderr ${this.stderrBytes} bytes (contents discarded for fear of account data)`)
         });
         this._conns.add(conn);
         conn.onClose(() => this._conns.delete(conn));
@@ -731,7 +731,7 @@ export async function startAppServer(opts = {}) {
     if (server.exitInfo !== null) {
         // 실패로 빠져나갈 때도 좀비를 남기지 않는다. 호출자는 이 시점에 close() 할 핸들이 없다.
         server._killSync();
-        throw new AppServerError(`app-server 를 띄우지 못했다: ${server.exitInfo}`, { processDead: true });
+        throw new AppServerError(`could not start app-server: ${server.exitInfo}`, { processDead: true });
     }
 
     return server;

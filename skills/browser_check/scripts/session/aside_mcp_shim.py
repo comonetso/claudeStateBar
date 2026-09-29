@@ -42,7 +42,7 @@ class Pipe:
         intro, st = self._read_until(rb"type 'help'", 40)
         m = re.search(rb'sessionDir: (\S+)', intro)
         self.session_dir = m.group(1).decode(errors='replace') if m else None
-        return '[shim] 새 repl 세션을 열었다(이전 변수·탭은 없다). sessionDir=%s' % self.session_dir
+        return '[shim] opened a new repl session (earlier variables and tabs are gone). sessionDir=%s' % self.session_dir
 
     def run(self, code):
         note = self.ensure()
@@ -60,7 +60,7 @@ class Pipe:
             except Exception:
                 pass
             self.p = None
-            text += '\n[shim] %s — 세션이 끝났다. 다음 호출에서 새로 연다.' % st
+            text += '\n[shim] %s — the session ended. The next call opens a new one.' % st
         is_err = st != 'ok' or '[error |' in text
         return ((note + '\n') if note else '') + text, is_err
 

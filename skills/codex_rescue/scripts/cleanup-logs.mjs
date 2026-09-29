@@ -47,20 +47,20 @@ function parseArgs(argv) {
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--dry-run') { o.dryRun = true; continue; }
-        if (!a.startsWith('--')) throw new Error(`알 수 없는 인자: ${a}`);
+        if (!a.startsWith('--')) throw new Error(`unknown argument: ${a}`);
         const v = argv[i + 1];
-        if (v === undefined) throw new Error(`${a} 에 값이 없다`);
+        if (v === undefined) throw new Error(`${a} needs a value`);
         o[a.slice(2)] = v;
         i++;
     }
-    if (!o.dir) throw new Error('--dir 가 필요하다');
+    if (!o.dir) throw new Error('--dir is required');
     if (!/^\d+$/.test(o['keep-days'] ?? '')) {
-        throw new Error(`보존 기간은 0 이상의 정수(일)여야 한다: ${o['keep-days'] ?? '(없음)'} — CR_KEEP_DAYS 를 확인해라`);
+        throw new Error(`the retention period must be a whole number of days, 0 or more: ${o['keep-days'] ?? '(none)'} — check CR_KEEP_DAYS`);
     }
     // 잘못된 인자로 엉뚱한 폴더를 지우지 않게 이름으로 한 번 더 막는다.
     const dir = path.resolve(o.dir);
     if (path.basename(dir) !== 'codex_rescue' || path.basename(path.dirname(dir)) !== 'docs') {
-        throw new Error(`docs/codex_rescue 폴더가 아니다: ${dir}`);
+        throw new Error(`not a docs/codex_rescue folder: ${dir}`);
     }
     return { dir, keepDays: Number(o['keep-days']), skipStamp: o['skip-stamp'] || '',
              skipLock: o['skip-lock'] || '', dryRun: o.dryRun };
@@ -185,22 +185,22 @@ async function main() {
     try {
         res = cleanup(opts);
     } catch (e) {
-        process.stderr.write(`⚠️ 지난 기록 정리 실패 — 실행은 계속한다: ${e.message}\n`);
+        process.stderr.write(`⚠️ cleaning up old records failed — the run continues: ${e.message}\n`);
         return;
     }
     if (opts.dryRun) {
-        for (const p of res.removed) process.stdout.write(`(미리보기) ${p}\n`);
-        if (res.scratchSkipped) process.stdout.write('(미리보기) 살아 있는 다른 실행이 있어 작업 폴더(.scratch)는 이번에 건너뛴다\n');
+        for (const p of res.removed) process.stdout.write(`(preview) ${p}\n`);
+        if (res.scratchSkipped) process.stdout.write('(preview) another run is alive, so the workbench (.scratch) is skipped this time\n');
     }
     if (res.logFiles || res.scratchItems) {
         const parts = [];
-        if (res.logFiles) parts.push(`실행 기록 ${res.logFiles}개`);
-        if (res.scratchItems) parts.push(`작업 폴더 ${res.scratchItems}개`);
-        const head = opts.dryRun ? '🧹 (미리보기) 지울 지난 기록' : '🧹 지난 기록 정리';
-        process.stdout.write(`${head} (보존 ${opts.keepDays}일 · CR_KEEP_DAYS): ${parts.join(' · ')} · ${fmtBytes(res.bytes)}\n`);
+        if (res.logFiles) parts.push(`${res.logFiles} run logs`);
+        if (res.scratchItems) parts.push(`${res.scratchItems} workbench items`);
+        const head = opts.dryRun ? '🧹 (preview) old records to delete' : '🧹 old records cleaned up';
+        process.stdout.write(`${head} (kept ${opts.keepDays} days · CR_KEEP_DAYS): ${parts.join(' · ')} · ${fmtBytes(res.bytes)}\n`);
     }
     if (res.failed.length) {
-        process.stderr.write(`⚠️ 지우지 못한 항목 ${res.failed.length}개 — 다음 발동 때 다시 시도한다:\n`);
+        process.stderr.write(`⚠️ ${res.failed.length} items could not be deleted — retried on the next run:\n`);
         for (const f of res.failed.slice(0, 5)) process.stderr.write(`   ${f}\n`);
     }
 }

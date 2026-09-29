@@ -14,6 +14,12 @@
 //   `commandMode: task-notification`. The queued shape was the more common one (91 of 152), so
 //   reading only the first, as the workflow notice parser does, would miss most endings.
 // - A monitor's events arrive as notifications with an `<event>` and no `<status>`.
+// - A task stopped with TaskStop gets no notification at all (27 of 27 successful stops on this
+//   PC, 2026-09-29), so without reading the stop itself it stayed "running" forever. A successful
+//   stop is a `tool_result` without `is_error` whose `toolUseResult.task_id` names the task; a
+//   failed one ("No task found", "is not running") is an error result and changes nothing.
+//   Such a task is shown as completed, not stopped, and makes no finish chime (user's call,
+//   2026-09-29): it is mostly a dev server Claude stops to start it again, which has done its job.
 // Commands started by a workflow's agents are logged in those agents' files, not here, so they
 // stay out of this list by construction — which is what the user asked for.
 //
@@ -50,6 +56,8 @@ export interface BgTask {
     events: string[];
     /** A foreground command's result text, which the conversation itself holds. */
     output?: string;
+    /** Ended by a TaskStop: shown as completed, but it makes no finish chime. */
+    endedByTaskStop?: boolean;
 }
 
 function textOf(content: unknown): string {
@@ -75,6 +83,8 @@ function tag(text: string, name: string): string | undefined {
 export function parseBackgroundTasks(text: string, longCommandMs: number): BgTask[] {
     const launches = new Map<string, { kind: BgTaskKind; description: string; command: string; startedAt: number }>();
     const foreground = new Map<string, BgTask>();
+    /** TaskStop calls waiting for their result: tool_use id → the task id it asked to stop. */
+    const stops = new Map<string, string>();
     const byId = new Map<string, BgTask>();
     const order: BgTask[] = [];
 
@@ -82,9 +92,9 @@ export function parseBackgroundTasks(text: string, longCommandMs: number): BgTas
         if (!line) continue;
         // A long conversation is mostly lines none of this concerns; skip them before parsing.
         const maybeLaunch = line.includes('"run_in_background":true') || line.includes('"name":"Monitor"')
-            || line.includes('"name":"Bash"');
+            || line.includes('"name":"Bash"') || line.includes('"name":"TaskStop"');
         const maybeResult = line.includes('"backgroundTaskId"') || line.includes('"taskId"')
-            || (foreground.size > 0 && line.includes('"tool_use_id"'));
+            || ((foreground.size > 0 || stops.size > 0) && line.includes('"tool_use_id"'));
         const maybeNotice = line.includes('task-notification');
         if (!maybeLaunch && !maybeResult && !maybeNotice) continue;
         let e: any;
@@ -105,6 +115,8 @@ export function parseBackgroundTasks(text: string, longCommandMs: number): BgTas
                 } else if (b.name === 'Monitor') {
                     launches.set(b.id, { kind: 'monitor', description: String(input.description || ''),
                         command: String(input.command || input.ws?.url || ''), startedAt: timeOf(e.timestamp) });
+                } else if (b.name === 'TaskStop' && typeof input.task_id === 'string') {
+                    stops.set(b.id, input.task_id);
                 }
             }
             continue;
@@ -113,9 +125,42 @@ export function parseBackgroundTasks(text: string, longCommandMs: number): BgTas
         if (e?.type === 'user' && Array.isArray(content)) {
             for (const b of content) {
                 if (b?.type !== 'tool_result') continue;
+                const stopFor = stops.get(b.tool_use_id);
+                if (stopFor !== undefined) {
+                    stops.delete(b.tool_use_id);
+                    if (b.is_error === true) continue;   // the stop failed; the task is whatever it was
+                    const r = e.toolUseResult;
+                    const id = r && typeof r === 'object' && typeof r.task_id === 'string' ? r.task_id : stopFor;
+                    const task = byId.get(id);
+                    // Same rule as the notifications below: the first ending stands.
+                    if (task && task.status === 'running') {
+                        task.status = 'completed';
+                        task.endedByTaskStop = true;
+                        const at = timeOf(e.timestamp);
+                        if (at) task.endedAt = at;
+                    }
+                    continue;
+                }
                 const fg = foreground.get(b.tool_use_id);
                 if (fg) {
                     foreground.delete(b.tool_use_id);
+                    // An ordinary command that outlives its time limit is moved to the background by
+                    // Claude Code: the result says "moved to the background (ID: …)" and carries
+                    // `toolUseResult.backgroundTaskId`. It keeps running and ends like any background
+                    // command, so from here on it is one (user's call, 2026-09-29; 12 on this PC).
+                    const moved = e.toolUseResult;
+                    const movedId = moved && typeof moved === 'object' && typeof moved.backgroundTaskId === 'string'
+                        ? moved.backgroundTaskId : undefined;
+                    if (movedId !== undefined) {
+                        if (CODEX_RESCUE_CALL.test(fg.command) || byId.has(movedId)) continue;
+                        const out = /Output is being written to: (.+?\.output)/.exec(textOf(b.content))?.[1];
+                        const task: BgTask = { taskId: movedId, kind: 'command', description: fg.description,
+                            command: fg.command, startedAt: fg.startedAt, status: 'running', events: [],
+                            ...(out ? { outputFile: out } : {}) };
+                        byId.set(movedId, task);
+                        order.push(task);
+                        continue;
+                    }
                     const endedAt = timeOf(e.timestamp);
                     if (!endedAt || !fg.startedAt || endedAt - fg.startedAt < longCommandMs) continue;
                     const out = textOf(b.content);

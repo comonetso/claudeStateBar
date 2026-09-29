@@ -54,8 +54,8 @@ function main() {
   const own = ownRoot(cwd);
   if (util.samePath(path.dirname(file), own)) return;
   const reason = [
-    'peer_req: 다른 저장소의 주소록(' + file + ')은 고치지 않는다. 주소록의 self 는 그 저장소 세션만 쓴다(이 세션의 저장소: ' + own + ').',
-    '짝이 어긋나 보이면 `peer.cjs doctor` 결과를 사용자에게 보여 주고, 그 저장소의 세션에서 고치게 하라. 셸 명령으로 우회하지 마라.',
+    'peer_req: do not edit the address book of another repository (' + file + '). Only sessions of that repository write its self (the repository of this session: ' + own + ').',
+    'If the pairing looks wrong, show the user the result of `peer.cjs doctor` and have it fixed from a session in that repository. Do not work around this with shell commands.',
   ].join(' ');
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
 }

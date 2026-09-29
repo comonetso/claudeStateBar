@@ -61,7 +61,7 @@ function resultMessageFile(dir) {
 }
 
 function requestDir(repoRoot, requestId) {
-  if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error('request_id 형식 오류: ' + requestId);
+  if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error('bad request_id format: ' + requestId);
   return path.join(recordsRoot(repoRoot), requestId);
 }
 
@@ -90,7 +90,7 @@ function appendEvent(dir, event) {
     const name = Date.now() + '-' + crypto.randomBytes(3).toString('hex') + '-' + safeType + '.json';
     if (util.publishOnce(path.join(evDir, name), JSON.stringify(ev, null, 2) + '\n')) return { file: name, event: ev };
   }
-  throw new Error('이벤트 파일 이름 충돌이 반복됐다');
+  throw new Error('event file name collisions kept repeating');
 }
 
 function listEvents(dir) {

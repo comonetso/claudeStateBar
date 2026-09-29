@@ -107,7 +107,7 @@ const ROOT_DIRNAME = 'live-consult';
  */
 function assertStamp(stamp) {
     if (typeof stamp !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(stamp)) {
-        throw new Error('runtime: 잘못된 stamp (허용: 영숫자·밑줄·하이픈 1~64자): ' + JSON.stringify(stamp));
+        throw new Error('runtime: invalid stamp (allowed: letters, digits, _ and -, 1–64 chars): ' + JSON.stringify(stamp));
     }
     return stamp;
 }
@@ -165,7 +165,7 @@ export function makeNonce() {
  */
 function nonceKey(nonce) {
     if (typeof nonce !== 'string' || nonce.length === 0) {
-        throw new Error('runtime: nonce 가 비어 있다');
+        throw new Error('runtime: nonce is empty');
     }
     return crypto.createHash('sha256').update(nonce, 'utf8').digest('hex').slice(0, 32);
 }
@@ -227,7 +227,7 @@ async function readJsonOrNull(filePath) {
     try {
         return JSON.parse(raw);
     } catch (e) {
-        throw new Error('runtime: 상태/큐 파일이 유효한 JSON 이 아니다: ' + filePath + ' — ' + e.message);
+        throw new Error('runtime: state/queue file is not valid JSON: ' + filePath + ' — ' + e.message);
     }
 }
 
@@ -249,18 +249,18 @@ async function readJsonOrNull(filePath) {
 export async function writeState(stamp, state, opts = {}) {
     assertStamp(stamp);
     if (!state || typeof state !== 'object') {
-        throw new Error('runtime: state 객체가 필요하다');
+        throw new Error('runtime: a state object is required');
     }
     if (state.stamp !== undefined && state.stamp !== stamp) {
         // 인자와 본문이 어긋나면 어느 쪽이 진짜인지 알 수 없다. 조용히 고르지 않는다.
-        throw new Error('runtime: state.stamp(' + state.stamp + ') 가 인자 stamp(' + stamp + ') 와 다르다');
+        throw new Error('runtime: state.stamp (' + state.stamp + ') differs from the stamp argument (' + stamp + ')');
     }
     if (state.phase !== undefined && !PHASES.includes(state.phase)) {
-        throw new Error('runtime: 알 수 없는 phase: ' + JSON.stringify(state.phase) + ' (허용: ' + PHASES.join('|') + ')');
+        throw new Error('runtime: unknown phase: ' + JSON.stringify(state.phase) + ' (allowed: ' + PHASES.join('|') + ')');
     }
     if (typeof state.nonce !== 'string' || state.nonce.length === 0) {
         // nonce 없이 쓰면 stale 판별이 stamp 재사용에 뚫린다. 처음부터 막는다.
-        throw new Error('runtime: state.nonce 가 필요하다 (makeNonce() 로 실행 시작 시 한 번 만든다)');
+        throw new Error('runtime: state.nonce is required (create it once at run start with makeNonce())');
     }
     const full = {
         schema: SCHEMA,
@@ -288,7 +288,7 @@ export async function readState(stamp) {
 export async function patchState(stamp, patch, opts = {}) {
     const cur = await readState(stamp);
     if (!cur) {
-        throw new Error('runtime: 갱신할 상태가 없다 (writeState 가 먼저다): ' + stamp);
+        throw new Error('runtime: no state to update (writeState must come first): ' + stamp);
     }
     return await writeState(stamp, { ...cur, ...patch }, opts);
 }
@@ -296,7 +296,7 @@ export async function patchState(stamp, patch, opts = {}) {
 /** phase 전환 단축. 크래시 경로에서 markFailed 로도 쓴다. */
 export async function setPhase(stamp, phase, extra = {}, opts = {}) {
     if (!PHASES.includes(phase)) {
-        throw new Error('runtime: 알 수 없는 phase: ' + JSON.stringify(phase));
+        throw new Error('runtime: unknown phase: ' + JSON.stringify(phase));
     }
     return await patchState(stamp, { phase, ...extra }, opts);
 }
@@ -340,32 +340,32 @@ export function isPidAlive(pid) {
 export function checkSteerable(state, expect = {}) {
     const reasons = [];
     if (!state) {
-        return { ok: false, reasons: ['상태 파일이 없다 (실행 중이 아니거나 이미 정리됨)'], state: null };
+        return { ok: false, reasons: ['no state file (not running, or already cleaned up)'], state: null };
     }
     if (state.schema !== SCHEMA) {
-        reasons.push('스키마 버전 불일치: 파일 ' + state.schema + ' vs 기대 ' + SCHEMA);
+        reasons.push('schema version mismatch: file ' + state.schema + ' vs expected ' + SCHEMA);
     }
     if (expect.stamp !== undefined && state.stamp !== expect.stamp) {
-        reasons.push('stamp 불일치: ' + state.stamp + ' vs ' + expect.stamp);
+        reasons.push('stamp mismatch: ' + state.stamp + ' vs ' + expect.stamp);
     }
     const wantHost = expect.host ?? os.hostname();
     if (state.host !== wantHost) {
         // 같은 stamp 가 다른 머신에서도 만들어질 수 있다. 임시 디렉토리가 공유되는
         // 환경(네트워크 홈 등)에서 남의 실행을 조종하는 사고를 막는다.
-        reasons.push('host 불일치: ' + state.host + ' vs ' + wantHost);
+        reasons.push('host mismatch: ' + state.host + ' vs ' + wantHost);
     }
     if (expect.nonce !== undefined && state.nonce !== expect.nonce) {
-        reasons.push('실행 nonce 불일치 (같은 stamp 의 다른 실행이다)');
+        reasons.push('run nonce mismatch (another run with the same stamp)');
     }
     if (expect.threadId !== undefined && state.threadId !== expect.threadId) {
-        reasons.push('threadId 불일치: ' + state.threadId + ' vs ' + expect.threadId);
+        reasons.push('threadId mismatch: ' + state.threadId + ' vs ' + expect.threadId);
     }
     if (!isPidAlive(state.pid)) {
-        reasons.push('pid ' + state.pid + ' 가 살아 있지 않다 (크래시했거나 이미 끝났다)');
+        reasons.push('pid ' + state.pid + ' is not alive (crashed or already finished)');
     }
     const requirePhase = expect.requirePhase === undefined ? 'active' : expect.requirePhase;
     if (requirePhase !== null && state.phase !== requirePhase) {
-        reasons.push('phase 가 ' + JSON.stringify(state.phase) + ' 다 (필요: ' + JSON.stringify(requirePhase) + ')');
+        reasons.push('phase is ' + JSON.stringify(state.phase) + ' (needed: ' + JSON.stringify(requirePhase) + ')');
     }
     return { ok: reasons.length === 0, reasons, state };
 }
@@ -407,7 +407,7 @@ async function reserveSeq(stamp, opts = {}) {
         }
     }
     // 조용히 뭉개지 않는다. seq 붕괴는 나중에 순서 뒤집힘으로 나타나 추적이 매우 어렵다.
-    throw new Error('runtime: seq 예약이 ' + limit + '회 연속 충돌했다 (' + stamp + ')');
+    throw new Error('runtime: seq reservation collided ' + limit + ' times in a row (' + stamp + ')');
 }
 
 /**
@@ -425,7 +425,7 @@ export async function enqueueSteer(stamp, req = {}, opts = {}) {
     assertStamp(stamp);
     const text = req.text;
     if (typeof text !== 'string' || text.length === 0) {
-        throw new Error('runtime: steer text 가 비어 있다');
+        throw new Error('runtime: steer text is empty');
     }
     const nonce = req.nonce ?? makeNonce();
     const key = nonceKey(nonce);
@@ -531,7 +531,7 @@ export async function drainSteer(stamp) {
 export async function recordSteerOutcome(stamp, rec = {}, opts = {}) {
     assertStamp(stamp);
     if (!OUTCOMES.includes(rec.outcome)) {
-        throw new Error('runtime: 알 수 없는 outcome: ' + JSON.stringify(rec.outcome) + ' (허용: ' + OUTCOMES.join('|') + ')');
+        throw new Error('runtime: unknown outcome: ' + JSON.stringify(rec.outcome) + ' (allowed: ' + OUTCOMES.join('|') + ')');
     }
     const key = nonceKey(rec.nonce);
     const file = path.join(outcomeDirPath(stamp), key + '.json');
@@ -688,7 +688,7 @@ export async function markFailed(stamp, info = {}, opts = {}) {
                 nonce: item.nonce,
                 outcome: 'unknown',
                 text: item.text,
-                error: { message: '실행이 비정상 종료해 전달 여부를 확인하지 못했다' }
+                error: { message: 'the run ended abnormally, so delivery could not be confirmed' }
             }, opts).catch(() => { });
         }
     }

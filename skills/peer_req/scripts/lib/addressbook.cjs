@@ -109,26 +109,26 @@ function validateBook(text, file) {
   try {
     book = JSON.parse(text);
   } catch (e) {
-    return { ok: false, errors: ['JSON 문법 오류: ' + e.message], warnings: warnings, book: null };
+    return { ok: false, errors: ['JSON syntax error: ' + e.message], warnings: warnings, book: null };
   }
-  findDuplicateKeys(text).forEach((d) => errors.push('중복 키: ' + d + ' (뒤의 값이 앞의 값을 조용히 덮는다)'));
+  findDuplicateKeys(text).forEach((d) => errors.push('duplicate key: ' + d + ' (the later value silently overwrites the earlier one)'));
 
-  if (!isObject(book)) return { ok: false, errors: ['최상위가 객체가 아니다'], warnings: warnings, book: null };
-  if (book.schema_version !== 1) errors.push('schema_version 은 1 이어야 한다 (지금: ' + JSON.stringify(book.schema_version) + ')');
+  if (!isObject(book)) return { ok: false, errors: ['the top level is not an object'], warnings: warnings, book: null };
+  if (book.schema_version !== 1) errors.push('schema_version must be 1 (now: ' + JSON.stringify(book.schema_version) + ')');
   Object.keys(book).forEach((k) => {
-    if (KNOWN_TOP.indexOf(k) === -1) warnings.push('모르는 최상위 키: ' + k + ' (무시한다)');
+    if (KNOWN_TOP.indexOf(k) === -1) warnings.push('unknown top-level key: ' + k + ' (ignored)');
   });
 
   const self = book.self;
   if (!isObject(self)) {
-    errors.push('self 가 없다 — endpoint_id·machine_id·root 가 필요하다');
+    errors.push('self is missing — it needs endpoint_id, machine_id and root');
   } else {
-    if (!ID_RE.test(self.endpoint_id || '')) errors.push('self.endpoint_id 형식 오류: ' + JSON.stringify(self.endpoint_id) + ' (소문자·숫자·. _ -)');
-    if (!self.machine_id || typeof self.machine_id !== 'string') errors.push('self.machine_id 가 없다');
+    if (!ID_RE.test(self.endpoint_id || '')) errors.push('self.endpoint_id has a bad format: ' + JSON.stringify(self.endpoint_id) + ' (lowercase letters, digits, . _ -)');
+    if (!self.machine_id || typeof self.machine_id !== 'string') errors.push('self.machine_id is missing');
     if (!util.isAbsolutePath(self.root)) {
-      errors.push('self.root 는 절대경로여야 한다: ' + JSON.stringify(self.root));
+      errors.push('self.root must be an absolute path: ' + JSON.stringify(self.root));
     } else if (file && !util.samePath(self.root, path.dirname(path.resolve(file)))) {
-      errors.push('self.root(' + self.root + ') 가 주소록이 있는 폴더(' + path.dirname(path.resolve(file)) + ')와 다르다 — 다른 저장소에서 복사해 온 주소록인가?');
+      errors.push('self.root (' + self.root + ') differs from the folder holding the address book (' + path.dirname(path.resolve(file)) + ') — was it copied from another repository?');
     }
   }
 
@@ -137,41 +137,41 @@ function validateBook(text, file) {
   const endpointSeen = Object.create(null);
   if (self && self.endpoint_id) endpointSeen[self.endpoint_id] = 'self';
   if (peers !== undefined && !isObject(peers)) {
-    errors.push('peers 는 객체여야 한다');
+    errors.push('peers must be an object');
   } else if (peers) {
     Object.keys(peers).forEach((alias) => {
       const p = peers[alias];
       const at = 'peers.' + alias;
-      if (!ALIAS_RE.test(alias)) errors.push(at + ': 별칭 형식 오류 (한글·영문·숫자·_ -, 공백 없이)');
+      if (!ALIAS_RE.test(alias)) errors.push(at + ': bad alias format (letters including Korean, digits, _ -, no spaces)');
       if (!isObject(p)) {
-        errors.push(at + ': 객체가 아니다');
+        errors.push(at + ': not an object');
         return;
       }
-      if (!ID_RE.test(p.endpoint_id || '')) errors.push(at + '.endpoint_id 형식 오류: ' + JSON.stringify(p.endpoint_id));
-      else if (endpointSeen[p.endpoint_id]) errors.push(at + '.endpoint_id(' + p.endpoint_id + ') 가 ' + endpointSeen[p.endpoint_id] + ' 와 겹친다');
+      if (!ID_RE.test(p.endpoint_id || '')) errors.push(at + '.endpoint_id has a bad format: ' + JSON.stringify(p.endpoint_id));
+      else if (endpointSeen[p.endpoint_id]) errors.push(at + '.endpoint_id (' + p.endpoint_id + ') clashes with ' + endpointSeen[p.endpoint_id]);
       else endpointSeen[p.endpoint_id] = at;
-      if (!p.machine_id || typeof p.machine_id !== 'string') errors.push(at + '.machine_id 가 없다');
+      if (!p.machine_id || typeof p.machine_id !== 'string') errors.push(at + '.machine_id is missing');
       const loc = isObject(p.location) ? p.location : {};
-      if (!util.isAbsolutePath(loc.root)) errors.push(at + '.location.root 는 절대경로여야 한다: ' + JSON.stringify(loc.root));
-      if (loc.os !== undefined && OS_VALUES.indexOf(loc.os) === -1) errors.push(at + '.location.os 는 windows·linux·macos 중 하나: ' + JSON.stringify(loc.os));
+      if (!util.isAbsolutePath(loc.root)) errors.push(at + '.location.root must be an absolute path: ' + JSON.stringify(loc.root));
+      if (loc.os !== undefined && OS_VALUES.indexOf(loc.os) === -1) errors.push(at + '.location.os must be one of windows, linux, macos: ' + JSON.stringify(loc.os));
       if (loc.host_alias !== undefined && (typeof loc.host_alias !== 'string' || !HOST_RE.test(loc.host_alias))) {
-        errors.push(at + '.location.host_alias 는 ~/.ssh/config 의 Host 이름이어야 한다(영문·숫자·. _ @ -, 첫 글자 - 금지): ' + JSON.stringify(loc.host_alias));
+        errors.push(at + '.location.host_alias must be a Host name from ~/.ssh/config (letters, digits, . _ @ -, not starting with -): ' + JSON.stringify(loc.host_alias));
       }
       const sameMachine = isObject(self) && util.sameMachine(p.machine_id, self.machine_id);
       if (sameMachine && p.machine_id !== self.machine_id) {
-        warnings.push(at + '.machine_id(' + p.machine_id + ') 가 self(' + self.machine_id + ')와 대소문자만 다르다 — 같은 기기로 본다');
+        warnings.push(at + '.machine_id (' + p.machine_id + ') differs from self (' + self.machine_id + ') only in letter case — treated as the same machine');
       }
       // rc_title 은 선택이다(D27) — 없으면 목록에서 한 번 고른 세션을 이 PC 가 기억한다. 적었다면 빈 값이면 안 된다.
       if (p.session_selector !== undefined && !isObject(p.session_selector)) {
-        errors.push(at + '.session_selector 는 객체여야 한다');
+        errors.push(at + '.session_selector must be an object');
       } else if (isObject(p.session_selector)) {
         const sel = p.session_selector;
         if (sel.rc_title !== undefined && !(typeof sel.rc_title === 'string' && sel.rc_title.trim())) {
-          errors.push(at + '.session_selector.rc_title 은 비어 있지 않은 문자열이어야 한다 (Remote Control 목록에서 찾을 제목. 모르면 빼라 — 처음 보낼 때 목록에서 고르면 기억한다)');
+          errors.push(at + '.session_selector.rc_title must be a non-empty string (the title to look for in the Remote Control list; leave it out if unknown — a session chosen from the list on the first send is remembered)');
         }
       }
       if (sameMachine && util.isAbsolutePath(loc.root) && util.samePath(loc.root, self.root)) {
-        errors.push(at + ': 같은 머신의 같은 root 다 — 자기 자신을 짝으로 적었다');
+        errors.push(at + ': same machine and same root — it lists itself as a peer');
       }
     });
   }
@@ -179,20 +179,20 @@ function validateBook(text, file) {
   const groups = book.groups;
   if (groups !== undefined) {
     if (!isObject(groups)) {
-      errors.push('groups 는 객체여야 한다');
+      errors.push('groups must be an object');
     } else {
       Object.keys(groups).forEach((g) => {
         const members = groups[g];
-        if (!ALIAS_RE.test(g)) errors.push('groups.' + g + ': 이름 형식 오류');
-        if (peers && peers[g]) errors.push('groups.' + g + ': 짝 별칭과 이름이 겹친다');
+        if (!ALIAS_RE.test(g)) errors.push('groups.' + g + ': bad name format');
+        if (peers && peers[g]) errors.push('groups.' + g + ': name clashes with a peer alias');
         if (!Array.isArray(members) || members.length === 0) {
-          errors.push('groups.' + g + ': 비어 있지 않은 배열이어야 한다');
+          errors.push('groups.' + g + ': must be a non-empty array');
           return;
         }
         const seen = Object.create(null);
         members.forEach((m) => {
-          if (!peers || !peers[m]) errors.push('groups.' + g + ': 없는 짝 ' + JSON.stringify(m));
-          if (seen[m]) errors.push('groups.' + g + ': ' + m + ' 가 두 번 들어 있다');
+          if (!peers || !peers[m]) errors.push('groups.' + g + ': unknown peer ' + JSON.stringify(m));
+          if (seen[m]) errors.push('groups.' + g + ': ' + m + ' appears twice');
           seen[m] = true;
         });
       });
@@ -202,14 +202,14 @@ function validateBook(text, file) {
   if (book.unattended !== undefined) {
     const u = book.unattended;
     if (!isObject(u) || (u.permission !== undefined && ['read_only', 'bypass'].indexOf(u.permission) === -1)) {
-      errors.push('unattended 는 { "permission": "read_only" | "bypass" } 형식이어야 한다');
+      errors.push('unattended must be { "permission": "read_only" | "bypass" }');
     }
   }
 
   if (book.records !== undefined) {
     const r = book.records;
     if (!isObject(r) || (r.commit !== undefined && typeof r.commit !== 'boolean')) {
-      errors.push('records 는 { "commit": true|false } 형식이어야 한다');
+      errors.push('records must be { "commit": true|false }');
     }
   }
 
@@ -234,7 +234,7 @@ function loadBookAt(dir) {
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch (e) {
-    return { found: true, file: file, root: dir, ok: false, errors: ['읽지 못했다: ' + e.message], warnings: [], book: null };
+    return { found: true, file: file, root: dir, ok: false, errors: ['could not read it: ' + e.message], warnings: [], book: null };
   }
   const r = validateBook(text, file);
   return { found: true, file: file, root: dir, ok: r.ok, errors: r.errors, warnings: r.warnings, book: r.book };

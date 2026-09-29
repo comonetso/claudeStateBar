@@ -5,12 +5,12 @@
 When Codex ends you are **woken automatically** with `send.sh`'s stdout; the user doesn't need to tell you. Then:
 
 1. If the report has 🔴 **changes outside the response file**, **report them to the user first** — the skill's premise broke, and that comes before the review. **Never revert them yourself** — the user decides.
-   (`🧪 Codex 작업 폴더에 N건` is **normal** — investigation traces in `.scratch/`, not a violation. `🧹 지난 기록 정리: …` is **normal** too — old records unrelated to this run were cleaned; relay it in one line. `⚠️ 지우지 못한 항목` is retried next time; mention it only if the same item keeps appearing.)
+   (`🧪 N item(s) left in the Codex workbench` is **normal** — investigation traces in `.scratch/`, not a violation. `🧹 old records cleaned up …` is **normal** too — old records unrelated to this run were cleaned; relay it in one line. `⚠️ … items could not be deleted` is retried next time; mention it only if the same item keeps appearing.)
 2. Read `response_path`. **Never edit Codex's text.** Append a `## Claude 검토` section at the end.
 3. It is done only after passing the **completion gate** below. Otherwise don't report it as done.
 4. Report the review (adopt / hold / reject, each with its reason, and the plan to apply) and get the user's decision.
 5. If there is no response file, read `.log/<stamp>_events.jsonl` and `_stderr.log` and report the cause to the user.
-6. **`⚠️ 중간 저장본 도착` means it isn't finished.** The response frontmatter has `status: partial` and `stop_reason` — `limit` (usage-limit traces) · `interrupted` (stopped by a person or signal — exit 130, or the turn-aborted event in the rollout) · `other` (unknown).
+6. **`⚠️ partial save arrived` means it isn't finished.** The response frontmatter has `status: partial` and `stop_reason` — `limit` (usage-limit traces) · `interrupted` (stopped by a person or signal — exit 130, or the turn-aborted event in the rollout) · `other` (unknown).
    - Trust only the plan and the confirmed facts; a conclusion section may be half-written
    - Write `미완성 — <stopped value>` as the first line of `## Claude 검토` and sum up what is confirmed and what remains
    - Report to the user: the cause (`stop_reason`), what is confirmed, what remains. Unless it is `limit`, don't call it a limit problem
@@ -154,4 +154,4 @@ Codex runs with `-s workspace-write` (it needs it to save the response), so it *
 🔴 **Never read `10` as "it didn't start".** `Conn.request()` waits for the reply **after sending** the `turn/start` frame, so reply timeouts, lost connections and replies without a turnId all end up as 10 — the code can't tell "the server started the turn but the reply was lost". A fallback would run the same investigation twice and burn double the limit.
 🔴 **No "it failed, just rerun it".** For anything but 11, read `.log/<stamp>_appserver.jsonl` and `_stderr.log`, report the cause and **get the user's decision.** Rerunning is the user's call.
 
-**A non-zero exit with a changed response file is a partial save**: `send.sh` announces `⚠️ 중간 저장본 도착` and writes `status: partial` into the frontmatter. The request tells Codex to write as it investigates, so facts confirmed before a limit cut remain. Handle it by §9 step 6.
+**A non-zero exit with a changed response file is a partial save**: `send.sh` announces `⚠️ partial save arrived` and writes `status: partial` into the frontmatter. The request tells Codex to write as it investigates, so facts confirmed before a limit cut remain. Handle it by §9 step 6.

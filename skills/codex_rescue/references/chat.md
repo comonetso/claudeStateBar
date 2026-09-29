@@ -34,7 +34,7 @@ For when you and the user want **another view once**, asked and answered on the 
    Bash(timeout: 180000):
      CR_CONFIRMED=1 bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --start --slug <slug> [--subject "<one line>"] "<question>"
 
-   # next turn of the same call — pass the previous stdout's `대화키:` value as is
+   # next turn of the same call — pass the previous stdout's `conversation key:` value as is
    Bash(timeout: 180000):
      bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --resume-stamp <key> --slug <slug> "<question>"
 
@@ -59,13 +59,13 @@ For when you and the user want **another view once**, asked and answered on the 
 
 5. **Add your judgement** — agree or push back in a line or two. Without it this is dictation, not ping-pong.
 
-6. **Link the conversation document once, when the ping-pong ends.** 🔴 **Not every turn** — a link between turns breaks the flow. When you stop asking Codex and hand back to the user, add one last line:
+6. **Link the conversation document once, when the ping-pong ends.** 🔴 **Not every turn** — a link between turns breaks the flow. When you stop asking Codex and hand back to the user, add one last line (in the user's language):
 
    ```
-   → 기록: [260822_141436_chat_joke-pingpong.md](docs/codex_rescue/260822_141436_chat_joke-pingpong.md) · 2턴
+   → record: [260822_141436_chat_joke-pingpong.md](docs/codex_rescue/260822_141436_chat_joke-pingpong.md) · 2 turns
    ```
 
-   The chat scatters turns between other messages; the document shows the whole conversation at once, so it is useful at the end, not midway. If the user later says "ask once more", that is a new end point — link again then. Take the path **as is** from the `기록  :` line of `send.sh`'s stdout; don't guess it (the stamp and the file depend on resume vs new thread). A Markdown link is enough.
+   The chat scatters turns between other messages; the document shows the whole conversation at once, so it is useful at the end, not midway. If the user later says "ask once more", that is a new end point — link again then. Take the path **as is** from the `record:` line of `send.sh`'s stdout; don't guess it (the stamp and the file depend on resume vs new thread). A Markdown link is enough.
 
 ## Where CHAT differs
 

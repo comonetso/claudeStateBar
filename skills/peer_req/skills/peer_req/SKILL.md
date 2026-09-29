@@ -72,7 +72,7 @@ Each receiver in `targets[]` has a `status`:
 | status | What to do |
 |---|---|
 | `ready` | Send per §2-5. If there is a `note`, relay it in one line (e.g. the remembered session's title changed so it goes to the new title · it looks like a new conversation so it goes to the session with the same title) |
-| `ask` | Show `reason` and `candidates` to the user and **let them choose.** 🔴 Don't choose yourself — not even when a name looks similar, has the highest number, is a management session, or the candidates have random names (`<host>-<adjective>-<noun>`). If `reason` mentions "unread lines", show the raw list too (such a line may be the real peer) |
+| `ask` | Show `reason` and `candidates` to the user and **let them choose.** 🔴 Don't choose yourself — not even when a name looks similar, has the highest number, is a management session, or the candidates have random names (`<host>-<adjective>-<noun>`). If `reason` mentions "unreadable lines", show the raw list too (such a line may be the real peer) |
 | `unreachable` | Relay `reason`. If `rc_visible:false`, the §0 explanation comes first. If the peer session really doesn't exist, **ask** about §2-7 unattended sending |
 
 When the user chooses — same machine or not — **prepare again with `--pick`**. The chosen session is remembered after the other side acknowledges:
@@ -85,7 +85,7 @@ When the user chooses — same machine or not — **prepare again with `--pick`*
 Nothing is remembered before sending — if the wrong session was picked, "not the target" comes back and no memory is created.
 - Same machine: the session id is remembered (while that conversation is open, across restarts too).
 - Other machines: the chosen session's title and reference number (`[87f895]`) are remembered. **Look up by reference number first** — a remote line's reference number is the same for everyone and stays the same for the same conversation even if its title changes. Then the address book's `rc_title`, then the remembered title.
-  An address book without `rc_title` is fine — choose once from the list. If there is only one remote session (not counting other peers'), it is sent there without asking. **But ask if the list has unread lines or lines of a kind not seen before.**
+  An address book without `rc_title` is fine — choose once from the list. If there is only one remote session (not counting other peers'), it is sent there without asking. **But ask if the list has unreadable lines or lines of an unfamiliar kind.**
   A new conversation gets a new reference number and drops out of the list, so it is asked again then (if exactly one session has the same title, it is sent there).
 - If the memory is wrong, clear it with `peer.cjs forget --to <peer>`.
 

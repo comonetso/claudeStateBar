@@ -5,7 +5,7 @@ description: Get a second view from the Codex CLI (OpenAI) in a fully automatic 
 
 # codex_rescue — automatic round trip to Codex for a second view
 
-Language: talk to the user in the user's language. Quoted `send.sh` / tool output and the request and response document templates stay exactly as they are (Korean) — the scripts write and refer to those strings.
+Language: talk to the user in the user's language. Script and tool output is in English. The request and response document templates, and the headings and labels the scripts write into documents, stay in Korean exactly as they are — the scripts write and refer to those strings.
 
 ## 0. Intent — decide this before anything else
 

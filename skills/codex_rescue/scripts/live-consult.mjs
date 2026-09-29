@@ -170,7 +170,7 @@ async function readStdin() {
 //    더 빨리 걸린다. 그래서 steer 본문은 **항상** 파일이나 stdin 으로만 받는다.
 async function readTextInput(spec) {
     if (spec === '-') return await readStdin();
-    if (!fs.existsSync(spec)) fail(EXIT.USAGE, `입력 파일이 없다: ${spec}`);
+    if (!fs.existsSync(spec)) fail(EXIT.USAGE, `input file not found: ${spec}`);
     return fs.readFileSync(spec, 'utf8');
 }
 
@@ -208,8 +208,8 @@ function requireLib(mods, missing, needed) {
         .map((m) => `  - lib/${m.name}.mjs : ${m.reason}`)
         .join('\n');
     fail(EXIT.LIB_MISSING,
-        `필요한 모듈을 싣지 못했다 (${gone.join(', ')}).\n${detail}\n` +
-        '아직 만들어지지 않았다면 --help / --dry-run 만 사용할 수 있다.');
+        `could not load required modules (${gone.join(', ')}).\n${detail}\n` +
+        'If they do not exist yet, only --help / --dry-run can be used.');
 }
 
 // runtime.mjs 가 없을 때도 --dry-run 이 경로를 보여줄 수 있게 하는 폴백.
@@ -263,7 +263,7 @@ function parseArgs(argv) {
 
 function need(opts, key, code = EXIT.USAGE) {
     const v = opts[key];
-    if (v === undefined || v === true || v === '') fail(code, `--${key} 가 필요하다`);
+    if (v === undefined || v === true || v === '') fail(code, `--${key} is required`);
     return String(v);
 }
 
@@ -275,7 +275,7 @@ const STAMP_RE = /^[A-Za-z0-9_-]{1,64}$/;
 function needStamp(opts) {
     const s = need(opts, 'stamp');
     if (!STAMP_RE.test(s)) {
-        fail(EXIT.USAGE, `--stamp 는 영숫자·밑줄·하이픈 1~64자여야 한다: "${s}"`);
+        fail(EXIT.USAGE, `--stamp must be 1–64 letters, digits, _ or -: "${s}"`);
     }
     return s;
 }
@@ -283,7 +283,7 @@ function needStamp(opts) {
 function numOpt(opts, key, dflt) {
     if (opts[key] === undefined || opts[key] === true) return dflt;
     const n = Number(opts[key]);
-    if (!Number.isFinite(n) || n < 0) fail(EXIT.USAGE, `--${key} 는 0 이상의 숫자여야 한다: ${opts[key]}`);
+    if (!Number.isFinite(n) || n < 0) fail(EXIT.USAGE, `--${key} must be a number, 0 or more: ${opts[key]}`);
     return n;
 }
 
@@ -298,61 +298,62 @@ function numOpt(opts, key, dflt) {
 // ══════════════════════════════════════════════════════════════════════════
 function buildConsultPrompt({ requestPathWin, scratchRel }) {
     return [
-        '아래 요청서 파일을 읽고, 그 안에 적힌 지시를 그대로 따라라.',
+        'Read the request file below and follow the instructions in it exactly.',
         '',
-        `요청서: ${requestPathWin}`,
+        `Request: ${requestPathWin}`,
         '',
-        '너는 이 사건의 **독립 조사자**다. 요청서는 출발점이지 경계가 아니다.',
-        'Claude 는 이미 그 안의 자료로 답을 못 찾았다. 같은 자료를 같은 방식으로 읽으면 같은 결론이 나온다.',
+        'You are the **independent investigator** of this case. The request is a starting point, not a boundary.',
+        'Claude already failed to find the answer with the material in it. Reading the same material the same way gives the same conclusion.',
         '',
-        '🔴 지켜야 할 선은 **하나**다 — 프로덕션 파일을 고치지 마라.',
+        '🔴 There is **one** line to hold — do not modify production files.',
         '',
-        '- **코드를 고치지 마라.** 너는 분석·진단과 수정 방법 제시만 한다. 실제 수정은 Claude 가 한다.',
-        '- 네가 쓸 수 있는 곳은 **정확히 두 곳**이다:',
-        '    ① 요청서가 지정한 응답 문서',
-        `    ② ${scratchRel}/    ← 네 작업대다`,
-        '  이 둘 밖의 파일은 만들거나 고치거나 지우지 마라. 저장소 상태를 바꾸는 명령도 금지다',
-        '  (git commit·checkout·stash·reset, 패키지 설치, 빌드).',
+        '- **Do not edit code.** You only analyze, diagnose and propose fixes. Claude does the actual fixing.',
+        '- You may write in **exactly two places**:',
+        '    ① the response document the request names',
+        `    ② ${scratchRel}/    ← your workbench`,
+        '  Do not create, modify or delete files outside these two. Commands that change repository state are forbidden too',
+        '  (git commit, checkout, stash, reset, package installs, builds).',
         '',
-        '그 밖의 조사는 **막지 않는다. 끝까지 파라.**',
-        '- **원본을 직접 열어라.** 디스크 어디든 읽어도 된다 — 워크스페이스 밖도 읽기는 허용돼 있다.',
-        '  요청서에 인용된 조각만 믿지 마라. **요약과 원본이 어긋나면 원본이 이긴다.**',
-        '- **계산·정렬·파싱·재집계를 직접 실행해라.** 스크립트를 짜서 돌려도 된다. 수치를 추측하지 말고 뽑아라.',
-        '  그 산출물(스크립트·중간 데이터·메모)은 위 작업대에 **마음껏** 만들어라 — 개수·크기 제한이 없고',
-        '  지우지 않아도 된다. 남겨 두면 Claude 가 네 계산을 재현할 수 있어 오히려 낫다.',
-        '- **네트워크를 써도 된다** — 문서·이슈·릴리스노트를 검색하고 직접 확인해라.',
-        '  단 **조회 전용**이다. 어디에도 데이터를 올리지 마라(POST/PUT·git push·publish 금지).',
-        '  🔴 **자격증명은 조사에 필요하면 읽어도 된다. 단 값을 옮기지 마라.** (2026-09-16 사용자 결정)',
-        '     `.env` 등의 접속 정보로 DB 에 붙어 원본을 조회하는 것은 허용한다 — 요청서가 준 명령',
-        '     (`node -r dotenv/config` 처럼 값을 화면에 드러내지 않고 불러 쓰는 방식)을 우선해라.',
-        '     비밀번호·토큰·키 값을 **응답 문서·작업대·명령 출력에 남기지 마라.** 응답 문서는 git 으로 원격까지 올라간다.',
-        '     값을 화면에 찍는 명령(`cat .env`·`echo $DB_PASSWORD` 등)은 쓰지 말고, 불가피하면 마스킹해라.',
-        '- Claude 의 가설은 참고 자료다. **틀렸으면 버려라.** 그걸 검증하는 데 시간을 다 쓰지 마라 —',
-        '  가설이 통째로 무의미할 수 있다. 원본이 다른 곳을 가리키면 그쪽을 쫓아가라.',
-        '- "기존 분석법이 실패했다"는 **"그 데이터를 다시 보지 마라"는 뜻이 아니다.**',
-        '  같은 원본을 다른 방법으로 분석하는 것은 언제나 허용이고, 대개 그게 정답이다.',
+        'Any other investigation is **not restricted. Dig to the end.**',
+        '- **Open the sources yourself.** You may read anywhere on disk — reading outside the workspace is allowed too.',
+        '  Do not trust only the excerpts quoted in the request. **When a summary and the source disagree, the source wins.**',
+        '- **Run the calculations, sorting, parsing and re-aggregation yourself.** You may write and run scripts. Do not guess numbers — extract them.',
+        '  Put their outputs (scripts, intermediate data, notes) on the workbench above **freely** — there is no limit on count or size,',
+        '  and you do not need to delete them. Leaving them lets Claude reproduce your calculations, which is better.',
+        '- **You may use the network** — search docs, issues and release notes and check them yourself.',
+        '  But it is **read-only.** Never upload data anywhere (no POST/PUT, git push, publish).',
+        '  🔴 **You may read credentials when the investigation needs them. But never copy their values.** (user decision, 2026-09-16)',
+        '     Connecting to a DB with the settings in `.env` and the like to query the source is allowed — prefer the commands the request gives',
+        '     (ways that load values without showing them, like `node -r dotenv/config`).',
+        '     Never leave passwords, tokens or key values **in the response document, the workbench or command output.** The response document goes to a remote via git.',
+        '     Do not use commands that print values (`cat .env`, `echo $DB_PASSWORD` etc.); if unavoidable, mask them.',
+        "- Claude's hypotheses are reference material. **Drop them if wrong.** Do not spend all your time verifying them —",
+        '  a hypothesis may be meaningless altogether. If the source points elsewhere, follow it there.',
+        '- "The existing analysis method failed" **does not mean "do not look at that data again."**',
+        '  Analyzing the same source a different way is always allowed, and usually that is the answer.',
         '',
-        '🔴 **막혔다고 포기하지 마라.** 이 실행에는 승인을 눌러 줄 사람이 없다(approval_policy=never).',
-        '   권한이 필요해 보이면 기다리지 말고 위에 허용된 수단으로 우회해 조사를 끝내라.',
-        '   그래도 못 하면 **무엇이 막혀 무엇을 확인하지 못했는지**를 응답에 명시해라.',
-        '   확인 못 한 것을 확인한 척하지 마라.',
+        '🔴 **Do not give up when blocked.** Nobody is here to press approve in this run (approval_policy=never).',
+        '   If it looks like you need permission, do not wait — work around it with the allowed means above and finish the investigation.',
+        '   If you still cannot, state in the response **what was blocked and what you could not confirm.**',
+        '   Never pretend to have checked what you did not.',
         '',
-        '🔴 **지금 열 수 있는 자료를 남겨 둔 채 "자료를 더 달라"로 끝내지 마라.**',
-        '   요청서에 경로가 있거나 워크스페이스에서 찾을 수 있는 것은 네가 직접 연다.',
-        '   `ls`·`find` 로 목록만 본 것은 연 것이 아니다 — 내용을 읽고 계산까지 해야 연 것이다.',
+        '🔴 **Do not end with "please send more material" while material you can open now is left unopened.**',
+        '   Anything with a path in the request, or findable in the workspace, you open yourself.',
+        '   Only listing with `ls` or `find` is not opening — it counts as opened once you have read the content and done the calculations.',
         '',
-        '- 요청서에 응답을 저장할 경로와 파일명이 명시되어 있다. 그 경로에 그 이름 그대로 저장해라.',
-        '- 저장이 실패하면 같은 내용을 최종 메시지로 그대로 출력해라. 자동으로 회수된다.',
-        '- 🔴 **응답 문서는 조사를 시작할 때 만들고, 조사하면서 채워라.** 이 실행은 사용량 한도로 도중에 끊길 수 있다.',
-        '  끝에 한 번만 쓰면 끊기는 순간 조사가 통째로 사라진다.',
-        '  ① 원본을 열기 전에 frontmatter 와 `## 0. 조사 계획`(무엇을 어떤 순서로 열지)을 먼저 저장한다',
-        '  ② 원본을 하나 열어 확인할 때마다 `## 1. 내가 직접 연 원본` 에 확인한 사실을 바로 덧붙인다',
-        '  ③ 나머지 섹션(원인·판정·수정 방법 등 결론)은 조사가 끝난 뒤 맨 마지막에 쓴다.',
-        '     확인한 사실보다 결론을 먼저 쓰지 마라 — 먼저 쓴 결론에 조사가 끌려간다.',
+        '- The request names the path and file name for the response. Save it at that path under that exact name.',
+        '- If saving fails, print the same content as your final message. It is collected automatically.',
+        '- 🔴 **Create the response document when you start the investigation, and fill it as you go.** This run can be cut off midway by the usage limit.',
+        '  Written only once at the end, the whole investigation vanishes the moment it is cut.',
+        '  ① Before opening any source, save the frontmatter and `## 0. 조사 계획` (what you will open, in what order) first',
+        '  ② Each time you open and check a source, append the confirmed facts right away under `## 1. 내가 직접 연 원본`',
+        '  ③ Write the remaining sections (the conclusions: cause, verdict, fix and so on) last, after the investigation.',
+        '     Do not write conclusions before the facts — a conclusion written first drags the investigation along.',
+        '- Keep the section headings the request asks for exactly as written; write everything else in the language the request itself is written in (not that of any quoted code or logs).',
         '',
-        '── 이 실행에만 해당하는 안내 ──────────────────────────────',
-        '이 턴은 진행 중에 추가 지시가 들어올 수 있다(사용자가 곁에서 보고 있다).',
-        '추가 지시가 도착하면 **지금 하던 명령을 재시작하지 말고** 이어서 반영해라.',
+        '── note for this run only ─────────────────────────────────────',
+        'Extra instructions may arrive while this turn runs (the user is watching).',
+        'When one arrives, **do not restart the command you were running** — carry on and apply it.',
         ''
     ].join('\n');
 }
@@ -370,7 +371,7 @@ function classifySignal(note) {
     // ── 후보 ⑦ 턴 종료 ──
     if (m === 'turn/completed') {
         const st = (p.turn && p.turn.status) || 'unknown';
-        return { kind: 'turn-ended', summary: `턴이 끝났다 (status=${st})`, detail: { status: st } };
+        return { kind: 'turn-ended', summary: `the turn ended (status=${st})`, detail: { status: st } };
     }
 
     // ── 후보 ④ waitingOnApproval ──
@@ -382,7 +383,7 @@ function classifySignal(note) {
         if (blob.includes('waitingonapproval') || blob.includes('approval')) {
             return {
                 kind: 'waiting-approval',
-                summary: '승인 대기 상태로 보인다 — 이 실행에는 승인할 사람이 없다',
+                summary: 'looks like it is waiting for approval — nobody can approve in this run',
                 detail: { status: st.type || null, flags }
             };
         }
@@ -400,7 +401,7 @@ function classifySignal(note) {
             const cmd = String(item.command || '').slice(0, 400);
             return {
                 kind: 'command-started',
-                summary: `명령 실행: ${cmd.slice(0, 160)}`,
+                summary: `command: ${cmd.slice(0, 160)}`,
                 detail: { command: cmd, cwd: item.cwd || null }
             };
         }
@@ -412,7 +413,7 @@ function classifySignal(note) {
             const paths = changes.map((c) => c && c.path).filter(Boolean);
             return {
                 kind: 'file-change',
-                summary: `파일 변경 시도: ${paths.slice(0, 3).join(', ')}${paths.length > 3 ? ` 외 ${paths.length - 3}건` : ''}`,
+                summary: `file change attempt: ${paths.slice(0, 3).join(', ')}${paths.length > 3 ? ` and ${paths.length - 3} more` : ''}`,
                 detail: { paths }
             };
         }
@@ -422,7 +423,7 @@ function classifySignal(note) {
         if (m === 'item/completed' && /plan|todo/i.test(type)) {
             return {
                 kind: 'plan',
-                summary: '조사 계획이 나왔다 — 방향이 맞는지 볼 시점이다',
+                summary: 'the investigation plan is out — time to check the direction',
                 detail: { itemType: type, item }
             };
         }
@@ -435,7 +436,7 @@ function classifySignal(note) {
             if (phase === FINALIZE_PHASE) {
                 return {
                     kind: 'finalizing',
-                    summary: '최종 답변을 쓰기 시작했다',
+                    summary: 'started writing the final answer',
                     detail: { preview: text.slice(0, 300) }
                 };
             }
@@ -446,7 +447,7 @@ function classifySignal(note) {
             if (hit) {
                 return {
                     kind: 'blocked',
-                    summary: `막혔다는 신호("${hit}") — 자료를 더 줄지 판단이 필요하다`,
+                    summary: `a blocked signal ("${hit}") — decide whether to give more material`,
                     detail: { phrase: hit, preview: text.slice(0, 300) }
                 };
             }
@@ -477,7 +478,7 @@ async function cmdRun(opts, lib) {
     const sandbox = opts['sandbox'] === undefined || opts['sandbox'] === true
         ? 'read-only' : String(opts['sandbox']);
     if (!['read-only', 'workspace-write'].includes(sandbox)) {
-        fail(EXIT.USAGE, `--sandbox 는 read-only 또는 workspace-write 여야 한다: ${sandbox}`);
+        fail(EXIT.USAGE, `--sandbox must be read-only or workspace-write: ${sandbox}`);
     }
 
     // 실행 전 확인에서 사용자가 고른 모델·추론 수준 (2026-09-13). 없으면 codex 설정값을 쓴다.
@@ -486,7 +487,7 @@ async function cmdRun(opts, lib) {
     const strOpt = (key) => {
         const v = opts[key];
         if (v === undefined) return null;
-        if (v === true || !/^[A-Za-z0-9._-]+$/.test(String(v))) fail(EXIT.USAGE, `--${key} 값이 이상하다: ${v}`);
+        if (v === true || !/^[A-Za-z0-9._-]+$/.test(String(v))) fail(EXIT.USAGE, `--${key} has an invalid value: ${v}`);
         return String(v);
     };
     const model = strOpt('model');
@@ -500,14 +501,14 @@ async function cmdRun(opts, lib) {
     let turnSeq = 1;
     if (turnSeqRaw !== undefined) {
         if (turnSeqRaw === true || !/^[0-9]+$/.test(String(turnSeqRaw)) || Number(turnSeqRaw) < 1) {
-            fail(EXIT.USAGE, `--turn-seq 는 1 이상의 정수여야 한다: ${turnSeqRaw}`);
+            fail(EXIT.USAGE, `--turn-seq must be an integer of 1 or more: ${turnSeqRaw}`);
         }
         turnSeq = Number(turnSeqRaw);
     }
     // 🔴 짝을 강제한다. 이어받는데 turn-seq 가 1 이면 되묻기 턴 항목이 1턴 항목과 같은 id 가 되고,
     //    반대로 새 대화인데 2 이상이면 없는 턴 접두사가 붙는다. 둘 다 조용히 패널을 망가뜨린다.
-    if (resumeThread && turnSeq < 2) fail(EXIT.USAGE, '--resume-thread 에는 --turn-seq 2 이상이 함께 와야 한다');
-    if (!resumeThread && turnSeqRaw !== undefined) fail(EXIT.USAGE, '--turn-seq 는 --resume-thread 와 함께만 쓴다');
+    if (resumeThread && turnSeq < 2) fail(EXIT.USAGE, '--resume-thread needs --turn-seq of 2 or more with it');
+    if (!resumeThread && turnSeqRaw !== undefined) fail(EXIT.USAGE, '--turn-seq is only used with --resume-thread');
 
     const scratchRel = opts['scratch-rel'] === undefined || opts['scratch-rel'] === true
         ? 'docs/codex_rescue/.scratch' : String(opts['scratch-rel']);
@@ -517,8 +518,8 @@ async function cmdRun(opts, lib) {
     // UI 미러는 `.log/` **디렉토리**를 받는다 — 파일명은 runtime.writeLiveMirror 가 정한다.
     const logDir = opts['log-dir'] && opts['log-dir'] !== true ? String(opts['log-dir']) : null;
 
-    if (!fs.existsSync(requestFile)) fail(EXIT.USAGE, `요청서가 없다: ${requestFile}`);
-    if (!fs.existsSync(cwd)) fail(EXIT.USAGE, `작업 디렉토리가 없다: ${cwd}`);
+    if (!fs.existsSync(requestFile)) fail(EXIT.USAGE, `request file not found: ${requestFile}`);
+    if (!fs.existsSync(cwd)) fail(EXIT.USAGE, `working directory not found: ${cwd}`);
 
     // 요청서 frontmatter 에서 카드에 쓸 두 값을 꺼낸다.
     //
@@ -543,59 +544,59 @@ async function cmdRun(opts, lib) {
     // 프롬프트는 send.sh 가 만들어 파일로 넘긴다 (2026-09-15). CONSULT·EDIT·REVIEW 가 모두 이 경로를 타면서
     // 프롬프트를 한 곳(send.sh)에서만 관리하려는 것이다. 파일이 없을 때만 예전 CONSULT 프롬프트를 쓴다.
     const promptFile = opts['prompt-file'] && opts['prompt-file'] !== true ? String(opts['prompt-file']) : null;
-    if (promptFile && !fs.existsSync(promptFile)) fail(EXIT.USAGE, `프롬프트 파일이 없다: ${promptFile}`);
+    if (promptFile && !fs.existsSync(promptFile)) fail(EXIT.USAGE, `prompt file not found: ${promptFile}`);
     const prompt = promptFile
         ? fs.readFileSync(promptFile, 'utf8')
         : buildConsultPrompt({ requestPathWin: winPath(requestFile), scratchRel });
-    if (!prompt.trim()) fail(EXIT.USAGE, '프롬프트가 비었다');
+    if (!prompt.trim()) fail(EXIT.USAGE, 'the prompt is empty');
 
     // 네트워크 해금 (2026-09-15). exec 경로의 `-c sandbox_workspace_write.network_access=true` 와 같은 효과를
     // turn/start 의 sandboxPolicy 로 준다. workspaceWrite 정책은 cwd 를 항상 쓰기 루트에 넣는다(codex-rs protocol.rs).
     // read-only 에는 붙이지 않는다 — send.sh 와 같은 이유로, 효력 없이 "허용" 인상만 남긴다.
     const network = opts['network'] === true && sandbox === 'workspace-write';
-    if (opts['network'] === true && !network) fail(EXIT.USAGE, '--network 는 --sandbox workspace-write 에서만 쓴다');
+    if (opts['network'] === true && !network) fail(EXIT.USAGE, '--network is only for --sandbox workspace-write');
 
     // ── dry-run: codex 를 부르지 않고 조립 결과만 보여준다 ──
     if (opts['dry-run']) {
         const dir = mods.runtime ? mods.runtime.runtimePath(stamp) : guessRuntimeDir(stamp);
         const port = opts['port'] === undefined || opts['port'] === true
-            ? '(자동 — 빈 포트를 잡는다)' : Number(opts['port']);
-        out('── DRYRUN (run) — codex 를 실행하지 않는다 ──');
-        out('서브커맨드   : run');
-        out(`스탬프       : ${stamp}`);
-        out(`요청서       : ${requestFile}`);
-        out(`요청서(win)  : ${winPath(requestFile)}`);
-        out(`작업 디렉토리: ${cwd}`);
-        out(`대화         : ${resumeThread ? `이어받기 thread/resume ${resumeThread} (${turnSeq}턴)` : '새 대화 thread/start'}`);
-        out(`샌드박스     : ${sandbox}${network ? ' +net (turn/start sandboxPolicy.networkAccess)' : ''}   (approvalPolicy=never 고정)`);
-        out(`프롬프트     : ${promptFile ? promptFile + '   (send.sh 가 만든 파일)' : '내장 CONSULT 프롬프트 (--prompt-file 미지정)'}`);
-        out(`모델         : ${model || '(codex 설정값)'}`);
-        out(`추론 수준    : ${effort || '(codex 설정값)'}`);
-        out(`포트         : ${port}`);
+            ? '(auto — takes a free port)' : Number(opts['port']);
+        out('── DRYRUN (run) — codex is not run ──');
+        out('subcommand   : run');
+        out(`stamp        : ${stamp}`);
+        out(`request      : ${requestFile}`);
+        out(`request (win): ${winPath(requestFile)}`);
+        out(`working dir  : ${cwd}`);
+        out(`thread       : ${resumeThread ? `resume thread/resume ${resumeThread} (turn ${turnSeq})` : 'new thread/start'}`);
+        out(`sandbox      : ${sandbox}${network ? ' +net (turn/start sandboxPolicy.networkAccess)' : ''}   (approvalPolicy=never, fixed)`);
+        out(`prompt       : ${promptFile ? promptFile + '   (file made by send.sh)' : 'built-in CONSULT prompt (no --prompt-file)'}`);
+        out(`model        : ${model || '(codex config)'}`);
+        out(`reasoning    : ${effort || '(codex config)'}`);
+        out(`port         : ${port}`);
         out('app-server   : codex app-server --listen ws://127.0.0.1:<port>' +
             (IS_WIN ? ' -c windows.sandbox=unelevated' : ''));
-        out(`runtime 디렉토리: ${dir}${mods.runtime ? '' : '   (lib/runtime.mjs 미탑재 — 추정치다)'}`);
-        if (mods.runtime) out(`  권위 상태   : ${mods.runtime.statePath(stamp)}`);
-        out(`  고신호      : ${CLI_FILES.signals(dir)}`);
+        out(`runtime dir  : ${dir}${mods.runtime ? '' : '   (lib/runtime.mjs not loaded — an estimate)'}`);
+        if (mods.runtime) out(`  state (authority): ${mods.runtime.statePath(stamp)}`);
+        out(`  signals     : ${CLI_FILES.signals(dir)}`);
         out(`events       : ${eventsFile}`);
         out(`last_message : ${lastMessageFile}`);
         out(`appserver-log: ${appserverLog}`);
         out(`steers-log   : ${steersLog}`);
-        out(`UI 미러      : ${logDir ? path.join(logDir, stamp + '_live.json') : '(--log-dir 미지정 — 쓰지 않는다)'}`);
-        out(`steer 폴링   : ${steerPollMs}ms`);
-        out(`요청 상한    : ${requestTimeoutMs}ms   (턴 길이와 무관 — RPC 왕복 상한이다)`);
-        out(`턴 상한      : ${turnTimeoutMs === 0 ? '무제한 (기존 CONSULT 와 동일)' : turnTimeoutMs + 'ms'}`);
+        out(`UI mirror    : ${logDir ? path.join(logDir, stamp + '_live.json') : '(no --log-dir — not written)'}`);
+        out(`steer poll   : ${steerPollMs}ms`);
+        out(`request cap  : ${requestTimeoutMs}ms   (not the turn length — an RPC round-trip cap)`);
+        out(`turn cap     : ${turnTimeoutMs === 0 ? 'unlimited (same as classic CONSULT)' : turnTimeoutMs + 'ms'}`);
         if (runtimeDirOpt && runtimeDirOpt !== true) {
-            out(`--runtime-dir 지정: ${runtimeDirOpt}`);
-            out('  ⚠ 실제 위치는 runtime.mjs 가 정한다 — 이 값은 기록용이다');
+            out(`--runtime-dir given: ${runtimeDirOpt}`);
+            out('  ⚠ runtime.mjs decides the real location — this value is only recorded');
         }
         if (missing.length) {
             out('');
-            out('⚠ 아직 없는 모듈:');
+            out('⚠ modules not present yet:');
             for (const m of missing) out(`  - lib/${m.name}.mjs`);
         }
         out('');
-        out('── 프롬프트 ──');
+        out('── prompt ──');
         out(prompt);
         return EXIT.OK;
     }
@@ -786,12 +787,12 @@ async function cmdRun(opts, lib) {
             });
             emitSignal({
                 kind: 'server-request',
-                summary: `서버가 요청을 보냈다(${req && req.method}) — 자동 승인하지 않고 거부했다`,
+                summary: `the server sent a request (${req && req.method}) — refused, not auto-approved`,
                 detail: { method: req && req.method }
             });
             try {
                 conn.respondError(req.id, -32601,
-                    `${CLI_NAME}: 이 실행은 무인이며 승인 주체가 없다(approval_policy=never). 요청을 거부한다.`);
+                    `${CLI_NAME}: this run is unattended and has no approver (approval_policy=never). Request refused.`);
             } catch { /* 응답 실패는 서버 쪽 타임아웃으로 처리된다 */ }
         });
 
@@ -853,10 +854,10 @@ async function cmdRun(opts, lib) {
             });
         }
         threadId = (th && th.thread && th.thread.id) || null;
-        if (!threadId) fail(EXIT.PRESTART_FAILED, `${resumeThread ? 'thread/resume' : 'thread/start'} 응답에 threadId 가 없다`);
+        if (!threadId) fail(EXIT.PRESTART_FAILED, `${resumeThread ? 'thread/resume' : 'thread/start'} response has no threadId`);
         // 🔴 다른 대화가 돌아오면 턴을 시작하지 않는다. 맥락 없는 답이 "되묻기 답"으로 문서에 붙는다.
         if (resumeThread && threadId !== resumeThread) {
-            fail(EXIT.PRESTART_FAILED, `thread/resume 이 다른 대화를 돌려줬다 (요청 ${resumeThread} · 응답 ${threadId})`);
+            fail(EXIT.PRESTART_FAILED, `thread/resume returned a different thread (asked ${resumeThread} · got ${threadId})`);
         }
         if (resumeThread) {
             // 서버가 실제로 적용한 값을 남긴다 — 샌드박스가 요청대로 됐는지 사후에 대조하는 근거다.
@@ -865,7 +866,7 @@ async function cmdRun(opts, lib) {
                 model: th.model ?? null, reasoningEffort: th.reasoningEffort ?? null, cwd: th.cwd ?? null
             };
             appendJson(appserverLog, { at: nowIso(), ms: Date.now() - t0, kind: 'resume-applied', threadId, ...applied });
-            err(`→ 대화 이어받음 (thread=${threadId} · ${turnSeq}턴) 서버 적용값: ${JSON.stringify(applied)}`);
+            err(`→ thread resumed (thread=${threadId} · turn ${turnSeq}) server applied: ${JSON.stringify(applied)}`);
         }
         ctx.threadId = threadId;
         await runtime.patchState(stamp, { threadId });
@@ -878,9 +879,9 @@ async function cmdRun(opts, lib) {
             if (threadName) {
                 try {
                     await conn.request('thread/name/set', { threadId, name: threadName });
-                    err(`→ 대화 이름: ${threadName}`);
+                    err(`→ thread name: ${threadName}`);
                 } catch (e) {
-                    err(`⚠️ 대화 이름을 못 붙였다 (실행은 계속): ${e && e.message}`);
+                    err(`⚠️ could not set the thread name (the run continues): ${e && e.message}`);
                 }
             }
         }
@@ -893,7 +894,7 @@ async function cmdRun(opts, lib) {
             try {
                 const stale = await runtime.drainSteer(stamp);
                 for (const item of (stale || [])) {
-                    const message = '앞 턴을 향한 개입이라 이번 턴에 넣지 않았다';
+                    const message = 'the intervention targeted an earlier turn, so it was not put into this one';
                     appendJson(steersLog, {
                         at: nowIso(), seq: item.seq, nonce: item.nonce,
                         source: item.source || 'unknown', text: item.text, accepted: false, error: message
@@ -928,16 +929,16 @@ async function cmdRun(opts, lib) {
             });
         } catch (e) {
             // 요청 자체가 거부됐다 = 턴이 시작되지 않았다 → 아직 PRESTART 다.
-            fail(EXIT.PRESTART_FAILED, `turn/start 실패: ${(e && e.message) || e}`);
+            fail(EXIT.PRESTART_FAILED, `turn/start failed: ${(e && e.message) || e}`);
         }
         turnId = (turnRes && turnRes.turn && turnRes.turn.id) || null;
-        if (!turnId) fail(EXIT.PRESTART_FAILED, 'turn/start 응답에 turnId 가 없다');
+        if (!turnId) fail(EXIT.PRESTART_FAILED, 'turn/start response has no turnId');
 
         started = true;
         ctx.turnId = turnId;
         await runtime.setPhase(stamp, 'active', { activeTurnId: turnId });
         mirror(true, turnId);
-        err(`→ 턴 시작 (thread=${threadId} turn=${turnId})`);
+        err(`→ turn started (thread=${threadId} turn=${turnId})`);
 
         // ── 8) steer 전용 연결 ──
         // 실측된 형태를 그대로 따른다: 알림을 받는 연결과 steer 를 보내는 연결을 나눈다.
@@ -954,7 +955,7 @@ async function cmdRun(opts, lib) {
             appendJson(steersLog, {
                 at: nowIso(), event: 'steer-channel-failed', error: String((e && e.message) || e)
             });
-            err('⚠ steer 채널을 열지 못했다 — 개입 없이 턴만 진행한다');
+            err('⚠ could not open the steer channel — the turn runs without interventions');
         }
 
         // ── 9) turn/completed 대기 + steer 큐 펌프 ──
@@ -981,7 +982,7 @@ async function cmdRun(opts, lib) {
             };
 
             if (!steerConn) {
-                const message = 'steer 채널이 열려 있지 않다';
+                const message = 'the steer channel is not open';
                 steerRejected += 1;
                 appendJson(steersLog, { ...base, accepted: false, error: message });
                 await runtime.recordSteerOutcome(stamp, {
@@ -1010,7 +1011,7 @@ async function cmdRun(opts, lib) {
                 } else {
                     steerRejected += 1;
                 }
-                const message = ok ? null : 'turn/steer 응답의 turnId 가 현재 턴과 다르다';
+                const message = ok ? null : 'the turnId in the turn/steer response differs from the current turn';
                 appendJson(steersLog, {
                     ...base, accepted: ok, responseTurnId: res ? res.turnId : null, error: message
                 });
@@ -1069,7 +1070,7 @@ async function cmdRun(opts, lib) {
             const leftover = await runtime.drainSteer(stamp);
             for (const item of (leftover || [])) {
                 if (item.nonce && handled.has(item.nonce)) continue;
-                const message = '턴이 이미 끝나 전달하지 못했다';
+                const message = 'the turn had already ended, so it was not delivered';
                 steerRejected += 1;
                 appendJson(steersLog, {
                     at: nowIso(), seq: item.seq, nonce: item.nonce,
@@ -1084,8 +1085,8 @@ async function cmdRun(opts, lib) {
             }
         } catch { /* 잔여 처리 실패가 결과를 바꾸지는 않는다 */ }
 
-        if (why === 'closed') fatalPost = '턴이 도는 중 app-server 연결이 끊겼다';
-        else if (why === 'timeout') fatalPost = `턴 상한(${turnTimeoutMs}ms)에 걸렸다`;
+        if (why === 'closed') fatalPost = 'the app-server connection closed while the turn was running';
+        else if (why === 'timeout') fatalPost = `hit the turn cap (${turnTimeoutMs}ms)`;
 
         // 알림이 파일 append 를 마칠 여유를 아주 조금 준다. 이벤트 순서가 뒤집히면
         // 확장이 카드를 잘못 그린다.
@@ -1104,7 +1105,7 @@ async function cmdRun(opts, lib) {
                 fs.writeFileSync(lastMessageFile,
                     finalText.endsWith('\n') ? finalText : finalText + '\n', 'utf8');
             } catch (e) {
-                err(`⚠ 최종 메시지 저장 실패: ${(e && e.message) || e}`);
+                err(`⚠ saving the final message failed: ${(e && e.message) || e}`);
             }
         }
 
@@ -1118,7 +1119,7 @@ async function cmdRun(opts, lib) {
                 undelivered, lastMessageFile, eventsFile, runtimeDir,
                 exitClass: 'poststart-failed', note: fatalPost
             });
-            err(`🔴 ${fatalPost} — 🔴 자동 fallback 금지. 같은 요청이 두 번 실행된다.`);
+            err(`🔴 ${fatalPost} — 🔴 no automatic fallback. The same request would run twice.`);
             return why === 'timeout' ? EXIT.TURN_TIMEOUT : EXIT.POSTSTART_FAILED;
         }
 
@@ -1130,7 +1131,7 @@ async function cmdRun(opts, lib) {
         });
 
         if (turnStatus !== 'completed') {
-            err(`🔴 턴이 status=${turnStatus} 로 끝났다 — 자동 fallback 금지.`);
+            err(`🔴 the turn ended with status=${turnStatus} — no automatic fallback.`);
             return EXIT.TURN_FAILED;
         }
         return EXIT.OK;
@@ -1147,14 +1148,14 @@ async function cmdRun(opts, lib) {
                 undelivered, lastMessageFile, eventsFile, runtimeDir,
                 exitClass: 'poststart-failed', note: msg
             });
-            err(`🔴 턴 시작 후 실패: ${msg}`);
-            err('🔴 자동 fallback 금지 — 같은 요청이 두 번 실행된다. 실패로 보고해라.');
+            err(`🔴 failed after the turn started: ${msg}`);
+            err('🔴 no automatic fallback — the same request would run twice. Report it as a failure.');
             return EXIT.POSTSTART_FAILED;
         }
         await finish('failed', { message: msg });
         const code = e instanceof CliError ? e.code : EXIT.PRESTART_FAILED;
-        err(`턴 시작 전 실패: ${msg}`);
-        if (code === EXIT.PRESTART_FAILED) err('턴이 시작되지 않았다 — codex exec 로 fallback 해도 안전하다.');
+        err(`failed before the turn started: ${msg}`);
+        if (code === EXIT.PRESTART_FAILED) err('exit 10: the turn probably did not start, but a lost turn/start reply looks the same — no automatic fallback (only exit 11 is safe).');
         return code;
     }
 }
@@ -1202,7 +1203,7 @@ async function cmdSteer(opts, lib) {
     const source = opts['source'] === undefined || opts['source'] === true
         ? 'user-via-claude' : String(opts['source']);
     if (!['user-via-claude', 'claude-monitor'].includes(source)) {
-        fail(EXIT.USAGE, `--source 는 user-via-claude 또는 claude-monitor 여야 한다: ${source}`);
+        fail(EXIT.USAGE, `--source must be user-via-claude or claude-monitor: ${source}`);
     }
     const confirmTimeoutMs = numOpt(opts, 'timeout-ms', PENDING_DECISION.steerConfirmTimeoutMs);
     const pollMs = numOpt(opts, 'poll-ms', PENDING_DECISION.filePollMs);
@@ -1210,15 +1211,15 @@ async function cmdSteer(opts, lib) {
     if (opts['dry-run']) {
         const dir = mods.runtime ? mods.runtime.runtimePath(stamp) : guessRuntimeDir(stamp);
         const text = await readTextInput(inputFile);
-        out('── DRYRUN (steer) — 큐에 넣지 않는다 ──');
-        out(`스탬프     : ${stamp}`);
-        out(`출처       : ${source}`);
-        out(`입력       : ${inputFile === '-' ? '(stdin)' : inputFile}`);
-        out(`본문 길이  : ${text.length}자 / ${Buffer.byteLength(text, 'utf8')}바이트`);
-        out(`runtime    : ${dir}${mods.runtime ? '' : '   (lib/runtime.mjs 미탑재 — 추정치다)'}`);
-        out(`확인 상한  : ${confirmTimeoutMs}ms`);
+        out('── DRYRUN (steer) — not queued ──');
+        out(`stamp      : ${stamp}`);
+        out(`source     : ${source}`);
+        out(`input      : ${inputFile === '-' ? '(stdin)' : inputFile}`);
+        out(`body length: ${text.length} chars / ${Buffer.byteLength(text, 'utf8')} bytes`);
+        out(`runtime    : ${dir}${mods.runtime ? '' : '   (lib/runtime.mjs not loaded — an estimate)'}`);
+        out(`confirm cap: ${confirmTimeoutMs}ms`);
         out('');
-        out('── 본문 (앞 500자) ──');
+        out('── body (first 500 chars) ──');
         out(text.slice(0, 500));
         return EXIT.OK;
     }
@@ -1227,7 +1228,7 @@ async function cmdSteer(opts, lib) {
     const runtime = mods.runtime;
 
     const text = await readTextInput(inputFile);
-    if (!text.trim()) fail(EXIT.USAGE, '입력이 비었다 — 빈 steer 는 보내지 않는다');
+    if (!text.trim()) fail(EXIT.USAGE, 'the input is empty — an empty steer is not sent');
 
     const state = await runtime.readState(stamp);
     // 🔴 phase 만 보지 않는다. checkSteerable 은 pid 생존·host 일치·스키마까지 본다 —
@@ -1235,9 +1236,9 @@ async function cmdSteer(opts, lib) {
     //    끝난 실행의 큐에 넣으면 아무도 비우지 않아 영영 대기하므로 여기서 잘라낸다.
     const check = runtime.checkSteerable(state, { stamp });
     if (!check.ok) {
-        out(`지금은 개입할 수 없다 (stamp=${stamp})`);
+        out(`cannot intervene now (stamp=${stamp})`);
         for (const r of check.reasons) out(`  · ${r}`);
-        out('  새 턴을 만들지 않는다.');
+        out('  no new turn is created.');
         return EXIT.NO_RUNTIME;
     }
 
@@ -1247,7 +1248,7 @@ async function cmdSteer(opts, lib) {
     const { seq, duplicate } = await runtime.enqueueSteer(stamp, { text, source, nonce: reqNonce });
     if (duplicate) {
         // 새 nonce 를 만들었으므로 정상 경로에서는 나올 수 없다. 나왔다면 상태가 이상한 것이다.
-        out(`이미 큐에 있는 요청이다 · seq=${seq}`);
+        out(`already in the queue · seq=${seq}`);
     }
 
     // 🔴 여기서 끝내면 안 된다. 큐에 넣은 것은 전달이 아니다.
@@ -1258,40 +1259,40 @@ async function cmdSteer(opts, lib) {
         const rec = outcomes.find((o) => o && o.nonce === reqNonce);
         if (rec) {
             if (rec.outcome === 'delivered') {
-                out(`전달됨 · seq=${seq} · turnId=${rec.turnId} · 출처=${source}`);
-                out('  turn/steer 가 같은 turnId 를 응답했다 — 실행 중인 턴에 실제로 들어갔다.');
+                out(`delivered · seq=${seq} · turnId=${rec.turnId} · source=${source}`);
+                out('  turn/steer answered with the same turnId — it really went into the running turn.');
                 return EXIT.OK;
             }
             if (rec.outcome === 'unknown') {
                 // 응답을 못 본 채 끊긴 경우다. 전달됐다고 말하지 않는다.
-                out(`전달 불명 · seq=${seq}`);
-                out(`  사유: ${(rec.error && rec.error.message) || '(사유 없음)'}`);
-                out('  전달 여부를 확인하지 못했다 — 전달되지 않았다고 보는 것이 안전하다.');
+                out(`delivery unknown · seq=${seq}`);
+                out(`  reason: ${(rec.error && rec.error.message) || '(no reason)'}`);
+                out('  delivery could not be confirmed — safest to assume it was not delivered.');
                 return EXIT.STEER_TIMEOUT;
             }
             // 🔴 사유를 가공하지 않고 그대로 낸다.
-            out(`거부됨 · seq=${seq}`);
+            out(`refused · seq=${seq}`);
             if (rec.error && rec.error.code !== undefined && rec.error.code !== null) {
                 out(`  code: ${rec.error.code}`);
             }
-            out(`  사유: ${(rec.error && rec.error.message) || '(사유 없음)'}`);
-            out('  새 턴을 만들지 않았다.');
+            out(`  reason: ${(rec.error && rec.error.message) || '(no reason)'}`);
+            out('  no new turn was created.');
             return EXIT.STEER_REJECTED;
         }
         // 그 사이 실행이 끝났으면 더 기다릴 이유가 없다.
         const cur = await runtime.readState(stamp);
         if (!cur || cur.phase !== 'active') {
-            out(`확인 실패 · seq=${seq}`);
-            out(`  큐에는 넣었지만 전달 확인 전에 실행이 끝났다 (phase=${cur ? cur.phase : 'none'}).`);
-            out('  전달되지 않았다고 보는 것이 안전하다.');
+            out(`confirmation failed · seq=${seq}`);
+            out(`  queued, but the run ended before delivery was confirmed (phase=${cur ? cur.phase : 'none'}).`);
+            out('  safest to assume it was not delivered.');
             return EXIT.STEER_TIMEOUT;
         }
         await sleep(pollMs);
     }
 
-    out(`확인 실패 · seq=${seq}`);
-    out(`  ${confirmTimeoutMs}ms 안에 전달 확인을 받지 못했다. 큐에는 들어가 있다.`);
-    out('  전달 여부는 steers-log 로 사후 확인해라.');
+    out(`confirmation failed · seq=${seq}`);
+    out(`  no delivery confirmation within ${confirmTimeoutMs}ms. It is in the queue.`);
+    out('  check delivery afterwards in the steers log.');
     return EXIT.STEER_TIMEOUT;
 }
 
@@ -1304,13 +1305,13 @@ async function cmdWait(opts, lib) {
 
     if (opts['dry-run']) {
         const dir = mods.runtime ? mods.runtime.runtimePath(stamp) : guessRuntimeDir(stamp);
-        out('── DRYRUN (wait) — 대기하지 않는다 ──');
-        out(`스탬프     : ${stamp}`);
-        out(`기준 seq   : ${after} (이 값보다 큰 신호를 기다린다)`);
-        out(`신호 파일  : ${CLI_FILES.signals(dir)}${mods.runtime ? '' : '   (lib/runtime.mjs 미탑재 — 추정치다)'}`);
-        out(`대기 상한  : ${timeoutMs}ms   🔴 결정 필요(잠정치)`);
+        out('── DRYRUN (wait) — not waiting ──');
+        out(`stamp      : ${stamp}`);
+        out(`after seq  : ${after} (waits for signals above this)`);
+        out(`signal file: ${CLI_FILES.signals(dir)}${mods.runtime ? '' : '   (lib/runtime.mjs not loaded — an estimate)'}`);
+        out(`wait cap   : ${timeoutMs}ms   🔴 decision needed (provisional)`);
         out('');
-        out('── 고신호로 보는 것 ──');
+        out('── counted as high signals ──');
         for (const l of SIGNAL_DOC) out(`  ${l}`);
         return EXIT.OK;
     }
@@ -1319,7 +1320,7 @@ async function cmdWait(opts, lib) {
     const runtime = mods.runtime;
 
     const state = await runtime.readState(stamp);
-    if (!state) fail(EXIT.NO_RUNTIME, `해당 스탬프의 실행 상태가 없다: ${stamp}`);
+    if (!state) fail(EXIT.NO_RUNTIME, `no run state for this stamp: ${stamp}`);
 
     const signalsFile = CLI_FILES.signals(runtime.runtimePath(stamp));
     const deadline = Date.now() + timeoutMs;
@@ -1327,26 +1328,26 @@ async function cmdWait(opts, lib) {
     while (Date.now() < deadline) {
         const sig = readSignalAfter(signalsFile, after);
         if (sig) {
-            out(`신호 seq=${sig.seq} · ${sig.kind}`);
+            out(`signal seq=${sig.seq} · ${sig.kind}`);
             out(sig.summary || '');
             if (sig.detail) {
                 const d = JSON.stringify(sig.detail);
-                out(`  상세: ${d.length > 600 ? d.slice(0, 600) + '…' : d}`);
+                out(`  detail: ${d.length > 600 ? d.slice(0, 600) + '…' : d}`);
             }
-            out(`  다음 대기: --after ${sig.seq}`);
+            out(`  next wait: --after ${sig.seq}`);
             return EXIT.OK;
         }
         const cur = await runtime.readState(stamp);
         if (!cur || (cur.phase !== 'active' && cur.phase !== 'starting' && cur.phase !== 'finalizing')) {
             // 종료 자체도 고신호라 보통은 위에서 잡힌다. 여기 오는 건 신호 파일을
             // 못 쓰고 끝난 경우이므로 그 사실을 그대로 알린다.
-            out(`신호 없음 — 실행이 끝났다 (phase=${cur ? cur.phase : 'none'})`);
+            out(`no signal — the run ended (phase=${cur ? cur.phase : 'none'})`);
             return EXIT.OK;
         }
         await sleep(pollMs);
     }
 
-    out(`대기 상한(${timeoutMs}ms)에 도달했다 — 고신호 없음`);
+    out(`wait cap (${timeoutMs}ms) reached — no high signal`);
     return EXIT.WAIT_TIMEOUT;
 }
 
@@ -1374,8 +1375,8 @@ async function cmdStatus(opts, lib) {
     if (opts['dry-run']) {
         const dir = mods.runtime ? mods.runtime.runtimePath(stamp) : guessRuntimeDir(stamp);
         out('── DRYRUN (status) ──');
-        out(`스탬프  : ${stamp}`);
-        out(`runtime : ${dir}${mods.runtime ? '' : '   (lib/runtime.mjs 미탑재 — 추정치다)'}`);
+        out(`stamp   : ${stamp}`);
+        out(`runtime : ${dir}${mods.runtime ? '' : '   (lib/runtime.mjs not loaded — an estimate)'}`);
         return EXIT.OK;
     }
 
@@ -1383,7 +1384,7 @@ async function cmdStatus(opts, lib) {
     const runtime = mods.runtime;
     const state = await runtime.readState(stamp);
     if (!state) {
-        out(`실행 상태 없음 (stamp=${stamp})`);
+        out(`no run state (stamp=${stamp})`);
         return EXIT.NO_RUNTIME;
     }
 
@@ -1391,13 +1392,13 @@ async function cmdStatus(opts, lib) {
 
     const dir = runtime.runtimePath(stamp);
     const alive = runtime.isPidAlive(state.pid);
-    out(`스탬프    : ${state.stamp}`);
-    out(`단계      : ${state.phase}${state.phase === 'active' && !alive ? '  ⚠ pid 가 죽었다 (크래시)' : ''}`);
-    out(`호스트/PID: ${state.host} / ${state.pid} (${alive ? '살아 있음' : '없음'})`);
-    out(`포트      : ${state.port}`);
-    out(`thread    : ${state.threadId || '(없음)'}`);
-    out(`활성 턴   : ${state.activeTurnId || '(없음)'}`);
-    out(`시작      : ${state.startedAt}`);
+    out(`stamp     : ${state.stamp}`);
+    out(`phase     : ${state.phase}${state.phase === 'active' && !alive ? '  ⚠ pid is dead (crash)' : ''}`);
+    out(`host/PID  : ${state.host} / ${state.pid} (${alive ? 'alive' : 'gone'})`);
+    out(`port      : ${state.port}`);
+    out(`thread    : ${state.threadId || '(none)'}`);
+    out(`active turn: ${state.activeTurnId || '(none)'}`);
+    out(`started   : ${state.startedAt}`);
     out(`runtime   : ${dir}`);
 
     // 개입 현황은 state.steerSeq(전달 성공 수)만으로 부족하다. 거부·불명까지 보여야
@@ -1406,24 +1407,24 @@ async function cmdStatus(opts, lib) {
     if (outcomes.length) {
         const tally = { delivered: 0, rejected: 0, unknown: 0 };
         for (const o of outcomes) if (tally[o.outcome] !== undefined) tally[o.outcome] += 1;
-        out(`개입      : 전달 ${tally.delivered} · 거부 ${tally.rejected} · 불명 ${tally.unknown}`);
+        out(`steers    : delivered ${tally.delivered} · refused ${tally.rejected} · unknown ${tally.unknown}`);
         for (const o of outcomes.slice(-3)) {
             const why = o.error && o.error.message ? ` — ${o.error.message}` : '';
             out(`  seq=${o.seq} ${o.outcome}${why}`);
         }
     } else {
-        out('개입      : 없음');
+        out('steers    : none');
     }
 
     const undelivered = await runtime.listUndeliveredSteer(stamp).catch(() => []);
     if (undelivered.length) {
-        out(`🔴 전달 못 한 개입 ${undelivered.length}건 — 원문이 runtime 에 남아 있다`);
+        out(`🔴 ${undelivered.length} steers not delivered — their text is kept in the runtime`);
     }
 
     const sigFile = CLI_FILES.signals(dir);
     if (fs.existsSync(sigFile)) {
         const lines = fs.readFileSync(sigFile, 'utf8').split('\n').filter((l) => l.trim());
-        out(`고신호    : ${lines.length}건`);
+        out(`signals   : ${lines.length}`);
         for (const l of lines.slice(-3)) {
             try {
                 const r = JSON.parse(l);
@@ -1440,118 +1441,118 @@ async function cmdStatus(opts, lib) {
 
 // README 와 --help 가 같은 문장을 쓰도록 한곳에 둔다.
 const SIGNAL_DOC = [
-    'plan            조사 계획이 나왔다 (item 타입에 plan/todo 가 들어가면 전부)',
-    'command-started 새 명령 실행 시작 — 명령문과 cwd 를 함께 낸다',
-    'file-change     파일 변경 시도 — 대상 경로를 낸다 (CONSULT 는 원래 고치면 안 된다)',
-    'blocked         "자료가 없다/확인할 수 없다" 류 문구가 최종 아닌 메시지에 나왔다',
-    'finalizing      최종 답변(phase=final_answer)을 쓰기 시작했다',
-    'waiting-approval 승인 대기로 보이는 상태 — 이 실행에는 승인할 사람이 없다',
-    'server-request  서버가 클라이언트에 요청을 보냈다 (거부하고 기록했다)',
-    'turn-ended      턴 종료'
+    'plan            an investigation plan appeared (any item type containing plan/todo)',
+    'command-started a new command started — with the command line and cwd',
+    'file-change     a file change attempt — with the target paths (CONSULT must not edit)',
+    'blocked         a "no material / cannot confirm" style phrase in a non-final message',
+    'finalizing      started writing the final answer (phase=final_answer)',
+    'waiting-approval looks like waiting for approval — nobody can approve in this run',
+    'server-request  the server sent the client a request (refused and recorded)',
+    'turn-ended      the turn ended'
 ];
 
 function printHelp() {
     const H = [
-        `${CLI_NAME} ${CLI_VERSION} — codex app-server 기반 CONSULT 실행기`,
+        `${CLI_NAME} ${CLI_VERSION} — CONSULT runner on codex app-server`,
         '',
-        '기존 CONSULT 는 codex exec 배치라 실행 중 개입이 불가능했다. 이 도구는 app-server 의',
-        'turn/steer 로 실행 중인 턴에 새 입력을 밀어 넣으면서, 산출물(events.jsonl ·',
-        'last_message.md)은 기존과 같은 모양으로 남긴다.',
+        'Classic CONSULT ran codex exec as a batch, so no intervention was possible. This tool uses app-server',
+        'turn/steer to push new input into the running turn, while leaving its outputs (events.jsonl ·',
+        'last_message.md) in the same shape as before.',
         '',
-        '사용법:',
-        `  node ${CLI_NAME}.mjs <서브커맨드> [옵션]`,
+        'Usage:',
+        `  node ${CLI_NAME}.mjs <subcommand> [options]`,
         `  node ${CLI_NAME}.mjs --help`,
         '',
-        '  어느 서브커맨드에나 --dry-run 을 붙이면 codex 를 부르지 않고 조립 결과만 낸다.',
+        '  Add --dry-run to any subcommand to print what would be assembled without calling codex.',
         '',
         '───────────────────────────────────────────────────────────────',
-        'run   — send.sh 가 부른다. 턴 완료까지 대기하고 기존 호환 결과를 남긴다',
+        'run   — called by send.sh. Waits for the turn to finish and leaves compatible results',
         '',
-        '  --request-file <절대경로>     요청서. 프롬프트를 여기서 만든다 (필수)',
-        '  --runtime-dir <경로>          권위 상태 디렉토리 (기록용 · 실제 위치는 runtime.mjs 가 정한다)',
-        '  --events-file <경로>          기존 events.jsonl (exec 호환) (필수)',
-        '  --last-message-file <경로>    기존 last_message.md (필수)',
-        '  --appserver-log <경로>        app-server 원문 (감사·디버깅) (필수)',
-        '  --steers-log <경로>           개입 기록 (필수)',
-        '  --stamp <스탬프>              (필수)',
-        '  --cwd <작업 디렉토리>          (필수)',
-        '  --sandbox read-only|workspace-write   기본 read-only',
-        '  --prompt-file <경로>          프롬프트 본문. send.sh 가 모드별로 만들어 넘긴다',
-        '                                (생략하면 내장 CONSULT 프롬프트 — 예전 호출 호환)',
-        '  --network                     네트워크 허용 (turn/start sandboxPolicy). workspace-write 에서만',
-        '  --port <포트>                 생략하면 빈 포트를 자동으로 잡는다 (고정 포트는 충돌한다)',
-        '  --scratch-rel <경로>          Codex 작업대. 기본 docs/codex_rescue/.scratch',
-        '  --log-dir <경로>              UI 미러를 쓸 .log 디렉토리 (<stamp>_live.json)',
-        '  --steer-poll-ms <ms>          steer 큐 확인 간격. 기본 ' + PENDING_DECISION.steerPollMs + '   🔴 결정 필요',
-        '  --request-timeout-ms <ms>     RPC 왕복 상한. 기본 ' + PENDING_DECISION.requestTimeoutMs + '   🔴 결정 필요',
-        '                                (턴 길이와 무관 — turn/completed 는 알림으로 온다)',
-        '  --turn-timeout-ms <ms>        턴 상한. 기본 0 = 무제한 (기존 CONSULT 동작 보존)',
-        '  --model <모델>                이번 턴의 모델. 생략하면 codex 설정값',
-        '  --effort <수준>               이번 턴의 추론 수준(low·medium·high 등). 생략하면 codex 설정값',
-        '  --resume-thread <id>          되묻기: 새 대화 대신 이 대화를 thread/resume 으로 이어받는다',
-        '  --turn-seq <N>                되묻기 턴 번호(2 이상). --resume-thread 와 반드시 함께 준다',
+        '  --request-file <abs path>     request file; the prompt is built from it (required)',
+        '  --runtime-dir <path>          authoritative state dir (recorded only · runtime.mjs decides the real location)',
+        '  --events-file <path>          events.jsonl (exec compatible) (required)',
+        '  --last-message-file <path>    last_message.md (required)',
+        '  --appserver-log <path>        raw app-server log (audit, debugging) (required)',
+        '  --steers-log <path>           steer record (required)',
+        '  --stamp <stamp>              (required)',
+        '  --cwd <working dir>          (required)',
+        '  --sandbox read-only|workspace-write   default read-only',
+        '  --prompt-file <path>          prompt body; send.sh builds it per mode',
+        '                                (omitted: built-in CONSULT prompt — for older callers)',
+        '  --network                     allow network (turn/start sandboxPolicy). workspace-write only',
+        '  --port <port>                 omitted: a free port is taken (fixed ports collide)',
+        '  --scratch-rel <path>          Codex workbench. default docs/codex_rescue/.scratch',
+        '  --log-dir <path>              .log dir for the UI mirror (<stamp>_live.json)',
+        '  --steer-poll-ms <ms>          steer queue poll interval. default ' + PENDING_DECISION.steerPollMs + '   🔴 decision needed',
+        '  --request-timeout-ms <ms>     RPC round-trip cap. default ' + PENDING_DECISION.requestTimeoutMs + '   🔴 decision needed',
+        '                                (not the turn length — turn/completed arrives as a notification)',
+        '  --turn-timeout-ms <ms>        turn cap. default 0 = unlimited (keeps classic CONSULT behavior)',
+        '  --model <model>               model for this turn. omitted: codex config',
+        '  --effort <level>              reasoning level for this turn (low, medium, high...). omitted: codex config',
+        '  --resume-thread <id>          follow-up: continue this thread with thread/resume instead of a new one',
+        '  --turn-seq <N>                follow-up turn number (2 or more). Always with --resume-thread',
         '',
-        '  stdout 으로 LIVE_CONSULT_RESULT 블록을 낸다 (send.sh 가 읽는다):',
+        '  prints a LIVE_CONSULT_RESULT block on stdout (send.sh reads it):',
         '    thread_id · turn_id · status · steer_delivered · steer_rejected',
-        '    steer_undelivered(+seq 목록) · last_message · events · runtime · exit_class',
+        '    steer_undelivered (+seq list) · last_message · events · runtime · exit_class',
         '',
         '───────────────────────────────────────────────────────────────',
-        'steer — 실행 중인 턴에 새 입력을 전달한다',
+        'steer — delivers new input to the running turn',
         '',
-        '  --stamp <스탬프>                                  (필수)',
-        '  --input-file <파일|->                             본문. - 이면 stdin (필수)',
-        '  --source user-via-claude|claude-monitor           기본 user-via-claude',
-        '  --timeout-ms <ms>    전달 확인 상한. 기본 ' + PENDING_DECISION.steerConfirmTimeoutMs + '   🔴 결정 필요',
+        '  --stamp <stamp>                                  (required)',
+        '  --input-file <file|->                             body; - means stdin (required)',
+        '  --source user-via-claude|claude-monitor           default user-via-claude',
+        '  --timeout-ms <ms>    delivery confirmation cap. default ' + PENDING_DECISION.steerConfirmTimeoutMs + '   🔴 decision needed',
         '',
-        '  🔴 긴 한글을 argv 로 넘기지 마라. Windows CreateProcess 는 32,767자 제한이 있고',
-        '     (실측: 32,000B 성공 / 32,700B 실패) 한글은 UTF-8 3바이트라 더 빨리 걸린다.',
-        '  🔴 "전달됨"은 turn/steer 가 같은 turnId 를 응답한 뒤에만 출력한다. 큐에 넣기만',
-        '     성공한 것은 전달이 아니다. 거부되면 서버가 준 사유를 그대로 낸다.',
+        '  🔴 Do not pass long non-ASCII text as argv. Windows CreateProcess has a 32,767-char limit',
+        '     (measured: 32,000 B ok / 32,700 B failed), and Korean hits it sooner at 3 bytes per char in UTF-8.',
+        '  🔴 "delivered" is printed only after turn/steer answers with the same turnId. Only queueing',
+        '     it is not delivery. When refused, the reason from the server is printed as is.',
         '',
         '───────────────────────────────────────────────────────────────',
-        'wait  — 판단이 필요한 고신호가 올 때까지 1회성 대기 (Claude 자율 모니터용)',
+        'wait  — one-shot wait for a high signal that needs a decision (for Claude as a monitor)',
         '',
-        '  --stamp <스탬프>       (필수)',
-        '  --after <seq>          이 seq 보다 큰 신호를 기다린다. 기본 0',
-        '  --timeout-ms <ms>      대기 상한. 기본 ' + PENDING_DECISION.waitTimeoutMs + '   🔴 결정 필요',
+        '  --stamp <stamp>       (required)',
+        '  --after <seq>          waits for signals above this seq. default 0',
+        '  --timeout-ms <ms>      wait cap. default ' + PENDING_DECISION.waitTimeoutMs + '   🔴 decision needed',
         '',
-        '  고신호로 보는 것 (놓치는 쪽보다 자주 깨우는 쪽으로 기울였다):',
+        '  counted as high signals (biased toward waking too often rather than missing one):',
         ...SIGNAL_DOC.map((l) => '    ' + l),
         '',
         '───────────────────────────────────────────────────────────────',
-        'status — 현재 상태 조회 (진단용)',
+        'status — current state (diagnostics)',
         '',
-        '  --stamp <스탬프>   (필수)',
-        '  --json             원본 상태 JSON 을 그대로 낸다',
-        '',
-        '───────────────────────────────────────────────────────────────',
-        '종료 코드 — 🔴 실패 경계가 여기 들어 있다',
-        '',
-        `  ${EXIT.OK}   정상`,
-        `  ${EXIT.USAGE}   인자 오류 (아무것도 실행하지 않았다)`,
-        '',
-        '  ── 10번대: turn/start 이전에 끝났다 → codex exec 로 fallback 해도 안전 ──',
-        `  ${EXIT.PRESTART_FAILED}  서버 기동 / initialize / thread/start / turn/start 실패`,
-        `  ${EXIT.LIB_MISSING}  lib/*.mjs 를 싣지 못했다`,
-        '',
-        '  ── 20번대: turn/start 이후에 끝났다 → 🔴 자동 fallback 금지 ──',
-        `  ${EXIT.POSTSTART_FAILED}  턴이 도는 중 연결이 끊기거나 서버가 죽었다`,
-        `  ${EXIT.TURN_FAILED}  turn/completed 가 status=failed 로 왔다`,
-        `  ${EXIT.TURN_TIMEOUT}  --turn-timeout-ms 상한에 걸렸다`,
-        '',
-        '  ── 30번대: steer ──',
-        `  ${EXIT.STEER_REJECTED}  turn/steer 가 거부됐다 (사유를 그대로 출력한다)`,
-        `  ${EXIT.NO_RUNTIME}  해당 실행이 없거나 개입할 수 없는 상태다 (거절 사유를 열거한다)`,
-        `  ${EXIT.STEER_TIMEOUT}  큐에는 넣었지만 전달 확인을 못 받았다 / 전달 여부 불명`,
-        '',
-        '  ── 40번대: wait ──',
-        `  ${EXIT.WAIT_TIMEOUT}  고신호 없이 상한에 도달했다`,
+        '  --stamp <stamp>   (required)',
+        '  --json             prints the raw state JSON',
         '',
         '───────────────────────────────────────────────────────────────',
-        '승인 요청 처리',
-        '  🔴 자동 승인하지 않는다. 무한 대기도 하지 않는다. 이 실행은 approval_policy=never 로',
-        '     돌기 때문에 애초에 승인 요청이 오지 않는 것이 정상이다. 그런데도 서버 요청이 오면',
-        '     fail-closed 로 거부하고 steers-log 에 기록한 뒤 고신호로 올린다.',
+        'Exit codes — 🔴 the failure boundary lives here',
+        '',
+        `  ${EXIT.OK}   ok`,
+        `  ${EXIT.USAGE}   argument error (nothing was run)`,
+        '',
+        '  ── 10–19: ended before turn/start was confirmed ──',
+        `  ${EXIT.PRESTART_FAILED}  server start / initialize / thread/start / turn/start failed — turn/start may still have been sent: 🔴 no automatic fallback`,
+        `  ${EXIT.LIB_MISSING}  could not load lib/*.mjs — nothing was sent: the only safe automatic fallback to codex exec`,
+        '',
+        '  ── 20–29: ended after turn/start → 🔴 no automatic fallback ──',
+        `  ${EXIT.POSTSTART_FAILED}  the connection closed or the server died while the turn was running`,
+        `  ${EXIT.TURN_FAILED}  turn/completed arrived with status=failed`,
+        `  ${EXIT.TURN_TIMEOUT}  hit the --turn-timeout-ms cap`,
+        '',
+        '  ── 30–39: steer ──',
+        `  ${EXIT.STEER_REJECTED}  turn/steer was refused (the reason is printed as is)`,
+        `  ${EXIT.NO_RUNTIME}  no such run, or it cannot take interventions (the reasons are listed)`,
+        `  ${EXIT.STEER_TIMEOUT}  queued but no delivery confirmation / delivery unknown`,
+        '',
+        '  ── 40–49: wait ──',
+        `  ${EXIT.WAIT_TIMEOUT}  reached the cap with no high signal`,
+        '',
+        '───────────────────────────────────────────────────────────────',
+        'Approval requests',
+        '  🔴 Never auto-approved, and never waited on forever. This run uses approval_policy=never,',
+        '     so normally no approval request arrives at all. If a server request comes anyway,',
+        '     it is refused fail-closed, recorded in the steers log and raised as a high signal.',
         ''
     ];
     out(H.join('\n'));
@@ -1577,8 +1578,8 @@ async function main() {
     const handlers = { run: cmdRun, steer: cmdSteer, wait: cmdWait, status: cmdStatus };
     const handler = handlers[sub];
     if (!handler) {
-        err(`알 수 없는 서브커맨드: ${sub}`);
-        err('run · steer · wait · status 중 하나여야 한다. --help 를 봐라.');
+        err(`unknown subcommand: ${sub}`);
+        err('It must be one of run, steer, wait, status. See --help.');
         return EXIT.USAGE;
     }
 
@@ -1594,7 +1595,7 @@ async function main() {
         return await handler(opts, lib);
     } catch (e) {
         if (e instanceof CliError) { err(`${CLI_NAME}: ${e.message}`); return e.code; }
-        err(`${CLI_NAME}: ${sub} 처리 중 예상 못 한 오류 — ${e && e.stack ? e.stack : e}`);
+        err(`${CLI_NAME}: unexpected error while handling ${sub} — ${e && e.stack ? e.stack : e}`);
         return unexpectedCode;
     }
 }
@@ -1625,7 +1626,7 @@ if (invokedDirectly) {
                 process.exitCode = e.code;
                 return;
             }
-            err(`${CLI_NAME}: 예상 못 한 오류 — ${e && e.stack ? e.stack : e}`);
+            err(`${CLI_NAME}: unexpected error — ${e && e.stack ? e.stack : e}`);
             // 🔴 어디서 터졌는지 모르면 fallback 을 허용하지 않는다. 턴이 이미 돌고 있었을
             //    가능성을 배제할 수 없고, 그 경우 재실행은 이중 실행이다. fail-closed.
             process.exitCode = EXIT.POSTSTART_FAILED;

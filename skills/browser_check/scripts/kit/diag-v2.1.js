@@ -74,7 +74,7 @@
   }
   function clip(s) {
     s = String(s);
-    return s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) + '…(' + s.length + '자)' : s;
+    return s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) + '…(' + s.length + ' chars)' : s;
   }
   function copy(x) {
     return JSON.parse(JSON.stringify(x));
@@ -113,7 +113,7 @@
 
   function preview(v, depth, budget, ancestors) {
     if (typeof v === 'string') return v.length > 300 ? v.slice(0, 300) + '…' : v;
-    if (typeof v === 'function') return '[함수 ' + (v.name || '익명') + ']';
+    if (typeof v === 'function') return '[function ' + (v.name || 'anonymous') + ']';
     if (typeof v === 'bigint') return String(v) + 'n';
     if (typeof v === 'symbol') return String(v);
     if (v === undefined) return '[undefined]';
@@ -121,9 +121,9 @@
     if (v instanceof Error) return v.stack || v.name + ': ' + v.message;
     if (typeof Node === 'function' && v instanceof Node) return '[' + (v.nodeName || 'Node') + ']';
     if (typeof Event === 'function' && v instanceof Event)
-      return '[' + v.type + ' 이벤트' + (v.target && v.target.nodeName ? ' ' + v.target.nodeName : '') + ']';
-    if (ancestors.indexOf(v) >= 0) return '[순환]';
-    if (depth >= 4 || budget.n <= 0) return Array.isArray(v) ? '[배열 ' + v.length + ']' : '[객체 …]';
+      return '[' + v.type + ' event' + (v.target && v.target.nodeName ? ' ' + v.target.nodeName : '') + ']';
+    if (ancestors.indexOf(v) >= 0) return '[circular]';
+    if (depth >= 4 || budget.n <= 0) return Array.isArray(v) ? '[array ' + v.length + ']' : '[object …]';
     var next = ancestors.concat([v]);
     var out;
     var i;
@@ -154,7 +154,7 @@
         budget.n--;
         out.push(preview(v[i], depth + 1, budget, next));
       }
-      if (v.length > 30) out.push('…(' + v.length + '개)');
+      if (v.length > 30) out.push('…(' + v.length + ' items)');
       return out;
     }
     out = {};
@@ -164,10 +164,10 @@
       try {
         out[keys[i]] = isSecret(keys[i], v[keys[i]]) ? '***' : preview(v[keys[i]], depth + 1, budget, next);
       } catch {
-        out[keys[i]] = '[읽기 오류]';
+        out[keys[i]] = '[read error]';
       }
     }
-    if (keys.length > 30) out['…'] = keys.length + '개 키';
+    if (keys.length > 30) out['…'] = keys.length + ' keys';
     return out;
   }
   function fmt(v) {
@@ -207,7 +207,7 @@
   }
   function redact(text) {
     if (typeof text !== 'string') return text;
-    if (text.length > MAX_BODY_BYTES) return '[본문 생략 ' + text.length + '자]';
+    if (text.length > MAX_BODY_BYTES) return '[body omitted, ' + text.length + ' chars]';
     var s = text.trim();
     if (s.charAt(0) === '{' || s.charAt(0) === '[') {
       try {
@@ -347,7 +347,7 @@
       if (t && t !== window && t.nodeType === 1) {
         var tag = String(t.tagName).toLowerCase();
         var ev = push('resource-error', { tag: tag, url: redactUrl(t.currentSrc || t.src || t.href || '') });
-        if (tag === 'script' && t.type === 'module') ev.hint = '모듈 또는 그 하위 의존 중 하나 — resource-status 에서 404/500 주소를 보라';
+        if (tag === 'script' && t.type === 'module') ev.hint = 'the module or one of its dependencies — find the 404/500 URL in resource-status';
         note(ev);
         return;
       }
@@ -397,7 +397,7 @@
         method: method,
         url: redactUrl(url),
         phase: 'pending',
-        reqBody: init && init.body != null ? bodyOf(init.body) : req && req.body ? '[Request 본문]' : undefined,
+        reqBody: init && init.body != null ? bodyOf(init.body) : req && req.body ? '[Request body]' : undefined,
       });
       var open = true;
       inflight++;
@@ -445,7 +445,7 @@
                   function () {},
                 );
             } else {
-              ev.resBody = '[본문 생략: ' + (lenHeader !== null ? len + 'B' : '길이 미상(스트림일 수 있음)') + ']';
+              ev.resBody = '[body omitted: ' + (lenHeader !== null ? len + 'B' : 'unknown length (may be a stream)') + ']';
             }
           }
           return res;
@@ -642,7 +642,7 @@
         w.addEventListener('error', function (e) {
           // 스크립트 안 예외(ErrorEvent)는 window 로 다시 보고되므로 여기선 로드 실패만
           if (!(typeof ErrorEvent === 'function' && e instanceof ErrorEvent && e.message)) {
-            note(push('worker-error', { url: u, msg: '워커 스크립트를 불러오지 못함(404·MIME·CSP)' }));
+            note(push('worker-error', { url: u, msg: 'worker script failed to load (404, MIME or CSP)' }));
           }
         });
         return w;
@@ -736,7 +736,7 @@
 
   if (/[?&]__diag_selftest(?:[=&#]|$)/.test(location.search)) {
     console.error('[dev-diag] selftest console.error');
-    console.warn('[dev-diag] selftest %s', 'console.warn 형식 치환');
+    console.warn('[dev-diag] selftest %s', 'console.warn format substitution');
     setTimeout(function () {
       throw new Error('[dev-diag] selftest uncaught');
     }, 0);

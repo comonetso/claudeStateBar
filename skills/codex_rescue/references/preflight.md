@@ -13,7 +13,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/codex-status.mjs" --cwd <project root>
 It shows the current model and reasoning level, 5-hour and weekly limits, the selectable models and reasoning levels **with their official descriptions**, the **limit baseline** (by limit shape), the per-turn usage of request-based runs over the last 21 days (overall and **per combination**, checked against the baseline), and the last 5 turns' task name, duration and tool-call count.
 
 - Past usage is **per turn** (a follow-up turn may switch models). Usage is recorded in 1% steps; on weekly-only plans one turn shows as +0–2% and combinations blur — compare the recent turns' duration and tool calls to size this job.
-- Some plans have no 5-hour window (e.g. Pro Lite — the output shows `플랜: prolite`, weekly only). The tool tells windows apart **by length (300 / 10080 minutes), not by position**, prints `5시간 한도: 5시간 제한 미적용`, and past usage switches to the same plan's weekly window (those lines are marked `주간 창`). A reset date days away means it is the weekly window.
+- Some plans have no 5-hour window (e.g. Pro Lite — the output shows `plan: prolite`, weekly only). The tool tells windows apart **by length (300 / 10080 minutes), not by position**, prints `5-hour limit: none on this plan`, and past usage switches to the same plan's weekly window (those lines are marked `weekly window`). A reset date days away means it is the weekly window.
 - Also check the install style here (see "Old install notice" below).
 
 ## ② Choose the recommendation — difficulty and limits together
@@ -23,9 +23,9 @@ It shows the current model and reasoning level, 5-hour and weekly limits, the se
    - Light: the files to look at can be named · confirmation questions · a narrow diff review
    - You may cite a similar recent turn from the query output ("about the size of the earlier X job").
 2. **Pick the combination for that difficulty** by matching the **official description text** in the query output. Never invent a model ranking. (E.g. reasoning `medium` = "everyday tasks", `high` = "complex problems", `max` = "hardest problems"; models likewise — "complex, demanding work" is the heavy side, "everyday tasks" / "fast and affordable" the light side.) Don't recommend models marked for retirement (⚠️).
-3. **Check it against the limit baseline** — if that combination's **largest past single-turn usage** exceeds the baseline (its line in the query output shows `→ 기준 초과`), **step down one level**: one reasoning level lower in the listed order, or a lighter model by official description. Choose which by the difficulty and say why. If neither works, add "narrow scope" to the recommendation. If the lowered one still exceeds, weigh it once more. When lowered, say in the question "by difficulty it would be X; lowered because it exceeds the baseline". No record for the combination ⇒ write "no record" and recommend by difficulty alone.
+3. **Check it against the limit baseline** — if that combination's **largest past single-turn usage** exceeds the baseline (its line in the query output shows `→ over the baseline`), **step down one level**: one reasoning level lower in the listed order, or a lighter model by official description. Choose which by the difficulty and say why. If neither works, add "narrow scope" to the recommendation. If the lowered one still exceeds, weigh it once more. When lowered, say in the question "by difficulty it would be X; lowered because it exceeds the baseline". No record for the combination ⇒ write "no record" and recommend by difficulty alone.
 
-Limit baseline by **which windows exist**, not by plan name (the tool computes it under `── 한도 기준 ──`):
+Limit baseline by **which windows exist**, not by plan name (the tool computes it under `── limit baseline`):
 
 | Limit shape | Check |
 |---|---|

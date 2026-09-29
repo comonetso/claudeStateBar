@@ -3779,7 +3779,8 @@ async function refreshAllSessionsOnce() {
             if (t.status === 'running') { bgSeenRunning.add(t.key); continue; }
             if (bgAlerted.has(t.key)) continue;
             bgAlerted.add(t.key);
-            if (t.status === 'completed' && bgSeenRunning.has(t.key) && !suppressBeep) chime = true;
+            // A task Claude ended with TaskStop reads as completed but stays silent (user's call, 2026-09-29).
+            if (t.status === 'completed' && !t.endedByTaskStop && bgSeenRunning.has(t.key) && !suppressBeep) chime = true;
         }
         if (chime && wfBeepEnabled) {
             log('[bg] background task completed → beep');

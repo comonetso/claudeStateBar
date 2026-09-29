@@ -40,7 +40,7 @@
     htmlExtraChildren: [...de.children].filter((e) => !/^(HEAD|BODY)$/.test(e.tagName)).map((e) => e.tagName.toLowerCase()),
     googleTranslate: de.classList.contains('translated-ltr') || de.classList.contains('translated-rtl'),
     grammarly: !!document.querySelector('[data-gr-ext-installed],[data-new-gr-c-s-check-loaded],grammarly-desktop-integration'),
-    rafNote: 'Aside 탭은 rAF 가 ~1초 간격으로 스로틀될 수 있다 — 이 스크립트는 rAF 를 기다리지 않고 강제 레이아웃으로 잰다',
+    rafNote: 'Aside tabs may throttle rAF to ~1 s — this script does not wait for rAF; it measures with a forced layout',
   };
 
   /* 1. Web Vitals — web-vitals 6.2.2 규칙 재현 */
@@ -97,7 +97,7 @@
     ttfb: ttfb == null ? null : Math.round(ttfb), fcp: fcp == null ? null : Math.round(fcp),
     lcp: lcp == null ? null : { ms: Math.round(lcp), el: describe(lcpEl), url: lcpE.url ? lcpE.url.slice(0, 80) : '', lazy: !!(lcpEl && lcpEl.loading === 'lazy'), fetchpriority: lcpEl ? lcpEl.getAttribute('fetchpriority') : null, breakdown: lcpBreakdown },
     cls: { webVitals: clsAll.value, excludingUnattributed: clsPage.value, largestShift: shiftSources.slice(0, MAX) },
-    inp: inpE ? { ms: inpE.duration, event: inpE.name, target: describe(inpE.target), inputDelay: Math.round(inpE.processingStart - inpE.startTime), processing: Math.round(inpE.processingEnd - inpE.processingStart), presentation: Math.round(inpE.startTime + inpE.duration - inpE.processingEnd), note: '사후 관찰은 104ms 이상만 · Aside 탭은 표시 지연이 부풀려짐 → processing 을 믿어라' } : null,
+    inp: inpE ? { ms: inpE.duration, event: inpE.name, target: describe(inpE.target), inputDelay: Math.round(inpE.processingStart - inpE.startTime), processing: Math.round(inpE.processingEnd - inpE.processingStart), presentation: Math.round(inpE.startTime + inpE.duration - inpE.processingEnd), note: 'observed after the fact only at ≥104 ms · Aside tabs inflate presentation delay → trust processing' } : null,
     interactionCount: performance.interactionCount,
     tbtApprox: Math.round(tbt), longTasks: ltL.length,
     loafTop: loafL.slice().sort((a, b) => b.blockingDuration - a.blockingDuration).slice(0, 3).map((f) => ({ ms: Math.round(f.duration), blocking: Math.round(f.blockingDuration), scripts: (f.scripts || []).slice(0, 3).map((s) => (s.invoker || '') + ' ' + (s.sourceURL || '').replace(location.origin, '').slice(0, 60) + (s.sourceFunctionName ? ' ' + s.sourceFunctionName : '') + ' ' + Math.round(s.duration) + 'ms') })),
@@ -118,12 +118,12 @@
   const anims = document.getAnimations ? document.getAnimations() : [];
   out.perf2 = {
     renderBlocking: sample(res.filter((r) => r.renderBlockingStatus === 'blocking'), (r) => r.name.replace(location.origin, '').slice(0, 80)),
-    protocols: res.reduce((m, r) => { const k = r.nextHopProtocol || '(교차출처 비공개)'; m[k] = (m[k] || 0) + 1; return m; }, {}),
+    protocols: res.reduce((m, r) => { const k = r.nextHopProtocol || '(cross-origin, hidden)'; m[k] = (m[k] || 0) + 1; return m; }, {}),
     uncompressed: sample(res.filter((r) => /script|css|link|fetch|xmlhttprequest/.test(r.initiatorType) && r.encodedBodySize > 1400 && r.encodedBodySize === r.decodedBodySize), (r) => Math.round(r.decodedBodySize / 1024) + 'KB ' + r.name.replace(location.origin, '').slice(0, 70)),
     document: nav ? { status: nav.responseStatus, protocol: nav.nextHopProtocol, redirects: nav.redirectCount, serverMs: Math.round(nav.responseStart - nav.requestStart), compressed: nav.encodedBodySize < nav.decodedBodySize, kb: Math.round(nav.decodedBodySize / 1024) } : null,
     cacheHits: res.filter((r) => r.transferSize === 0 && r.decodedBodySize > 0).length,
-    thirdParty: Object.entries(byOrigin).sort((a, b) => b[1].kb - a[1].kb).slice(0, MAX).map(([o, v]) => o + ' ' + v.n + '건 ' + Math.round(v.kb) + 'KB'),
-    dom: { nodes: document.getElementsByTagName('*').length, maxDepth: depth, maxChildren: maxKids, lighthouseWarn: '노드 >1400 · 깊이 >32 · 자식 >60' },
+    thirdParty: Object.entries(byOrigin).sort((a, b) => b[1].kb - a[1].kb).slice(0, MAX).map(([o, v]) => o + ' ' + v.n + ' requests ' + Math.round(v.kb) + 'KB'),
+    dom: { nodes: document.getElementsByTagName('*').length, maxDepth: depth, maxChildren: maxKids, lighthouseWarn: 'nodes >1400 · depth >32 · children >60' },
     unsizedImages: sample(imgs.filter((i) => { const cs = getComputedStyle(i); if (cs.position === 'fixed' || cs.position === 'absolute') return false; const r = i.getBoundingClientRect(); if (!r.width && !r.height) return false; if (/^data:image\/svg/.test(i.src)) return false; const w = i.hasAttribute('width') || !!i.style.width, h = i.hasAttribute('height') || !!i.style.height, ar = cs.aspectRatio && cs.aspectRatio !== 'auto'; return !((w && h) || (w && ar) || (h && ar)); })),
     oversizedImages: sample(rasterImgs.filter((i) => { const r = i.getBoundingClientRect(); const d = devicePixelRatio; return i.naturalWidth * i.naturalHeight > (r.width * d * 1.5) * (r.height * d * 1.5) && i.naturalWidth > 200; }), (i) => i.naturalWidth + 'x' + i.naturalHeight + '→' + Math.round(i.getBoundingClientRect().width) + 'x' + Math.round(i.getBoundingClientRect().height) + ' ' + describe(i)),
     blurryImages: sample(rasterImgs.filter((i) => { const r = i.getBoundingClientRect(); const f = r.width > 64 || r.height > 64 ? 0.75 : 1; return i.naturalWidth < Math.ceil(f * dpr * r.width) || i.naturalHeight < Math.ceil(f * dpr * r.height); }), (i) => i.naturalWidth + 'x' + i.naturalHeight + ' < ' + Math.round(i.getBoundingClientRect().width * dpr) + 'x' + Math.round(i.getBoundingClientRect().height * dpr) + ' ' + describe(i)),
@@ -137,7 +137,7 @@
   const walk = (list, media) => { for (const r of list) { if (r.cssRules && !(r instanceof CSSStyleRule)) walk(r.cssRules, r.conditionText || media); if (r.style) rules.push({ r, media }); } };
   for (const s of [...document.styleSheets, ...(document.adoptedStyleSheets || [])]) { try { walk(s.cssRules, ''); } catch (e) { blockedSheets.push(s.href); } }
   const vhRules = [];
-  for (const { r } of rules) for (const p of ['height', 'min-height', 'max-height']) { const v = r.style.getPropertyValue(p); if (/\b100vh\b/.test(v) && r.selectorText) { let n = 0; try { n = document.querySelectorAll(r.selectorText).length; } catch (e) {} vhRules.push(r.selectorText.slice(0, 50) + ' {' + p + ':' + v + '} 적용 ' + n); } }
+  for (const { r } of rules) for (const p of ['height', 'min-height', 'max-height']) { const v = r.style.getPropertyValue(p); if (/\b100vh\b/.test(v) && r.selectorText) { let n = 0; try { n = document.querySelectorAll(r.selectorText).length; } catch (e) {} vhRules.push(r.selectorText.slice(0, 50) + ' {' + p + ':' + v + '} applies to ' + n); } }
   for (const e of document.querySelectorAll('[style*="100vh"]')) vhRules.push('inline ' + describe(e));
   const fontFaces = rules.filter(({ r }) => r instanceof CSSFontFaceRule).map(({ r }) => r.style.getPropertyValue('font-family').replace(/["']/g, '') + ' display=' + (r.style.getPropertyValue('font-display') || 'auto'));
   const reducedMotionCss = rules.some(({ media }) => /prefers-reduced-motion/.test(media || ''));
@@ -209,7 +209,7 @@
     const after = clippedSet();
     document.adoptedStyleSheets = prevSheets;
     out.css2.textSpacingNewlyClipped = sample([...after].filter((e) => !before.has(e)));
-  } catch (e) { out.css2.textSpacingNewlyClipped = '오류 ' + e.message; }
+  } catch (e) { out.css2.textSpacingNewlyClipped = 'error ' + e.message; }
 
   /* 4. SEO */
   const meta = (n) => { const m = document.querySelector('meta[name="' + n + '" i]'); return m ? m.content : null; };
@@ -219,23 +219,23 @@
   const anchors = [...document.querySelectorAll('a')].filter((a) => !inForeign(a));
   const uncrawlable = anchors.filter((a) => { const raw = (a.getAttribute('href') || '').replace(/\s/g, ''); if (a.getAttribute('role')) return false; if (raw.startsWith('mailto:')) return false; if (raw === '' && a.id) return false; if (raw.startsWith('file:')) return true; if (a.getAttribute('name')) return false; if (!a.hasAttribute('href')) return !!a.onclick; return raw === '' || /javascript:void(\(|)0(\)|)/.test(raw); });
   let robots = null;
-  try { const rt = await fetch('/robots.txt', { cache: 'no-store' }); const txt = rt.ok ? await rt.text() : ''; robots = { status: rt.status, disallowAll: /user-agent:\s*\*[\s\S]*?disallow:\s*\/\s*$/im.test(txt) }; } catch (e) { robots = '오류'; }
-  const ld = [...document.querySelectorAll('script[type="application/ld+json"]')].map((s) => { try { const j = JSON.parse(s.textContent); return 'ok ' + [].concat(j).map((x) => x && x['@type']).join(','); } catch (e) { return 'JSON 오류'; } });
+  try { const rt = await fetch('/robots.txt', { cache: 'no-store' }); const txt = rt.ok ? await rt.text() : ''; robots = { status: rt.status, disallowAll: /user-agent:\s*\*[\s\S]*?disallow:\s*\/\s*$/im.test(txt) }; } catch (e) { robots = 'error'; }
+  const ld = [...document.querySelectorAll('script[type="application/ld+json"]')].map((s) => { try { const j = JSON.parse(s.textContent); return 'ok ' + [].concat(j).map((x) => x && x['@type']).join(','); } catch (e) { return 'JSON error'; } });
   const hreflangs = [...document.querySelectorAll('link[rel="alternate"][hreflang]')].map((l) => l.hreflang);
   const canon = [...document.querySelectorAll('link[rel="canonical"]')];
   out.seo = {
     httpStatus: nav ? nav.responseStatus : null,
     titleLength: document.title.length,
-    metaDescription: meta('description') ? meta('description').length + '자' : '(없음)',
+    metaDescription: meta('description') ? meta('description').length + ' chars' : '(none)',
     robotsMeta: meta('robots'),
     noindex: /noindex/i.test(meta('robots') || ''),
-    canonical: canon.length === 0 ? '(없음)' : canon.length > 1 ? '여러 개 ' + canon.length : canon[0].href + (canon[0].getAttribute('href').startsWith('http') ? '' : ' (상대경로)'),
+    canonical: canon.length === 0 ? '(none)' : canon.length > 1 ? 'multiple: ' + canon.length : canon[0].href + (canon[0].getAttribute('href').startsWith('http') ? '' : ' (relative)'),
     hreflangInvalid: hreflangs.filter((h) => !/^([a-z]{2,3}(-[A-Za-z0-9]{2,8})*|x-default)$/i.test(h)),
     vagueLinkText: sample(anchors.filter((a) => a.hasAttribute('href') && badSet.has((a.innerText || '').trim().toLowerCase()))),
     uncrawlableAnchors: sample(uncrawlable),
     robotsTxt: robots,
     structuredData: ld,
-    ogTags: ['og:title', 'og:description', 'og:image'].filter((p) => !document.querySelector('meta[property="' + p + '"]')).map((p) => p + ' 없음'),
+    ogTags: ['og:title', 'og:description', 'og:image'].filter((p) => !document.querySelector('meta[property="' + p + '"]')).map((p) => p + ' missing'),
   };
 
   /* 5. 모범 사례 */
@@ -246,13 +246,13 @@
     if (ev.defaultPrevented) pasteBlocked.push(i);
   }
   out.bestPractices = {
-    doctype: document.doctype ? document.doctype.name + (document.doctype.publicId ? ' (public ' + document.doctype.publicId.slice(0, 30) + ')' : '') : '(없음)',
+    doctype: document.doctype ? document.doctype.name + (document.doctype.publicId ? ' (public ' + document.doctype.publicId.slice(0, 30) + ')' : '') : '(none)',
     compatMode: document.compatMode,
     charset: document.characterSet,
     pasteBlockedInputs: sample(pasteBlocked, (e) => describe(e) + ' type=' + e.type),
     passwordAutocompleteOff: [...document.querySelectorAll('input[type=password]')].filter((i) => i.autocomplete === 'off').length,
     libraries: [window.jQuery && window.jQuery.fn ? 'jQuery ' + window.jQuery.fn.jquery : null, document.querySelector('[data-reactroot]') || [...document.querySelectorAll('body, body > *')].some((e) => Object.keys(e).some((k) => k.startsWith('__reactContainer') || k.startsWith('__reactFiber'))) ? 'React' : null, window.__VUE__ || document.querySelector('[data-v-app]') ? 'Vue' : null, document.querySelector('[ng-version]') ? 'Angular ' + document.querySelector('[ng-version]').getAttribute('ng-version') : null, window.__NEXT_DATA__ ? 'Next.js' : null, document.querySelector('script[src*="/@vite/client"]') ? 'Vite dev' : null].filter(Boolean),
-    permissions: await (async () => { const o = {}; for (const n of ['geolocation', 'notifications']) { try { o[n] = (await navigator.permissions.query({ name: n })).state; } catch (e) { o[n] = '조회 불가'; } } return o; })(),
+    permissions: await (async () => { const o = {}; for (const n of ['geolocation', 'notifications']) { try { o[n] = (await navigator.permissions.query({ name: n })).state; } catch (e) { o[n] = 'unavailable'; } } return o; })(),
   };
 
   /* 6. 보안 */
@@ -266,24 +266,24 @@
     const maxAge = Number((hsts.match(/max-age=(\d+)/) || [0, 0])[1]);
     headers = {
       status: h.status,
-      csp: csp ? { present: true, unsafeInline: /'unsafe-inline'/.test(scriptSrc) && !/'nonce-|'sha(256|384|512)-|'strict-dynamic'/.test(scriptSrc), unsafeEval: /'unsafe-eval'/.test(scriptSrc), objectSrcNone: /object-src\s+'none'/.test(csp), baseUri: /base-uri/.test(csp), frameAncestors: (csp.match(/frame-ancestors[^;]*/) || [null])[0] } : '(없음)',
+      csp: csp ? { present: true, unsafeInline: /'unsafe-inline'/.test(scriptSrc) && !/'nonce-|'sha(256|384|512)-|'strict-dynamic'/.test(scriptSrc), unsafeEval: /'unsafe-eval'/.test(scriptSrc), objectSrcNone: /object-src\s+'none'/.test(csp), baseUri: /base-uri/.test(csp), frameAncestors: (csp.match(/frame-ancestors[^;]*/) || [null])[0] } : '(none)',
       cspReportOnly: !!g('content-security-policy-report-only'),
-      hsts: hsts ? { maxAge, oneYear: maxAge >= 31536000, includeSubDomains: /includesubdomains/i.test(hsts), preload: /preload/i.test(hsts) } : '(없음)',
+      hsts: hsts ? { maxAge, oneYear: maxAge >= 31536000, includeSubDomains: /includesubdomains/i.test(hsts), preload: /preload/i.test(hsts) } : '(none)',
       xFrameOptions: g('x-frame-options'),
       clickjackingProtected: !!g('x-frame-options') || /frame-ancestors/.test(csp),
       xContentTypeOptions: g('x-content-type-options'),
       referrerPolicy: g('referrer-policy'),
-      permissionsPolicy: g('permissions-policy') ? 'present' : '(없음)',
+      permissionsPolicy: g('permissions-policy') ? 'present' : '(none)',
       coop: g('cross-origin-opener-policy'),
       corp: g('cross-origin-resource-policy'),
       xRobotsTag: g('x-robots-tag'),
       serverBanner: [g('server'), g('x-powered-by')].filter(Boolean).join(' / '),
     };
-  } catch (e) { headers = '오류 ' + e.message; }
+  } catch (e) { headers = 'error ' + e.message; }
   const httpAttr = [...document.querySelectorAll('[src^="http:"],[href^="http:"],[srcset*="http:"],[data^="http:"],[poster^="http:"],form[action^="http:"]')].filter((e) => !inForeign(e) && !(e.tagName === 'A'));
   const cssHttp = rules.filter(({ r }) => /url\(\s*["']?http:/.test(r.cssText || '')).map(({ r }) => (r.selectorText || '@font-face').slice(0, 40));
-  let cookies = '미지원';
-  try { cookies = (await cookieStore.getAll()).map((c) => c.name + (c.secure ? '' : ' [secure 없음]') + (c.sameSite === 'none' && !c.secure ? ' [SameSite=None 인데 secure 없음]' : '') + ' sameSite=' + c.sameSite); } catch (e) {}
+  let cookies = 'unsupported';
+  try { cookies = (await cookieStore.getAll()).map((c) => c.name + (c.secure ? '' : ' [no secure]') + (c.sameSite === 'none' && !c.secure ? ' [SameSite=None without secure]' : '') + ' sameSite=' + c.sameSite); } catch (e) {}
   out.security2 = {
     headers,
     mixedContentDom: sample(httpAttr, (e) => describe(e) + ' ' + (e.getAttribute('src') || e.getAttribute('href') || e.getAttribute('action') || '').slice(0, 60)),

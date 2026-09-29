@@ -35,33 +35,33 @@ try {
   const configPath = process.env.BROWSER_CHECK_CONFIG || (dataDir ? resolve(dataDir, 'config.json') : '');
 
   if (!configPath || !existsSync(configPath)) {
-    notes.push('비공개 설정 없음 — 처음 `browser_check` 를 쓸 때 `scripts/browser-check.mjs setup` 이 이 기기를 살펴 만듭니다 (직접 쓰려면 config/example.json)');
+    notes.push('no private config yet — on first use of `browser_check`, `scripts/browser-check.mjs setup` inspects this machine and writes it (to write it by hand, see config/example.json)');
     emit();
     process.exit(0);
   }
 
   const st = lstatSync(configPath);
-  if (st.isSymbolicLink()) notes.push('설정 파일이 심볼릭 링크입니다 (거부)');
+  if (st.isSymbolicLink()) notes.push('the config file is a symbolic link (refused)');
   // No POSIX mode bits on Windows (always reads 0o666) — skipped there, same as scripts/lib/config.mjs
-  if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) notes.push('설정 파일 권한이 0600 이 아닙니다');
+  if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) notes.push('config file permissions are not 0600');
 
   let cfg = null;
   try {
     cfg = JSON.parse(readFileSync(configPath, 'utf8'));
   } catch (e) {
-    notes.push('설정 JSON 파싱 실패: ' + (e && e.message ? e.message : String(e)).slice(0, 80));
+    notes.push('config JSON parse failed: ' + (e && e.message ? e.message : String(e)).slice(0, 80));
   }
 
   if (cfg && Date.now() < deadline) {
     // light schema check — the full validator lives in scripts/lib/config.mjs (used by doctor)
-    if (cfg.schemaVersion !== 1) notes.push('schemaVersion 이 1 이 아닙니다');
-    if (cfg.aside && cfg.aside.enabled && cfg.aside.bin && !existsSync(cfg.aside.bin)) notes.push('aside.bin 경로에 실행 파일이 없습니다');
+    if (cfg.schemaVersion !== 1) notes.push('schemaVersion is not 1');
+    if (cfg.aside && cfg.aside.enabled && cfg.aside.bin && !existsSync(cfg.aside.bin)) notes.push('no executable at the aside.bin path');
     const sock = cfg.cdp && cfg.cdp.remote && cfg.cdp.remote.socketPath;
     if (sock && existsSync(sock)) {
       const ss = lstatSync(sock);
-      if (!ss.isSocket()) notes.push('cdp.remote.socketPath 가 소켓이 아닙니다');
-      else if ((ss.mode & 0o077) !== 0) notes.push('CDP 유닉스 소켓 권한이 0600 이 아닙니다 (다른 사용자가 붙을 수 있음)');
-      else if (typeof process.getuid === 'function' && ss.uid !== process.getuid()) notes.push('CDP 유닉스 소켓 소유자가 현재 사용자와 다릅니다');
+      if (!ss.isSocket()) notes.push('cdp.remote.socketPath is not a socket');
+      else if ((ss.mode & 0o077) !== 0) notes.push('CDP Unix socket permissions are not 0600 (other users could attach)');
+      else if (typeof process.getuid === 'function' && ss.uid !== process.getuid()) notes.push('the CDP Unix socket is owned by another user');
     }
   }
   void root;

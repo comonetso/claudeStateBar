@@ -60,16 +60,16 @@ die() { printf 'codex_rescue: %s\n' "$*" >&2; exit 2; }
 #    규칙만으로는 강제력이 없어 EDIT 게이트와 같은 구조로 막는다. 붙이는 행위 자체가 "물어서 답을 받았다"는 표시다.
 confirm_gate() {
   [ "${CR_CONFIRMED:-}" = 1 ] && return 0
-  die "실행 전 확인을 안 했다 — CR_CONFIRMED=1 이 없어 멈춘다.
-  1. node $SELF_DIR/scripts/codex-status.mjs --cwd <프로젝트 루트>
-  2. 난이도와 한도를 함께 따진 권장 조합을 사용자에게 텍스트로 묻는다 (SKILL.md § 절차 2-1 질문 틀 그대로)
-  3. 답을 받은 뒤에만 CR_CONFIRMED=1 을 붙여 다시 실행한다 (현재 설정과 다른 조합을 골랐으면 CR_MODEL·CR_EFFORT 도)
-  🔴 답을 받지 않고 이 값을 붙이지 마라. 답이 없거나 애매하면 다시 묻는다."
+  die "pre-run confirmation was skipped — stopping because CR_CONFIRMED=1 is not set.
+  1. node $SELF_DIR/scripts/codex-status.mjs --cwd <project root>
+  2. Ask the user about the recommended combination, weighing difficulty and limits together, using the question frame of SKILL.md §2-1 → references/preflight.md exactly
+  3. Only after the answer, run again with CR_CONFIRMED=1 (plus CR_MODEL / CR_EFFORT if a combination other than the current settings was chosen)
+  🔴 Never add it without an answer. If there is no answer or it is unclear, ask again."
 }
 
 # 스킬 폴더. 아래에서 `cd "$ROOT"` 를 하므로 그 전에 한 번만 잡는다 —
 # 상대경로로 불렸을 때 cd 뒤에 계산하면 엉뚱한 곳을 가리킨다.
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || die "스킬 폴더를 찾지 못했다"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || die "cannot find the skill folder"
 
 # ── Codex 에 넘기는 경로는 Windows 형식으로 바꾼다 ──────────────
 # codex 진입점은 Node 스크립트(Windows 네이티브)다. Git Bash 의 MSYS 경로(`/d/OneDrive/...`)를
@@ -82,7 +82,7 @@ IS_WIN=0
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WIN=1 ;; esac
 winp() {
   if [ "$IS_WIN" = 1 ]; then
-    cygpath -m -- "$1" || die "cygpath 변환 실패: $1"
+    cygpath -m -- "$1" || die "cygpath conversion failed: $1"
   else
     printf '%s' "$1"
   fi
@@ -141,7 +141,7 @@ fm_set() {   # $1=파일  $2=키  $3=값
 for _cr_v in CR_MODEL CR_EFFORT; do
   case "${!_cr_v:-}" in
     '') ;;
-    *[!A-Za-z0-9._-]*) die "$_cr_v 값이 이상하다: ${!_cr_v}  (영문·숫자·. _ - 만 쓴다)" ;;
+    *[!A-Za-z0-9._-]*) die "$_cr_v has an invalid value: ${!_cr_v}  (letters, digits, . _ - only)" ;;
   esac
 done
 unset _cr_v
@@ -210,62 +210,62 @@ if [ "${1:-}" = "--chat" ]; then
   CH_LOOK_LIST=""    # 개행 구분. <절대경로>\t<시작>\t<끝>\t<표시이름>  ← cd 전에 굳힌다
   CH_LOOK_BYTES=0
   ch_one_action() {
-    [ -z "$CH_ACTION" ] || die "--chat: --start · --resume-stamp · --close-stamp 는 함께 쓸 수 없다 (지금: $CH_ACTION)"
+    [ -z "$CH_ACTION" ] || die "--chat: --start, --resume-stamp and --close-stamp cannot be combined (now: $CH_ACTION)"
   }
   while [ $# -gt 0 ]; do
     case "$1" in
-      --slug)    [ -n "${2:-}" ] || die "--chat: --slug 값이 없다";    CH_SLUG="$2";    shift 2 ;;
-      --subject) [ -n "${2:-}" ] || die "--chat: --subject 값이 없다"; CH_SUBJECT="$2"; shift 2 ;;
+      --slug)    [ -n "${2:-}" ] || die "--chat: --slug needs a value";    CH_SLUG="$2";    shift 2 ;;
+      --subject) [ -n "${2:-}" ] || die "--chat: --subject needs a value"; CH_SUBJECT="$2"; shift 2 ;;
       --start)   ch_one_action; CH_ACTION=start; shift ;;
       --explore) CH_EXPLORE=1; shift ;;
       --look)
-        [ -n "${2:-}" ] || die "--chat: --look 값이 없다 — 살펴볼 파일을 지목해라.
-  · 파일 전체   → --look src/main.js
-  · 일부만      → --look src/main.js:120-260
-  여러 번 쓸 수 있다. 디렉토리는 못 준다 — **볼 파일을 네가 정하는 것**이 이 옵션의 요점이다."
+        [ -n "${2:-}" ] || die "--chat: --look needs a value — name the file to look at.
+  · whole file   → --look src/main.js
+  · part of it  → --look src/main.js:120-260
+  Repeatable. Directories are not accepted — **you choosing the files** is the point of this option."
         CH_LOOK_SPECS="$CH_LOOK_SPECS${CH_LOOK_SPECS:+$CH_NL}$2"
         shift 2 ;;
       --resume-stamp)
-        [ -n "${2:-}" ] || die "--chat: --resume-stamp 값이 없다 (직전 턴 stdout 의 '대화키' 를 그대로 넘겨라)"
+        [ -n "${2:-}" ] || die "--chat: --resume-stamp needs a value (pass the conversation key from the stdout of the previous turn as is)"
         ch_one_action; CH_ACTION=resume; CH_RESUME_STAMP="$2"; shift 2 ;;
       --close-stamp)
-        [ -n "${2:-}" ] || die "--chat: --close-stamp 값이 없다"
+        [ -n "${2:-}" ] || die "--chat: --close-stamp needs a value"
         ch_one_action; CH_ACTION=close; CH_CLOSE_STAMP="$2"; shift 2 ;;
       --new)
-        die "--new 는 없어졌다 (2026-08-22). 호출 경계를 보장하지 못했기 때문이다.
-  · 새 대화를 시작한다        → --start
-  · 이어서 말한다             → --resume-stamp <직전 턴의 대화키>
-  · 대화를 닫기만 한다        → --close-stamp <대화키>" ;;
+        die "--new was removed (2026-08-22) because it could not guarantee call boundaries.
+  · start a new conversation       → --start
+  · continue it                    → --resume-stamp <conversation key of the previous turn>
+  · only close the conversation   → --close-stamp <conversation key>" ;;
       --)        shift; CH_MSG="$CH_MSG${CH_MSG:+ }$*"; break ;;
       *)         CH_MSG="$CH_MSG${CH_MSG:+ }$1"; shift ;;
     esac
   done
-  [ -n "$CH_SLUG" ] || die "--chat 은 --slug <영문-kebab> 이 필요하다 — 파일 이름과 락의 단위다"
+  [ -n "$CH_SLUG" ] || die "--chat needs --slug <english-kebab> — it names the file and the lock"
   # 🔴 동작을 안 밝히면 **추측하지 않고 멈춘다.** 예전에는 옵션이 없으면 같은 슬러그의 최신
   #    문서를 자동으로 이어받았고, 그래서 새 스킬 호출이 지난 대화에 조용히 붙었다.
-  [ -n "$CH_ACTION" ] || die "--chat: 동작이 모호하다 — --start 인지 --resume-stamp 인지 밝혀라.
-  · 이번 스킬 호출의 **첫 턴**  → --start            (대화키는 이 스크립트가 발급한다)
-  · 같은 호출의 **다음 턴**     → --resume-stamp <직전 턴 stdout 의 '대화키'>
-  같은 슬러그라도 새 스킬 호출이면 --start 다. 그게 대화를 호출 단위로 나누는 유일한 신호다."
+  [ -n "$CH_ACTION" ] || die "--chat: ambiguous action — say --start or --resume-stamp.
+  · **first turn** of this skill call  → --start            (this script issues the conversation key)
+  · **next turn** of the same call     → --resume-stamp <conversation key from the stdout of the previous turn>
+  Even with the same slug, a new skill call is --start. That is the only signal that splits conversations per call."
   for s in "$CH_RESUME_STAMP" "$CH_CLOSE_STAMP"; do
     case "$s" in
       "") ;;
       [0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-      *)  die "대화키 형식이 틀렸다: $s   (ymd_His, 예: 260822_213131)" ;;
+      *)  die "bad conversation key format: $s   (ymd_His, e.g. 260822_213131)" ;;
     esac
   done
   # 🔴 소문자만 받는다 (2026-08-22, Codex 지적). 대문자를 허용하면 Windows 에서는 `Foo` 와 `foo`
   #    가 같은 파일이고 Linux 에서는 다른 파일이라, 5대에 배포된 이 스킬에서 같은 슬러그가
   #    머신마다 다른 대화를 가리키게 된다. 문서도 처음부터 kebab-case 를 요구하고 있었다.
   case "$CH_SLUG" in
-    *[!a-z0-9-]*) die "슬러그는 **소문자** 영문·숫자·하이픈만 쓴다: $CH_SLUG
-  (대문자를 허용하면 Windows/Linux 에서 같은 슬러그가 다른 파일을 가리킨다)" ;;
+    *[!a-z0-9-]*) die "a slug uses only **lowercase** letters, digits and hyphens: $CH_SLUG
+  (with uppercase allowed, the same slug would point to different files on Windows and Linux)" ;;
   esac
   if [ "$CH_ACTION" = close ]; then
-    [ -z "$CH_MSG" ] || die "--close-stamp 는 대화를 닫기만 한다 — 던질 말을 함께 주지 마라"
-    [ -z "$CH_LOOK_SPECS" ] || die "--close-stamp 는 codex 를 부르지 않는다 — --look 을 함께 주지 마라"
+    [ -z "$CH_MSG" ] || die "--close-stamp only closes the conversation — do not pass a message with it"
+    [ -z "$CH_LOOK_SPECS" ] || die "--close-stamp does not call codex — do not pass --look with it"
   else
-    [ -n "$CH_MSG" ] || die "--chat: Codex 에게 던질 말이 없다"
+    [ -n "$CH_MSG" ] || die "--chat: no message for Codex"
   fi
   # 실행 전 확인은 핑퐁의 첫 턴에만 받는다
   [ "$CH_ACTION" = start ] && confirm_gate
@@ -287,7 +287,7 @@ if [ "${1:-}" = "--chat" ]; then
   #    🔴 존재하지 않는 파일은 **조용히 빼지 않고 멈춘다.** 빼면 Codex 는 근거 없이 답하는데
   #    호출자는 자료를 준 줄 안다. 조용한 실패가 이 스킬에서 가장 나쁜 양식이다.
   CH_LOOK_MAX="${CR_CHAT_LOOK_MAX:-65536}"
-  case "$CH_LOOK_MAX" in ''|*[!0-9]*) die "CR_CHAT_LOOK_MAX 는 바이트 단위 정수여야 한다: $CH_LOOK_MAX" ;; esac
+  case "$CH_LOOK_MAX" in ''|*[!0-9]*) die "CR_CHAT_LOOK_MAX must be an integer number of bytes: $CH_LOOK_MAX" ;; esac
 
   if [ -n "$CH_LOOK_SPECS" ]; then
     while IFS= read -r spec; do
@@ -303,35 +303,35 @@ if [ "${1:-}" = "--chat" ]; then
             *) lk_from="$lk_f"; lk_to="$lk_t"; lk_path="${spec%:*}" ;;
           esac ;;
       esac
-      [ -n "$lk_path" ] || die "--look 경로가 비었다: $spec"
+      [ -n "$lk_path" ] || die "--look path is empty: $spec"
 
-      [ -e "$lk_path" ] || die "--look 이 지목한 것이 없다: $lk_path
-  (경로는 **이 명령을 부르는 위치** 기준이다. 오타이거나 다른 폴더에서 부르고 있다)"
-      [ -d "$lk_path" ] && die "--look 에 디렉토리는 못 준다: $lk_path
-  통째로 실으면 핑퐁이 아니라 조사가 된다. 볼 파일을 지목해라."
-      [ -f "$lk_path" ] || die "--look 대상이 일반 파일이 아니다: $lk_path"
-      [ -r "$lk_path" ] || die "--look 대상을 읽을 수 없다(권한): $lk_path"
-      [ -s "$lk_path" ] || die "--look 대상이 빈 파일이다: $lk_path"
+      [ -e "$lk_path" ] || die "--look target does not exist: $lk_path
+  (paths are relative to **where this command is called from**. A typo, or it is being called from another folder)"
+      [ -d "$lk_path" ] && die "--look does not accept a directory: $lk_path
+  Sending a whole tree turns ping-pong into an investigation. Name the files to look at."
+      [ -f "$lk_path" ] || die "--look target is not a regular file: $lk_path"
+      [ -r "$lk_path" ] || die "--look target is not readable (permissions): $lk_path"
+      [ -s "$lk_path" ] || die "--look target is an empty file: $lk_path"
       grep -Iq . -- "$lk_path" 2>/dev/null \
-        || die "--look 대상이 바이너리다: $lk_path   (텍스트 파일만 실을 수 있다)"
+        || die "--look target is binary: $lk_path   (only text files can be sent)"
 
       if [ -n "$lk_from" ]; then
-        [ "$lk_from" -ge 1 ] 2>/dev/null || die "--look 라인 범위의 시작은 1 이상이어야 한다: $spec"
-        [ "$lk_to" -ge "$lk_from" ] 2>/dev/null || die "--look 라인 범위가 거꾸로다: $spec"
+        [ "$lk_from" -ge 1 ] 2>/dev/null || die "--look line range must start at 1 or more: $spec"
+        [ "$lk_to" -ge "$lk_from" ] 2>/dev/null || die "--look line range is reversed: $spec"
       fi
 
       # 절대경로로 굳힌다 (cd 이후에도 유효하게).
       case "$lk_path" in
         /*|[A-Za-z]:[/\\]*) lk_abs="$lk_path" ;;
         *) lk_dir=$(cd -- "$(dirname -- "$lk_path")" 2>/dev/null && pwd) \
-             || die "--look 경로를 해석하지 못했다: $lk_path"
+             || die "cannot resolve the --look path: $lk_path"
            lk_abs="$lk_dir/$(basename -- "$lk_path")" ;;
       esac
 
       # 실을 크기를 미리 잰다 — 상한을 넘으면 codex 를 부르기 전에 멈춘다.
       if [ -n "$lk_from" ]; then
         lk_bytes=$(sed -n "${lk_from},${lk_to}p" -- "$lk_abs" 2>/dev/null | wc -c)
-        [ "${lk_bytes:-0}" -gt 0 ] || die "--look 라인 범위에 내용이 없다: $spec   (파일이 그보다 짧다)"
+        [ "${lk_bytes:-0}" -gt 0 ] || die "--look line range is empty: $spec   (the file is shorter)"
         lk_name="$lk_path (${lk_from}-${lk_to}행)"
       else
         lk_bytes=$(wc -c < "$lk_abs" 2>/dev/null)
@@ -345,13 +345,13 @@ $CH_LOOK_SPECS
 EOF
 
     if [ "$CH_LOOK_BYTES" -gt "$CH_LOOK_MAX" ]; then
-      die "--look 자료가 너무 크다: ${CH_LOOK_BYTES}B (상한 ${CH_LOOK_MAX}B)
+      die "--look material is too large: ${CH_LOOK_BYTES}B (limit ${CH_LOOK_MAX}B)
 
-  실측(2026-08-25): 56KB 인라인은 12초에 답이 왔다. 그보다 크면 핑퐁의 크기가 아니다.
-   · 라인 범위로 좁혀라  → --look <경로>:<시작>-<끝>
-   · 파일 수를 줄여라
-   · 정말 통째로 봐야 하면 CHAT 이 아니라 **CONSULT**(요청서 방식)다.
-  상한은 CR_CHAT_LOOK_MAX 로 조정한다(바이트)."
+  Measured (2026-08-25): 56 KB inline got an answer in 12 s. Anything larger is not ping-pong size.
+   · narrow it with a line range  → --look <path>:<start>-<end>
+   · send fewer files
+   · if it really must be read whole, it is **CONSULT** (request file), not CHAT.
+  Adjust the limit with CR_CHAT_LOOK_MAX (bytes)."
     fi
   fi
 
@@ -374,20 +374,20 @@ EOF
     #    `/f/...` 라 형식이 섞이는데(2026-08-22 실측), 그대로 두면 아래 상대경로 출력
     #    (`${CH_DOC#"$CH_ROOT"/}`)과 `winp` 변환이 어긋난다. 이동 자체도 필요하다 —
     #    resume 호출은 `-C` 없이 **cwd 에 의존**하기 때문이다(아래 codex 호출부 참조).
-    cd "$CH_ROOT" || die "프로젝트 루트로 이동하지 못했다: $CH_ROOT"
+    cd "$CH_ROOT" || die "cannot cd to the project root: $CH_ROOT"
     CH_ROOT="$PWD"
   else
     # 레포 밖이다. 여기서는 이어받기가 성립하지 않으므로 **조용히 넘어가지 않는다** —
     # 조용한 실패가 위 사고의 본질이었다.
     CH_ROOT="$PWD"
-    echo "⚠️ git 레포 밖에서 실행됐다 — 대화는 여기에 쌓인다: $CH_ROOT/docs/codex_rescue"
-    echo "   같은 슬러그라도 **다른 위치에서 부르면 맥락이 이어지지 않는다.**"
+    echo "⚠️ running outside a git repository — the conversation is stored here: $CH_ROOT/docs/codex_rescue"
+    echo "   Even with the same slug, **calling from another location does not continue the context.**"
   fi
   CH_DOCS="$CH_ROOT/docs/codex_rescue"
   CH_LOGD="$CH_DOCS/.log"
   # 이 대화가 어느 머신 것인지. 대화 문서는 git 으로 5대 사이를 오가지만 Codex 세션은 안 따라간다.
   CH_ORIGIN=$(hostname 2>/dev/null || echo unknown)
-  mkdir -p "$CH_LOGD" || die "디렉토리 생성 실패: $CH_LOGD"
+  mkdir -p "$CH_LOGD" || die "cannot create directory: $CH_LOGD"
   # 락 파일이 git 에 노출되지 않게. 기존 파일은 건드리지 않는다.
   [ -f "$CH_LOGD/.gitignore" ] || printf '*\n' > "$CH_LOGD/.gitignore" 2>/dev/null
 
@@ -400,16 +400,16 @@ EOF
   if ! (set -o noclobber; printf 'nonce=%s\npid=%s\nhost=%s\nstarted=%s\n' \
           "$CH_NONCE" "$$" "$(hostname 2>/dev/null || echo unknown)" \
           "$(date "+%Y-%m-%dT%H:%M:%S" 2>/dev/null)" > "$CH_LOCK") 2>/dev/null; then
-    die "같은 대화($CH_SLUG)가 이미 돌고 있다 — 한 세션에 두 턴을 동시에 던지면 응답 순서가 뒤섞인다.
+    die "the same conversation ($CH_SLUG) is already running — two turns at once in one session mix up the answer order.
 
   lock: $CH_LOCK
 $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
 
-  위 pid 의 프로세스가 없고 started 가 한참 전이면 비정상 종료로 남은 것이다. 지우고 다시 해라."
+  If the pid above is gone and started is long ago, it was left by an abnormal exit. Delete it and retry."
   fi
 
   CH_TMP=$(mktemp -d "${TMPDIR:-/tmp}/codex-chat.XXXXXX") \
-    || { rm -f -- "$CH_LOCK"; die "임시 디렉토리 생성 실패"; }
+    || { rm -f -- "$CH_LOCK"; die "cannot create temp directory"; }
   # 내가 잡은 락일 때만 푼다 — 위 ABA 방어의 나머지 절반이다.
   ch_unlock() {
     [ -n "${CH_LOCK:-}" ] || return 0
@@ -420,7 +420,7 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
   }
   ch_cleanup() { rm -rf -- "${CH_TMP:-}" 2>/dev/null; ch_unlock; return 0; }
   trap ch_cleanup EXIT
-  trap 'ch_cleanup; echo "codex_rescue: 중단됨(신호 수신)" >&2; exit 130' HUP INT TERM
+  trap 'ch_cleanup; echo "codex_rescue: interrupted (signal received)" >&2; exit 130' HUP INT TERM
   # CHAT 은 `.log/` 에 스탬프 파일을 안 쓴다 — 건너뛸 스탬프는 없고, 자기 잠금만 '다른 실행'에서 뺀다
   cr_cleanup "$CH_DOCS" "" "$(basename -- "$CH_LOCK")"
 
@@ -463,22 +463,22 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
     CH_IF_SLUG=$(sed -n 's/^slug=//p'    "$CH_INFLIGHT" 2>/dev/null | head -1 | tr -d '\r')
     case "$CH_IF_STAMP" in
       [0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-      *) die "귀속할 수 없는 in-flight 마커다(구형이거나 손상됨): $CH_INFLIGHT
-  어느 대화가 끊겼는지 알 수 없어 **아무 문서도 건드리지 않았다.** 내용을 확인하고 지워라." ;;
+      *) die "in-flight marker cannot be attributed (old format or damaged): $CH_INFLIGHT
+  It is unknown which conversation broke, so **no document was touched.** Check the contents and delete it." ;;
     esac
     [ "$CH_IF_SLUG" = "$CH_SLUG" ] \
-      || die "in-flight 마커의 slug 가 다르다: '$CH_IF_SLUG' ≠ '$CH_SLUG' ($CH_INFLIGHT)"
+      || die "in-flight marker slug differs: '$CH_IF_SLUG' ≠ '$CH_SLUG' ($CH_INFLIGHT)"
     CH_IF_DOC="$CH_DOCS/${CH_IF_STAMP}_chat_${CH_IF_SLUG}.md"
     if [ -f "$CH_IF_DOC" ]; then
       ch_discard_thread "$CH_IF_DOC" \
         "지난 실행이 codex 호출과 기록 사이에서 강제 종료됐다(마커: ${CH_IF_WHEN:-시각 불명})." \
-        && echo "⚠️ 지난 실행이 중간에 죽어 있었다 — 그 대화($CH_IF_STAMP)의 스레드를 폐기했다." \
-        || die "지난 실행의 스레드를 폐기하지 못했다: $CH_IF_DOC
-  그대로 두면 어긋난 세션을 재개한다. 손으로 thread_id 를 비우고 다시 해라."
+        && echo "⚠️ the previous run had died midway — discarded the thread of that conversation ($CH_IF_STAMP)." \
+        || die "could not discard the thread of the previous run: $CH_IF_DOC
+  Left as is, the mismatched session would be resumed. Clear thread_id by hand and retry."
     else
       # 첫 턴이 문서 생성 전에 죽은 경우다. 닫을 문서가 없다 — 과거 대화는 건드리지 않는다.
       # orphan Codex 세션이 남을 수는 있지만, 멀쩡한 과거 기록을 깨뜨리는 것보다 낫다.
-      echo "⚠️ 지난 실행은 첫 턴을 기록하기 전에 죽었다($CH_IF_STAMP). 과거 문서는 건드리지 않는다."
+      echo "⚠️ the previous run died before recording its first turn ($CH_IF_STAMP). Earlier documents are left untouched."
     fi
     rm -f -- "$CH_INFLIGHT" 2>/dev/null
   fi
@@ -489,33 +489,33 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
   }
 
   if [ "$CH_ACTION" = start ]; then
-    CH_STAMP=$(date "+%y%m%d_%H%M%S") || die "스탬프 생성 실패"
+    CH_STAMP=$(date "+%y%m%d_%H%M%S") || die "cannot create a stamp"
     # 같은 초에 두 번 시작하면 기존 문서에 조용히 append 된다. 덮지 말고 실패시킨다.
     for f in "$CH_DOCS/${CH_STAMP}_chat_"*.md; do
-      [ -e "$f" ] && die "대화키가 겹친다: $CH_STAMP — 1초 뒤에 다시 해라"
+      [ -e "$f" ] && die "conversation key collision: $CH_STAMP — retry in a second"
     done
     CH_DOC="$CH_DOCS/${CH_STAMP}_chat_${CH_SLUG}.md"
     CH_THREAD=""
   else
     # resume · close 공통. 🔴 대상이 없으면 **만들지 않고 멈춘다** — 조용한 새 대화가
     #    이번 사고의 본질이었고, 잘못된 resume 은 기록과 답변을 동시에 오염시킨다.
-    [ -z "$CH_SUBJECT" ] || die "--subject 는 --start 에서만 쓴다 (제목은 문서가 이미 갖고 있다)"
+    [ -z "$CH_SUBJECT" ] || die "--subject is only for --start (the document already has a title)"
     CH_STAMP="${CH_RESUME_STAMP:-$CH_CLOSE_STAMP}"
     CH_DOC="$CH_DOCS/${CH_STAMP}_chat_${CH_SLUG}.md"
-    [ -f "$CH_DOC" ] || die "그 대화가 없다: ${CH_STAMP}_chat_${CH_SLUG}.md
-  새 문서를 만들지 않았다. 새 대화를 원하면 --start 를 써라."
-    [ "$(ch_fm "$CH_DOC" stamp)" = "$CH_STAMP" ] || die "파일명과 frontmatter 의 stamp 가 어긋난다: $CH_DOC"
-    [ "$(ch_fm "$CH_DOC" slug)"  = "$CH_SLUG"  ] || die "파일명과 frontmatter 의 slug 가 어긋난다: $CH_DOC"
+    [ -f "$CH_DOC" ] || die "no such conversation: ${CH_STAMP}_chat_${CH_SLUG}.md
+  No new document was created. For a new conversation use --start."
+    [ "$(ch_fm "$CH_DOC" stamp)" = "$CH_STAMP" ] || die "file name and frontmatter stamp differ: $CH_DOC"
+    [ "$(ch_fm "$CH_DOC" slug)"  = "$CH_SLUG"  ] || die "file name and frontmatter slug differ: $CH_DOC"
 
     # 🔴 다른 머신의 대화는 **중단**한다 (2026-08-22 개정). 예전에는 경고 후 새 대화로
     #    바꿨는데, 그건 호출자가 요청한 것과 다른 동작이라 조용한 분리와 같다.
     CH_DOC_ORIGIN=$(ch_fm "$CH_DOC" origin)
     if [ -n "$CH_DOC_ORIGIN" ] && [ "$CH_DOC_ORIGIN" != "$CH_ORIGIN" ]; then
-      die "이 대화는 다른 머신($CH_DOC_ORIGIN)에서 시작됐다 — 여기($CH_ORIGIN)선 이어받을 수 없다.
-  Codex 세션 저장소는 머신마다 따로다. 조용히 새 대화로 바꾸지 않았다 — 새로 하려면 --start 를 써라."
+      die "this conversation started on another machine ($CH_DOC_ORIGIN) — it cannot be continued here ($CH_ORIGIN).
+  Codex keeps sessions per machine. It was not silently switched to a new conversation — use --start for a new one."
     fi
     [ -n "$CH_DOC_ORIGIN" ] \
-      || echo "⚠️ origin 이 없는 구형 문서다 — 머신 일치를 확인할 수 없지만 요청한 그 문서만 재개한다."
+      || echo "⚠️ old document without origin — the machine cannot be checked, but only the requested document is resumed."
     CH_THREAD=$(ch_fm "$CH_DOC" thread_id)
   fi
 
@@ -523,11 +523,11 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
   #    `--new` 를 대신한다. 예전 `--new` 는 "새로 시작"과 "옛 문서 닫기"를 한 동작에 묶었고,
   #    닫을 대상을 glob 으로 추측해서 **잘못 고른 문서를 영구히 닫을** 수 있었다.
   if [ "$CH_ACTION" = close ]; then
-    [ -n "$CH_THREAD" ] || die "이미 닫힌 대화다: ${CH_STAMP}_chat_${CH_SLUG}.md"
+    [ -n "$CH_THREAD" ] || die "conversation already closed: ${CH_STAMP}_chat_${CH_SLUG}.md"
     sed -i "1,/^---$/ s|^thread_id:.*|thread_id:|" "$CH_DOC" \
-      || die "대화를 닫지 못했다: $CH_DOC (파일 권한을 확인해라)"
+      || die "could not close the conversation: $CH_DOC (check file permissions)"
     # 정말 비었는지 되읽어 확인한다. 실패를 성공으로 보고하지 않기 위해서다.
-    [ -z "$(ch_fm "$CH_DOC" thread_id)" ] || die "thread_id 가 지워지지 않았다: $CH_DOC"
+    [ -z "$(ch_fm "$CH_DOC" thread_id)" ] || die "thread_id was not cleared: $CH_DOC"
     {
       echo
       # 제목 문구는 확장 패널의 파서가 그대로 매칭한다(`⏹ 새 대화로 전환`). 바꾸지 마라.
@@ -536,15 +536,15 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
       echo '`--close-stamp` 로 이 대화를 닫았다. 다음 대화는 `--start` 로 새로 시작한다.'
     } >> "$CH_DOC" 2>/dev/null
     echo "── codex_rescue CHAT ──────────────────────────────────"
-    echo "대화를 닫았다: ${CH_DOC#"$CH_ROOT"/}"
+    echo "conversation closed: ${CH_DOC#"$CH_ROOT"/}"
     exit 0
   fi
 
   # 🔴 재개인데 스레드가 비어 있으면 **같은 파일에 새 스레드를 섞지 않는다.**
   if [ "$CH_ACTION" = resume ] && [ -z "$CH_THREAD" ]; then
-    die "이 대화는 닫혔거나 끊겼다: ${CH_STAMP}_chat_${CH_SLUG}.md
-  (문서의 thread_id 가 비어 있다 — 실패로 폐기됐거나 --close-stamp 로 닫았다)
-  같은 파일에 새 스레드를 섞지 않았다. 이어서 하려면 --start 로 새 대화를 시작해라."
+    die "this conversation is closed or broken: ${CH_STAMP}_chat_${CH_SLUG}.md
+  (the document thread_id is empty — discarded after a failure, or closed with --close-stamp)
+  No new thread was mixed into the same file. To go on, start a new conversation with --start."
   fi
 
   CH_LAST="$CH_TMP/last.md"
@@ -605,22 +605,22 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
   #    잘리면 스레드까지 폐기되어 그 턴이 통째로 손실이다. 그 조용한 실패를 만들지 않으려고
   #    상한을 **함께 명시**하게 강제한다 — EDIT 게이트와 같은 "두 번의 의식적 선택" 구조다.
   if [ "$CH_EXPLORE" = 1 ] && [ -z "${CR_CHAT_LIMIT:-}" ]; then
-    die "--explore 는 시간 상한을 **함께 명시**해야 한다.
+    die "--explore needs a time limit **stated with it**.
 
-  기본 상한 60초로는 탐색이 잘리고, 잘리면 스레드까지 폐기된다(턴이 통째로 손실).
-  실측(2026-08-25): 대상을 지목하지 않은 질문에 탐색을 열면 **명령 105회 · 240초 초과**다.
+  The default 60 s limit cuts exploration short, and a cut discards the thread too (the whole turn is lost).
+  Measured (2026-08-25): opening exploration for a question with no named target means **105 commands · over 240 s**.
 
-  먼저 이걸 의심해라 — 대개 --explore 가 아니라 **지목이 빠진 것**이 문제다:
-     --look <경로>              그 파일을 스크립트가 실어 보낸다 (실측 8~12초, 답도 가장 정확)
-     --look <경로>:<시작>-<끝>   일부만
+  Suspect this first — usually the problem is not --explore but **a missing target**:
+     --look <path>              the script sends that file (measured 8–12 s, and the most accurate answer)
+     --look <path>:<start>-<end>   only part of it
 
-  그래도 Codex 가 직접 훑어야 하면 상한을 대고 불러라:
+  If Codex still has to scan by itself, call it with a limit:
      CR_CHAT_LIMIT=180 bash \"\$0\" --chat ... --explore ...
-  (그 시간만큼 핑퐁이 멈춘다. 정말 그래야 하는지 한 번 더 생각해라 — 대개 CONSULT 감이다.)"
+  (ping-pong stalls for that long. Think once more whether it must — usually it is a CONSULT job.)"
   fi
   CH_LIMIT="${CR_CHAT_LIMIT:-60}"
   case "$CH_LIMIT" in
-    ''|*[!0-9]*) die "CR_CHAT_LIMIT 은 초 단위 정수여야 한다: $CH_LIMIT" ;;
+    ''|*[!0-9]*) die "CR_CHAT_LIMIT must be an integer number of seconds: $CH_LIMIT" ;;
   esac
 
   # 🔴 프롬프트는 **stdin 으로 넘긴다** (2026-08-25 개정).
@@ -635,10 +635,10 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
   {
     printf '%s\n' "$CH_MSG"
     if [ -n "$CH_LOOK_LIST" ]; then
-      printf '\n아래는 네가 살펴볼 자료다. 내가 직접 실어 보낸 것이다.\n'
+      printf '\nBelow is material for you to look at. I sent it inline myself.\n'
       while IFS="$CH_US" read -r lk_abs lk_from lk_to lk_name; do
         [ -n "$lk_abs" ] || continue
-        printf '\n===== 자료: %s =====\n' "$lk_name"
+        printf '\n===== material: %s =====\n' "$lk_name"
         if [ -n "$lk_from" ]; then
           sed -n "${lk_from},${lk_to}p" -- "$lk_abs"
         else
@@ -647,45 +647,46 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
       done <<EOF
 $CH_LOOK_LIST
 EOF
-      printf '\n===== 자료 끝 =====\n'
+      printf '\n===== end of material =====\n'
     fi
     # 🔴 `[ -n "$x" ] && printf` 를 쓰지 마라 — 조건이 거짓이면 **블록 전체가 exit 1 이 되어**
     #    아래 `|| die "프롬프트 조립 실패"` 가 걸린다(2026-08-25 실측으로 잡은 버그).
     #    `if ... fi` 는 조건이 거짓이고 else 가 없으면 0 을 반환한다.
     if [ "$CH_EXPLORE" = 1 ]; then
       if [ -n "$CH_LOOK_LIST" ]; then
-        printf '\n(위 자료를 먼저 보고, 그것으로 부족할 때만 다른 파일을 찾아봐라.)\n'
+        printf '\n(Read the material above first; look for other files only if it is not enough.)\n'
       else
-        printf '\n(필요하면 파일을 찾아봐도 된다. 다만 대상을 좁혀서 봐라 — 트리 전체를 훑지 마라.)\n'
+        printf '\n(You may look up files if needed, but keep the target narrow — do not scan the whole tree.)\n'
       fi
     elif [ -n "$CH_LOOK_LIST" ]; then
-      printf '\n(위 자료와 이 대화에 주어진 것만으로 답해라. 파일이나 디렉토리를 직접 읽지 마라.)\n'
+      printf '\n(Answer only from the material above and what this conversation gives you. Do not read files or directories yourself.)\n'
     else
-      printf '\n(파일이나 디렉토리를 읽지 마라. 지금 이 대화에 주어진 것만으로 답해라.)\n'
+      printf '\n(Do not read files or directories. Answer only from what this conversation gives you.)\n'
     fi
-  } > "$CH_PROMPT" || die "프롬프트 조립 실패: $CH_PROMPT"
+    printf '(Answer in the language of the question at the top.)\n'
+  } > "$CH_PROMPT" || die "cannot assemble the prompt: $CH_PROMPT"
 
   # PROMPT 자리에 `-` 를 둔다. 실제 내용은 아래 실행부에서 stdin 리다이렉션으로 들어간다.
   set -- "$@" -
 
   if [ -n "${CR_DRYRUN:-}" ]; then
     echo "── CHAT dry-run ──"
-    echo "슬러그 : $CH_SLUG"
-    echo "동작   : $CH_ACTION   ·   대화키: $CH_STAMP"
-    echo "이어받기: ${CH_THREAD:-(새 스레드)}"
-    echo "기록   : ${CH_DOC#"$CH_ROOT"/}"
+    echo "slug   : $CH_SLUG"
+    echo "action : $CH_ACTION   ·   conversation key: $CH_STAMP"
+    echo "resume : ${CH_THREAD:-(new thread)}"
+    echo "record : ${CH_DOC#"$CH_ROOT"/}"
     if [ -n "$CH_LOOK_LIST" ]; then
-      echo "자료   : ${CH_LOOK_BYTES}B / 상한 ${CH_LOOK_MAX}B"
+      echo "material: ${CH_LOOK_BYTES}B / limit ${CH_LOOK_MAX}B"
       while IFS="$CH_US" read -r _a _f _t lk_name; do
         [ -n "$lk_name" ] && echo "         · $lk_name"
       done <<EOF
 $CH_LOOK_LIST
 EOF
     fi
-    echo "탐색   : $([ "$CH_EXPLORE" = 1 ] && echo '개방(--explore)' || echo '차단')"
-    echo "상한   : ${CH_LIMIT}초"
-    printf '명령   :'; printf ' %q' "$@"; printf '\n'
-    echo "── 프롬프트(stdin) ──"
+    echo "explore: $([ "$CH_EXPLORE" = 1 ] && echo 'open (--explore)' || echo 'blocked')"
+    echo "limit  : ${CH_LIMIT} s"
+    printf 'command:'; printf ' %q' "$@"; printf '\n'
+    echo "── prompt (stdin) ──"
     cat "$CH_PROMPT"
     exit 0
   fi
@@ -780,43 +781,43 @@ EOF
     # 이미 끝난 일을 "죽은 실행"으로 또 처리한다.
     rm -f -- "$CH_INFLIGHT" 2>/dev/null
     if [ "$CH_TIMEDOUT" = 1 ]; then
-      echo "⏱ ${CH_LIMIT}초를 넘겨 중단했다 — 핑퐁이 아니라 조사가 되고 있었다."
+      echo "⏱ stopped after exceeding ${CH_LIMIT} s — this was turning into an investigation, not ping-pong."
       echo
-      echo "   실측(2026-08-25)으로 원인은 거의 정해져 있다. **탐색을 켜서가 아니라"
-      echo "   대상을 지목하지 않아서**다:"
-      echo "     · 탐색 개방 + 가벼운 질문         =   7초 · 명령   0회"
-      echo "     · 탐색 개방 + 파일명을 지목한 질문 =  25초 · 명령   1회"
-      echo "     · 자료 인라인 13KB / 56KB         = 8초 / 12초 · 명령 0회"
-      echo "     · 탐색 개방 + 대상 없는 넓은 질문  = 240초 초과 · 명령 105회  ← 지금 이것"
+      echo "   Measurements (2026-08-25) nearly settle the cause. **Not because exploration was on,"
+      echo "   but because no target was named**:"
+      echo "     · exploration + light question            =   7 s · 0 commands"
+      echo "     · exploration + question naming a file    =  25 s · 1 command"
+      echo "     · inline material 13 KB / 56 KB          = 8 s / 12 s · 0 commands"
+      echo "     · exploration + broad untargeted question = over 240 s · 105 commands  ← this one"
       echo
-      echo "   순서대로 시도해라:"
-      echo "   ① **볼 것을 지목해라** — 첫 처방이다. 가장 빠르고 답도 가장 정확하다."
-      echo "        --look <경로>              그 파일을 스크립트가 실어 보낸다"
-      echo "        --look <경로>:<시작>-<끝>   일부만 (여러 번 쓸 수 있다)"
-      echo "   ② 질문을 하나로 쪼개라 — 한 번에 하나만 묻는 것이 핑퐁이다."
-      echo "   ③ 어디를 볼지 **Claude 도 모르는** 질문이면 그건 CHAT 이 아니라 **CONSULT** 다."
-      echo "        (요청서 방식. 오래 걸려도 백그라운드라 대화가 막히지 않는다)"
+      echo "   Try in this order:"
+      echo "   ① **Name what to look at** — the first remedy. Fastest, and the most accurate answer."
+      echo "        --look <path>              the script sends that file"
+      echo "        --look <path>:<start>-<end>   only part of it (repeatable)"
+      echo "   ② Split the question — ping-pong asks one thing at a time."
+      echo "   ③ If **even Claude does not know** where to look, it is **CONSULT**, not CHAT."
+      echo "        (a request file; it runs in the background, so a long run does not block the conversation)"
       echo
-      echo "   Codex 가 직접 훑는 것이 정말 필요하면 상한을 함께 대라:"
-      echo "     CR_CHAT_LIMIT=180 ... --explore     (그 시간만큼 핑퐁이 멈춘다)"
+      echo "   If Codex really has to scan by itself, give a limit with it:"
+      echo "     CR_CHAT_LIMIT=180 ... --explore     (ping-pong stalls for that long)"
       echo
     fi
-    echo "🔴 코덱스 턴이 실패했다 (codex exit: $CH_RC, 응답 $([ -s "$CH_LAST" ] && echo '일부 있음' || echo '없음'))"
+    echo "🔴 the Codex turn failed (codex exit: $CH_RC, answer $([ -s "$CH_LAST" ] && echo 'partial' || echo 'none'))"
     echo
     if [ -s "$CH_LAST" ]; then
-      echo "--- 받은 출력(신뢰할 수 없다 — 종료 코드가 0이 아니다) ---"
+      echo "--- received output (not trustworthy — the exit code is not 0) ---"
       cat "$CH_LAST"
       echo
     fi
-    echo "--- stderr 마지막 20줄 ---"
+    echo "--- last 20 lines of stderr ---"
     tail -20 "$CH_ERR" 2>/dev/null
     echo "-------------------------"
-    echo "실패한 턴은 대화 문서에 기록하지 않았다 — 온전하지 않은 턴이 다음 턴의 맥락을 오염시킨다."
+    echo "The failed turn was not recorded in the conversation document — a broken turn would pollute the context of the next turn."
     if [ -f "$CH_DOC" ] && [ "$CH_DISCARDED" = 1 ]; then
-      echo "스레드를 폐기했다: 같은 슬러그로 다시 물으면 새 대화로 시작한다."
+      echo "Thread discarded: asking again with the same slug starts a new conversation."
     elif [ -f "$CH_DOC" ]; then
-      echo "🔴 스레드 폐기에 **실패했다** — $CH_DOC 의 thread_id 가 그대로다."
-      echo "   그대로 두면 다음 턴이 어긋난 세션을 재개한다. --close-stamp 로 닫거나 손으로 thread_id 를 비워라."
+      echo "🔴 discarding the thread **failed** — thread_id in $CH_DOC is unchanged."
+      echo "   Left as is, the next turn resumes a mismatched session. Close it with --close-stamp or clear thread_id by hand."
     fi
     exit 1
   fi
@@ -842,7 +843,7 @@ EOF
       echo '> 짧은 턴으로 주고받은 대화 기록이다. 이 문서는 `send.sh` 가 쓴다.'
       echo '> Codex 는 read-only 로 돌았다 — 첫 턴은 `-s read-only`, 이어받기는'
       echo '> `-c sandbox_mode=read-only`(resume 은 첫 턴 설정을 상속하지 않는다. 2026-08-22 실측).'
-    } > "$CH_DOC" || die "대화 문서 생성 실패: $CH_DOC"
+    } > "$CH_DOC" || die "cannot create the conversation document: $CH_DOC"
     CH_TURN=1
   else
     # 🔴 턴 수는 **대화 본문이 흉내낼 수 없는 마커**로 센다 (2026-08-22, Codex 지적).
@@ -879,7 +880,7 @@ EOF
     echo
     cat "$CH_LAST"
     echo
-  } >> "$CH_DOC" || die "대화 문서 기록 실패: $CH_DOC"
+  } >> "$CH_DOC" || die "cannot write to the conversation document: $CH_DOC"
 
   # 🔴 턴이 문서에 안전하게 들어갔다 — 취약 구간이 닫혔으므로 마커를 내린다.
   #    이 줄이 in-flight 복구의 마지막 조각이다. 여기 도달하지 못하고 죽으면 마커가 남고,
@@ -894,19 +895,19 @@ EOF
   fi
 
   echo "── codex_rescue CHAT ──────────────────────────────────"
-  echo "슬러그: $CH_SLUG   ·   ${CH_TURN}턴   ·   codex exit: $CH_RC"
+  echo "slug: $CH_SLUG   ·   turn ${CH_TURN}   ·   codex exit: $CH_RC"
   # 🔴 다음 턴이 이 값을 그대로 `--resume-stamp` 로 넘긴다. 형식을 바꾸지 마라 — 호출자가
   #    읽는 계약이다. 이 줄이 없으면 이어서 말할 방법이 없다.
-  echo "대화키: $CH_STAMP        ← 같은 호출의 다음 턴: --resume-stamp $CH_STAMP"
-  echo "기록  : ${CH_DOC#"$CH_ROOT"/}"
-  echo "스레드: ${CH_THREAD:-(미확인)}"
+  echo "conversation key: $CH_STAMP   ← next turn of the same call: --resume-stamp $CH_STAMP"
+  echo "record: ${CH_DOC#"$CH_ROOT"/}"
+  echo "thread: ${CH_THREAD:-(unknown)}"
   echo
-  echo "↓ 코덱스 답변 원문. 사용자에게 '코덱스:' 를 달아 **그대로** 전해라 — 요약·윤색 금지."
+  echo "↓ Codex answer, verbatim. Relay it to the user **as is**, prefixed with the Codex label from references/chat.md — no summarizing or polishing."
   echo "───────────────────────────────────────────────────────"
   cat "$CH_LAST"
   echo
   echo "───────────────────────────────────────────────────────"
-  [ -z "$CH_THREAD" ] && echo "⚠️ thread_id 를 잡지 못했다 — 다음 턴은 맥락 없이 새로 시작된다"
+  [ -z "$CH_THREAD" ] && echo "⚠️ thread_id was not captured — the next turn starts fresh without context"
   exit 0
 fi
 
@@ -935,60 +936,60 @@ if [ "${1:-}" = "--followup" ]; then
   #    라서 길고 개행이 있다. 요청서를 파일로 주는 것과 같은 이유다.
   KIND=followup; shift
   FUP="${1:-}"
-  [ -n "$FUP" ] || die "사용법: send.sh --followup <반박서 경로>
-  반박서는 docs/codex_rescue/<원건스탬프>_followup<N>_<슬러그>.md 다.
-  🔴 원 요청서 경로가 아니다 — 그걸 넘기면 1턴이 통째로 다시 돈다."
-  [ $# -le 1 ] || die "--followup 은 반박서 경로 **하나만** 받는다.
-  되묻는 말은 반박서 파일 안에 써라 (인자로 넘기면 따옴표·개행이 깨진다)."
-  [ -f "$FUP" ] || die "반박서 파일이 없다: $FUP"
-  FUP_ABS="$(cd "$(dirname "$FUP")" && pwd)/$(basename "$FUP")" || die "반박서 경로 해석 실패"
+  [ -n "$FUP" ] || die "usage: send.sh --followup <follow-up file path>
+  The follow-up file is docs/codex_rescue/<original stamp>_followup<N>_<slug>.md.
+  🔴 Not the original request path — passing that reruns turn 1 entirely."
+  [ $# -le 1 ] || die "--followup takes **exactly one** follow-up file path.
+  Write the follow-up inside the follow-up file (as an argument, quotes and newlines break)."
+  [ -f "$FUP" ] || die "follow-up file not found: $FUP"
+  FUP_ABS="$(cd "$(dirname "$FUP")" && pwd)/$(basename "$FUP")" || die "cannot resolve the follow-up path"
   case "$FUP_ABS" in
     */docs/codex_rescue/*) ROOT="${FUP_ABS%/docs/codex_rescue/*}" ;;
-    *) die "반박서는 docs/codex_rescue/ 아래에 있어야 한다: $FUP
-  (원 건의 요청서·응답 문서와 같은 디렉토리여야 스탬프 짝이 성립한다)" ;;
+    *) die "the follow-up file must be under docs/codex_rescue/: $FUP
+  (it must share the directory of the original request and response for the stamps to pair)" ;;
   esac
 
 elif [ "${1:-}" = "--review" ]; then
   KIND=review; shift
   while [ $# -gt 0 ]; do
     case "$1" in
-      --slug)        [ -n "${2:-}" ] || die "--slug 값이 없다";   SLUG="$2";      shift 2 ;;
-      --base)        [ -n "${2:-}" ] || die "--base 값이 없다";   SCOPE=base;   SCOPE_VAL="$2"; shift 2 ;;
-      --commit)      [ -n "${2:-}" ] || die "--commit 값이 없다"; SCOPE=commit; SCOPE_VAL="$2"; shift 2 ;;
-      --title)       [ -n "${2:-}" ] || die "--title 값이 없다";  TITLE="$2";     shift 2 ;;
-      --subject)     [ -n "${2:-}" ] || die "--subject 값이 없다"; SUBJECT="$2";  shift 2 ;;
+      --slug)        [ -n "${2:-}" ] || die "--slug needs a value";   SLUG="$2";      shift 2 ;;
+      --base)        [ -n "${2:-}" ] || die "--base needs a value";   SCOPE=base;   SCOPE_VAL="$2"; shift 2 ;;
+      --commit)      [ -n "${2:-}" ] || die "--commit needs a value"; SCOPE=commit; SCOPE_VAL="$2"; shift 2 ;;
+      --title)       [ -n "${2:-}" ] || die "--title needs a value";  TITLE="$2";     shift 2 ;;
+      --subject)     [ -n "${2:-}" ] || die "--subject needs a value"; SUBJECT="$2";  shift 2 ;;
       --uncommitted) SCOPE=uncommitted; shift ;;
       --)            shift; FOCUS="$FOCUS${FOCUS:+ }$*"; break ;;
       *)             FOCUS="$FOCUS${FOCUS:+ }$1"; shift ;;
     esac
   done
-  [ -n "$SLUG" ] || die "리뷰는 --slug <영문-kebab-슬러그> 가 필요하다 (응답 파일명에 쓴다)"
+  [ -n "$SLUG" ] || die "a review needs --slug <english-kebab-slug> (used in the response file name)"
   case "$SLUG" in
-    *[!a-zA-Z0-9-]*) die "슬러그는 영문·숫자·하이픈만 쓴다: $SLUG" ;;
+    *[!a-zA-Z0-9-]*) die "a slug uses only letters, digits and hyphens: $SLUG" ;;
   esac
   ROOT="$PWD"
 else
   REQ="${1:-}"
-  [ -n "$REQ" ] || die "사용법: send.sh <request 파일 경로>
-      또는: send.sh --review --slug <슬러그> [--subject \"<한 줄>\"] [--uncommitted|--base <브랜치>|--commit <SHA>] [집중지시]
-      또는: send.sh --followup <반박서 경로>          ← CONSULT 2턴 이후 (되묻기)"
-  [ -f "$REQ" ] || die "요청서 파일이 없다: $REQ"
-  REQ_ABS="$(cd "$(dirname "$REQ")" && pwd)/$(basename "$REQ")" || die "요청서 경로 해석 실패"
+  [ -n "$REQ" ] || die "usage: send.sh <request file path>
+         or: send.sh --review --slug <slug> [--subject \"<one line>\"] [--uncommitted|--base <branch>|--commit <SHA>] [focus]
+         or: send.sh --followup <follow-up file path>   ← CONSULT turn 2 and later (follow-up)"
+  [ -f "$REQ" ] || die "request file not found: $REQ"
+  REQ_ABS="$(cd "$(dirname "$REQ")" && pwd)/$(basename "$REQ")" || die "cannot resolve the request path"
   case "$REQ_ABS" in
     */docs/codex_rescue/*) ROOT="${REQ_ABS%/docs/codex_rescue/*}" ;;
     *)                     ROOT="$PWD" ;;
   esac
 fi
-cd "$ROOT" || die "루트로 이동 실패: $ROOT"
+cd "$ROOT" || die "cannot cd to the root: $ROOT"
 
 if [ "$KIND" = review ]; then
   # ── 리뷰: 요청서가 없다. 대상은 git diff 다 ──────────────────
   MODE=review
-  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "여기는 git 레포가 아니다: $ROOT
-  코드 리뷰는 git diff 를 대상으로 하므로 git 레포에서만 된다.
-  막힌 문제를 물어보려면 요청서 방식(--review 없이)을 써라."
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git repository: $ROOT
+  Code review works on git diff, so only in a git repository.
+  To ask about a stuck problem, use a request file (without --review)."
 
-  STAMP=$(date "+%y%m%d_%H%M%S") || die "스탬프 생성 실패"
+  STAMP=$(date "+%y%m%d_%H%M%S") || die "cannot create a stamp"
   RESP_REL="docs/codex_rescue/${STAMP}_review_${SLUG}.md"
 
   # 스코프 자동 판정 — 플러그인(codex-plugin-cc)의 auto 규칙과 같은 기준으로 맞췄다.
@@ -1003,11 +1004,11 @@ if [ "$KIND" = review ]; then
           git show-ref --verify --quiet "refs/heads/$c" && { BB="$c"; break; }
         done
       fi
-      [ -n "$BB" ] || die "커밋 안 된 변경이 없고 기본 브랜치도 못 찾았다.
-  --base <브랜치> 나 --commit <SHA> 로 리뷰 대상을 명시해라."
+      [ -n "$BB" ] || die "no uncommitted changes, and the default branch was not found.
+  Name the review target with --base <branch> or --commit <SHA>."
       CUR=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-      [ "$CUR" != "$BB" ] || die "리뷰할 변경이 없다 — 현재 브랜치가 기본 브랜치($BB)이고 커밋 안 된 변경도 없다.
-  특정 커밋을 보려면 --commit <SHA>, 다른 기준이면 --base <브랜치> 를 써라."
+      [ "$CUR" != "$BB" ] || die "nothing to review — the current branch is the default branch ($BB) and there are no uncommitted changes.
+  For a specific commit use --commit <SHA>; against another base use --base <branch>."
       SCOPE=base; SCOPE_VAL="$BB"
     fi
   fi
@@ -1037,8 +1038,8 @@ if [ "$KIND" = review ]; then
     ROOT_FOR_REQ=$(winp "$ROOT") || exit 2
     REQ="docs/codex_rescue/${STAMP}_request_${SLUG}.md"
     RESP="docs/codex_rescue/${STAMP}_response_${SLUG}.md"
-    mkdir -p -- docs/codex_rescue || die "요청서 디렉토리를 만들 수 없다: docs/codex_rescue"
-    [ -e "$REQ" ] && die "같은 스탬프의 요청서가 이미 있다: $REQ (1초 뒤 다시 실행해라)"
+    mkdir -p -- docs/codex_rescue || die "cannot create the request directory: docs/codex_rescue"
+    [ -e "$REQ" ] && die "a request with the same stamp already exists: $REQ (retry in a second)"
     {
       echo '---'
       echo 'type: codex_request'
@@ -1071,7 +1072,7 @@ if [ "$KIND" = review ]; then
       echo '## 응답 저장 위치'
       echo
       echo "    $RESP"
-    } > "$REQ" || die "리뷰 요청서를 만들 수 없다: $REQ"
+    } > "$REQ" || die "cannot create the review request: $REQ"
     REQ_ABS="$ROOT/$REQ"
     RESP_REL="$RESP"          # `_review_` 가 아니라 `_response_` 규약 — 되묻기가 이 이름을 요구한다
     REVIEW_REQ_AUTO=1
@@ -1081,49 +1082,49 @@ if [ "$KIND" = review ]; then
 elif [ "$KIND" = followup ]; then
   # ── FOLLOWUP 검증 — 대화의 생명줄을 확인한다 ──────────────────
   MODE=followup
-  fm_ok "$FUP_ABS" || die "반박서 frontmatter 가 깨졌다(첫 줄 '---' 또는 닫는 '---' 없음): $FUP_ABS"
+  fm_ok "$FUP_ABS" || die "follow-up frontmatter is broken (no '---' first line or no closing '---'): $FUP_ABS"
 
   # 🔴 양방향 잠금 ①: followup 파일은 --followup 로만 들어온다.
   #    이 검사가 없으면 반박서를 요청서로 실행할 수 있고, response_path 가 같으므로
   #    **Codex 가 1턴 원문과 Claude 검토가 담긴 응답 문서를 통째로 덮어쓴다.**
   [ "$(fmf "$FUP_ABS" type)" = "codex_followup" ] \
-    || die "이 파일은 반박서가 아니다(type: codex_followup 이 아니다): $FUP_ABS"
+    || die "this is not a follow-up file (type is not codex_followup): $FUP_ABS"
   [ "$(fmf "$FUP_ABS" mode)" = "followup" ] \
-    || die "반박서의 mode 는 followup 이어야 한다: $FUP_ABS
-  🔴 mode: edit 인 반박서는 받지 않는다 — followup 은 read-only 고정이다(EDIT 게이트 무결성)."
+    || die "the follow-up file mode must be followup: $FUP_ABS
+  🔴 a follow-up file with mode: edit is refused — followup is fixed to read-only (EDIT gate integrity)."
 
   STAMP=$(fmf "$FUP_ABS" stamp)
   SLUG=$(fmf "$FUP_ABS" slug)
   FUP_TURN=$(fmf "$FUP_ABS" turn)
   RESP=$(fmf "$FUP_ABS" response_path)
   [ -n "$STAMP" ] && [ -n "$SLUG" ] && [ -n "$FUP_TURN" ] && [ -n "$RESP" ] \
-    || die "반박서 frontmatter 에 stamp·slug·turn·response_path 가 모두 있어야 한다: $FUP_ABS"
+    || die "the follow-up frontmatter needs all of stamp, slug, turn and response_path: $FUP_ABS"
   case "$STAMP" in
     [0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-    *) die "stamp 형식이 틀렸다: $STAMP (ymd_His)" ;;
+    *) die "bad stamp format: $STAMP (ymd_His)" ;;
   esac
-  case "$FUP_TURN" in ''|*[!0-9]*) die "turn 은 정수여야 한다: $FUP_TURN" ;; esac
-  [ "$FUP_TURN" -ge 2 ] || die "turn 은 2 이상이다 (1턴은 CONSULT 요청서로 돈다): $FUP_TURN"
+  case "$FUP_TURN" in ''|*[!0-9]*) die "turn must be an integer: $FUP_TURN" ;; esac
+  [ "$FUP_TURN" -ge 2 ] || die "turn must be 2 or more (turn 1 runs from the CONSULT request): $FUP_TURN"
 
   # 파일명과 frontmatter 를 대조한다 — 한쪽만 고친 반박서를 걸러낸다.
   EXPECT_FUP="${STAMP}_followup${FUP_TURN}_${SLUG}.md"
-  [ "$(basename "$FUP_ABS")" = "$EXPECT_FUP" ] || die "반박서 파일명이 규약과 다르다.
-  기대: $EXPECT_FUP
-  실제: $(basename "$FUP_ABS")"
+  [ "$(basename "$FUP_ABS")" = "$EXPECT_FUP" ] || die "the follow-up file name breaks the convention.
+  expected: $EXPECT_FUP
+  actual:   $(basename "$FUP_ABS")"
 
   # 🔴 응답 경로는 원 건 것과 **완전히 같아야** 한다. 감시 제외 대상이므로 검증 없이 신뢰하면
   #    "정상 산출물 제외"가 곧 감시 우회가 된다 (1턴 CONSULT 와 같은 이유).
   RESP_REL=${RESP#./}
   EXPECT="docs/codex_rescue/${STAMP}_response_${SLUG}.md"
-  [ "$RESP_REL" = "$EXPECT" ] || die "response_path 가 규약과 다르다.
-  기대: $EXPECT
-  실제: $RESP"
+  [ "$RESP_REL" = "$EXPECT" ] || die "response_path breaks the convention.
+  expected: $EXPECT
+  actual:   $RESP"
 
   # 원 요청서 — 있어야 한다. 확장 카드의 근거이자 1턴의 정본이다.
   PARENT_REQ="docs/codex_rescue/${STAMP}_request_${SLUG}.md"
-  [ -f "$PARENT_REQ" ] || die "원 요청서가 없다: $PARENT_REQ
-  followup 은 1턴이 실제로 돈 건에만 붙는다."
-  fm_ok "$PARENT_REQ" || die "원 요청서 frontmatter 가 깨졌다: $PARENT_REQ"
+  [ -f "$PARENT_REQ" ] || die "original request not found: $PARENT_REQ
+  A followup attaches only to a case whose turn 1 actually ran."
+  fm_ok "$PARENT_REQ" || die "original request frontmatter is broken: $PARENT_REQ"
   PARENT_MODE=$(fmf "$PARENT_REQ" mode); [ -n "$PARENT_MODE" ] || PARENT_MODE=readonly
   SUBJECT=$(fmf "$PARENT_REQ" subject)   # 카드 제목은 원 건 것을 그대로 이어 쓴다
 
@@ -1137,78 +1138,78 @@ elif [ "$KIND" = followup ]; then
   case "$FUP_EDIT_RAW" in
     ''|no|false) FUP_EDIT=0 ;;
     yes|true)    FUP_EDIT=1 ;;
-    *) die "반박서의 edit 값이 이상하다: '$FUP_EDIT_RAW' (yes 또는 생략)" ;;
+    *) die "invalid edit value in the follow-up file: '$FUP_EDIT_RAW' (yes, or leave it out)" ;;
   esac
   if [ "$FUP_EDIT" = 1 ]; then
-    [ "$PARENT_MODE" = edit ] || die "edit: yes 는 EDIT 건의 되묻기에서만 쓸 수 있다 — 원 요청서 mode: $PARENT_MODE
-  CONSULT·REVIEW 결과를 받고 코드를 고치게 하려면 새 EDIT 요청서를 써라."
-    [ -n "${CR_ALLOW_EDIT:-}" ] || die "EDIT 되묻기(${FUP_TURN}턴)는 기본 차단이다 — Codex 가 코드를 이어서 고치는 경로다.
+    [ "$PARENT_MODE" = edit ] || die "edit: yes is only for follow-ups of an EDIT case — original request mode: $PARENT_MODE
+  To have code fixed after a CONSULT or REVIEW result, write a new EDIT request."
+    [ -n "${CR_ALLOW_EDIT:-}" ] || die "an EDIT follow-up (turn ${FUP_TURN}) is blocked by default — it is the path where Codex keeps editing code.
 
-  반박서: $FUP
+  follow-up: $FUP
 
-  🔴 Claude 가 할 일 — 실행하지 말고 먼저 사용자에게 확인받아라:
-     \"Codex 가 같은 대화를 이어 코드를 추가로 고칩니다. 커밋 안 한 작업이 있으면 먼저 커밋하시길 권합니다. 진행할까요?\"
+  🔴 What Claude does — do not run; first get the user to confirm:
+     \"Codex will continue the same conversation and edit more code. If you have uncommitted work, committing it first is recommended. Go ahead?\" (ask in the language of the user)
 
-  승인을 받은 뒤에만 아래처럼 다시 실행한다:
+  Only after approval, run it again like this:
      CR_ALLOW_EDIT=1 bash \"\$0\" --followup \"$FUP\"
 
-  (1턴 승인은 이 턴에 이어지지 않는다. 턴마다 묻는다.)"
+  (approval for turn 1 does not carry over to this turn. Ask every turn.)"
     EDITLOG_REL="docs/codex_rescue/${STAMP}_edit${FUP_TURN}_${SLUG}.md"
-    [ -e "$EDITLOG_REL" ] && die "이 턴의 수정 기록 파일이 이미 있다: $EDITLOG_REL
-  같은 턴을 다시 돌리려는 것이면 무엇이 남았는지 먼저 확인해라 (지난 실행이 코드를 반쯤 고쳤을 수 있다)."
+    [ -e "$EDITLOG_REL" ] && die "the edit log for this turn already exists: $EDITLOG_REL
+  If this reruns the same turn, first check what is left (the last run may have half-edited the code)."
   fi
 
   # ── 응답 문서 = 대화의 생명줄 ────────────────────────────────
-  [ -f "$RESP_REL" ] || die "1턴 응답 문서가 없다: $RESP_REL
-  이어붙일 대화가 없다 — CONSULT 1턴부터 다시 해라."
-  fm_ok "$RESP_REL" || die "응답 문서 frontmatter 가 깨졌다: $RESP_REL
-  🔴 thread_id 를 안전하게 읽을 수 없어 **아무것도 하지 않았다.** 손으로 확인해라."
+  [ -f "$RESP_REL" ] || die "turn-1 response document not found: $RESP_REL
+  No conversation to continue — start again from CONSULT turn 1."
+  fm_ok "$RESP_REL" || die "response document frontmatter is broken: $RESP_REL
+  🔴 thread_id cannot be read safely, so **nothing was done.** Check it by hand."
 
   THREAD=$(fmf "$RESP_REL" thread_id)
-  [ -n "$THREAD" ] || die "이 건은 이어받을 수 없다: $RESP_REL 의 thread_id 가 비어 있다.
-  다음 중 하나다:
-   ① 1턴이 thread_id 를 심기 전 버전으로 돌았다 (구형 응답 문서)
-   ② 지난 followup 이 실패해 스레드가 폐기됐다 (문서에 '⚠️ 스레드 끊김' 이 있는지 봐라)
-   ③ 강제 종료된 실행을 다음 실행이 복구하며 폐기했다
-  🔴 같은 문서에 새 스레드를 섞지 않았다. 이어서 물으려면 CONSULT 1턴부터 새로 해라."
+  [ -n "$THREAD" ] || die "this case cannot be continued: thread_id in $RESP_REL is empty.
+  One of these:
+   ① turn 1 ran on a version before thread_id was recorded (old response document)
+   ② the last followup failed and the thread was discarded (look for '⚠️ 스레드 끊김' in the document)
+   ③ the next run discarded it while recovering from a killed run
+  🔴 No new thread was mixed into the same document. To ask further, start over from CONSULT turn 1."
 
   # 🔴 머신 대조 — Codex 세션 저장소는 머신마다 따로인데 docs/ 는 git 으로 5대를 오간다.
   #    CHAT 과 같은 이유이고, 같은 이유로 **조용히 새 대화로 바꾸지 않고 중단**한다.
   RESP_DOC_ORIGIN=$(fmf "$RESP_REL" origin)
   MY_ORIGIN=$(hostname 2>/dev/null || echo unknown)
   if [ -n "$RESP_DOC_ORIGIN" ] && [ "$RESP_DOC_ORIGIN" != "$MY_ORIGIN" ]; then
-    die "이 건은 다른 머신($RESP_DOC_ORIGIN)에서 시작됐다 — 여기($MY_ORIGIN)선 이어받을 수 없다.
-  Codex 세션 저장소는 머신마다 따로다. 그 머신에서 이어가거나, 여기서 새 CONSULT 를 시작해라."
+    die "this case started on another machine ($RESP_DOC_ORIGIN) — it cannot be continued here ($MY_ORIGIN).
+  Codex keeps sessions per machine. Continue on that machine, or start a new CONSULT here."
   fi
   [ -n "$RESP_DOC_ORIGIN" ] \
-    || echo "⚠️ origin 이 없는 구형 응답 문서다 — 머신 일치를 확인할 수 없다. resume 이 실패하면 그 이유일 수 있다."
+    || echo "⚠️ old response document without origin — the machine cannot be checked. If resume fails, this may be why."
 
   # 🔴 턴 번호는 **문서가 권위**다. Claude 가 세는 것을 믿지 않는다.
   PREV_TURNS=$(fmf "$RESP_REL" turns); PREV_TURNS=${PREV_TURNS:-1}
-  case "$PREV_TURNS" in ''|*[!0-9]*) die "응답 문서의 turns 가 정수가 아니다: '$PREV_TURNS' ($RESP_REL)" ;; esac
-  [ "$FUP_TURN" -eq $((PREV_TURNS + 1)) ] || die "턴 번호가 어긋난다.
-  응답 문서에 쌓인 턴: $PREV_TURNS  →  이번 반박서는 turn: $((PREV_TURNS + 1)) 이어야 한다
-  반박서가 주장하는 turn: $FUP_TURN
-  (건너뛰거나 되돌아가면 대화 기록과 Codex 세션의 맥락이 어긋난다)"
+  case "$PREV_TURNS" in ''|*[!0-9]*) die "turns in the response document is not an integer: '$PREV_TURNS' ($RESP_REL)" ;; esac
+  [ "$FUP_TURN" -eq $((PREV_TURNS + 1)) ] || die "turn number mismatch.
+  turns in the response document: $PREV_TURNS  →  this follow-up must be turn: $((PREV_TURNS + 1))
+  turn claimed by the follow-up: $FUP_TURN
+  (skipping or going back puts the conversation record and the Codex session out of step)"
 
   # ── 턴 상한 = 11 (2026-08-25 사용자 결정) ────────────────────
   #    근거: 사용자가 Codex 와 직접 대화해 결론에 도달한 세션의 **실측 사용자 턴 수가 11회**였다.
   #    같은 장애를 CONSULT(1턴 단발)로는 3회 물어도 결론이 안 났다. 그 실측을 상한으로 삼는다.
   CONSULT_MAX="${CR_CONSULT_MAX_TURN:-11}"
   case "$CONSULT_MAX" in
-    ''|*[!0-9]*) die "CR_CONSULT_MAX_TURN 은 정수여야 한다: $CONSULT_MAX" ;;
+    ''|*[!0-9]*) die "CR_CONSULT_MAX_TURN must be an integer: $CONSULT_MAX" ;;
   esac
-  [ "$FUP_TURN" -le "$CONSULT_MAX" ] || die "턴 상한($CONSULT_MAX)을 넘었다 — ${FUP_TURN}턴은 돌리지 않는다.
-  🔴 여기까지 왔는데 완료 게이트가 안 채워졌다면 **Codex 를 더 부를 문제가 아니다.**
-     남은 게이트 항목과 마지막 턴까지의 대립점을 사용자에게 올리고 판단을 받아라."
+  [ "$FUP_TURN" -le "$CONSULT_MAX" ] || die "turn limit ($CONSULT_MAX) exceeded — turn ${FUP_TURN} is not run.
+  🔴 If the completion gate is still not met at this point, **calling Codex more is not the answer.**
+     Bring the remaining gate items and the disagreements still open at the last turn to the user and get a decision."
 
 else
   # ── frontmatter 파싱 ──────────────────────────────────────────
   # 닫는 `---` 가 있는지 먼저 검증한다. 없으면 sed 범위가 EOF 까지 늘어나 **본문의 `mode:` 같은
   # 줄을 값으로 읽는다.** 경계가 깨진 문서는 조용히 잘못 읽지 않고 거부한다(fail-closed).
-  head -1 "$REQ_ABS" | grep -qx -- '---' || die "요청서 첫 줄이 '---' 가 아니다: $REQ_ABS"
+  head -1 "$REQ_ABS" | grep -qx -- '---' || die "the first line of the request is not '---': $REQ_ABS"
   awk 'NR>1 && /^---$/{found=1; exit} END{exit !found}' "$REQ_ABS" \
-    || die "요청서 frontmatter 의 닫는 '---' 가 없다: $REQ_ABS"
+    || die "the request frontmatter has no closing '---': $REQ_ABS"
 
   # `q` 는 단일 주소만 받으므로 `1,/^---$/!q` 로는 못 쓴다 — 범위 + s///p 로만 짠다.
   fm() { sed -n "1,/^---$/ s/^$1:[[:space:]]*//p" "$REQ_ABS" | head -1; }
@@ -1218,9 +1219,9 @@ else
   RESP=$(fm response_path)
   SUBJECT=$(fm subject)   # 없어도 된다 — 구형 요청서는 카드에 slug 로 남는다
 
-  [ -n "$STAMP" ] || die "frontmatter 에 stamp 가 없다"
-  [ -n "$SLUG" ]  || die "frontmatter 에 slug 가 없다"
-  [ -n "$RESP" ]  || die "frontmatter 에 response_path 가 없다"
+  [ -n "$STAMP" ] || die "no stamp in the frontmatter"
+  [ -n "$SLUG" ]  || die "no slug in the frontmatter"
+  [ -n "$RESP" ]  || die "no response_path in the frontmatter"
   [ -n "$MODE" ]  || MODE=readonly
 
   # ── 🔴 양방향 잠금 ② — 반박서가 요청서 경로로 들어오는 것을 막는다 (2026-08-25) ──
@@ -1231,22 +1232,22 @@ else
   #    N턴 대화가 한 번에 날아가는 경로다 — 실측으로 구멍을 확인하고 막았다.
   REQ_TYPE=$(fm type)
   case "$REQ_TYPE" in
-    codex_followup) die "이건 반박서다. 요청서 경로로 실행하지 마라: $REQ
-  🔴 이대로 돌면 Codex 가 **1턴 원문과 Claude 검토가 담긴 응답 문서를 덮어쓴다.**
-     ($RESP — 반박서와 원 요청서는 같은 응답 문서를 가리킨다)
+    codex_followup) die "this is a follow-up file. Do not run it through the request path: $REQ
+  🔴 Run like this, Codex would **overwrite the response document holding the turn-1 text and the Claude review.**
+     ($RESP — the follow-up and the original request point to the same response document)
 
-  되묻기는 이렇게 한다:
+  Follow up like this:
      bash \"\$0\" --followup $REQ" ;;
   esac
   case "$MODE" in
-    followup) die "mode: followup 은 요청서로 실행할 수 없다: $REQ
-  🔴 위와 같은 이유다 — \`--followup\` 으로 불러라." ;;
+    followup) die "mode: followup cannot run as a request: $REQ
+  🔴 Same reason as above — call it with \`--followup\`." ;;
     readonly|edit) ;;
     # 끼어들기 리뷰가 자동으로 만든 요청서를 다시 돌리는 경우(RESUME)다. 대상이 git diff 라 레포여야 한다.
     review)
-      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "리뷰 요청서는 git 레포에서만 돈다: $ROOT" ;;
-    *) die "요청서의 mode 가 알 수 없는 값이다: '$MODE' ($REQ)
-  readonly · edit · review 중 하나여야 한다." ;;
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "a review request runs only in a git repository: $ROOT" ;;
+    *) die "unknown mode in the request: '$MODE' ($REQ)
+  It must be one of readonly, edit, review." ;;
   esac
 
   # ── 🔴 EDIT 게이트 — 기본 차단 (2026-08-17 사용자 결정) ────────
@@ -1259,19 +1260,19 @@ else
   # → 이제 스크립트가 막는다. Claude 가 규칙을 잊어도 여기서 멈춘다.
   #   환경변수를 붙이는 행위 자체가 "의식적 선택"이 되고, 실수로 만든 edit 요청서는 실행되지 않는다.
   if [ "$MODE" = "edit" ] && [ -z "${CR_ALLOW_EDIT:-}" ]; then
-    die "EDIT 모드는 기본 차단이다 — Codex 가 코드를 직접 고치는 경로다.
+    die "EDIT mode is blocked by default — it is the path where Codex edits code directly.
 
-  요청서: $REQ
-  모드  : edit
+  request: $REQ
+  mode   : edit
 
-  🔴 Claude 가 할 일 — 실행하지 말고 먼저 사용자에게 확인받아라:
-     \"Codex 가 직접 코드를 고칩니다. 제가 모르는 변경이 생겨 맥락이 끊깁니다.
-      커밋 안 한 작업이 있으면 먼저 커밋하시길 권합니다. 진행할까요?\"
+  🔴 What Claude does — do not run; first get the user to confirm:
+     \"Codex will edit the code directly. Changes I do not know about will appear and break my context.
+      If you have uncommitted work, committing it first is recommended. Go ahead?\" (ask in the language of the user)
 
-  승인을 받은 뒤에만 아래처럼 다시 실행한다:
+  Only after approval, run it again like this:
      CR_ALLOW_EDIT=1 bash \"\$0\" \"$REQ\"
 
-  (승인 없이 이 환경변수를 붙이지 마라. 그러면 게이트를 만든 의미가 없다.)"
+  (never add this variable without approval — that would defeat the gate.)"
   fi
 
   # ── response_path 검증 ────────────────────────────────────────
@@ -1280,14 +1281,14 @@ else
   #    그래서 규약 이름과 **정확히 일치**할 때만 통과시킨다.
   RESP_REL=${RESP#./}
   EXPECT="docs/codex_rescue/${STAMP}_response_${SLUG}.md"
-  [ "$RESP_REL" = "$EXPECT" ] || die "response_path 가 규약과 다르다.
-  기대: $EXPECT
-  실제: $RESP
-  (스탬프·슬러그가 요청서와 짝을 이루어야 하고, 루트 기준 상대경로여야 한다)"
+  [ "$RESP_REL" = "$EXPECT" ] || die "response_path breaks the convention.
+  expected: $EXPECT
+  actual:   $RESP
+  (stamp and slug must pair with the request, and the path must be relative to the root)"
 fi
 
 LOGD="docs/codex_rescue/.log"
-mkdir -p -- "$LOGD" "$(dirname -- "$RESP_REL")" || die "로그/응답 디렉토리를 만들 수 없다"
+mkdir -p -- "$LOGD" "$(dirname -- "$RESP_REL")" || die "cannot create the log/response directories"
 
 # 🔴 원시 실행 기록이 실수로 커밋되는 것을 막는다 (2026-08-19).
 # `.log/` 에는 명령 출력 전문·MCP 인자/결과·에이전트 메시지가 그대로 담긴다(실측: 한 실행의
@@ -1313,7 +1314,7 @@ mkdir -p -- "$LOGD" "$(dirname -- "$RESP_REL")" || die "로그/응답 디렉토�
 #    그대로 둔다. `.log/` 를 "비권위 telemetry" 로 못박은 것과 같은 이유다 — 피감시자가 쓸 수 있는
 #    곳에 감시 기준을 두면 안 된다.
 SCRATCH_REL="docs/codex_rescue/.scratch"
-mkdir -p -- "$SCRATCH_REL" || die "scratch 디렉토리를 만들 수 없다: $SCRATCH_REL"
+mkdir -p -- "$SCRATCH_REL" || die "cannot create the scratch directory: $SCRATCH_REL"
 [ -e "$SCRATCH_REL/.gitignore" ] || printf '# codex_rescue scratch — Codex 가 조사 중 만든 임시 산출물.\n# 판단 근거로 남기되 커밋하지는 않는다.\n# 요청/응답 .md 는 한 단계 위에 있고 그건 커밋 대상이다.\n*\n' > "$SCRATCH_REL/.gitignore" 2>/dev/null
 
 # ── 🔴 동시 실행 차단 (2026-08-17) ─────────────────────────────
@@ -1326,15 +1327,15 @@ mkdir -p -- "$SCRATCH_REL" || die "scratch 디렉토리를 만들 수 없다: $S
 # 응답 파일 존재 검사만으로는 로그 충돌을 못 막으므로 lock 으로 통째 직렬화한다.
 LOCK="$LOGD/.${STAMP}.lock"
 if ! (set -o noclobber; : > "$LOCK") 2>/dev/null; then
-  die "같은 스탬프($STAMP)가 이미 실행 중이다 — 동시 실행은 응답·로그를 덮어쓴다.
+  die "the same stamp ($STAMP) is already running — concurrent runs overwrite the response and logs.
 
   lock: $LOCK
 
-  이 중 하나다:
-   ① 정말 지금 돌고 있다   → 끝날 때까지 기다려라
-   ② 비정상 종료로 남았다   → lock 파일을 지우고 다시 실행해라
+  One of these:
+   ① it really is running now      → wait until it ends
+   ② left over from an abnormal exit → delete the lock file and run again
 
-  판별: lock 의 mtime 을 봐라. 몇 분 이상 지났고 codex 프로세스가 없으면 ②다."
+  To tell: look at the mtime of the lock. If it is minutes old and no codex process exists, it is ②."
 fi
 
 # ── 🔴 in-flight 복구 — FOLLOWUP 전용 (CHAT 과 같은 이유) ────────
@@ -1348,8 +1349,8 @@ if [ "$KIND" = followup ] && [ -f "$INFLIGHT" ]; then
   IF_WHEN=$(sed -n 's/^started=//p' "$INFLIGHT" 2>/dev/null | head -1)
   IF_TURN=$(sed -n 's/^turn=//p'    "$INFLIGHT" 2>/dev/null | head -1 | tr -d '\r')
   IF_RESP=$(sed -n 's/^resp=//p'    "$INFLIGHT" 2>/dev/null | head -1 | tr -d '\r')
-  { [ -n "$IF_RESP" ] && [ -f "$IF_RESP" ]; } || die "귀속할 수 없는 in-flight 마커다: $INFLIGHT
-  어느 문서가 끊겼는지 알 수 없어 **아무것도 건드리지 않았다.** 내용을 확인하고 지워라."
+  { [ -n "$IF_RESP" ] && [ -f "$IF_RESP" ]; } || die "in-flight marker cannot be attributed: $INFLIGHT
+  It is unknown which document broke, so **nothing was touched.** Check the contents and delete it."
   if fm_set "$IF_RESP" thread_id "" && [ -z "$(fmf "$IF_RESP" thread_id)" ]; then
     {
       echo
@@ -1359,10 +1360,10 @@ if [ "$KIND" = followup ] && [ -f "$INFLIGHT" ]; then
       echo "Codex 세션에는 그 턴이 남았는데 이 문서에는 안 남아 맥락이 어긋났다 — 스레드를 폐기했다."
       echo "이 건은 더 이어붙일 수 없다. 새 CONSULT 로 시작해라."
     } >> "$IF_RESP"
-    echo "⚠️ 지난 followup 이 중간에 죽어 있었다 — 스레드를 폐기했다: $IF_RESP"
+    echo "⚠️ the last followup had died midway — thread discarded: $IF_RESP"
   else
-    die "지난 실행의 스레드를 폐기하지 못했다: $IF_RESP
-  그대로 두면 어긋난 세션을 재개한다. 손으로 thread_id 를 비워라."
+    die "could not discard the thread of the previous run: $IF_RESP
+  Left as is, the mismatched session would be resumed. Clear thread_id by hand."
   fi
   rm -f -- "$INFLIGHT" 2>/dev/null
 fi
@@ -1376,7 +1377,7 @@ fi
 #    회수**한다. 같은 요청서를 재실행하면 실제로 재현되는 버그다. run 디렉토리는 매번 새로 만들어지므로
 #    stale 재사용이 원천적으로 불가능하다.
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-rescue-${STAMP}.XXXXXX") \
-  || { rm -f -- "$LOCK"; die "run 디렉토리 생성 실패"; }
+  || { rm -f -- "$LOCK"; die "cannot create the run directory"; }
 
 # 신호를 받으면 정리하고 **즉시 종료**한다. 정리만 하고 계속 진행하면 방금 지운 marker 를
 # 참조해 엉뚱한 곳에서 죽는다(2026-08-17 실측: 외부 timeout 으로 죽였을 때 발생).
@@ -1395,7 +1396,7 @@ trap cleanup EXIT
 # 신호로 죽을 때 status 를 interrupted 로 남긴다 — best effort 다.
 # hard kill(작업관리자 등)은 여기 못 오므로 그건 heartbeat stale 이 담당한다.
 trap '[ -n "${STATUS:-}" ] && write_status interrupted "\"$(date -u "+%Y-%m-%dT%H:%M:%SZ")\"" 2>/dev/null
-      cleanup; echo "codex_rescue: 중단됨(신호 수신)" >&2; exit 130' HUP INT TERM
+      cleanup; echo "codex_rescue: interrupted (signal received)" >&2; exit 130' HUP INT TERM
 cr_cleanup "docs/codex_rescue" "$STAMP"   # 잠금·trap 뒤, 스냅샷 앞 — cr_cleanup 주석 참조
 EVENTS="$RUN_DIR/events.jsonl"
 ERRLOG="$RUN_DIR/stderr.log"
@@ -1479,10 +1480,10 @@ if [ -e "$RESP_REL" ]; then
 fi
 
 if [ -z "${CR_DRYRUN:-}" ]; then
-  SCAN | LC_ALL=C sort > "$BEFORE" || die "실행 전 스냅샷 실패 — 감지 없이 진행하지 않는다"
-  [ -s "$BEFORE" ] || die "실행 전 스냅샷이 비었다 — 스캔이 정상 동작하지 않았다"
+  SCAN | LC_ALL=C sort > "$BEFORE" || die "pre-run snapshot failed — not proceeding without change detection"
+  [ -s "$BEFORE" ] || die "pre-run snapshot is empty — the scan did not work"
   [ "$IS_GIT" = 1 ] && git status --porcelain > "$RUN_DIR/git_before" 2>/dev/null
-  : > "$MARKER" || die "마커 생성 실패 — 감지 기준을 세울 수 없다"
+  : > "$MARKER" || die "cannot create the marker — no baseline for change detection"
 fi
 
 # ── Codex 에 넘기는 경로는 Windows 형식으로 바꾼다 ──────────────
@@ -1512,12 +1513,12 @@ if [ "$KIND" = review ]; then
   #    거기에 우리 서식을 덮어씌우면 오히려 품질이 떨어진다.
   if [ -n "$FOCUS" ]; then
     case "$SCOPE" in
-      uncommitted) SCOPE_HINT="커밋되지 않은 변경(staged·unstaged·untracked)을 리뷰 대상으로 삼아라." ;;
-      base)        SCOPE_HINT="현재 브랜치를 '$SCOPE_VAL' 브랜치와 비교한 변경을 리뷰 대상으로 삼아라." ;;
-      commit)      SCOPE_HINT="커밋 $SCOPE_VAL 이 도입한 변경을 리뷰 대상으로 삼아라." ;;
+      uncommitted) SCOPE_HINT="Review the uncommitted changes (staged, unstaged, untracked)." ;;
+      base)        SCOPE_HINT="Review the changes of the current branch against the '$SCOPE_VAL' branch." ;;
+      commit)      SCOPE_HINT="Review the changes introduced by commit $SCOPE_VAL." ;;
       *)           SCOPE_HINT="" ;;
     esac
-    PROMPT="${SCOPE_HINT}
+    PROMPT="${SCOPE_HINT}${SCOPE_HINT:+ }Answer in the language of the focus instruction below.
 
 ${FOCUS}"
     SCOPE_VIA=prompt
@@ -1534,24 +1535,25 @@ elif [ "$KIND" = followup ]; then
   #    한 줄은 지키고 한 줄은 놓쳐 자격증명 금지 문구가 통째로 날아갔다.
   #    여기서 날아가면 "## Claude 검토 를 읽어라"가 사라진다 — 되묻기의 작동 원리 자체다.
   read -r -d '' PROMPT <<'EOF' || :
-같은 문제를 이어서 논의한다. 앞 턴에서 네가 한 분석에 대해, Claude 가 검토하고 되묻는다.
+This continues the same problem. Claude has reviewed your analysis from the previous turn and is asking back.
 
-반박서: __CR_FUP_W__
-직전까지의 대화 기록(네 원문 + Claude 의 검토): __CR_RESP_W__
+Follow-up file: __CR_FUP_W__
+Conversation so far (your text + Claude's reviews): __CR_RESP_W__
 
-먼저 위 두 파일을 읽어라. 특히 응답 문서의 `## Claude 검토` 섹션들 —
-**네 분석이 어떻게 해석됐는지가 거기 있다.**
+Read both files first — especially the `## Claude 검토` sections of the response document.
+**That is where you see how your analysis was read.**
 
-🔴 반드시 지켜라:
-- **아무 파일도 만들거나 수정하거나 삭제하지 마라. 읽기만 해라.**
-  이번 턴은 read-only 로 돌고 있고, 네 답변은 최종 메시지로 자동 회수된다.
-  응답 문서에 직접 쓰려고 하지 마라 — 스크립트가 대신 이어 붙인다.
-- **Claude 의 해석이 네 뜻과 다르면 그것부터 바로잡아라.** 이 턴의 존재 이유다.
-  "너는 X 라고 읽었지만 나는 Y 를 뜻했다" 를 명시적으로 써라.
-- **기각당한 지적은 근거를 보고 다시 판단해라.** 수용이면 수용이라고, 근거가 틀렸으면
-  왜 틀렸는지 반박해라. 물러서지도, 고집하지도 마라 — 근거로 판단해라.
-- 반박서의 완료 게이트 각 항목에 대해 **충족/미충족을 네가 직접 판정**해라.
-  이 대화는 "더 물을 게 없을 때"가 아니라 **"핵심 증상이 설명됐을 때"** 끝난다.
+🔴 Must follow:
+- **Do not create, modify or delete any file. Only read.**
+  This turn runs read-only, and your answer is collected automatically from your final message.
+  Do not try to write the response document yourself — the script appends it for you.
+- **If Claude's reading differs from what you meant, correct that first.** That is why this turn exists.
+  Say it explicitly: "you read X, but I meant Y".
+- **Re-judge rejected points on their grounds.** If you accept, say so; if the grounds are wrong,
+  explain why. Neither back down nor dig in — decide by the evidence.
+- For each item of the completion gate in the follow-up file, **judge met / not met yourself.**
+  This conversation ends not "when there is nothing more to ask" but **"when the core symptom is explained."**
+- Answer in the language the follow-up file itself is written in (not that of any quoted code or logs).
 EOF
   # ── EDIT 되묻기(`edit: yes`)는 위 read-only 프롬프트를 통째로 갈아끼운다 (2026-09-15) ──
   #    "아무 파일도 고치지 마라"가 남은 채 수정 지시를 덧붙이면 Codex 가 둘 중 하나를 버린다.
@@ -1560,29 +1562,30 @@ EOF
   if [ "$FUP_EDIT" = 1 ]; then
     EDITLOG_W=$(winp "$ROOT/$EDITLOG_REL") || exit 2
     read -r -d '' PROMPT <<'EOF' || :
-같은 건을 이어서 한다. 앞 턴에서 네가 코드를 고쳤고, Claude 가 검토한 뒤 **추가 수정**을 요청한다.
+This continues the same case. You edited code in the previous turn; Claude reviewed it and asks for **further edits**.
 
-반박서: __CR_FUP_W__
-직전까지의 대화 기록(네 원문 + Claude 의 검토): __CR_RESP_W__
+Follow-up file: __CR_FUP_W__
+Conversation so far (your text + Claude's reviews): __CR_RESP_W__
 
-먼저 위 두 파일을 읽어라. 특히 응답 문서의 `## Claude 검토` 섹션들 —
-**네 수정이 어떻게 해석됐는지가 거기 있다.**
+Read both files first — especially the `## Claude 검토` sections of the response document.
+**That is where you see how your edits were read.**
 
-🔴 이번 턴에는 코드를 고친다. 경계는 이렇다:
-- **반박서가 지시한 수정만 해라.** 그 대상 외의 프로덕션 파일은 건드리지 마라.
-- **응답 문서는 직접 쓰지 마라.** 네 최종 메시지를 스크립트가 이어 붙인다.
-- 조사·검증은 자유다 — 디스크 읽기·네트워크 조회·명령 실행을 써라(네트워크는 조회 전용).
-  재현·검증용 임시 파일은 __CR_SCRATCH_REL__/ 안에 만들어라. 거긴 네 작업대다.
-  🔴 **수정 대상 옆에 백업본·테스트 파일을 흩뿌리지 마라** — 전부 무단 변경으로 보고된다.
-- 🔴 **파일을 하나 고칠 때마다 아래 수정 기록 파일에 바로 적어라.** 이 실행은 사용량 한도로 도중에 끊길 수 있다.
-  끝에 한 번만 쓰면 끊겼을 때 무엇을 고쳤는지 아무도 모른다 — 코드는 반쯤 바뀐 채 남는다.
-  수정 전에 그 파일을 만들고 `## 변경한 파일·라인` 을 먼저 적은 뒤, 고칠 때마다 덧붙여라.
-    수정 기록: __CR_EDITLOG_W__
-- **Claude 의 해석이 네 뜻과 다르면 그것부터 바로잡아라.**
-- 확신이 안 서면 **고치지 말고** 왜 확신이 안 서는지 적어라.
-  이 실행에는 승인을 눌러 줄 사람이 없다(approval_policy=never) — "먼저 물어봐"는 성립하지 않는다.
+🔴 This turn edits code. The boundaries:
+- **Make only the edits the follow-up file asks for.** Do not touch production files outside that target.
+- **Do not write the response document yourself.** The script appends your final message.
+- Investigation and verification are free — read the disk, query the network, run commands (network is read-only).
+  Put temporary files for reproduction and verification inside __CR_SCRATCH_REL__/. That is your workbench.
+  🔴 **Do not scatter backups or test files next to the files you edit** — all of them are reported as unauthorized changes.
+- 🔴 **Each time you edit a file, write it down right away in the edit log below.** This run can be cut off midway by the usage limit.
+  Written only once at the end, nobody knows what you changed when it is cut — the code is left half-changed.
+  Create that file before editing, write `## 변경한 파일·라인` first, then append on every edit.
+    Edit log: __CR_EDITLOG_W__
+- **If Claude's reading differs from what you meant, correct that first.**
+- If you are not sure, **do not edit** — write down why you are not sure.
+  Nobody is here to press approve in this run (approval_policy=never) — "ask first" is not possible.
 
-끝나면 최종 메시지로 이 순서대로 보고해라:
+When done, report in your final message in this order, keeping these labels exactly as written and writing the rest
+in the language the follow-up file itself is written in (not that of any quoted code or logs):
 1. 변경한 파일·라인
 2. 무엇을 왜 바꿨나 (before → after)
 3. 빌드·검증 방법과 실제로 돌려 본 결과
@@ -1601,47 +1604,48 @@ elif [ "$MODE" = "review" ]; then
   #    한도로 끊길 때 아무것도 안 남는다. 발견할 때마다 응답 문서에 적게 한다.
   #    경계는 CONSULT 와 같다: 코드 수정 금지, 쓸 곳은 응답 문서와 작업대 두 곳.
   RUBRIC_FILE="$SELF_DIR/prompts/review_rubric.md"
-  [ -s "$RUBRIC_FILE" ] || die "리뷰 기준 파일이 없다: $RUBRIC_FILE
-  스킬을 다시 받아라 (prompts/ 디렉토리가 함께 온다)."
-  RUBRIC=$(cat "$RUBRIC_FILE") || die "리뷰 기준 파일을 읽지 못했다: $RUBRIC_FILE"
+  [ -s "$RUBRIC_FILE" ] || die "review rubric file not found: $RUBRIC_FILE
+  Reinstall the skill (the prompts/ directory comes with it)."
+  RUBRIC=$(cat "$RUBRIC_FILE") || die "cannot read the review rubric file: $RUBRIC_FILE"
   read -r -d '' PROMPT <<'EOF' || :
-아래 요청서 파일을 읽고, 거기 적힌 대상을 코드 리뷰해라.
+Read the request file below and code-review the target it names.
 
-요청서: __CR_REQ_W__
+Request: __CR_REQ_W__
 
-너는 다른 엔지니어가 만든 변경을 보는 **독립 리뷰어**다. 판정 기준은 이 프롬프트 끝의 `Review guidelines` 다.
-요청서의 "확인 명령"으로 변경을 직접 뽑아 보고, 바뀐 코드가 닿는 곳은 원본 파일을 열어 확인해라.
-diff 조각만 보고 판단하지 마라 — 호출하는 쪽·호출되는 쪽을 열어야 "증명 가능한 영향"이 나온다.
+You are an **independent reviewer** of a change another engineer made. The criteria are the `Review guidelines` at the end of this prompt.
+Pull the change yourself with the request's "확인 명령" (check commands), and open the source files the changed code reaches.
+Do not judge from diff fragments alone — "provable impact" needs the callers and callees opened.
 
-🔴 지켜야 할 선은 **하나**다 — 프로덕션 파일을 고치지 마라.
+🔴 There is **one** line to hold — do not modify production files.
 
-- **코드를 고치지 마라.** 너는 지적과 근거만 낸다. 실제 수정은 Claude 가 한다.
-- 네가 쓸 수 있는 곳은 **정확히 두 곳**이다:
-    ① 요청서가 지정한 응답 문서
-    ② __CR_SCRATCH_REL__/    ← 네 작업대다
-  이 둘 밖의 파일은 만들거나 고치거나 지우지 마라. 저장소 상태를 바꾸는 명령도 금지다
-  (git commit·checkout·stash·reset·add, 패키지 설치, 빌드 산출물을 워크스페이스에 남기는 명령).
-- 테스트·재현 스크립트는 작업대에서 돌려도 된다. 지적을 **실행으로 확인**할 수 있으면 확인해라.
-- **네트워크를 써도 된다** — 라이브러리 문서·이슈·릴리스노트 확인용. 단 **조회 전용**이다(POST/PUT·git push·publish 금지).
-  🔴 **자격증명은 읽어도 되지만 값을 옮기지 마라.** `.env` 등의 접속 정보로 DB·서비스에 붙는 것은 허용한다.
-     단 비밀번호·토큰·키 값을 응답 문서·작업대·명령 출력에 남기지 마라(응답 문서는 git 으로 원격까지 올라간다).
-     값을 화면에 찍는 명령(`cat .env` 등)은 쓰지 말고, 불가피하면 마스킹해라.
-- 이 실행에는 승인을 눌러 줄 사람이 없다(approval_policy=never). 막히면 허용된 수단으로 우회하고,
-  그래도 못 본 곳은 **못 봤다고 적어라.** 확인 못 한 것을 확인한 척하지 마라.
+- **Do not edit code.** You give findings and evidence only. Claude does the actual fixing.
+- You may write in **exactly two places**:
+    ① the response document the request names
+    ② __CR_SCRATCH_REL__/    ← your workbench
+  Do not create, modify or delete files outside these two. Commands that change repository state are forbidden too
+  (git commit, checkout, stash, reset, add, package installs, commands that leave build output in the workspace).
+- You may run tests and reproduction scripts on the workbench. If a finding can be **confirmed by running it**, do so.
+- **You may use the network** — to check library docs, issues and release notes. **Read-only** (no POST/PUT, git push, publish).
+  🔴 **You may read credentials, but never copy their values.** Connecting to a DB or service with the settings in `.env` and the like is allowed.
+     But never leave passwords, tokens or key values in the response document, the workbench or command output (the response document goes to a remote via git).
+     Do not use commands that print values (`cat .env` etc.); if unavoidable, mask them.
+- Nobody is here to press approve in this run (approval_policy=never). If blocked, work around it with the allowed means,
+  and whatever you still could not see, **say you could not see it.** Never pretend to have checked what you did not.
 
-- 🔴 **응답 문서는 리뷰를 시작할 때 만들고, 리뷰하면서 채워라.** 이 실행은 사용량 한도로 도중에 끊길 수 있다.
-  끝에 한 번만 쓰면 끊기는 순간 리뷰가 통째로 사라진다.
-  ① 코드를 열기 전에 frontmatter(type: codex_response / mode: review / stamp / slug / author: codex)와
-     `## 0. 리뷰 계획`(바뀐 파일 목록과 어떤 순서로 볼지)을 먼저 저장한다
-  ② 지적을 하나 확정할 때마다 `## 1. 지적` 아래에 바로 덧붙인다. 형식:
-       ### [P0~P3] <80자 이내 제목>
-       - 위치: <파일>:<시작줄>-<끝줄>   (diff 와 겹치는 가장 짧은 범위)
+- 🔴 **Create the response document when you start the review, and fill it as you go.** This run can be cut off midway by the usage limit.
+  Written only once at the end, the whole review vanishes the moment it is cut.
+  ① Before opening any code, save the frontmatter (type: codex_response / mode: review / stamp / slug / author: codex) and
+     `## 0. 리뷰 계획` (the list of changed files and the order you will read them in) first
+  ② Each time a finding is settled, append it right away under `## 1. 지적`. Format:
+       ### [P0~P3] <title within 80 characters>
+       - 위치: <file>:<start line>-<end line>   (the shortest range overlapping the diff)
        - 확신도: <0.0~1.0>
-       <한 문단 — 왜 버그인지, 어떤 입력·환경에서 터지는지, 심각도가 무엇에 달렸는지>
-  ③ 다 본 뒤 맨 마지막에 `## 2. 전체 판정` 을 쓴다 —
-     `patch is correct` 또는 `patch is incorrect` · 1~3문장 근거 · 확신도(0.0~1.0)
-  지적이 없으면 `## 1. 지적` 에 "없음"이라고 적는다. 억지로 만들지 마라.
-- 저장이 실패하면 같은 내용을 최종 메시지로 그대로 출력해라. 자동으로 회수된다.
+       <one paragraph — why it is a bug, which input or environment triggers it, what the severity depends on>
+  ③ After reading everything, write `## 2. 전체 판정` last —
+     `patch is correct` or `patch is incorrect` · 1–3 sentences of grounds · confidence (0.0~1.0)
+  If there are no findings, write "없음" under `## 1. 지적`. Do not invent any.
+- Keep the section headings and field labels above exactly as written; write everything else in the language the request itself is written in (not that of any quoted code or logs).
+- If saving fails, print the same content as your final message. It is collected automatically.
 
 ────────────────────────────────────────────────────────────
 __CR_RUBRIC__
@@ -1656,19 +1660,20 @@ elif [ "$MODE" = "edit" ]; then
   #    "대상 파일 외에는 건드리지 마라" 같은 제약 문장이 조용히 비면 손실이 파일 단위다.
   #    마크다운 한 줄을 더 쓰는 순간 터지는 자리라 미리 막는다.
   read -r -d '' PROMPT <<'EOF' || :
-아래 요청서 파일을 읽고, 그 안에 적힌 지시를 그대로 따라라.
+Read the request file below and follow the instructions in it exactly.
 
-요청서: __CR_REQ_W__
+Request: __CR_REQ_W__
 
-- 요청서에 보고서를 저장할 경로와 파일명이 명시되어 있다. 그 경로에 그 이름 그대로 저장해라.
-- 요청서가 지정한 대상 파일 외에는 건드리지 마라.
-- 단 **조사·검증은 자유다** — 디스크 읽기·네트워크 조회·명령 실행을 써라(네트워크는 조회 전용).
-  재현·검증용 임시 파일은 __CR_SCRATCH_REL__/ 안에 만들어라. 거긴 네 작업대다.
-  🔴 **수정 대상 옆에 백업본·테스트 파일을 흩뿌리지 마라** — 전부 무단 변경으로 보고된다.
-- 저장이 실패하면 같은 내용을 최종 메시지로 그대로 출력해라. 자동으로 회수된다.
-- 🔴 **파일을 하나 고칠 때마다 보고서에 바로 적어라.** 이 실행은 사용량 한도로 도중에 끊길 수 있다.
-  끝에 한 번만 쓰면 끊겼을 때 무엇을 고쳤는지 아무도 모른다 — 코드는 반쯤 바뀐 채 남는다.
-  수정 전에 보고서 frontmatter 와 `## 1. 변경한 파일·라인` 을 먼저 만들고, 고칠 때마다 덧붙여라.
+- The request names the path and file name for your report. Save it at that path under that exact name.
+- Do not touch files other than the targets the request names.
+- But **investigation and verification are free** — read the disk, query the network, run commands (network is read-only).
+  Put temporary files for reproduction and verification inside __CR_SCRATCH_REL__/. That is your workbench.
+  🔴 **Do not scatter backups or test files next to the files you edit** — all of them are reported as unauthorized changes.
+- If saving fails, print the same content as your final message. It is collected automatically.
+- 🔴 **Each time you edit a file, write it down in the report right away.** This run can be cut off midway by the usage limit.
+  Written only once at the end, nobody knows what you changed when it is cut — the code is left half-changed.
+  Before editing, create the report frontmatter and `## 1. 변경한 파일·라인` first, then append on every edit.
+- Keep the section headings the request asks for exactly as written; write everything else in the language the request itself is written in (not that of any quoted code or logs).
 EOF
   PROMPT=${PROMPT//__CR_REQ_W__/"$REQ_W"}
   PROMPT=${PROMPT//__CR_SCRATCH_REL__/"$SCRATCH_REL"}
@@ -1683,57 +1688,58 @@ else
   # 🔴 백틱만 이스케이프하는 방식으로 고치지 마라. 다음에 마크다운을 한 줄 더 쓰는 순간
   #    같은 사고가 다시 난다. **본문은 리터럴로 두고 변수만 아래에서 후주입한다.**
   read -r -d '' PROMPT <<'EOF' || :
-아래 요청서 파일을 읽고, 그 안에 적힌 지시를 그대로 따라라.
+Read the request file below and follow the instructions in it exactly.
 
-요청서: __CR_REQ_W__
+Request: __CR_REQ_W__
 
-너는 이 사건의 **독립 조사자**다. 요청서는 출발점이지 경계가 아니다.
-Claude 는 이미 그 안의 자료로 답을 못 찾았다. 같은 자료를 같은 방식으로 읽으면 같은 결론이 나온다.
+You are the **independent investigator** of this case. The request is a starting point, not a boundary.
+Claude already failed to find the answer with the material in it. Reading the same material the same way gives the same conclusion.
 
-🔴 지켜야 할 선은 **하나**다 — 프로덕션 파일을 고치지 마라.
+🔴 There is **one** line to hold — do not modify production files.
 
-- **코드를 고치지 마라.** 너는 분석·진단과 수정 방법 제시만 한다. 실제 수정은 Claude 가 한다.
-- 네가 쓸 수 있는 곳은 **정확히 두 곳**이다:
-    ① 요청서가 지정한 응답 문서
-    ② __CR_SCRATCH_REL__/    ← 네 작업대다
-  이 둘 밖의 파일은 만들거나 고치거나 지우지 마라. 저장소 상태를 바꾸는 명령도 금지다
-  (git commit·checkout·stash·reset, 패키지 설치, 빌드).
+- **Do not edit code.** You only analyze, diagnose and propose fixes. Claude does the actual fixing.
+- You may write in **exactly two places**:
+    ① the response document the request names
+    ② __CR_SCRATCH_REL__/    ← your workbench
+  Do not create, modify or delete files outside these two. Commands that change repository state are forbidden too
+  (git commit, checkout, stash, reset, package installs, builds).
 
-그 밖의 조사는 **막지 않는다. 끝까지 파라.**
-- **원본을 직접 열어라.** 디스크 어디든 읽어도 된다 — 워크스페이스 밖도 읽기는 허용돼 있다.
-  요청서에 인용된 조각만 믿지 마라. **요약과 원본이 어긋나면 원본이 이긴다.**
-- **계산·정렬·파싱·재집계를 직접 실행해라.** 스크립트를 짜서 돌려도 된다. 수치를 추측하지 말고 뽑아라.
-  그 산출물(스크립트·중간 데이터·메모)은 위 작업대에 **마음껏** 만들어라 — 개수·크기 제한이 없고
-  지우지 않아도 된다. 남겨 두면 Claude 가 네 계산을 재현할 수 있어 오히려 낫다.
-- **네트워크를 써도 된다** — 문서·이슈·릴리스노트를 검색하고 직접 확인해라.
-  단 **조회 전용**이다. 어디에도 데이터를 올리지 마라(POST/PUT·git push·publish 금지).
-  🔴 **자격증명은 조사에 필요하면 읽어도 된다. 단 값을 옮기지 마라.** (2026-09-16 사용자 결정)
-     `.env` 등의 접속 정보로 DB 에 붙어 원본을 조회하는 것은 허용한다 — 요청서가 준 명령
-     (`node -r dotenv/config` 처럼 값을 화면에 드러내지 않고 불러 쓰는 방식)을 우선해라.
-     비밀번호·토큰·키 값을 **응답 문서·작업대·명령 출력에 남기지 마라.** 응답 문서는 git 으로 원격까지 올라간다.
-     값을 화면에 찍는 명령(`cat .env`·`echo $DB_PASSWORD` 등)은 쓰지 말고, 불가피하면 마스킹해라.
-- Claude 의 가설은 참고 자료다. **틀렸으면 버려라.** 그걸 검증하는 데 시간을 다 쓰지 마라 —
-  가설이 통째로 무의미할 수 있다. 원본이 다른 곳을 가리키면 그쪽을 쫓아가라.
-- "기존 분석법이 실패했다"는 **"그 데이터를 다시 보지 마라"는 뜻이 아니다.**
-  같은 원본을 다른 방법으로 분석하는 것은 언제나 허용이고, 대개 그게 정답이다.
+Any other investigation is **not restricted. Dig to the end.**
+- **Open the sources yourself.** You may read anywhere on disk — reading outside the workspace is allowed too.
+  Do not trust only the excerpts quoted in the request. **When a summary and the source disagree, the source wins.**
+- **Run the calculations, sorting, parsing and re-aggregation yourself.** You may write and run scripts. Do not guess numbers — extract them.
+  Put their outputs (scripts, intermediate data, notes) on the workbench above **freely** — there is no limit on count or size,
+  and you do not need to delete them. Leaving them lets Claude reproduce your calculations, which is better.
+- **You may use the network** — search docs, issues and release notes and check them yourself.
+  But it is **read-only.** Never upload data anywhere (no POST/PUT, git push, publish).
+  🔴 **You may read credentials when the investigation needs them. But never copy their values.** (user decision, 2026-09-16)
+     Connecting to a DB with the settings in `.env` and the like to query the source is allowed — prefer the commands the request gives
+     (ways that load values without showing them, like `node -r dotenv/config`).
+     Never leave passwords, tokens or key values **in the response document, the workbench or command output.** The response document goes to a remote via git.
+     Do not use commands that print values (`cat .env`, `echo $DB_PASSWORD` etc.); if unavoidable, mask them.
+- Claude's hypotheses are reference material. **Drop them if wrong.** Do not spend all your time verifying them —
+  a hypothesis may be meaningless altogether. If the source points elsewhere, follow it there.
+- "The existing analysis method failed" **does not mean "do not look at that data again."**
+  Analyzing the same source a different way is always allowed, and usually that is the answer.
 
-🔴 **막혔다고 포기하지 마라.** 이 실행에는 승인을 눌러 줄 사람이 없다(approval_policy=never).
-   권한이 필요해 보이면 기다리지 말고 위에 허용된 수단으로 우회해 조사를 끝내라.
-   그래도 못 하면 **무엇이 막혀 무엇을 확인하지 못했는지**를 응답에 명시해라.
-   확인 못 한 것을 확인한 척하지 마라.
+🔴 **Do not give up when blocked.** Nobody is here to press approve in this run (approval_policy=never).
+   If it looks like you need permission, do not wait — work around it with the allowed means above and finish the investigation.
+   If you still cannot, state in the response **what was blocked and what you could not confirm.**
+   Never pretend to have checked what you did not.
 
-🔴 **지금 열 수 있는 자료를 남겨 둔 채 "자료를 더 달라"로 끝내지 마라.**
-   요청서에 경로가 있거나 워크스페이스에서 찾을 수 있는 것은 네가 직접 연다.
-   `ls`·`find` 로 목록만 본 것은 연 것이 아니다 — 내용을 읽고 계산까지 해야 연 것이다.
+🔴 **Do not end with "please send more material" while material you can open now is left unopened.**
+   Anything with a path in the request, or findable in the workspace, you open yourself.
+   Only listing with `ls` or `find` is not opening — it counts as opened once you have read the content and done the calculations.
 
-- 요청서에 응답을 저장할 경로와 파일명이 명시되어 있다. 그 경로에 그 이름 그대로 저장해라.
-- 저장이 실패하면 같은 내용을 최종 메시지로 그대로 출력해라. 자동으로 회수된다.
-- 🔴 **응답 문서는 조사를 시작할 때 만들고, 조사하면서 채워라.** 이 실행은 사용량 한도로 도중에 끊길 수 있다.
-  끝에 한 번만 쓰면 끊기는 순간 조사가 통째로 사라진다.
-  ① 원본을 열기 전에 frontmatter 와 `## 0. 조사 계획`(무엇을 어떤 순서로 열지)을 먼저 저장한다
-  ② 원본을 하나 열어 확인할 때마다 `## 1. 내가 직접 연 원본` 에 확인한 사실을 바로 덧붙인다
-  ③ 나머지 섹션(원인·판정·수정 방법 등 결론)은 조사가 끝난 뒤 맨 마지막에 쓴다.
-     확인한 사실보다 결론을 먼저 쓰지 마라 — 먼저 쓴 결론에 조사가 끌려간다.
+- The request names the path and file name for the response. Save it at that path under that exact name.
+- If saving fails, print the same content as your final message. It is collected automatically.
+- 🔴 **Create the response document when you start the investigation, and fill it as you go.** This run can be cut off midway by the usage limit.
+  Written only once at the end, the whole investigation vanishes the moment it is cut.
+  ① Before opening any source, save the frontmatter and `## 0. 조사 계획` (what you will open, in what order) first
+  ② Each time you open and check a source, append the confirmed facts right away under `## 1. 내가 직접 연 원본`
+  ③ Write the remaining sections (the conclusions: cause, verdict, fix and so on) last, after the investigation.
+     Do not write conclusions before the facts — a conclusion written first drags the investigation along.
+- Keep the section headings the request asks for exactly as written; write everything else in the language the request itself is written in (not that of any quoted code or logs).
 EOF
   # 🔴 위 히어독이 quoted 라 변수가 확장되지 않는다. 여기서 넣는다.
   #    값이 셸 코드로 재해석되지 않으므로 경로에 백틱·`$`·공백이 있어도 안전하다.
@@ -1746,7 +1752,7 @@ if [ "$KIND" = review ]; then
   # 🔴 `codex exec review` 에는 `-s`(샌드박스)도 `-C`(작업 디렉토리)도 **없다.**
   #    항상 read-only 이고 cwd 를 기준으로 돈다. 이미 ROOT 로 cd 했으므로 cwd 가 맞다.
   #    `-c` · `--json` · `-o` 는 지원하므로 기존 배관(샌드박스 우회·이벤트 로그·응답 회수)이 그대로 산다.
-  SANDBOX="read-only (review 고정)"
+  SANDBOX="read-only (fixed for review)"
   set -- codex exec review --skip-git-repo-check --json -o "$LASTMSG_W"
   # 스코프 플래그는 프롬프트가 없을 때만 붙인다 (위 주석의 CLI 제약).
   if [ "$SCOPE_VIA" = flag ]; then
@@ -1772,7 +1778,7 @@ elif [ "$KIND" = followup ]; then
     # EDIT 되묻기(`edit: yes` + CR_ALLOW_EDIT) 만 쓰기를 푼다 (2026-09-15). 위 검증을 통과해야 여기 온다.
     # 네트워크는 1턴 EDIT 와 같은 규칙이다(CR_NETWORK=false 로 끈다).
     SANDBOX_RAW=workspace-write
-    SANDBOX="workspace-write (EDIT 되묻기 · -c sandbox_mode)"
+    SANDBOX="workspace-write (EDIT follow-up · -c sandbox_mode)"
     set -- codex exec resume "$THREAD" --skip-git-repo-check --json \
            -c sandbox_mode="workspace-write" -o "$LASTMSG_W"
     if [ "${CR_NETWORK:-true}" != "false" ]; then
@@ -1780,7 +1786,7 @@ elif [ "$KIND" = followup ]; then
       SANDBOX="$SANDBOX +net"
     fi
   else
-    SANDBOX="read-only (followup 고정 · -c sandbox_mode)"
+    SANDBOX="read-only (fixed for followup · -c sandbox_mode)"
     set -- codex exec resume "$THREAD" --skip-git-repo-check --json \
            -c sandbox_mode="read-only" -o "$LASTMSG_W"
   fi
@@ -1854,14 +1860,14 @@ fi
 # "있는데 안 되는 옵션"이 가장 나쁘다 — 믿고 EDIT 나 장기 작업에 걸면 고아 프로세스가 남는다.
 # 그래서 조용히 무시하지 않고 **명시적으로 거부**한다.
 if [ -n "${CR_TIMEOUT:-}" ]; then
-  die "CR_TIMEOUT 은 제거됐다 — Windows 에서 작동하지 않는 것이 실측으로 확인됐다(2026-08-17).
+  die "CR_TIMEOUT was removed — measured not to work on Windows (2026-08-17).
 
-  대신 이렇게 한다:
-   · Claude 는 이 스크립트를 백그라운드로 던지므로 오래 걸려도 대화가 막히지 않는다
-   · 정말 멈춰야 하면 사용자가 codex 프로세스를 직접 종료한다
-     Windows: 작업관리자에서 codex.exe   ·   Linux: pkill -f 'codex exec'
+  Do this instead:
+   · Claude runs this script in the background, so a long run does not block the conversation
+   · if it really must stop, the user ends the codex process directly
+     Windows: codex.exe in Task Manager   ·   Linux: pkill -f 'codex exec'
 
-  CR_TIMEOUT 을 지우고 다시 실행해라."
+  Remove CR_TIMEOUT and run again."
 fi
 
 # ── 🔴 표시용 샌드박스 — 끼어들기 경로도 exec 와 같은 권한으로 돈다 (2026-08-26 개정) ──
@@ -1929,16 +1935,16 @@ LIVE_NET=0
 #    전달이 안 되는 것을 그때서야 알게 된다. 그 시점엔 이미 늦다.
 if [ "$LIVE_STEER_ON" != 1 ] && [ "${CR_LIVE_STEER:-}" = "1" ] && [ "$LIVE_MODE_OK" = 1 ]; then
   if [ "$NODE_WS_OK" != 1 ]; then
-    echo "⚠️  이번 실행에는 끼어들 수 없다 — 이 Node 에 전역 WebSocket 이 없다." >&2
-    echo "    Node 22+ 를 쓰거나, Node 20.10+ 라면 --experimental-websocket 이 있어야 한다." >&2
-    echo "    현재: $(node -v 2>/dev/null || echo 'node 없음') · 옛 exec 경로로 돈다." >&2
+    echo "⚠️  live steering is not available for this run — this Node has no global WebSocket." >&2
+    echo "    Use Node 22+, or Node 20.10+ with --experimental-websocket." >&2
+    echo "    now: $(node -v 2>/dev/null || echo 'no node') · running on the old exec path." >&2
   fi
 fi
 if [ "$LIVE_STEER_ON" = 1 ]; then
   if [ "$LIVE_NET" = 1 ]; then
-    SANDBOX_SHOWN="${SANDBOX_RAW} +net (끼어들기 경로 · turn/start sandboxPolicy)"
+    SANDBOX_SHOWN="${SANDBOX_RAW} +net (live-steer path · turn/start sandboxPolicy)"
   else
-    SANDBOX_SHOWN="${SANDBOX_RAW:-read-only} (끼어들기 경로 · 네트워크 없음)"
+    SANDBOX_SHOWN="${SANDBOX_RAW:-read-only} (live-steer path · no network)"
   fi
 else
   SANDBOX_SHOWN="$SANDBOX"
@@ -1946,33 +1952,33 @@ fi
 
 # 끼어들기 경로에서만 프롬프트 끝에 붙는 안내. 예전에는 중계기 내장 CONSULT 프롬프트 끝에 있었다 —
 # 프롬프트를 send.sh 한 곳에서 만들게 되면서 여기로 옮겼다(2026-09-15). 문구는 그대로다.
-LIVE_NOTE="── 이 실행에만 해당하는 안내 ──────────────────────────────
-이 턴은 진행 중에 추가 지시가 들어올 수 있다(사용자가 곁에서 보고 있다).
-추가 지시가 도착하면 **지금 하던 명령을 재시작하지 말고** 이어서 반영해라."
+LIVE_NOTE="── note for this run only ─────────────────────────────────────
+Extra instructions may arrive while this turn runs (the user is watching).
+When one arrives, **do not restart the command you were running** — carry on and apply it."
 
 if [ -n "${CR_DRYRUN:-}" ]; then
-  echo "── DRYRUN — 실행하지 않는다 ──"
-  echo "종류     : $KIND"
-  echo "루트     : $ROOT"
-  echo "모드     : $MODE / 샌드박스: $SANDBOX_SHOWN"
-  echo "모델     : ${CR_MODEL:-(codex 설정값)} / 추론 수준: ${CR_EFFORT:-(codex 설정값)}"
-  { [ "$KIND" = review ] || [ "$MODE" = review ]; } && echo "리뷰 대상: $SCOPE ${SCOPE_VAL:+($SCOPE_VAL)} — 지정 방식: $SCOPE_VIA"
-  echo "응답 경로: $RESP_REL (실행 전 존재: $RESP_EXISTED)"
-  [ -n "$EDITLOG_REL" ] && echo "수정 기록: $EDITLOG_REL   (EDIT 되묻기 — 고칠 때마다 Codex 가 적는다)"
-  echo "run 디렉토리: $RUN_DIR"
+  echo "── DRYRUN — not running ──"
+  echo "kind     : $KIND"
+  echo "root     : $ROOT"
+  echo "mode     : $MODE / sandbox: $SANDBOX_SHOWN"
+  echo "model    : ${CR_MODEL:-(codex config)} / reasoning: ${CR_EFFORT:-(codex config)}"
+  { [ "$KIND" = review ] || [ "$MODE" = review ]; } && echo "review target: $SCOPE ${SCOPE_VAL:+($SCOPE_VAL)} — given by: $SCOPE_VIA"
+  echo "response : $RESP_REL (existed before the run: $RESP_EXISTED)"
+  [ -n "$EDITLOG_REL" ] && echo "edit log : $EDITLOG_REL   (EDIT follow-up — Codex writes it on every edit)"
+  echo "run dir  : $RUN_DIR"
   if [ "$LIVE_STEER_ON" = 1 ]; then
-    echo "경로     : 끼어들기(app-server) — 중계기에 --prompt-file 로 아래 프롬프트를 넘긴다"
-    echo "중계기   : --sandbox ${SANDBOX_RAW:-read-only}$([ "$LIVE_NET" = 1 ] && printf ' --network')${CR_MODEL:+ --model $CR_MODEL}${CR_EFFORT:+ --effort $CR_EFFORT}"
-    [ "$KIND" = followup ] && echo "이어받기 : --resume-thread $THREAD --turn-seq $FUP_TURN   (원 요청서: $PARENT_REQ)"
-    printf '(옛 경로였다면): '; printf '%q ' "$@"; echo
+    echo "path     : live steer (app-server) — the prompt below goes to the bridge via --prompt-file"
+    echo "bridge   : --sandbox ${SANDBOX_RAW:-read-only}$([ "$LIVE_NET" = 1 ] && printf ' --network')${CR_MODEL:+ --model $CR_MODEL}${CR_EFFORT:+ --effort $CR_EFFORT}"
+    [ "$KIND" = followup ] && echo "resume   : --resume-thread $THREAD --turn-seq $FUP_TURN   (original request: $PARENT_REQ)"
+    printf '(on the old path): '; printf '%q ' "$@"; echo
   else
-    echo "경로     : codex exec"
-    printf '명령     : '; printf '%q ' "$@"; echo
+    echo "path     : codex exec"
+    printf 'command  : '; printf '%q ' "$@"; echo
   fi
-  echo "── 프롬프트 ──"; printf '%s\n' "${PROMPT:-(없음 — codex 기본 리뷰)}"
+  echo "── prompt ──"; printf '%s\n' "${PROMPT:-(none — codex default review)}"
   [ "$LIVE_STEER_ON" = 1 ] && printf '\n%s\n' "$LIVE_NOTE"
   if [ "$REVIEW_REQ_AUTO" = 1 ]; then
-    echo "── 자동 생성 요청서 ($REQ) — DRYRUN 이라 보여주고 지운다 ──"
+    echo "── auto-generated request ($REQ) — shown and deleted because of DRYRUN ──"
     cat -- "$REQ_ABS"
     rm -f -- "$REQ_ABS"
   fi
@@ -1980,10 +1986,10 @@ if [ -n "${CR_DRYRUN:-}" ]; then
 fi
 
 if [ "$KIND" = review ]; then
-  echo "→ Codex 리뷰 중… (대상: $SCOPE ${SCOPE_VAL:+$SCOPE_VAL})" >&2
+  echo "→ Codex reviewing… (target: $SCOPE ${SCOPE_VAL:+$SCOPE_VAL})" >&2
 else
-  echo "→ Codex 실행 중… (요청서: $REQ / 샌드박스: $SANDBOX_SHOWN)" >&2
-  [ -n "${CR_MODEL:-}${CR_EFFORT:-}" ] && echo "   모델: ${CR_MODEL:-(설정값)} / 추론 수준: ${CR_EFFORT:-(설정값)}" >&2
+  echo "→ Codex running… (request: $REQ / sandbox: $SANDBOX_SHOWN)" >&2
+  [ -n "${CR_MODEL:-}${CR_EFFORT:-}" ] && echo "   model: ${CR_MODEL:-(config)} / reasoning: ${CR_EFFORT:-(config)}" >&2
 fi
 
 # ── 진행 상황을 밖에서 볼 수 있게 준비한다 ──────────────────────
@@ -2054,13 +2060,13 @@ LIVE_BRIDGE=""
 if [ "$LIVE_STEER_ON" = 1 ]; then
   _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   LIVE_BRIDGE="$_SELF_DIR/scripts/live-consult.mjs"
-  [ -f "$LIVE_BRIDGE" ] || die "CR_LIVE_STEER=1 인데 중계기가 없다: $LIVE_BRIDGE
-  스킬을 다시 받아라 (scripts/ 디렉토리가 함께 온다)."
-  command -v node >/dev/null 2>&1 || die "CR_LIVE_STEER=1 에는 node 가 필요하다."
+  [ -f "$LIVE_BRIDGE" ] || die "CR_LIVE_STEER=1 but the bridge is missing: $LIVE_BRIDGE
+  Reinstall the skill (the scripts/ directory comes with it)."
+  command -v node >/dev/null 2>&1 || die "CR_LIVE_STEER=1 needs node."
 fi
 
 if [ -n "$LIVE_BRIDGE" ]; then
-  echo "→ 실행 중 끼어들기 경로(app-server) 로 돈다 — 대화키: $STAMP" >&2
+  echo "→ running on the live-steer path (app-server) — conversation key: $STAMP" >&2
   # 🔴 `$LIVE_EVENTS` 에 직접 쓰고 끝나서 `$EVENTS` 로 복사한다. tee 파이프라인을 흉내내는
   #    것인데, 파이프가 아니라 단일 프로세스라 PIPESTATUS 가 성립하지 않기 때문이다.
   # $NODE_WS_FLAG 는 따옴표 없이 편다 — 빈 값일 때 빈 인자가 생기면 안 된다.
@@ -2068,7 +2074,7 @@ if [ -n "$LIVE_BRIDGE" ]; then
   # 프롬프트는 여기서 만든 것을 파일로 넘긴다(2026-09-15) — 모드별 프롬프트를 send.sh 한 곳에서 관리한다.
   # RUN_DIR 은 workspace 밖이라 Codex 가 고칠 수 없다. 긴 한글을 argv 로 넘기지 않는 이유는 중계기 steer 와 같다.
   LIVE_PROMPT="$RUN_DIR/prompt.txt"
-  printf '%s\n\n%s\n' "$PROMPT" "$LIVE_NOTE" > "$LIVE_PROMPT" || die "프롬프트 파일을 쓰지 못했다: $LIVE_PROMPT"
+  printf '%s\n\n%s\n' "$PROMPT" "$LIVE_NOTE" > "$LIVE_PROMPT" || die "cannot write the prompt file: $LIVE_PROMPT"
   # 되묻기(2026-09-17) — 새 대화 대신 응답 문서의 thread_id 를 잇는다. 턴 번호는 진행 패널 항목 id 용이다.
   # 되묻기에는 요청서가 없다(`$REQ_ABS` 가 비어 있다). 중계기는 요청서에서 카드 제목(subject·slug)만 읽으므로
   # 원 요청서를 준다 — 위 검증에서 존재를 확인했다.
@@ -2121,11 +2127,11 @@ TOUCHED=$(find . \( -type d \( -name .git -o -name node_modules -o -name .venv -
                    -o -name .gradle -o -name build -o -name .next -o -name __pycache__ \
                    -o -path ./docs/codex_rescue/.log \) -prune \) -o \
                 -type f -newer "$MARKER" -print) \
-  || die "실행 후 스캔 실패 — 변경 여부를 판정할 수 없다. Codex 는 이미 실행됐으므로 $RUN_DIR 를 직접 확인해라"
+  || die "post-run scan failed — changes cannot be judged. Codex already ran, so check $RUN_DIR directly"
 TOUCHED=$(printf '%s\n' "$TOUCHED" | LC_ALL=C sort | sed 's|^\./||')
 
 AFTER="$RUN_DIR/after.list"
-SCAN | LC_ALL=C sort > "$AFTER" || die "실행 후 목록 스냅샷 실패 — 삭제 여부를 판정할 수 없다"
+SCAN | LC_ALL=C sort > "$AFTER" || die "post-run listing snapshot failed — deletions cannot be judged"
 DELETED=$(LC_ALL=C comm -23 "$BEFORE" "$AFTER" | sed 's|^\./||' \
           | grep -v '^docs/codex_rescue/\.scratch/' || true)
 
@@ -2189,10 +2195,10 @@ if [ "$KIND" = followup ]; then
         cat "$EDITLOG_REL"
         echo
       fi
-    } >> "$RESP_REL" || die "턴 기록 실패: $RESP_REL
-  🔴 Codex 세션에는 이 턴이 남았는데 문서에는 안 남았다. thread_id 를 손으로 비워라."
+    } >> "$RESP_REL" || die "cannot record the turn: $RESP_REL
+  🔴 The Codex session has this turn but the document does not. Clear thread_id by hand."
     fm_set "$RESP_REL" turns "$FUP_TURN" && [ "$(fmf "$RESP_REL" turns)" = "$FUP_TURN" ] \
-      || die "turns 갱신 실패: $RESP_REL — 다음 턴의 번호 검증이 어긋난다. 손으로 고쳐라."
+      || die "cannot update turns: $RESP_REL — the next turn number check will be off. Fix it by hand."
     AUTHOR=codex
     rm -f -- "$INFLIGHT" 2>/dev/null   # 취약 구간이 닫혔다
   else
@@ -2248,7 +2254,7 @@ elif [ "$KIND" = review ]; then
       echo '## Codex 원문'
       echo
       cat "$LASTMSG"
-    } > "$RESP_REL" || die "리뷰 결과 저장 실패: $RESP_REL"
+    } > "$RESP_REL" || die "cannot save the review result: $RESP_REL"
   fi
   # 옛 리뷰가 연 대화에도 이름을 붙인다 (2026-09-17). 요청서가 없어 --subject/슬러그로 만든다.
   REVIEW_THREAD=$(grep -o '"thread_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$EVENTS" 2>/dev/null \
@@ -2288,7 +2294,7 @@ elif [ -s "$LASTMSG" ]; then
     echo '## Codex 원문'
     echo
     cat "$LASTMSG"
-  } > "$RESP_REL" || die "응답 파일 저장 실패: $RESP_REL"
+  } > "$RESP_REL" || die "cannot save the response file: $RESP_REL"
 fi
 
 # ── 🔴 multi-turn 준비: 1턴의 thread_id 를 응답 문서에 심는다 (2026-08-25) ──
@@ -2329,22 +2335,22 @@ if [ "$KIND" = doc ] && { [ "$AUTHOR" = codex ] || [ "$AUTHOR" = codex-via-stdou
       echo
       cat "$RESP_REL"
     } > "$FM_TMP" 2>/dev/null && mv -f -- "$FM_TMP" "$RESP_REL" 2>/dev/null \
-      && echo "⚠️ 응답 문서에 frontmatter 가 없어 규약 헤더를 붙였다(원문은 보존)." \
+      && echo "⚠️ the response document had no frontmatter, so the standard header was added (text preserved)." \
       || rm -f -- "$FM_TMP" 2>/dev/null
   fi
 
   if [ -z "$NEW_THREAD" ]; then
-    THREAD_WHY="이벤트 스트림에 thread_id 가 없다"
+    THREAD_WHY="no thread_id in the event stream"
   elif ! fm_ok "$RESP_REL"; then
     # 위에서 붙이는 것도 실패했다면 손대지 않는다.
-    THREAD_WHY="응답 문서의 frontmatter 경계가 깨져 있고 헤더 삽입도 실패했다"
+    THREAD_WHY="the response frontmatter boundary is broken and adding the header failed too"
   elif fm_set "$RESP_REL" thread_id "$NEW_THREAD" \
        && fm_set "$RESP_REL" origin "$(hostname 2>/dev/null || echo unknown)" \
        && fm_set "$RESP_REL" turns 1 \
        && [ "$(fmf "$RESP_REL" thread_id)" = "$NEW_THREAD" ]; then
     THREAD_SAVED="$NEW_THREAD"
   else
-    THREAD_WHY="frontmatter 에 쓰지 못했다(권한·디스크를 확인해라)"
+    THREAD_WHY="could not write to the frontmatter (check permissions and disk)"
   fi
 
   # 옛 경로가 연 대화에 이름을 붙인다 (2026-09-17). 끼어들기 경로는 live-consult.mjs 가 대화를 만들 때
@@ -2407,7 +2413,7 @@ if [ "$KIND" = doc ] && [ "$AUTHOR" = partial ]; then
   unset _lim _ro _as _rw
   { fm_ok "$RESP_REL" && fm_set "$RESP_REL" status partial && fm_set "$RESP_REL" stopped "exit $RC" \
       && fm_set "$RESP_REL" stop_reason "$STOP_REASON"; } \
-    || echo "⚠️ 중간 저장본 표시(status: partial)를 frontmatter 에 쓰지 못했다 — 문서만 보고 완성본으로 오해하지 마라."
+    || echo "⚠️ could not mark the partial save (status: partial) in the frontmatter — do not mistake the document for a finished one."
 fi
 
 # ── 실행 기록을 workspace 로 보존 ───────────────────────────────
@@ -2443,176 +2449,176 @@ fi
 
 # ── Claude 에게 보고 ────────────────────────────────────────────
 echo
-echo "════════ codex_rescue 완료 ════════"
+echo "════════ codex_rescue done ════════"
 if [ "$KIND" = review ]; then
   if [ "$SCOPE_VIA" = flag ]; then
-    echo "리뷰 대상: $SCOPE ${SCOPE_VAL:+$SCOPE_VAL}   (CLI 플래그로 지정 — 정확)"
+    echo "review target: $SCOPE ${SCOPE_VAL:+$SCOPE_VAL}   (given by CLI flag — exact)"
   else
-    echo "리뷰 대상: $SCOPE ${SCOPE_VAL:+$SCOPE_VAL}   (⚠️ 프롬프트 문장으로 지시 — codex CLI 가"
-    echo "           스코프 플래그와 집중 지시를 함께 받지 않아서다. 실제로 그 범위를 봤는지는"
-    echo "           리뷰 본문에서 확인해라)"
+    echo "review target: $SCOPE ${SCOPE_VAL:+$SCOPE_VAL}   (⚠️ given as a prompt sentence — the codex CLI"
+    echo "           does not take a scope flag and a focus instruction together. Whether that scope was really covered,"
+    echo "           check in the review text)"
   fi
-  [ -n "$FOCUS" ] && echo "집중 지시: $FOCUS"
+  [ -n "$FOCUS" ] && echo "focus    : $FOCUS"
 elif [ "$KIND" = followup ]; then
-  echo "되묻기   : ${FUP_TURN}턴   (반박서: $FUP)$([ "$FUP_EDIT" = 1 ] && printf '   · 🔧 추가 수정 (edit: yes)')"
-  echo "대화     : $RESP_REL   ·   스레드: $THREAD"
-  [ -n "$EDITLOG_REL" ] && echo "수정 기록: $EDITLOG_REL"
+  echo "followup : turn ${FUP_TURN}   (follow-up file: $FUP)$([ "$FUP_EDIT" = 1 ] && printf '   · 🔧 further edits (edit: yes)')"
+  echo "thread   : $RESP_REL   ·   id: $THREAD"
+  [ -n "$EDITLOG_REL" ] && echo "edit log : $EDITLOG_REL"
 else
-  echo "요청서   : $REQ$([ "$REVIEW_REQ_AUTO" = 1 ] && printf '   (send.sh 자동 작성)')"
+  echo "request  : $REQ$([ "$REVIEW_REQ_AUTO" = 1 ] && printf '   (written by send.sh)')"
   if [ "$MODE" = review ]; then
-    echo "리뷰 대상: ${SCOPE:-(요청서 참조)} ${SCOPE_VAL:+$SCOPE_VAL}   (끼어들기 리뷰 — 일반 턴 + Codex 공식 rubric)"
-    [ -n "$FOCUS" ] && echo "집중 지시: $FOCUS"
+    echo "review target: ${SCOPE:-(see request)} ${SCOPE_VAL:+$SCOPE_VAL}   (live-steer review — normal turn + official Codex rubric)"
+    [ -n "$FOCUS" ] && echo "focus    : $FOCUS"
   fi
 fi
-echo "모드     : $MODE / 샌드박스: $SANDBOX_SHOWN / codex exit: $RC"
-echo "모델     : ${CR_MODEL:-(codex 설정값)} / 추론 수준: ${CR_EFFORT:-(codex 설정값)}"
-echo "이벤트   : $LOGD/${STAMP}_events.jsonl   (실행 중 실시간 기록 — 진행 패널이 이걸 읽는다)"
-echo "상태     : $STATUS"
+echo "mode     : $MODE / sandbox: $SANDBOX_SHOWN / codex exit: $RC"
+echo "model    : ${CR_MODEL:-(codex config)} / reasoning: ${CR_EFFORT:-(codex config)}"
+echo "events   : $LOGD/${STAMP}_events.jsonl   (live record while running — the progress panel reads it)"
+echo "status   : $STATUS"
 if [ "$TEE_RC" != 0 ]; then
-  echo "⚠️  실시간 미러(tee) 가 실패했다 (exit $TEE_RC) — 진행 표시가 불완전했을 수 있다."
-  echo "    분석 결과 자체는 영향받지 않는다(응답은 별도 경로로 회수된다). 디스크·권한을 확인해라."
+  echo "⚠️  the live mirror (tee) failed (exit $TEE_RC) — the progress display may have been incomplete."
+  echo "    The analysis itself is unaffected (the response is collected separately). Check disk and permissions."
 fi
 if [ -n "$LOGCOPY_FAIL" ]; then
-  echo "⚠️  실행 기록 복사 실패:$LOGCOPY_FAIL"
-  echo "    원본은 이미 정리된 run 디렉토리에 있었다 — 그 기록은 없다. 디스크·권한을 확인해라."
+  echo "⚠️  copying the run logs failed:$LOGCOPY_FAIL"
+  echo "    The originals were in the run directory, already cleaned up — those records are gone. Check disk and permissions."
 fi
 echo
 
 case "$AUTHOR" in
   codex)
     if [ "$KIND" = review ]; then
-      echo "✅ 리뷰 도착: $RESP_REL   (read-only 실행 — Codex 는 코드를 고치지 않았다)"
+      echo "✅ review arrived: $RESP_REL   (read-only run — Codex did not edit code)"
     else
-      echo "✅ 응답 도착: $RESP_REL   (Codex 가 직접 저장)"
+      echo "✅ response arrived: $RESP_REL   (saved by Codex)"
     fi
     ;;
   codex-via-stdout)
-    echo "✅ 응답 도착: $RESP_REL   (⚠️ Codex 저장 실패 → 최종 메시지로 대체 저장. author: codex-via-stdout)"
-    echo "   왜 못 썼는지 $LOGD/${STAMP}_stderr.log 를 확인해라."
+    echo "✅ response arrived: $RESP_REL   (⚠️ Codex failed to save → saved from its final message instead. author: codex-via-stdout)"
+    echo "   See $LOGD/${STAMP}_stderr.log for why it could not write."
     ;;
   stale)
-    echo "🔴 응답 파일이 **갱신되지 않았다** — 내용이 실행 전과 동일하다(해시 일치)."
-    echo "   $RESP_REL 은 **이전 실행의 결과물**이다. 이번 응답으로 오해하지 마라."
-    echo "   Codex 는 이번에 아무것도 쓰지 못했다. $LOGD/${STAMP}_stderr.log 를 읽고 원인을 보고해라."
-    [ -s "$LASTMSG" ] && echo "   이번 실행의 최종 메시지는 $LOGD/${STAMP}_last_message.md 에 있다 — 기존 파일과 비교해라."
-    echo "   🔴 기존 응답 파일을 임의로 덮어쓰거나 지우지 마라. 사용자 판단을 받아라."
+    echo "🔴 the response file was **not updated** — same content as before the run (hash match)."
+    echo "   $RESP_REL is **the output of an earlier run**. Do not take it for this response."
+    echo "   Codex wrote nothing this time. Read $LOGD/${STAMP}_stderr.log and report the cause."
+    [ -s "$LASTMSG" ] && echo "   The final message of this run is in $LOGD/${STAMP}_last_message.md — compare it with the existing file."
+    echo "   🔴 Do not overwrite or delete the existing response file on your own. Get the user to decide."
     ;;
   partial)
-    echo "⚠️ 중간 저장본 도착: $RESP_REL   (Codex 가 도중에 끝났다 — codex exit: $RC)"
+    echo "⚠️ partial save arrived: $RESP_REL   (Codex stopped midway — codex exit: $RC)"
     case "${STOP_REASON:-other}" in
-      limit)       echo "   원인: 사용량 한도 초과로 보인다 (로그·실행 기록에 한도 도달 흔적)." ;;
-      interrupted) echo "   원인: 중단됐다 (exit 130 신호 또는 턴 중단 이벤트) — 사람이 멈췄거나 프로세스가 종료됐다." ;;
-      *)           echo "   원인: 한도 흔적도 중단 신호도 없다 — $LOGD/${STAMP}_stderr.log 와 events 를 확인해라." ;;
+      limit)       echo "   cause: looks like the usage limit was hit (limit traces in the logs)." ;;
+      interrupted) echo "   cause: interrupted (exit 130 signal or a turn-interrupt event) — a person stopped it or the process ended." ;;
+      *)           echo "   cause: no limit trace and no interrupt signal — check $LOGD/${STAMP}_stderr.log and events." ;;
     esac
-    echo "   이 문서는 **완성본이 아니다.** frontmatter 에 status: partial · stop_reason: ${STOP_REASON:-other} 를 심었다."
+    echo "   This document is **not finished.** status: partial · stop_reason: ${STOP_REASON:-other} was set in its frontmatter."
     ;;
   none)
-    echo "❌ 응답 파일이 없고 최종 메시지도 비어 있다: $RESP_REL"
-    echo "   $LOGD/${STAMP}_events.jsonl 과 ${STAMP}_stderr.log 를 읽고 원인을 사용자에게 보고해라."
+    echo "❌ no response file, and the final message is empty: $RESP_REL"
+    echo "   Read $LOGD/${STAMP}_events.jsonl and ${STAMP}_stderr.log and report the cause to the user."
     ;;
 esac
 
 echo
 if [ -n "$STRAY" ] || [ -n "$DELETED" ]; then
-  echo "🔴🔴 응답 파일 외의 변경이 감지됐다 — 반드시 사용자에게 보고해라"
-  [ -n "$STRAY" ]   && { echo "   [생성·수정]"; printf '%s\n' "$STRAY"   | sed 's/^/     /'; }
-  [ -n "$DELETED" ] && { echo "   [삭제]";      printf '%s\n' "$DELETED" | sed 's/^/     /'; }
+  echo "🔴🔴 changes other than the response file detected — you must report them to the user"
+  [ -n "$STRAY" ]   && { echo "   [created / modified]"; printf '%s\n' "$STRAY"   | sed 's/^/     /'; }
+  [ -n "$DELETED" ] && { echo "   [deleted]";      printf '%s\n' "$DELETED" | sed 's/^/     /'; }
   echo
-  echo "   이 스킬의 전제는 'Codex 는 코드를 고치지 않는다' 다. 위 변경은 그 전제를 깬 것일 수 있다."
-  echo "   ⚠️ 단 이 감지는 '스캔 사이에 최종 차이가 났다'는 사실만 말한다. OneDrive 동기화나 다른"
-  echo "      프로세스의 변경일 수도 있으므로 **Codex 가 했다고 단정하지 마라.**"
-  echo "      $LOGD/${STAMP}_events.jsonl 에서 Codex 가 실제로 실행한 동작을 대조해라."
+  echo "   This skill assumes 'Codex does not edit code'. The changes above may break that assumption."
+  echo "   ⚠️ But this detection only says 'the final state differed between scans'. It may be OneDrive sync or"
+  echo "      another process, so **do not conclude that Codex did it.**"
+  echo "      Check against what Codex actually ran in $LOGD/${STAMP}_events.jsonl."
   if [ "$IS_GIT" = 1 ]; then
-    echo "   → git diff 로 실제 내용을 확인한 뒤 사용자에게 보고해라."
+    echo "   → check the actual content with git diff, then report to the user."
   else
-    echo "   → 각 파일을 Read 해서 무엇이 바뀌었는지 확인한 뒤 보고해라 (git 레포가 아니라 diff 불가)."
+    echo "   → Read each file to see what changed, then report (not a git repository, so no diff)."
   fi
-  echo "   🔴 **임의로 되돌리지 마라.** 되돌릴지 살릴지는 사용자 판단이다."
+  echo "   🔴 **Do not revert on your own.** Whether to revert or keep is the decision of the user."
 else
-  echo "✅ 감시 범위에서 응답 파일 외 변경 없음."
+  echo "✅ no changes besides the response file in the watched area."
 fi
 if [ -n "$SCRATCH_MADE" ]; then
   echo
-  echo "🧪 Codex 작업 폴더에 $(printf '%s\n' "$SCRATCH_MADE" | wc -l | tr -d ' ')건이 남았다 — **정상이다.**"
-  echo "   $SCRATCH_REL/ 에 있는 조사 흔적(계산 스크립트·중간 데이터)이다. 위반이 아니다."
-  echo "   응답의 수치가 어떻게 나왔는지 따질 때 여기를 열어라. git 에는 올라가지 않는다."
+  echo "🧪 $(printf '%s\n' "$SCRATCH_MADE" | wc -l | tr -d ' ') item(s) left in the Codex workbench — **this is normal.**"
+  echo "   Investigation traces in $SCRATCH_REL/ (calculation scripts, intermediate data). Not a violation."
+  echo "   Open it when checking how the numbers in the response came out. It is not committed to git."
   printf '%s\n' "$SCRATCH_MADE" | sed 's/^/     /'
 fi
-echo "   (감시 제외 영역: $PRUNED — 이 안의 변경과, 생성 후 삭제·mtime 원복은 잡지 못한다)"
+echo "   (not watched: $PRUNED — changes inside it, and create-then-delete or restored mtimes, are not caught)"
 case "$SANDBOX" in
   *danger-full-access*)
     echo
-    echo "   🔴 이 실행은 danger-full-access 였다 — **cwd 밖 파일 수정이 가능했고, 위 감지는"
-    echo "      그것을 원리적으로 못 본다**(감지는 cwd 기준 \`find .\` 이다)."
-    echo "      위의 '변경 없음'을 'cwd 밖도 안전하다'로 읽지 마라 — 확인된 바가 없다는 뜻이다."
-    echo "      $LOGD/${STAMP}_events.jsonl 의 shell·apply_patch 인자를 직접 훑어 대조해라." ;;
+    echo "   🔴 this run was danger-full-access — **files outside the cwd could be changed, and the detection above"
+    echo "      cannot see that in principle** (it is a \`find .\` from the cwd)."
+    echo "      Do not read 'no changes' above as 'outside the cwd is safe' — it means nothing was checked there."
+    echo "      Go through the shell and apply_patch arguments in $LOGD/${STAMP}_events.jsonl yourself." ;;
 esac
 
 echo
-echo "🔴 Claude 가 이어서 할 일:"
+echo "🔴 What Claude does next:"
 if [ "$KIND" = followup ] && [ "$AUTHOR" = codex ]; then
   if [ "$FUP_EDIT" = 1 ]; then
-    echo "   0. 🔧 **EDIT 되묻기였다 — Codex 가 코드를 고쳤다.** 위 '응답 파일 외의 변경' 목록이 이번 수정분이다"
-    echo "      $([ "$IS_GIT" = 1 ] && printf 'git diff 로' || printf '각 파일을 Read 해서') 실제 변경을 **직접 확인**하고,"
-    echo "      재답변의 '변경한 파일·라인' · 수정 기록($EDITLOG_REL)과 어긋나는지 대조한 뒤 검토한다"
+    echo "   0. 🔧 **This was an EDIT follow-up — Codex edited code.** The 'changes other than the response file' list above is this edit"
+    echo "      **Check the actual changes yourself** $([ "$IS_GIT" = 1 ] && printf 'with git diff' || printf 'by reading each file'),"
+    echo "      compare them with the '변경한 파일·라인' section of the reply and the edit log ($EDITLOG_REL), then review"
   fi
-  echo "   1. $RESP_REL 를 Read 한다 — 맨 아래 '## 🔷 ${FUP_TURN}턴 — Codex 재답변' 이 이번 답이다"
-  echo "   2. 🔴 **Codex 가 네 해석을 교정했는지부터 봐라.** 이 모드의 존재 이유다."
-  echo "      '너는 X 라고 읽었지만 나는 Y 를 뜻했다' 가 있으면 그 교정을 받아들이고 다시 판단해라"
-  echo "   3. 그 아래에 '## Claude 검토 (${FUP_TURN}턴)' 을 덧붙인다 — 채택/보류/기각 + 근거"
-  echo "   4. **§ 절차 10 종료 판정표를 위에서부터 훑는다.** 처음 걸리는 줄에서 멈춘다"
-  echo "      · 새 정보가 없다(같은 말의 재배열) → **종료.** 더 물어도 안 나온다"
-  echo "      · 되묻기 사유 3개 중 하나에 해당 → 다음 반박서 (상한 ${CONSULT_MAX}턴):"
+  echo "   1. Read $RESP_REL — the '## 🔷 ${FUP_TURN}턴 — Codex 재답변' section at the bottom is this answer"
+  echo "   2. 🔴 **First see whether Codex corrected your reading.** That is why this mode exists."
+  echo "      If it says 'you read X but I meant Y', accept the correction and judge again"
+  echo "   3. Append '## Claude 검토 (${FUP_TURN}턴)' below it — adopt / hold / reject + reasons"
+  echo "   4. **Go down the stop table (references/results.md §10) from the top.** Stop at the first row that matches"
+  echo "      · no new information (the same points reshuffled) → **stop.** Asking more will not produce it"
+  echo "      · one of the 3 follow-up reasons applies → next follow-up file (limit ${CONSULT_MAX} turns):"
   echo "          docs/codex_rescue/${STAMP}_followup$((FUP_TURN + 1))_${SLUG}.md   (turn: $((FUP_TURN + 1)))"
-  echo "          bash \$0 --followup 그 경로   ← run_in_background: true"
-  echo "      · 그 외 전부 → **종료.** 채택/보류/기각 판단으로"
-  echo "   🔴 **기본은 종료다.** 왕복 자체가 목적이 아니다 — 턴이 아니라 **새 정보**가 답을 만든다"
+  echo "          bash \$0 --followup <that path>   ← run_in_background: true"
+  echo "      · everything else → **stop.** Move on to adopt / hold / reject"
+  echo "   🔴 **The default is to stop.** Round trips are not the goal — **new information**, not turns, makes the answer"
 elif [ "$KIND" = followup ]; then
-  echo "   1. ${FUP_TURN}턴이 실패했다 — $ERR_DEST 를 읽어 원인을 사용자에게 보고한다"
+  echo "   1. turn ${FUP_TURN} failed — read $ERR_DEST and report the cause to the user"
   if [ "$FUP_EDIT" = 1 ]; then
-    echo "   🔴 EDIT 되묻기가 도중에 끝났다 — **코드가 반쯤 바뀐 상태일 수 있다.** 이것부터 보고한다"
-    echo "      위 '응답 파일 외의 변경' 목록 · git diff · 수정 기록($EDITLOG_REL)을 대조한다. 되돌리지 마라"
+    echo "   🔴 the EDIT follow-up ended midway — **the code may be half-changed.** Report this first"
+    echo "      Compare the 'changes other than the response file' list above, git diff and the edit log ($EDITLOG_REL). Do not revert"
   fi
   if [ "$FUP_DISCARDED" = 1 ]; then
-    echo "   2. 🔴 스레드가 폐기됐다. 같은 건에 followup 을 더 붙일 수 없다"
-    echo "      이어서 물으려면 지금까지의 대화를 재료로 **새 CONSULT 요청서**를 써라"
+    echo "   2. 🔴 the thread was discarded. No more followups can be added to this case"
+    echo "      To ask further, write a **new CONSULT request** from the conversation so far"
   else
-    echo "   2. 🔴 스레드 폐기에 **실패했다** — $RESP_REL 의 thread_id 가 그대로다"
-    echo "      그대로 두면 다음 턴이 어긋난 세션을 재개한다. 손으로 thread_id 를 비워라"
+    echo "   2. 🔴 discarding the thread **failed** — thread_id in $RESP_REL is unchanged"
+    echo "      Left as is, the next turn resumes a mismatched session. Clear thread_id by hand"
   fi
 elif { [ "$KIND" = review ] || [ "$MODE" = review ]; } && [ "$AUTHOR" = codex ]; then
-  echo "   1. $RESP_REL 를 Read 한다 — Codex 가 낸 리뷰 지적이다"
-  echo "   2. **Codex 원문을 고치지 마라.** 파일 끝에 '## Claude 검토' 섹션을 덧붙인다"
-  echo "      — 지적별로 채택 / 보류 / 기각 + 이유. 오탐이라 판단하면 코드로 반증한 결과를 적는다"
-  echo "   3. 채택할 것만 골라 사용자에게 보고하고 적용 여부 판단을 받는다"
-  echo "   🔴 **리뷰 지적을 자동으로 전부 고치지 마라.** 리뷰에는 오탐과 취향 문제가 섞인다."
-  echo "      무엇을 고칠지는 사용자 판단이다"
+  echo "   1. Read $RESP_REL — the findings of the Codex review"
+  echo "   2. **Do not edit the Codex text.** Append a '## Claude 검토' section at the end of the file"
+  echo "      — adopt / hold / reject per finding + reason. If you judge one a false positive, write how the code disproves it"
+  echo "   3. Report only what you adopt to the user and let them decide whether to apply it"
+  echo "   🔴 **Do not fix every review finding automatically.** Reviews mix in false positives and matters of taste."
+  echo "      What to fix is the decision of the user"
 elif [ "$AUTHOR" = partial ]; then
-  echo "   1. $RESP_REL 를 Read 한다 — **중간 저장본이다.** 조사 계획 대비 어디까지 확인됐는지 파악한다"
-  echo "   2. **Codex 원문을 고치지 마라.** 끝에 '## Claude 검토' 를 덧붙이되 첫 줄에 '미완성 — exit $RC' 를 적는다"
-  echo "   3. 사용자에게 보고한다 — 끊긴 원인, 확인된 것, 남은 것"
+  echo "   1. Read $RESP_REL — **it is a partial save.** Work out how far the investigation plan got"
+  echo "   2. **Do not edit the Codex text.** Append '## Claude 검토' at the end, with '미완성 — exit $RC' as its first line"
+  echo "   3. Report to the user — why it stopped, what was confirmed, what is left"
   case "${STOP_REASON:-other}" in
-    limit)       echo "      · 한도 초과 — 리셋 시각을 codex-status.mjs 로 확인해 함께 알린다" ;;
-    interrupted) echo "      · 신호 중단 — 사용자가 멈춘 것인지부터 확인한다. 한도 문제로 단정하지 마라" ;;
-    *)           echo "      · 원인 미상 — 로그에서 찾은 실패 사유를 그대로 전한다. 한도 문제로 단정하지 마라" ;;
+    limit)       echo "      · limit hit — check the reset time with codex-status.mjs and include it" ;;
+    interrupted) echo "      · interrupted by a signal — first check whether the user stopped it. Do not assume a limit problem" ;;
+    *)           echo "      · cause unknown — relay the failure reason found in the logs as is. Do not assume a limit problem" ;;
   esac
   if [ "$MODE" = edit ]; then
-    echo "   🔴 EDIT 이 도중에 끝났다 — **코드가 반쯤 바뀐 상태일 수 있다.** 보고서의 변경 기록과"
-    echo "      실제 변경(변경 감지 결과·git diff)을 대조해 사용자에게 먼저 보고한다. 되돌리지 마라"
+    echo "   🔴 the EDIT ended midway — **the code may be half-changed.** Compare the change record in the report"
+    echo "      with the actual changes (change detection, git diff) and report to the user first. Do not revert"
   else
-    echo "   4. 이어갈지는 **사용자가 정한다.** 이어가면 한도가 풀린 뒤 되묻기(--followup)로 남은 항목을 이어서 하라고 보낸다"
-    echo "      ⚠️ 되묻기는 읽기 전용이라 그 턴은 중간 저장이 안 된다 · 한도로 끊긴 턴을 이어간 실측 사례는 아직 없다"
-    [ -z "$THREAD_SAVED" ] && echo "      🔴 이번 건은 대화 번호를 심지 못했다(${THREAD_WHY:-사유 불명}) — 되묻기로 이어갈 수 없다"
+    echo "   4. **The user decides** whether to continue. If so, after the limit resets, send a follow-up (--followup) asking to continue the remaining items"
+    echo "      ⚠️ follow-ups are read-only, so that turn gets no partial save · continuing a turn cut by the limit has not been measured yet"
+    [ -z "$THREAD_SAVED" ] && echo "      🔴 no thread id was recorded for this case (${THREAD_WHY:-reason unknown}) — it cannot be continued with a follow-up"
   fi
 elif [ "$AUTHOR" = codex ] || [ "$AUTHOR" = codex-via-stdout ]; then
-  echo "   1. $RESP_REL 를 Read 한다. **내용이 실제 분석인지 먼저 확인해라** —"
-  echo "      '요청서를 읽지 못했다' 류의 실패 보고일 수 있다. 그러면 검토할 것이 없다"
-  echo "   2. **Codex 원문을 고치지 마라.** 파일 끝에 '## Claude 검토' 섹션을 덧붙인다"
-  echo "      — 채택 / 보류 / 기각 + 각각의 이유, 내 가설이 기각됐다면 코드로 재확인한 결과, 적용 계획"
-  echo "   3. 검토 결과를 사용자에게 보고하고 적용 여부 판단을 받는다"
+  echo "   1. Read $RESP_REL. **First check that the content is a real analysis** —"
+  echo "      it may be a failure report such as 'could not read the request'. Then there is nothing to review"
+  echo "   2. **Do not edit the Codex text.** Append a '## Claude 검토' section at the end of the file"
+  echo "      — adopt / hold / reject with reasons, a code re-check if your hypothesis was rejected, and the plan to apply"
+  echo "   3. Report the review to the user and let them decide whether to apply it"
 else
-  echo "   1. 실패 원인을 로그에서 확인해 사용자에게 보고한다"
-  echo "   2. 요청서를 다시 만들지 말고, 원인을 고친 뒤 같은 요청서로 재실행한다"
+  echo "   1. Find the failure cause in the logs and report it to the user"
+  echo "   2. Do not rewrite the request; fix the cause and rerun with the same request"
 fi
 
 # ── 🔁 1턴 CONSULT 뒤: 되묻기 안내 (2026-08-25) ─────────────────
@@ -2620,30 +2626,30 @@ fi
 if [ "$KIND" = doc ] && [ "$AUTHOR" != partial ]; then
   if [ -n "$THREAD_SAVED" ]; then
     echo
-    echo "🔁 **되물을 수 있다** — 이 건은 이어서 대화할 수 있게 준비됐다."
+    echo "🔁 **Follow-up possible** — this case is ready to continue the conversation."
     if [ "$MODE" = edit ]; then
-      echo "   🔧 EDIT 건이다 — 추가 수정까지 시키려면 반박서 frontmatter 에 **edit: yes** 를 적고,"
-      echo "      사용자 확인을 다시 받은 뒤 **CR_ALLOW_EDIT=1** 을 붙여 던진다. 턴마다 확인한다. 없으면 읽기 전용이다."
+      echo "   🔧 an EDIT case — to have Codex edit further, put **edit: yes** in the follow-up frontmatter,"
+      echo "      confirm with the user again, then send it with **CR_ALLOW_EDIT=1**. Confirm every turn. Without it the turn is read-only."
     fi
-    echo "   실측(2026-08-25): 같은 장애를 CONSULT 단발로 **3회** 물어도 결론이 안 났고,"
-    echo "   사용자가 Codex 와 **11턴** 대화하니 났다. 같은 모델·같은 effort 였다."
-    echo "   **차이는 턴 수다.** 한 번 받고 혼자 해석해 결론 내지 마라."
+    echo "   Measured (2026-08-25): asking about the same failure in **3** single CONSULTs reached no conclusion;"
+    echo "   the user talking with Codex for **11 turns** did. Same model, same effort."
+    echo "   **The difference was the number of turns.** Do not conclude alone from one answer."
     echo
-    echo "   🔴 **되묻기는 예외다. 기본은 여기서 끝내는 것이다.** 사유는 셋뿐이다:"
-    echo "     · **핵심 증상이 설명되지 않았다** ← 물어본 이유 자체가 안 풀렸다"
-    echo "     · **Codex 지적을 기각했는데 그 근거를 코드·로그로 확인 못 했다**"
-    echo "       (내 기각이 틀렸을 수 있고, Codex 는 자기가 기각당한 줄 모른다)"
-    echo "     · **응답에 명백한 사실 오류가 있다**"
-    echo "   ⚠️ 'Codex 가 내 가설에 동의했다' 는 사유가 아니다. 되묻기 2회 이상은 **새 정보가 있을 때만.**"
-    echo "   ⚠️ 원본을 안 열었을 뿐이고 내가 직접 열 수 있으면 — **되묻지 말고 내가 연다.** 그게 빠르다."
+    echo "   🔴 **A follow-up is the exception. The default is to stop here.** There are only three reasons:"
+    echo "     · **the core symptom is not explained** ← the reason for asking is unresolved"
+    echo "     · **you rejected a Codex point but could not confirm the grounds in code or logs**"
+    echo "       (your rejection may be wrong, and Codex does not know it was rejected)"
+    echo "     · **the response has an obvious factual error**"
+    echo "   ⚠️ 'Codex agreed with my hypothesis' is not a reason. A second follow-up or more **only with new information.**"
+    echo "   ⚠️ If Codex just did not open a source you can open yourself — **do not follow up; open it yourself.** That is faster."
     echo
-    echo "   방법:"
-    echo "     1. docs/codex_rescue/${STAMP}_followup2_${SLUG}.md 를 쓴다 (turn: 2)"
-    echo "     2. bash \$0 --followup 그 경로   ← run_in_background: true"
+    echo "   How:"
+    echo "     1. Write docs/codex_rescue/${STAMP}_followup2_${SLUG}.md (turn: 2)"
+    echo "     2. bash \$0 --followup <that path>   ← run_in_background: true"
   elif [ -n "$THREAD_WHY" ]; then
     echo
-    echo "⚠️ 이 건은 **되물을 수 없다** — $THREAD_WHY"
-    echo "   1턴 분석 자체는 정상이다. 더 물어야 하면 새 CONSULT 요청서를 써라."
+    echo "⚠️ this case **cannot be followed up** — $THREAD_WHY"
+    echo "   The turn-1 analysis itself is fine. To ask more, write a new CONSULT request."
   fi
 fi
 

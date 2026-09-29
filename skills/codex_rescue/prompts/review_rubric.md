@@ -1,7 +1,8 @@
-<!-- 출처: openai/codex codex-rs/prompts/templates/review/rubric.md (Apache-2.0), 2026-09-15 main 기준.
-     1~62줄의 판정 기준만 옮겼다. 58줄(JSON priority 필드)과 64줄 이후(JSON 출력 스키마)는 뺐다 —
-     한 번에 JSON 으로 내면 한도로 끊길 때 아무것도 남지 않아 중간 저장과 충돌하기 때문이다.
-     출력 형식은 send.sh 의 REVIEW 프롬프트가 정한다. Codex 가 갱신되면 이 파일을 다시 가져온다. -->
+<!-- Source: openai/codex codex-rs/prompts/templates/review/rubric.md (Apache-2.0), main as of 2026-09-15.
+     Only the review criteria (lines 1–62) are copied. Line 58 (the JSON priority field) and lines 64 on (the JSON
+     output schema) are left out — a single JSON answer leaves nothing behind when a usage limit cuts the run,
+     which conflicts with saving as you go. The output format is set by the REVIEW prompt in send.sh.
+     Fetch this file again when Codex updates it. -->
 
 # Review guidelines:
 

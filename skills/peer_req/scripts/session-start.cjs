@@ -114,25 +114,25 @@ function main() {
   const line = parts.join(' · ');
 
   const ctx = [
-    '[peer_req] 플러그인이 로드됐다. 이번 세션의 **첫 응답 끝에** 사용자에게 아래 한 줄을 사용자의 언어로 알려라. 이미 알렸으면 반복하지 마라.',
+    '[peer_req] The plugin is loaded. At the **end of your first reply** in this session, give the user the line below in the language of the user. If already given, do not repeat it.',
     '  → ' + line,
   ];
   if (!rcOn) {
     ctx.push(
-      '[peer_req] ~/.claude/settings.json 에 "remoteControlAtStartup": true 가 없다. 다른 머신의 짝과는 Remote Control 로만 통신한다.',
-      '  사용자가 peer_req 를 쓰려 할 때 켜는 법을 안내하라: /config 의 "Enable Remote Control for all sessions" 또는 settings.json 에 "remoteControlAtStartup": true. 설정을 대신 바꾸지 마라.'
+      '[peer_req] ~/.claude/settings.json has no "remoteControlAtStartup": true. Peers on other machines are reachable only through Remote Control.',
+      '  When the user wants to use peer_req, explain how to turn it on: "Enable Remote Control for all sessions" in /config, or "remoteControlAtStartup": true in settings.json. Do not change the setting yourself.'
     );
   }
   if (!autoUpdateOn) {
     ctx.push(
-      '[peer_req] 이 플러그인의 마켓(comonetso)에 자동 업데이트가 꺼져 있어 새 버전이 저절로 오지 않는다. 첫 응답의 알림 줄에서 켜는 법을 한 줄로 덧붙여라:',
-      '  ~/.claude/settings.json 의 "extraKnownMarketplaces": { "comonetso": { "source": { "source": "github", "repo": "comonetso/claudeStateBar" }, "autoUpdate": true } } (Claude State Bar 확장을 쓰면 알림의 [켜기] 한 번). 설정을 대신 바꾸지 마라.'
+      '[peer_req] Auto-update is off for the marketplace of this plugin (comonetso), so new versions do not arrive by themselves. Add one line on how to turn it on to the notice in your first reply:',
+      '  in ~/.claude/settings.json, "extraKnownMarketplaces": { "comonetso": { "source": { "source": "github", "repo": "comonetso/claudeStateBar" }, "autoUpdate": true } } (with the Claude State Bar extension, one click on the button in its notice). Do not change the setting yourself.'
     );
   }
   if (items.length) {
-    ctx.push('[peer_req] 사용자에게 아직 알리지 않은 요청·결과:');
-    items.slice(0, 10).forEach((it) => ctx.push('  - ' + (it.direction === 'inbound' ? '받음' : '보냄') + ' ' + it.id + ' · ' + it.peer + ' · ' + it.state));
-    ctx.push('  자세한 내용은 peer-req:peer_req 스킬의 inbox 절차로 확인한다(알린 뒤 --mark-reported).');
+    ctx.push('[peer_req] Requests and results not yet reported to the user:');
+    items.slice(0, 10).forEach((it) => ctx.push('  - ' + (it.direction === 'inbound' ? 'received' : 'sent') + ' ' + it.id + ' · ' + it.peer + ' · ' + it.state));
+    ctx.push('  Check the details with the inbox procedure of the peer-req:peer_req skill (then --mark-reported).');
   }
 
   const out = { hookEventName: 'SessionStart', additionalContext: ctx.join('\n') };

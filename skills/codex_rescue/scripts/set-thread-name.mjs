@@ -22,13 +22,13 @@ function parseArgs(argv) {
     const o = {};
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
-        if (!a.startsWith('--')) throw new Error(`알 수 없는 인자: ${a}`);
+        if (!a.startsWith('--')) throw new Error(`unknown argument: ${a}`);
         const v = argv[i + 1];
-        if (v === undefined) throw new Error(`${a} 에 값이 없다`);
+        if (v === undefined) throw new Error(`${a} needs a value`);
         o[a.slice(2)] = v;
         i++;
     }
-    if (!o.thread) throw new Error('--thread 가 필요하다');
+    if (!o.thread) throw new Error('--thread is required');
     return o;
 }
 
@@ -48,8 +48,8 @@ function rpc(requestTimeoutMs) {
         for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error(dead)); }
         pending.clear();
     };
-    child.on('error', (e) => failAll(`app-server 를 띄우지 못했다: ${e.message}`));
-    child.on('exit', (code, sig) => failAll(`app-server 가 먼저 끝났다 (exit ${code ?? sig})`));
+    child.on('error', (e) => failAll(`could not start app-server: ${e.message}`));
+    child.on('exit', (code, sig) => failAll(`app-server exited first (exit ${code ?? sig})`));
     readline.createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', (line) => {
         let j;
         try { j = JSON.parse(line); } catch { return; }
@@ -68,7 +68,7 @@ function rpc(requestTimeoutMs) {
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     pending.delete(id);
-                    reject(new Error(`${method} 응답이 ${requestTimeoutMs}ms 안에 오지 않았다`));
+                    reject(new Error(`no ${method} response within ${requestTimeoutMs}ms`));
                 }, requestTimeoutMs);
                 pending.set(id, { resolve, reject, timer });
                 send({ id, method, params });
@@ -76,7 +76,7 @@ function rpc(requestTimeoutMs) {
         },
         notify(method, params) { if (!dead) send({ method, params }); },
         close() {
-            failAll('닫힘');
+            failAll('closed');
             if (child.exitCode !== null || child.signalCode !== null) return;
             try {
                 if (IS_WIN) cp.execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
@@ -96,7 +96,7 @@ async function main() {
         ? threadNameFromRequest(o['request-file'])
         : threadNameFor({ mode: o.mode, subject: o.subject, slug: o.slug });
     if (!name) {
-        process.stderr.write('set-thread-name: 이름을 만들 주제가 없어 건너뛴다\n');
+        process.stderr.write('set-thread-name: no subject to build a name from — skipped\n');
         return 0;
     }
     const conn = rpc(PENDING_DECISION.requestTimeoutMs);
@@ -104,9 +104,9 @@ async function main() {
         await conn.request('initialize', { clientInfo: { name: 'claude-state-bar-thread-name', version: '0.1.0' } });
         conn.notify('initialized', {});
         await conn.request('thread/name/set', { threadId: o.thread, name });
-        process.stdout.write(`대화 이름: ${name}\n`);
+        process.stdout.write(`thread name: ${name}\n`);
     } catch (e) {
-        process.stderr.write(`set-thread-name: 이름을 못 붙였다 — ${e && e.message}\n`);
+        process.stderr.write(`set-thread-name: could not set the name — ${e && e.message}\n`);
     } finally {
         conn.close();
     }
@@ -114,6 +114,6 @@ async function main() {
 }
 
 main().then((code) => process.exit(code), (e) => {
-    process.stderr.write(`set-thread-name: 예상 못 한 오류 — ${e && e.message}\n`);
+    process.stderr.write(`set-thread-name: unexpected error — ${e && e.message}\n`);
     process.exit(0);
 });

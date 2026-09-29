@@ -41,7 +41,7 @@
     const cs = getComputedStyle(el);
     const big = parseFloat(cs.fontSize) >= 24 || (parseFloat(cs.fontSize) >= 18.66 && Number(cs.fontWeight) >= 700);
     const e = effective(el);
-    if (e.ratio < (big ? 3 : 4.5)) low.push(e.ratio + (e.opacity < 1 ? ' (투명도 ' + e.opacity + ')' : '') + ' ' + describe(el) + ' fg=' + e.fg.map(Math.round) + ' bg=' + e.bg.map(Math.round));
+    if (e.ratio < (big ? 3 : 4.5)) low.push(e.ratio + (e.opacity < 1 ? ' (opacity ' + e.opacity + ')' : '') + ' ' + describe(el) + ' fg=' + e.fg.map(Math.round) + ' bg=' + e.bg.map(Math.round));
   }
   out.lowContrastEffective = low;
 
@@ -53,7 +53,7 @@
     if (window.__diag && window.__diag.clickTargets && window.__diag.clickTargets.has(el)) return 'addEventListener(click)';
     return null;
   };
-  out.fakeButtons = [...document.querySelectorAll('body *')].filter((el) => !skipExt(el) && rendered(el) && !el.matches(NATIVE) && !el.closest(NATIVE) && clickOf(el)).map((el) => describe(el) + ' ← ' + clickOf(el) + (el.tabIndex >= 0 ? ' · 포커스 가능' : ' · 🔴 키보드로 못 감') + (getComputedStyle(el).cursor === 'pointer' ? '' : ' · 커서 표시 없음'));
+  out.fakeButtons = [...document.querySelectorAll('body *')].filter((el) => !skipExt(el) && rendered(el) && !el.matches(NATIVE) && !el.closest(NATIVE) && clickOf(el)).map((el) => describe(el) + ' ← ' + clickOf(el) + (el.tabIndex >= 0 ? ' · focusable' : ' · 🔴 not keyboard-reachable') + (getComputedStyle(el).cursor === 'pointer' ? '' : ' · no pointer cursor'));
 
   // ── (3) 목표 크기 24px — WCAG 2.5.8 예외(문장 안 인라인·간격) 반영(S27·S28·S29) ──
   const targets = [...document.querySelectorAll('a[href],button,input:not([type=hidden]),select,textarea,[role=button],[role=link],[role=checkbox],[role=tab]')].filter((el) => !skipExt(el) && rendered(el));

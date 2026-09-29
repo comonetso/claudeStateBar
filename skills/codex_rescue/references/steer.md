@@ -17,7 +17,7 @@ This applies **while** a run is going (a CONSULT · EDIT · REVIEW turn or a fol
 
 🔴 **Never pass the text as an argv.** Windows CreateProcess caps a command line at 32,767 characters, and non-ASCII text (3 UTF-8 bytes per character) hits it sooner (measured: 32,000 B succeeds, 32,700 B fails). Use a file even when it looks short — measuring the length is one more judgement to get wrong. (`--input-file -` reads stdin.)
 
-**`<stamp>` is the one in the request file name** — you set it yourself when writing the request. **Never guess it or make a new one.** It equals the `대화키:` value on `send.sh`'s stderr.
+**`<stamp>` is the one in the request file name** — you set it yourself when writing the request. **Never guess it or make a new one.** It equals the `conversation key:` value on `send.sh`'s stderr.
 
 ## When — only when the user said something
 
@@ -43,7 +43,7 @@ This applies **while** a run is going (a CONSULT · EDIT · REVIEW turn or a fol
 
 🔴 **Don't translate `30` as "the server rejected it".** Besides an explicit rejection, 30 covers **no steer channel · turnId mismatch · a queue left after the turn ended · an RPC reply timeout** — the request frame was already sent, so **even "the server got it but replied late" is 30.** Relay the reason string as is, without interpreting it.
 🔴 **"Queued" is not "delivered".** The relay counts delivery only after a reply with the same turnId. 32 means unknown; reporting unknown as success makes the user act as if it had been applied.
-⚠️ **`exit 0` alone isn't delivery** — `--help`, `--version` and `--dry-run` also exit 0. Judge by the `전달됨 · seq=N · turnId=…` output together with the code.
+⚠️ **`exit 0` alone isn't delivery** — `--help`, `--version` and `--dry-run` also exit 0. Judge by the `delivered · seq=N · turnId=…` output together with the code.
 ⚠️ **Dedicated review and compaction turns can't be steered** (`NonSteerableTurnKind = ["review","compact"]`). That is why the live REVIEW runs as a **normal turn**; a review on the old path (`--review` without `CR_LIVE_STEER`) can't be steered.
 ⚠️ **Steering an EDIT doesn't undo files already changed**; a new direction applies from then on. If it is stopped (results.md §9 step 6) the code may be half-changed — compare the report's `## 1. 변경한 파일·라인` with `git diff`.
 ⚠️ **A finished turn can't take input — but it doesn't always return 31.** Finished before the initial check ⇒ 31; finished in a race after passing the check ⇒ **30 or 32** (`-32600 no active turn to steer` comes after enqueue, so it is **30**). Either way it didn't get in — use a follow-up (followup.md).

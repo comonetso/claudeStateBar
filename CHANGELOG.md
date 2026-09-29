@@ -19,6 +19,16 @@ resting colour as a session item, and its glyph the light blue of a Codex sessio
 A workflow whose end notice arrived while Claude was answering could stay listed as running in the
 workflow panel. That kind of notice is now read too.
 
+A background command that Claude stopped with TaskStop stayed listed as running in the background-task
+panel, and kept the grey status-bar dot lit, because Claude Code sends no end notice for a stopped task.
+The stop itself is now read: a successful TaskStop ends the task at that moment and shows it as completed,
+without the finish chime (it is mostly a dev server Claude stops to start again); a failed one changes
+nothing.
+
+An ordinary command that Claude Code moved to the background after its time limit was shown as finished
+at that moment, under the long-running commands, though it went on running. It now moves to the
+background group, keeps its start time, and ends like any background task.
+
 A running agent's time in the workflow panel stood still while the agent waited on a command or was
 thinking, because it was measured to the agent's last log entry. It now counts from the agent's start
 to now and ticks every second. Finished agents still show how long they took.

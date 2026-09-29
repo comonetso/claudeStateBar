@@ -49,10 +49,10 @@ function ingestEnvelope(root, env, from) {
   const dir = store.requestDir(root, env.request_id);
   const rec = store.readRequestRecord(dir);
   if (!rec || rec.direction !== 'outbound') {
-    return { ok: false, unknown_request: true, request_id: env.request_id, hint: '이 저장소가 보낸 요청이 아니다. 기록하지 않는다' };
+    return { ok: false, unknown_request: true, request_id: env.request_id, hint: 'not a request sent from this repository — not recorded' };
   }
   const alias = findAlias(dir, rec, env);
-  if (!alias) return { ok: false, request_id: env.request_id, hint: '응답자 ' + env.sender_endpoint + ' 는 이 요청의 받는 쪽이 아니고, 우리가 보낸 시도와도 맞지 않는다' };
+  if (!alias) return { ok: false, request_id: env.request_id, hint: 'responder ' + env.sender_endpoint + ' is not a recipient of this request and matches none of our send attempts' };
   // 같은 결과를 또 받았으면(무인 "다시 확인" 등) 기록하지 않는다 — 이미 알린 것이 다시 "알리지 않은 것" 이 되지 않게
   const before = state.fold(store.listEvents(dir))[alias];
   if (env.type === 'result' && before && before.state === env.status) {

@@ -77,18 +77,18 @@ test('I2 중복 별칭을 잡는다 (JSON.parse 가 삼키는 것)', () => {
   assert.deepEqual(findDuplicateKeys(text), ['peers.b']);
   const r = validateBook(text, path.join(dir, '.peer_req.json'));
   assert.equal(r.ok, false);
-  assert.ok(r.errors.some((e) => e.includes('중복 키: peers.b')));
+  assert.ok(r.errors.some((e) => e.includes('duplicate key: peers.b')));
 });
 
 test('I2 잘못된 root 를 잡는다 (상대경로 · 주소록 위치와 다름 · 자기 자신)', () => {
   const dir = tmp('book');
   const b1 = goodBook('relative/path');
-  assert.ok(validateBook(JSON.stringify(b1), path.join(dir, '.peer_req.json')).errors.some((e) => e.includes('절대경로')));
+  assert.ok(validateBook(JSON.stringify(b1), path.join(dir, '.peer_req.json')).errors.some((e) => e.includes('absolute path')));
   const b2 = goodBook('C:/somewhere/else');
-  assert.ok(validateBook(JSON.stringify(b2), path.join(dir, '.peer_req.json')).errors.some((e) => e.includes('다른 저장소에서 복사')));
+  assert.ok(validateBook(JSON.stringify(b2), path.join(dir, '.peer_req.json')).errors.some((e) => e.includes('copied from another repository')));
   const b3 = goodBook(fwd(dir));
   b3.peers.b.location.root = fwd(dir);
-  assert.ok(validateBook(JSON.stringify(b3), path.join(dir, '.peer_req.json')).errors.some((e) => e.includes('자기 자신')));
+  assert.ok(validateBook(JSON.stringify(b3), path.join(dir, '.peer_req.json')).errors.some((e) => e.includes('itself as a peer')));
 });
 
 // ───────────── I3 envelope ─────────────
@@ -528,7 +528,7 @@ test('목록에 읽지 못한 줄·처음 보는 종류의 줄이 있으면 남�
   fs.writeFileSync(f1, 'This session is a [1]\nPeer sessions (2):\n  host-lively-otter [0000bb]  ·  Remote Control  ·  idle\n  real-peer [0000ee]  ·  Remote Control (new)  ·  idle\n');
   const p1 = t.prep(f1);
   assert.equal(p1.targets[0].status, 'ask');
-  assert.ok(p1.targets[0].reason.includes('처음 보는 종류'));
+  assert.ok(p1.targets[0].reason.includes('unfamiliar kind'));
   const f2 = path.join(t.A, 'agents-short.txt');
   fs.writeFileSync(f2, 'This session is a [1]\nPeer sessions (2):\n  host-lively-otter [0000bb]  ·  Remote Control  ·  idle\n  this line changed format\n');
   assert.equal(t.prep(f2).targets[0].status, 'ask');
@@ -1000,7 +1000,7 @@ test('기기 이름은 대소문자를 무시한다 — 같은 PC 를 달리 적
   fs.writeFileSync(path.join(A, '.peer_req.json'), JSON.stringify(book));
   const v = validateBook(JSON.stringify(book), path.join(A, '.peer_req.json'));
   assert.equal(v.ok, true);
-  assert.ok(v.warnings.some((w) => w.includes('대소문자')));
+  assert.ok(v.warnings.some((w) => w.includes('letter case')));
   const p = cli(['prepare', '--to', 'b', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agentsFile], { cwd: A, env: envA });
   assert.equal(p.targets[0].same_machine, true);
   assert.equal(p.targets[0].via, 'auto');

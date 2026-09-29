@@ -12,7 +12,7 @@
 // 조회가 일부 실패해도 나머지는 낸다 — 이 스크립트가 스킬 발동을 막으면 안 된다.
 //
 // 사용법:
-//   node codex-status.mjs [--cwd <프로젝트 루트>] [--days <n>] [--json] [--no-history]
+//   node codex-status.mjs [--cwd <project root>] [--days <n>] [--json] [--no-history]
 //
 // 종료 코드: 0 전부 조회 / 3 일부 실패(출력은 낸다) / 2 인자 오류
 
@@ -46,10 +46,10 @@ function parseArgs(argv) {
         else if (a === '--cwd') o.cwd = argv[++i];
         else if (a === '--days') o.days = Number(argv[++i]);
         else if (a === '--help' || a === '-h') o.help = true;
-        else throw new Error(`알 수 없는 인자: ${a}`);
+        else throw new Error(`unknown argument: ${a}`);
     }
-    if (!o.cwd) throw new Error('--cwd 에 경로가 없다');
-    if (!Number.isFinite(o.days) || o.days <= 0) throw new Error('--days 는 양수여야 한다');
+    if (!o.cwd) throw new Error('--cwd needs a path');
+    if (!Number.isFinite(o.days) || o.days <= 0) throw new Error('--days must be a positive number');
     return o;
 }
 
@@ -74,8 +74,8 @@ function startStdioServer(cwd, requestTimeoutMs) {
         for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error(dead)); }
         pending.clear();
     };
-    child.on('error', (e) => failAll(`app-server 를 띄우지 못했다: ${e.message}`));
-    child.on('exit', (code, sig) => failAll(`app-server 가 먼저 끝났다 (exit ${code ?? sig})`));
+    child.on('error', (e) => failAll(`could not start app-server: ${e.message}`));
+    child.on('exit', (code, sig) => failAll(`app-server exited first (exit ${code ?? sig})`));
     readline.createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', (line) => {
         let j;
         try { j = JSON.parse(line); } catch { return; }
@@ -94,7 +94,7 @@ function startStdioServer(cwd, requestTimeoutMs) {
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     pending.delete(id);
-                    reject(new Error(`${method} 응답이 ${requestTimeoutMs}ms 안에 오지 않았다`));
+                    reject(new Error(`no ${method} response within ${requestTimeoutMs}ms`));
                 }, requestTimeoutMs);
                 pending.set(id, { resolve, reject, timer });
                 send(params === undefined ? { id, method } : { id, method, params });
@@ -102,7 +102,7 @@ function startStdioServer(cwd, requestTimeoutMs) {
         },
         notify(method, params) { if (!dead) send({ method, params }); },
         close() {
-            failAll('닫힘');
+            failAll('closed');
             if (child.exitCode !== null || child.signalCode !== null) return;
             try {
                 // shell:true 라 child.pid 는 cmd.exe 다 — 트리째 죽인다 (lib/appserver.mjs 와 같은 방식)
@@ -120,7 +120,7 @@ async function queryAppServer(cwd) {
         // RPC 왕복 상한은 중계기와 같은 값을 쓴다 — 여기서 새 숫자를 만들지 않는다.
         ({ PENDING_DECISION: pending } = await import(new URL('./live-consult.mjs', import.meta.url).href));
     } catch (e) {
-        res.errors.lib = `모듈을 싣지 못했다: ${e && e.message}`;
+        res.errors.lib = `could not load module: ${e && e.message}`;
         return res;
     }
 
@@ -225,10 +225,11 @@ async function summarizeRollout(file) {
         } else if (j.type === 'response_item' && TOOL_CALL_TYPES.has(p.type)) {
             if (cur) cur.calls++;
         } else if (j.type === 'response_item' && p.type === 'message' && p.role === 'user' && s.userSeen < 5) {
-            // 요청서 기반 실행은 프롬프트에 `요청서: <경로>_request_<슬러그>.md` 가 들어간다.
+            // 요청서 기반 실행은 프롬프트에 `Request: <경로>_request_<슬러그>.md` 가 들어간다
+            // (2026-09-29 전 기록은 `요청서: …` — 둘 다 읽어야 과거 소모 집계가 끊기지 않는다).
             s.userSeen++;
             const text = JSON.stringify(p.content || '');
-            if (text.includes('요청서') && text.includes('_request_')) s.isRequest = true;
+            if ((text.includes('Request:') || text.includes('요청서')) && text.includes('_request_')) s.isRequest = true;
             const m = !s.slug && text.match(/_request_([^\s"'`\\/]+?)\.md/);
             if (m) s.slug = m[1];
         } else if (j.type === 'event_msg' && p.type === 'token_count' && p.rate_limits) {
@@ -358,20 +359,20 @@ function judgeCombo(hist, crit, model, effort) {
 
 // ── 출력 ───────────────────────────────────────────────────────────────
 function fmtReset(epochSec) {
-    if (!Number.isFinite(epochSec)) return '리셋 시각 모름';
+    if (!Number.isFinite(epochSec)) return 'reset time unknown';
     const d = new Date(epochSec * 1000);
     const mins = Math.round((d.getTime() - Date.now()) / 60000);
     const pad = (n) => String(n).padStart(2, '0');
     const when = `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    if (mins <= 0) return `리셋 ${when}`;
-    const left = mins >= 60 ? `${Math.floor(mins / 60)}시간 ${mins % 60}분 후` : `${mins}분 후`;
-    return `리셋 ${when} (${left})`;
+    if (mins <= 0) return `resets ${when}`;
+    const left = mins >= 60 ? `in ${Math.floor(mins / 60)} h ${mins % 60} min` : `in ${mins} min`;
+    return `resets ${when} (${left})`;
 }
 
 function fmtWindow(label, w) {
-    if (!w || !Number.isFinite(w.usedPercent)) return `${label}: 정보 없음`;
+    if (!w || !Number.isFinite(w.usedPercent)) return `${label}: no data`;
     const left = Math.max(0, 100 - w.usedPercent);
-    return `${label}: ${w.usedPercent}% 사용 · 남은 여유 ${left}% · ${fmtReset(w.resetsAt)}`;
+    return `${label}: ${w.usedPercent}% used · ${left}% left · ${fmtReset(w.resetsAt)}`;
 }
 
 function pickSnapshot(rateLimits) {
@@ -388,7 +389,7 @@ function pickWindow(snap, mins) {
 
 function render(o, st, hist) {
     const L = [];
-    L.push('── Codex 현재 상태 ──');
+    L.push('── Codex status now ──');
 
     const cfg = st.config || {};
     const models = st.models || [];
@@ -396,28 +397,28 @@ function render(o, st, hist) {
     const curModel = cfg.model || (def && (def.model || def.id)) || null;
     const curModelInfo = models.find((m) => (m.model || m.id) === curModel);
     const curEffort = cfg.model_reasoning_effort || (curModelInfo && curModelInfo.defaultReasoningEffort) || null;
-    if (st.errors.config && !curModel) L.push(`모델/추론 수준: 조회 실패 — ${st.errors.config}`);
-    else L.push(`모델/추론 수준: ${curModel || '모름'} / ${curEffort || '모름'}${cfg.model ? '' : '   (설정에 없어 기본값으로 표시)'}`);
+    if (st.errors.config && !curModel) L.push(`model/reasoning: lookup failed — ${st.errors.config}`);
+    else L.push(`model/reasoning: ${curModel || 'unknown'} / ${curEffort || 'unknown'}${cfg.model ? '' : '   (not in config, showing the default)'}`);
 
     const snap = pickSnapshot(st.rateLimits);
     if (st.errors.rateLimits || st.errors.appServer || st.errors.lib) {
-        L.push(`한도: 조회 실패 — ${st.errors.rateLimits || st.errors.appServer || st.errors.lib}`);
+        L.push(`limits: lookup failed — ${st.errors.rateLimits || st.errors.appServer || st.errors.lib}`);
     } else if (!snap) {
-        L.push('한도: 응답에 한도 정보가 없다');
+        L.push('limits: the response has no limit data');
     } else {
         const five = pickWindow(snap, FIVE_HOUR_MINS);
         const weekly = pickWindow(snap, WEEKLY_MINS);
-        L.push(!five && weekly ? '5시간 한도: 5시간 제한 미적용' : fmtWindow('5시간 한도', five));
-        L.push(fmtWindow('주간 한도 ', weekly));
-        if (snap.planType) L.push(`플랜: ${snap.planType}`);
-        if (snap.rateLimitReachedType) L.push(`🔴 한도 도달 상태: ${snap.rateLimitReachedType}`);
+        L.push(!five && weekly ? '5-hour limit: none on this plan' : fmtWindow('5-hour limit', five));
+        L.push(fmtWindow('weekly limit', weekly));
+        if (snap.planType) L.push(`plan: ${snap.planType}`);
+        if (snap.rateLimitReachedType) L.push(`🔴 limit reached: ${snap.rateLimitReachedType}`);
     }
 
     if (st.errors.models) {
-        L.push(`모델 목록: 조회 실패 — ${st.errors.models}`);
+        L.push(`model list: lookup failed — ${st.errors.models}`);
     } else if (models.length) {
         // 공식 설명을 함께 낸다 — 난이도에 맞는 조합을 고를 때 지어낸 서열 대신 이 문구를 근거로 쓴다(§ 2-1).
-        L.push('고를 수 있는 모델 (공식 설명):');
+        L.push('selectable models (official descriptions):');
         const effortDesc = new Map();
         for (const m of models) {
             const id = m.model || m.id;
@@ -427,63 +428,63 @@ function render(o, st, hist) {
                 return name;
             }).join('/');
             const retire = m.upgradeInfo && m.upgradeInfo.migrationMarkdown ? `  ⚠️ ${m.upgradeInfo.migrationMarkdown}` : '';
-            L.push(`  - ${id}${id === curModel ? ' (현재)' : ''}  [${efforts || '추론 수준 정보 없음'}]  ${m.description || ''}${retire}`);
+            L.push(`  - ${id}${id === curModel ? ' (current)' : ''}  [${efforts || 'no reasoning-level data'}]  ${m.description || ''}${retire}`);
         }
         if (effortDesc.size) {
-            L.push('추론 수준 (공식 설명):');
+            L.push('reasoning levels (official descriptions):');
             for (const [name, d] of effortDesc) L.push(`  - ${name}: ${d}`);
         }
     }
 
     const crit = buildCriteria(snap, Date.now());
-    L.push('── 한도 기준 (난이도로 고른 조합의 과거 1회 최대 소모가 넘으면 권장을 낮춘다) ──');
-    if (crit.reached) L.push(`🔴 한도 도달 상태: ${crit.reached}`);
-    if (crit.shape === 'unknown') L.push('한도를 조회하지 못했다 → 난이도만 보고 권장한다');
-    else if (crit.shape === 'none') L.push('한도 창이 없다 → 난이도만 보고 권장한다');
-    if (crit.fiveLeft !== undefined) L.push(`5시간 창 기준: 남은 여유 ${crit.fiveLeft}%`);
+    L.push('── limit baseline (lower the recommendation when the largest past single use of the combination chosen by difficulty exceeds it) ──');
+    if (crit.reached) L.push(`🔴 limit reached: ${crit.reached}`);
+    if (crit.shape === 'unknown') L.push('limits could not be queried → recommend by difficulty only');
+    else if (crit.shape === 'none') L.push('no limit windows → recommend by difficulty only');
+    if (crit.fiveLeft !== undefined) L.push(`5-hour window baseline: ${crit.fiveLeft}% left`);
     if (crit.weeklyLeft !== undefined) {
         L.push(crit.dailyShare === null
-            ? `주간 창 기준: 리셋 시각을 몰라 하루 몫을 못 낸다 (남은 여유 ${crit.weeklyLeft}%)`
-            : `주간 창 기준: 하루 몫 ${crit.dailyShare}% (남은 여유 ${crit.weeklyLeft}% ÷ 리셋까지 ${crit.daysLeft}일${crit.daysLeft < 1 ? ', 하루 미만이라 1일로 계산' : ''})`);
+            ? `weekly window baseline: reset time unknown, so no daily share (${crit.weeklyLeft}% left)`
+            : `weekly window baseline: daily share ${crit.dailyShare}% (${crit.weeklyLeft}% left ÷ ${crit.daysLeft} days to reset${crit.daysLeft < 1 ? ', under a day so counted as 1' : ''})`);
     }
 
     if (hist) {
         if (hist.error) {
-            L.push(`과거 1회 소모: 계산 실패 — ${hist.error}`);
+            L.push(`past single use: calculation failed — ${hist.error}`);
         } else {
-            const scope = hist.plan ? `${hist.plan} 플랜 ` : '';
-            const other = hist.skippedPlan ? ` · 다른 플랜 기록 ${hist.skippedPlan}건 제외` : '';
-            L.push(`── 과거 1회 소모 (최근 ${hist.days}일 ${scope}요청서 기반 실행의 턴 단위${other}) ──`);
+            const scope = hist.plan ? `${hist.plan} plan ` : '';
+            const other = hist.skippedPlan ? ` · ${hist.skippedPlan} records from other plans excluded` : '';
+            L.push(`── past single use (per turn of ${scope}request-based runs, last ${hist.days} days${other}) ──`);
             const wins = [FIVE_HOUR_MINS, WEEKLY_MINS].filter((m) => hist.windows[m]);
-            const label = (m) => (m === FIVE_HOUR_MINS ? '5시간 창' : '주간 창');
+            const label = (m) => (m === FIVE_HOUR_MINS ? '5-hour window' : 'weekly window');
             if (!wins.some((m) => hist.windows[m].counted)) {
-                L.push(`집계할 수 있는 턴이 없다 (요청서 기반 실행 ${hist.requestRuns}건)`);
+                L.push(`no turns to count (${hist.requestRuns} request-based runs)`);
             } else {
                 for (const m of wins) {
                     const h = hist.windows[m];
-                    L.push(`${label(m)} 전체: ${h.counted}턴 · 중간값 +${h.median}% · 최대 +${h.max}% · 최소 +${h.min}%` +
-                        (h.skippedReset || h.skippedNoData ? `   (제외: 턴 중 창 리셋 ${h.skippedReset} · 사용률 기록 부족 ${h.skippedNoData})` : ''));
+                    L.push(`${label(m)} overall: ${h.counted} turn(s) · median +${h.median}% · max +${h.max}% · min +${h.min}%` +
+                        (h.skippedReset || h.skippedNoData ? `   (excluded: window reset during a turn ${h.skippedReset} · missing usage data ${h.skippedNoData})` : ''));
                 }
                 // 조합별 — 두 창의 조합을 합쳐 한 줄씩. 판정은 위 기준과 대조한 결과다.
                 const keys = new Map();
                 for (const m of wins) for (const g of hist.windows[m].byCombo) keys.set(comboKey(g.model, g.effort), g);
-                L.push('조합별:');
-                const verdictText = { over: '→ 기준 초과', within: '→ 기준 이내', none: '' };
+                L.push('per combination:');
+                const verdictText = { over: '→ over the baseline', within: '→ within the baseline', none: '' };
                 for (const g of keys.values()) {
                     const j = judgeCombo(hist, crit, g.model, g.effort);
                     const parts = [];
-                    if (j.five) parts.push(`5시간 ${j.five.count}턴 중간값 +${j.five.median}% 최대 +${j.five.max}%`);
-                    if (j.weekly) parts.push(`주간 ${j.weekly.count}턴 중간값 +${j.weekly.median}% 최대 +${j.weekly.max}%`);
+                    if (j.five) parts.push(`5-hour ${j.five.count} turn(s) median +${j.five.median}% max +${j.five.max}%`);
+                    if (j.weekly) parts.push(`weekly ${j.weekly.count} turn(s) median +${j.weekly.median}% max +${j.weekly.max}%`);
                     L.push(`  - ${comboKey(g.model, g.effort).padEnd(20)} ${parts.join(' · ')}  ${verdictText[j.verdict]}`.trimEnd());
                 }
-                L.push('  (여기 없는 조합은 기록 없음 — 판정 못 한다)');
+                L.push('  (combinations not listed have no record — cannot be judged)');
                 // 최근 턴 — 이번 작업과 규모를 견줄 재료(작업 이름·걸린 시간·도구 호출 수)
                 const main = hist.windows[wins.find((m) => hist.windows[m].counted)];
-                L.push(`최근 턴 (${label(main.windowMins)}):`);
+                L.push(`recent turns (${label(main.windowMins)}):`);
                 for (const r of main.runs.slice(-5)) {
                     const when = String(r.startedAt || '').slice(0, 16).replace('T', ' ');
-                    const name = `${r.slug || '?'}${r.turns > 1 ? ` ${r.turn}/${r.turns}턴` : ''}`;
-                    L.push(`  - ${when}  ${comboKey(r.model, r.effort)}  ${name}  ${fmtDur(r.durationSec)} · 도구 ${r.calls}회  ${r.from}% → ${r.to}% (+${r.delta}%)`);
+                    const name = `${r.slug || '?'}${r.turns > 1 ? ` turn ${r.turn}/${r.turns}` : ''}`;
+                    L.push(`  - ${when}  ${comboKey(r.model, r.effort)}  ${name}  ${fmtDur(r.durationSec)} · ${r.calls} tool calls  ${r.from}% → ${r.to}% (+${r.delta}%)`);
                 }
             }
         }
@@ -492,9 +493,9 @@ function render(o, st, hist) {
 }
 
 function fmtDur(sec) {
-    if (!Number.isFinite(sec)) return '시간 모름';
+    if (!Number.isFinite(sec)) return 'time unknown';
     const m = Math.floor(sec / 60), s = sec % 60;
-    return m ? `${m}분 ${s}초` : `${s}초`;
+    return m ? `${m} min ${s} s` : `${s} s`;
 }
 
 async function main() {
@@ -504,7 +505,7 @@ async function main() {
         return 2;
     }
     if (o.help) {
-        process.stdout.write('node codex-status.mjs [--cwd <프로젝트 루트>] [--days <n>] [--json] [--no-history]\n');
+        process.stdout.write('node codex-status.mjs [--cwd <project root>] [--days <n>] [--json] [--no-history]\n');
         return 0;
     }
 
@@ -528,6 +529,6 @@ async function main() {
 }
 
 main().then((code) => process.exit(code), (e) => {
-    process.stderr.write(`codex-status: 예상 못 한 오류 — ${e && e.stack ? e.stack : e}\n`);
+    process.stderr.write(`codex-status: unexpected error — ${e && e.stack ? e.stack : e}\n`);
     process.exit(3);
 });

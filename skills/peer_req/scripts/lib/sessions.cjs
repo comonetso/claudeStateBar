@@ -67,7 +67,7 @@ function readRegistry() {
   try {
     names = fs.readdirSync(dir).filter((n) => /^\d+\.json$/.test(n));
   } catch (e) {
-    return { readable: false, sessions: [], reason: dir + ' 를 읽지 못했다' };
+    return { readable: false, sessions: [], reason: 'could not read ' + dir };
   }
   const sessions = [];
   let malformed = 0;
@@ -90,7 +90,7 @@ function readRegistry() {
   });
   // 파일은 있는데 전부 모양이 다르면 형식이 바뀐 것이다 — 읽을 수 없다고 본다
   if (names.length > 0 && malformed === names.length) {
-    return { readable: false, sessions: [], reason: '등록 파일 형식이 예상과 다르다(Claude Code 업데이트?)' };
+    return { readable: false, sessions: [], reason: 'the session registry format is not what was expected (a Claude Code update?)' };
   }
   return { readable: true, sessions: sessions };
 }
@@ -103,7 +103,7 @@ function declaredDir() {
 }
 
 function declaredFile(endpointId) {
-  if (!ab.ID_RE.test(endpointId || '')) throw new Error('endpoint_id 형식 오류: ' + endpointId);
+  if (!ab.ID_RE.test(endpointId || '')) throw new Error('bad endpoint_id format: ' + endpointId);
   return path.join(declaredDir(), endpointId + '.json');
 }
 
@@ -167,7 +167,7 @@ function legacyTitlesDir() {
 }
 
 function titleFile(endpointId) {
-  if (!ab.ID_RE.test(endpointId || '')) throw new Error('endpoint_id 형식 오류: ' + endpointId);
+  if (!ab.ID_RE.test(endpointId || '')) throw new Error('bad endpoint_id format: ' + endpointId);
   return path.join(titlesDir(), endpointId + '.json');
 }
 
@@ -402,7 +402,7 @@ function withSendTo(rows, r) {
 // 보낸 쪽 저장소(sender_root) 아래에서 도는 세션을 찾아 지금 이름을 돌려준다.
 function findReplyTarget(o) {
   const reg = o.registry || readRegistry();
-  if (!reg.readable) return { status: 'ask', reason: '세션 등록 파일을 읽을 수 없다(' + reg.reason + ')', candidates: [] };
+  if (!reg.readable) return { status: 'ask', reason: 'cannot read the session registry (' + reg.reason + ')', candidates: [] };
   const localRows = localRowsOf(o.agents, reg);
   const cands = reg.sessions
     .filter((s) => s.sessionId !== o.selfSessionId && util.isUnder(s.cwd, o.senderRoot))
@@ -412,8 +412,8 @@ function findReplyTarget(o) {
     });
   const sendable = cands.filter((c) => c.send_to);
   if (sendable.length === 1) return { status: 'ready', send_to: sendable[0].send_to, session_id: sendable[0].session_id };
-  if (cands.length === 0) return { status: 'unreachable', reason: '보낸 쪽 저장소(' + o.senderRoot + ')에서 도는 세션이 없다 — 닫혔다' };
-  return { status: 'ask', reason: '보낸 쪽 저장소에서 도는 세션이 ' + cands.length + '개다', candidates: cands };
+  if (cands.length === 0) return { status: 'unreachable', reason: 'no session is running in the sending repository (' + o.senderRoot + ') — it was closed' };
+  return { status: 'ask', reason: cands.length + ' sessions are running in the sending repository', candidates: cands };
 }
 
 // ───────────────────────── 대상 결정 ─────────────────────────
@@ -424,7 +424,7 @@ function resolveRemote(o, peer, make) {
   const rows = o.agents.rows;
   const remote = rows.filter((r) => r.where === 'remote');
   if (remote.length === 0) {
-    return make({ status: 'unreachable', reason: '목록에 다른 머신 세션이 하나도 없다 — 이 세션의 Remote Control 이 꺼져 있을 가능성이 크다', rc_visible: false });
+    return make({ status: 'unreachable', reason: 'the list has no sessions from other machines — Remote Control is probably off in this session', rc_visible: false });
   }
   const sel = peer.session_selector || {};
   const rcTitle = typeof sel.rc_title === 'string' && sel.rc_title.trim() ? sel.rc_title : null;
@@ -462,7 +462,7 @@ function resolveRemote(o, peer, make) {
     const byRef = remote.filter((r) => r.ref === mine.ref && !excluded(r) && !claimed[r.ref]);
     if (byRef.length === 1) {
       const renamed = !!mine.title && byRef[0].name !== mine.title;
-      return ready(byRef[0], { via: 'remembered_ref', remember: true, note: renamed ? '전에 고른 세션의 제목이 "' + mine.title + '" → "' + byRef[0].name + '" 로 바뀌었다(같은 대화 — 참조 번호가 같다)' : null });
+      return ready(byRef[0], { via: 'remembered_ref', remember: true, note: renamed ? 'the title of the session chosen earlier changed from "' + mine.title + '" to "' + byRef[0].name + '" (same conversation — same reference number)' : null });
     }
   }
 
@@ -470,7 +470,7 @@ function resolveRemote(o, peer, make) {
   if (rcTitle) {
     const hits = remote.filter((r) => titleMatches(r.name, rcTitle, sel.accept_numeric_suffix) && !excluded(r) && !claimed[r.ref]);
     if (hits.length === 1) return ready(hits[0], { via: 'rc_title', remember: true });
-    if (hits.length > 1) return make({ status: 'ask', reason: '제목 "' + rcTitle + '" 후보가 ' + hits.length + '개다', candidates: asCandidates(hits) });
+    if (hits.length > 1) return make({ status: 'ask', reason: hits.length + ' candidates have the title "' + rcTitle + '"', candidates: asCandidates(hits) });
   }
 
   // ③ 기억한 제목 — 참조 번호가 목록에 없으니 새 대화다. 같은 제목이 하나면(제목을 고정해 쓰는 경우) 그리로 보낸다
@@ -478,23 +478,23 @@ function resolveRemote(o, peer, make) {
   if (mine && mine.title) {
     const byTitle = remote.filter((r) => r.name === mine.title && !excluded(r) && !takenByOther(r));
     if (byTitle.length === 1) {
-      return ready(byTitle[0], { via: 'remembered', remember: true, note: mine.ref ? '전에 고른 대화(참조 번호 ' + mine.ref + ')는 목록에 없고 같은 제목의 세션이 있다 — 새 대화로 보고 그리로 보낸다' : null });
+      return ready(byTitle[0], { via: 'remembered', remember: true, note: mine.ref ? 'the conversation chosen earlier (reference number ' + mine.ref + ') is not in the list, but a session with the same title is — treated as a new conversation and sent there' : null });
     }
-    if (byTitle.length > 1) return make({ status: 'ask', reason: '전에 고른 제목 "' + mine.title + '" 인 세션이 ' + byTitle.length + '개다', candidates: asCandidates(byTitle) });
-    note = '전에 고른 세션("' + mine.title + '")이 목록에 없다 — 닫혔거나 새 대화로 바뀌었다';
+    if (byTitle.length > 1) return make({ status: 'ask', reason: byTitle.length + ' sessions have the title chosen earlier, "' + mine.title + '"', candidates: asCandidates(byTitle) });
+    note = 'the session chosen earlier ("' + mine.title + '") is not in the list — it was closed or became a new conversation';
   }
 
   // ④·⑤ 다른 짝 몫과 "이 짝 아님" 을 뺀 나머지
   const free = remote.filter((r) => !excluded(r) && !takenByOther(r));
-  const lead = rcTitle ? 'Remote Control 목록에 제목 "' + rcTitle + '" 인 세션이 없다 — ' : '';
+  const lead = rcTitle ? 'no session titled "' + rcTitle + '" in the Remote Control list — ' : '';
   const understood = listUnderstood(o.agents, o.registry || null);
   if (free.length === 0 && understood) {
-    return make({ status: 'unreachable', reason: lead + '다른 짝 몫을 빼면 남는 다른 머신 세션이 없다', note: note, rc_visible: true });
+    return make({ status: 'unreachable', reason: lead + 'no session from another machine is left after excluding those of other peers', note: note, rc_visible: true });
   }
   // 주소록에 제목을 적어 둔 짝이 안 떠 있거나, 목록에 읽지 못한 줄이 있으면 남은 하나가 그 짝이라는 근거가 없다
   if (free.length === 1 && !rcTitle && understood) return ready(free[0], { via: 'only_candidate', remember: true, note: note });
-  const why = understood ? '' : ' 목록에 읽지 못한 줄이나 처음 보는 종류의 줄이 있어 자동으로 고르지 않는다(' + (o.agents.unparsed || 0) + '줄 · 종류 ' + o.agents.rows.filter((r) => r.where === 'unknown').map((r) => r.kind).join(',') + ').';
-  return make({ status: 'ask', reason: lead + '어느 세션이 이 짝인지 모른다(후보 ' + free.length + '개).' + why + ' 고르면 받았다는 답이 온 뒤 기억해 두고 다음부터 묻지 않는다', note: note, candidates: asCandidates(free) });
+  const why = understood ? '' : ' The list has unreadable lines or lines of an unfamiliar kind, so nothing is chosen automatically (' + (o.agents.unparsed || 0) + ' lines · kinds ' + o.agents.rows.filter((r) => r.where === 'unknown').map((r) => r.kind).join(',') + ').';
+  return make({ status: 'ask', reason: lead + 'unknown which session is this peer (' + free.length + ' candidates).' + why + ' Once chosen, it is remembered after the peer acknowledges and not asked again', note: note, candidates: asCandidates(free) });
 }
 
 // 한 짝의 전송 대상을 정한다.
@@ -520,7 +520,7 @@ function resolvePeer(o) {
   const asCandidates = (list) => list.map((s) => ({ session_id: s.sessionId, name: s.name, cwd: s.cwd, status: s.status, in_list: !!toLocal(s) }));
 
   if (!reg.readable) {
-    return make({ status: 'ask', reason: '세션 등록 파일을 읽을 수 없다(' + reg.reason + ') — 목록에서 사용자에게 고르게 한다', candidates: localRows.map((r) => withSendTo(agents.rows, r)) });
+    return make({ status: 'ask', reason: 'cannot read the session registry (' + reg.reason + ') — let the user choose from the list', candidates: localRows.map((r) => withSendTo(agents.rows, r)) });
   }
   // 이번 요청에서 앞 짝에게 이미 배정한 세션은 뺀다(한 짝의 폴더가 다른 짝 폴더의 상위이면 후보가 겹친다)
   const claimedSessions = (o.claimed && o.claimed.sessions) || {};
@@ -533,22 +533,22 @@ function resolvePeer(o) {
     if (hit.length === 1) {
       const t = toLocal(hit[0]);
       if (t) return make(Object.assign({ status: 'ready', via: 'declared', session_id: hit[0].sessionId }, t));
-      return make({ status: 'ask', reason: '기록해 둔 세션(' + hit[0].name + ')이 ListAgents 목록에서 하나로 특정되지 않는다', candidates: asCandidates(hit) });
+      return make({ status: 'ask', reason: 'the recorded session (' + hit[0].name + ') does not match exactly one entry in the ListAgents list', candidates: asCandidates(hit) });
     }
-    if (hit.length > 1) return make({ status: 'ask', reason: '기록해 둔 세션 번호로 도는 프로세스가 여럿이다', candidates: asCandidates(hit) });
-    note = '기록해 둔 세션(' + (dec.name_at_bind || dec.session_id) + ')은 지금 떠 있지 않다';
+    if (hit.length > 1) return make({ status: 'ask', reason: 'several processes are running with the recorded session id', candidates: asCandidates(hit) });
+    note = 'the recorded session (' + (dec.name_at_bind || dec.session_id) + ') is not running now';
   }
 
   const cands = live.filter((s) => util.isUnder(s.cwd, peer.location.root));
   if (cands.length === 1) {
     const t = toLocal(cands[0]);
     if (t) return make(Object.assign({ status: 'ready', via: 'auto', session_id: cands[0].sessionId, bind: true, note: note }, t));
-    return make({ status: 'ask', reason: '후보(' + cands[0].name + ')가 ListAgents 목록에서 하나로 특정되지 않는다', note: note, candidates: asCandidates(cands) });
+    return make({ status: 'ask', reason: 'the candidate (' + cands[0].name + ') does not match exactly one entry in the ListAgents list', note: note, candidates: asCandidates(cands) });
   }
   if (cands.length === 0) {
-    return make({ status: 'ask', reason: '짝 폴더(' + peer.location.root + ')에서 도는 세션을 찾지 못했다', note: note, candidates: asCandidates(live) });
+    return make({ status: 'ask', reason: 'no session found running in the peer folder (' + peer.location.root + ')', note: note, candidates: asCandidates(live) });
   }
-  return make({ status: 'ask', reason: '짝 폴더에서 도는 세션이 ' + cands.length + '개다', note: note, candidates: asCandidates(cands) });
+  return make({ status: 'ask', reason: cands.length + ' sessions are running in the peer folder', note: note, candidates: asCandidates(cands) });
 }
 
 module.exports = {
