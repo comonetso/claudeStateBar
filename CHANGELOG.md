@@ -23,6 +23,18 @@ the newest one of this session. A chat document does not record which Claude con
 this session is taken to start with the earliest Claude conversation the status bar shows for the
 workspace.
 
+The codex-rescue plugin moved to 1.17.2 on 2026-09-30. Before a run it now asks three things at once:
+the model, the reasoning effort and how deep Codex should dig. The model and the effort start from
+your own Codex setting, which is always the first and recommended choice; the other choices are picked
+by the descriptions Codex gives them, and `ultra` is offered only if you type it. Claude recommends a
+depth (shallow, normal or deep) from the task, and the depth goes into the request as a short
+instruction to Codex; the old "narrow the investigation" choice became "shallow". Limits no longer
+lower the recommendation. When the combination about to run once used more than the day's share, the
+question opens with a warning and the choice stays yours. Reruns and ping-pong ask only the model and
+the effort. Three spots in the plugin's scripts that failed on a stock Mac were fixed: an empty list
+under bash 3.2, a checksum tool macOS doesn't have, and GNU-style `sed -i`. They were checked with the
+bash and sed versions macOS ships, not on a Mac itself.
+
 ## [1.17.1] - 2026-09-30
 
 Sub-agents launched with the Agent tool are now handled the same way as workflows. The orange dot

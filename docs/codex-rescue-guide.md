@@ -185,32 +185,36 @@ models and effort levels you can pick (with the descriptions Codex gives them), 
 run used over the last three weeks, broken down by model and effort. For the last few runs it also
 shows what the task was, how long it took and how many tool calls it made.
 
-Claude uses this to pick a **recommended combination** (2026-09-19). It first judges how hard the task
-is and picks the model and effort whose Codex description fits, then checks the most that combination
-has used in a single run before. If that is over the line below, it recommends one step lower or a
-narrower investigation. The line depends on which limits apply, not on the plan's name.
+Claude then asks **the model, the reasoning effort and how deep to dig, all at once** (2026-09-30).
+For the model and the effort, **your current Codex setting is the first choice** and the recommended
+one. The other choices are picked by the descriptions Codex gives them: for the model, the latest
+general-purpose one, the one meant for the most demanding work and the fast, affordable one; for the
+effort, one step below your setting, one step above and two below. `ultra` is never offered as a
+choice, so type it in if you want it. For the depth (shallow, normal or deep), Claude looks at the
+task, recommends one and says why in a line. The depth you pick goes into the request and sets how far
+Codex digs. The old "narrow the investigation" choice is now "shallow".
+
+Limits only produce a warning. If the combination about to run once used more in a single run than
+the line below, the question opens with a one-line warning, and whether to change anything is up to
+you. The line depends on which limits apply, not on the plan's name.
 
 - Plans with both a 5-hour and a weekly limit: what is left of the 5-hour window, and the weekly daily
-  share (weekly headroom ÷ days until reset). Going over either one lowers the recommendation
+  share (weekly headroom ÷ days until reset). Going over either one brings the warning
 - Plans with only a weekly limit: the weekly daily share
-- Limits could not be read, or there are none: the recommendation goes by difficulty alone
+- Limits could not be read, or there are none: no warning
 
 Past runs count only if they were on the same plan.
 
 ```
-Codex recommends: gpt-5.6-sol / medium   (current setting: gpt-6-astra / high)
-Difficulty: moderate — three files to look at, no server lookups (my read)
-Limits: weekly daily share 13.7% (65% left ÷ 4.8 days) · this combination used at most +2% per run
-1. Go with the recommendation (sol/medium)
-2. Keep the current setting (astra/high)
-3. Narrow the investigation (sol/medium)
-4. Pick the model and effort yourself
-5. Cancel
+Model     gpt-6-sol (recommended, your setting) · gpt-6.1-sol · gpt-6-astra · gpt-6-luna
+Effort    xhigh (recommended, your setting) · high · max · medium
+Depth     normal (recommended — three files to look at, no server lookups) · shallow · deep
 ```
 
-Consultations, fixes, reviews and follow-ups ask every time; ping-pong asks once, when the
-conversation starts. With no answer, nothing runs. Say "your call" to take the recommendation, or
-"as is" to keep the current setting.
+Consultations, fixes, reviews and follow-ups ask all three every time. Reruns and ping-pong (once,
+when the conversation starts) ask only the model and the effort. To cancel, type "stop" in the free
+answer. With no answer, nothing runs. Say "your call" to take every recommendation, or "as is" to keep
+your setting with the recommended depth.
 
 **The script enforces this** (2026-09-16). A run once went out without the question, so `send.sh`
 now refuses to start without the mark that an answer was received (`CR_CONFIRMED=1`) — the same
