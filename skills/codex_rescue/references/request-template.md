@@ -4,7 +4,7 @@
 
 🔴 **Never reorder the sections.** Codex reads top-down and **anchors on what it reads first**, so observation → sources → investigation instructions come first and your hypothesis comes late. (An older template put prohibitions and storage rules first, and Codex imprinted the format before the investigation.)
 
-Include `## 조사 범위 — 이번엔 좁게` only when "narrow scope" was chosen in §2-1 (preflight.md).
+Always include `## 조사 깊이 — <얕게|보통|깊게>` for the depth chosen in §2-1 (preflight.md): copy exactly one block from "조사 깊이 문안" at the end of this file, in the place marked in the template.
 
 ## readonly (default)
 
@@ -80,11 +80,7 @@ response_path: docs/codex_rescue/<260726_014119>_response_<mms-jar-encoding>.md
 5. **확인한 사실은 그때마다 응답 문서에 적어라.** 이 실행은 사용량 한도로 도중에 끊길 수 있다.
    적는 순서는 맨 아래 `응답 저장 위치` 에 있다 — 첫 원본을 열기 전에 그것만 먼저 읽어라.
 
-## 조사 범위 — 이번엔 좁게     ← 실행 전 확인(§ 2-1)에서 "범위 줄여서"를 골랐을 때만 넣는다
-사용량 한도가 빠듯해서 이번 조사는 좁게 한다.
-- 우선 볼 원본: <위 표에서 1~2개>
-- 이번엔 하지 않는 것: <넓은 탐색 · 서버/DB 조회 · 대조군 전수 비교 중 해당하는 것>
-- 이 범위로 결론이 안 나면 **거기서 멈추고** 무엇을 더 봐야 하는지만 적어라. 되물어서 이어간다.
+## 조사 깊이 — <얕게|보통|깊게>     ← 실행 전 확인(§ 2-1)에서 고른 깊이의 문안 하나를 그대로 넣는다 (맨 아래 "조사 깊이 문안")
 
 ## 환경
 - 언어/프레임워크/버전, 기기, 빌드·툴 체인 (구체적으로)
@@ -207,6 +203,8 @@ response_path: docs/codex_rescue/<스탬프>_response_<슬러그>.md
 ## 환경 / 문제 / 대상 파일 / 맥락 코드 / 시도했고 실패한 것
 (readonly 템플릿과 동일하게 채운다)
 
+## 조사 깊이 — <얕게|보통|깊게>     ← readonly 와 같은 문안 (맨 아래 "조사 깊이 문안")
+
 ## 작업 — 직접 수정할 것
 1. 근본 원인을 진단하고 위 대상 파일을 직접 수정해줘.
 2. **최소 변경**만. 문제와 무관한 리팩터·포맷 변경 금지.
@@ -228,3 +226,32 @@ response_path: docs/codex_rescue/<스탬프>_response_<슬러그>.md
 ```
 
 In EDIT mode, after the run always check the actual changes yourself with `git diff` and record them in the response file.
+
+## 조사 깊이 문안 — depth texts
+
+Copy the block for the depth chosen in §2-1 as it is, heading included. In **얕게**, fill `<…>` with real values. Follow-up files use the same blocks (followup.md).
+
+**얕게**
+```markdown
+## 조사 깊이 — 얕게
+이번 건은 좁고 빠르게 확인한다.
+- 우선 볼 원본: <위 표에서 1~2개>
+- 이번엔 하지 않는 것: <넓은 탐색 · 서버/DB 조회 · 대조군 전수 비교 중 해당하는 것>
+- 결론과 근거 파일 경로만 짧게 적어라.
+- 아래 완료 게이트는 이 범위에서 확인한 것만 채우고, 못 채운 항목은 미충족으로 적어라.
+- 이 범위로 결론이 안 나면 거기서 멈추고 무엇을 더 봐야 하는지만 적어라. 되물어서 이어간다.
+```
+
+**보통**
+```markdown
+## 조사 깊이 — 보통
+관련 원본의 핵심부를 읽고 결론을 내라. 근거는 파일 경로와 줄 번호로 적어라.
+확신이 낮은 부분은 낮다고 적어라.
+```
+
+**깊게**
+```markdown
+## 조사 깊이 — 깊게
+호출 관계와 엣지 케이스까지 따라가라. 대표 사례와 대조군은 원본으로 끝까지 대조해라.
+찾은 결론을 스스로 반증해 보고, 반증에 실패한 것만 확정으로 적어라. 근거는 파일 경로와 줄 번호로 적어라.
+```

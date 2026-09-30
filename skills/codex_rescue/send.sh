@@ -62,8 +62,8 @@ confirm_gate() {
   [ "${CR_CONFIRMED:-}" = 1 ] && return 0
   die "pre-run confirmation was skipped — stopping because CR_CONFIRMED=1 is not set.
   1. node $SELF_DIR/scripts/codex-status.mjs --cwd <project root>
-  2. Ask the user about the recommended combination, weighing difficulty and limits together, using the question frame of SKILL.md §2-1 → references/preflight.md exactly
-  3. Only after the answer, run again with CR_CONFIRMED=1 (plus CR_MODEL / CR_EFFORT if a combination other than the current settings was chosen)
+  2. Ask the user model · reasoning (Codex's config values first) and depth (shallow / normal / deep) in one go, using the question frame of SKILL.md §2-1 → references/preflight.md exactly
+  3. Only after the answer, run again with CR_CONFIRMED=1 (plus CR_MODEL / CR_EFFORT only for values other than the config)
   🔴 Never add it without an answer. If there is no answer or it is unclear, ask again."
 }
 

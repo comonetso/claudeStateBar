@@ -74,7 +74,7 @@ After a context compaction, re-read the file for the current step — the detail
 
 ### 2-1. Pre-run confirmation
 
-Query Codex's limits and settings, recommend a model and reasoning level, ask once, apply the answer — `preflight.md`. `send.sh` refuses to run without `CR_CONFIRMED=1`.
+Query Codex's limits and settings, then ask model · reasoning (Codex's config first) and depth (shallow / normal / deep) in one go and apply the answer — `preflight.md`. `send.sh` refuses to run without `CR_CONFIRMED=1`.
 
 ## 3. Output after sending
 

@@ -324,9 +324,10 @@ function buildHistory(days, sums, snap) {
 }
 
 // ── 한도 기준 (권장 조합을 낮출지 가르는 선) ─────────────────────────────
-// 🔴 2026-09-19 사용자 결정: 난이도로 고른 조합의 **과거 1회 최대 소모**가 기준을 넘으면 권장을 낮춘다.
+// 🔴 2026-09-30 사용자 결정: 돌릴 조합의 **과거 1회 최대 소모**가 기준을 넘으면 경고 한 줄만 띄운다(권장을 낮추지 않는다).
+//    (09-19 에는 넘으면 권장을 한 단계 낮췄다. 모델·추론 첫 칸이 Codex 설정값으로 바뀌면서 경고로 바뀌었다)
 //    5시간 창 기준 = 5시간 남은 여유 · 주간 창 기준 = 하루 몫(주간 남은 여유 ÷ 리셋까지 남은 날수).
-//    두 창이 다 있으면 둘 다 본다(더 빠듯한 쪽이 걸린다). 판정은 여기서 표시만 하고 권장은 SKILL.md § 2-1 이 정한다.
+//    두 창이 다 있으면 둘 다 본다(더 빠듯한 쪽이 걸린다). 판정은 여기서 표시만 하고 경고 여부는 preflight.md 가 정한다.
 function buildCriteria(snap, now) {
     const shape = limitShape(snap);
     const c = { shape, reached: (snap && snap.rateLimitReachedType) || null };
@@ -417,7 +418,7 @@ function render(o, st, hist) {
     if (st.errors.models) {
         L.push(`model list: lookup failed — ${st.errors.models}`);
     } else if (models.length) {
-        // 공식 설명을 함께 낸다 — 난이도에 맞는 조합을 고를 때 지어낸 서열 대신 이 문구를 근거로 쓴다(§ 2-1).
+        // 공식 설명을 함께 낸다 — 확인 질문의 모델·추론 칸을 채울 때 지어낸 서열 대신 이 문구를 근거로 쓴다(§ 2-1).
         L.push('selectable models (official descriptions):');
         const effortDesc = new Map();
         for (const m of models) {
@@ -437,10 +438,10 @@ function render(o, st, hist) {
     }
 
     const crit = buildCriteria(snap, Date.now());
-    L.push('── limit baseline (lower the recommendation when the largest past single use of the combination chosen by difficulty exceeds it) ──');
+    L.push('── limit baseline (warn — never lower — when the largest past single use of the combination about to run exceeds it) ──');
     if (crit.reached) L.push(`🔴 limit reached: ${crit.reached}`);
-    if (crit.shape === 'unknown') L.push('limits could not be queried → recommend by difficulty only');
-    else if (crit.shape === 'none') L.push('no limit windows → recommend by difficulty only');
+    if (crit.shape === 'unknown') L.push('limits could not be queried → no limit warning');
+    else if (crit.shape === 'none') L.push('no limit windows → no limit warning');
     if (crit.fiveLeft !== undefined) L.push(`5-hour window baseline: ${crit.fiveLeft}% left`);
     if (crit.weeklyLeft !== undefined) {
         L.push(crit.dailyShare === null

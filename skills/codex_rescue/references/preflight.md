@@ -10,20 +10,32 @@ Ask before every CONSULT · EDIT · FOLLOWUP · REVIEW · RESUME run, and before
 node "${CLAUDE_SKILL_DIR}/scripts/codex-status.mjs" --cwd <project root>
 ```
 
-It shows the current model and reasoning level, 5-hour and weekly limits, the selectable models and reasoning levels **with their official descriptions**, the **limit baseline** (by limit shape), the per-turn usage of request-based runs over the last 21 days (overall and **per combination**, checked against the baseline), and the last 5 turns' task name, duration and tool-call count.
+It shows the current model and reasoning level (Codex's own config), 5-hour and weekly limits, the selectable models and reasoning levels **with their official descriptions**, the **limit baseline** (by limit shape), the per-turn usage of request-based runs over the last 21 days (overall and **per combination**, checked against the baseline), and the last 5 turns' task name, duration and tool-call count.
 
-- Past usage is **per turn** (a follow-up turn may switch models). Usage is recorded in 1% steps; on weekly-only plans one turn shows as +0–2% and combinations blur — compare the recent turns' duration and tool calls to size this job.
+- Past usage is **per turn** (a follow-up turn may switch models). Usage is recorded in 1% steps; on weekly-only plans one turn shows as +0–2% and combinations blur.
 - Some plans have no 5-hour window (e.g. Pro Lite — the output shows `plan: prolite`, weekly only). The tool tells windows apart **by length (300 / 10080 minutes), not by position**, prints `5-hour limit: none on this plan`, and past usage switches to the same plan's weekly window (those lines are marked `weekly window`). A reset date days away means it is the weekly window.
 - Also check the install style here (see "Old install notice" below).
 
-## ② Choose the recommendation — difficulty and limits together
+## ② Prepare the questions — model, reasoning, depth
 
-1. **Estimate the difficulty** — light / medium / heavy, with a one-line reason, stated as your estimate.
-   - Heavy: many or large sources to open · server/DB queries · cross-file analysis · unknown cause · design trade-offs · the previous turn went in circles
-   - Light: the files to look at can be named · confirmation questions · a narrow diff review
-   - You may cite a similar recent turn from the query output ("about the size of the earlier X job").
-2. **Pick the combination for that difficulty** by matching the **official description text** in the query output. Never invent a model ranking. (E.g. reasoning `medium` = "everyday tasks", `high` = "complex problems", `max` = "hardest problems"; models likewise — "complex, demanding work" is the heavy side, "everyday tasks" / "fast and affordable" the light side.) Don't recommend models marked for retirement (⚠️).
-3. **Check it against the limit baseline** — if that combination's **largest past single-turn usage** exceeds the baseline (its line in the query output shows `→ over the baseline`), **step down one level**: one reasoning level lower in the listed order, or a lighter model by official description. Choose which by the difficulty and say why. If neither works, add "narrow scope" to the recommendation. If the lowered one still exceeds, weigh it once more. When lowered, say in the question "by difficulty it would be X; lowered because it exceeds the baseline". No record for the combination ⇒ write "no record" and recommend by difficulty alone.
+🔴 **The model and reasoning level start from Codex's own config** (user decision, 2026-09-30). The current values go in the first slot as the recommendation. Don't recommend a different combination by difficulty and don't lower it for limits — other values are the user's choice. **Depth is the one thing you judge.**
+
+Which runs get which questions:
+
+| Run | Questions |
+|---|---|
+| CONSULT · EDIT · REVIEW · FOLLOWUP | model · reasoning · depth |
+| RESUME · CHAT `--start` | model · reasoning only — a RESUME reruns the original request as it is, and a CHAT has exploration blocked by default, so depth means nothing there |
+
+1. **Model — 4 slots.** First: the current model, `(recommended)`. Fill the other three from the query output's selectable models **by their official descriptions**, one per role: the latest general-purpose ("workhorse") model · the one for the most demanding work · the fast, affordable one. Skip the current model and models marked for retirement (⚠️). If a role has no model or repeats one already placed, take the next unused model from the top of the list. Never invent a ranking. Each option's description is the official description; the current one also says "your Codex config". Other models go through "Other".
+2. **Reasoning — 4 slots.** First: the current level, `(recommended)`. Then one level lower, one higher, two lower, in the query output's listed order. At an end of the list, fill from the other side (current `low` ⇒ low / medium / high / xhigh). 🔴 **Never put `ultra` in a slot** (maximum reasoning with automatic task delegation) — it is reachable only through "Other". Descriptions are the official ones.
+3. **Depth — shallow / normal / deep.** Put your judgement first, `(recommended)`, with a one-line reason in the question:
+   - **shallow**: confirmation questions · the files to look at can be named · a narrow diff review
+   - **normal**: everything else. EDIT is normal by default
+   - **deep**: unknown cause · the previous turn went in circles · design trade-offs · refutation · a pre-release check · the user asked for care ("꼼꼼히", "확실히", "검증", "놓치지 말고", "carefully", "make sure")
+
+   Each description says what that depth makes Codex do (the texts are in request-template.md "조사 깊이 문안").
+4. **Limit warning, never an automatic change.** If the line of the combination about to run shows `→ over the baseline` in the query output, put one warning line at the top of the model question (e.g. "this combination once used +5%, more than today's share of 3.1%"). Limit already reached ⇒ say so at the top of the model question. No record, query failed, or no windows ⇒ no warning line.
 
 Limit baseline by **which windows exist**, not by plan name (the tool computes it under `── limit baseline`):
 
@@ -31,46 +43,48 @@ Limit baseline by **which windows exist**, not by plan name (the tool computes i
 |---|---|
 | 5-hour + weekly (Plus etc.) | ① 5-hour headroom vs the 5-hour window's largest past single use · ② weekly daily share vs the weekly window's largest past single use — exceeding either counts |
 | Weekly only (Pro Lite etc.) | weekly daily share vs the same plan's weekly largest past single use |
-| No windows · query failed | recommend by difficulty only; the limit line gives the reason |
-| Limit already reached | say so at the very top of the question |
+| No windows · query failed | no warning |
 
 Daily share = weekly headroom ÷ days until reset (less than a day counts as 1). Only past records from the same plan count.
 
 ## ③ Ask the user once
 
-Don't recite usage numbers — the user can already see them. Use only the numbers behind your judgement. Ask with the host's choice UI if there is one, otherwise as text, following the user's standing preference.
+Use the host's choice UI (`AskUserQuestion`): **all questions in one call**, `multiSelect: false`, in the user's language. A choice UI hides the text above it, so everything needed to decide goes **inside** the questions and option descriptions. There is no "stop" slot — the user types it in "Other".
 
 ```
-Codex recommendation: <model> / <reasoning>[ · narrow scope]   (current: <model> / <reasoning>)
-Difficulty: <light/medium/heavy> — <one-line reason> (my estimate)
-Limits: <one-line baseline> · this combination's largest past single use <value or "no record"> [· why it was lowered]
-1. As recommended (<model>/<reasoning>)
-2. Keep current settings (<model>/<reasoning>)
-3. Narrow scope (<recommended combination>)
-4. Choose model/reasoning myself — <selectable models>
-5. Stop
+Q1  header "Model"      "Which Codex model? [⚠️ limit warning line, if any]"
+    gpt-6-sol (recommended)   your Codex config · Previous generation workhorse model.
+    gpt-6.1-sol               Latest workhorse model for coding and everyday work.
+    gpt-6-astra               Frontier intelligence for the most demanding work.
+    gpt-6-luna                Fast and affordable model for easier tasks.
+Q2  header "Reasoning"  "Which reasoning level?"
+    xhigh (recommended)       your Codex config · Extra high reasoning depth for complex problems
+    high · max · medium       (official descriptions)
+Q3  header "Depth"      "How deep should Codex dig? Recommended normal — <one-line reason>"
+    normal (recommended)      reads the core of the relevant sources, cites file and line, marks low confidence
+    shallow                   one or two sources, a short conclusion; stops and names what is missing if unresolved
+    deep                      follows call paths and edge cases, tries to refute its own conclusions
 ```
 
-- If the recommendation equals the current settings, merge 1 and 2 into "1. Go ahead (recommended = current)". If the recommendation already includes narrow scope, drop 3.
-- As buttons, mark option 1 "(recommended)". Buttons hold at most 4 options, so take "choose myself" as free input.
-- Limit-line examples — weekly only: "weekly daily share 13.7% (65% left ÷ 4.8 days) · largest past single use for this combination +2%"; 5-hour + weekly: "5-hour headroom 45% · weekly daily share 23% · largest past single use 5-hour +50% → over the 5-hour baseline, lowered from high to medium"; query failed: "limit query failed (<reason>) — recommended by difficulty only".
+(The model names above are an example — always fill from the current query output.)
+
+- Without a choice UI, ask the same questions as text, one line per question with numbered options.
 - Ask even if the query failed. A failed query never blocks the run.
 - If the sensory-observation question (consult.md) also applies, **put both in the same message.** Never make two round trips.
 - Old install ⇒ append the notice below on the first run of the conversation.
 
 ## ④ Apply the answer
 
-🔴 **No answer ⇒ don't run. Never proceed on a guess — ask again.** The same when the answer is off-topic or it's unclear which option was meant. Go on without a number only when the user **said** so — "up to you" = 1 · "keep it" = 2.
+🔴 **No answer ⇒ don't run. Never proceed on a guess — ask again.** The same when the answer is off-topic or it's unclear which option was meant. Go on without a pick only when the user **said** so — "up to you" / "알아서" = every recommended value · "keep it" / "그대로" = the config values and the recommended depth.
 
-| Choice | Apply |
+| Answer | Apply |
 |---|---|
-| 1. As recommended | add as `CR_MODEL` / `CR_EFFORT` **only the values that differ from the current settings**. If the recommendation includes narrow scope, apply 3 as well |
-| 2. Keep current | add nothing |
-| 3. Narrow scope | add the recommended combination as in 1, and put `## 조사 범위 — 이번엔 좁게` into the request (request-template.md). For REVIEW, narrow with the focus instruction |
-| 4. Choose myself | `CR_MODEL=<model>` · `CR_EFFORT=<level>` |
-| 5. Stop | write no request; end |
+| Model or reasoning = the config value | add nothing — Codex's own config applies |
+| Model or reasoning = another value | `CR_MODEL=<model>` · `CR_EFFORT=<level>` — only the one that differs |
+| Depth | CONSULT · EDIT: put that depth's `## 조사 깊이 — …` section into the request (request-template.md) · FOLLOWUP: into the follow-up file (followup.md) · REVIEW: append that depth's line to the focus instruction (review.md) |
+| "stop" / "중단" in Other | write no request; end |
 
-Both variables work on the live-steer path (passed as `--model` / `--effort`) and the old exec path (`-m` / `-c`). Don't add values equal to the current settings — then Codex's own config applies.
+Both variables work on the live-steer path (passed as `--model` / `--effort`) and the old exec path (`-m` / `-c`).
 
 ## Old install notice
 
