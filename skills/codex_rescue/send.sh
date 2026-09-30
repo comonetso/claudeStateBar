@@ -62,8 +62,8 @@ confirm_gate() {
   [ "${CR_CONFIRMED:-}" = 1 ] && return 0
   die "pre-run confirmation was skipped — stopping because CR_CONFIRMED=1 is not set.
   1. node $SELF_DIR/scripts/codex-status.mjs --cwd <project root>
-  2. Ask the user about the recommended combination, weighing difficulty and limits together, using the question frame of SKILL.md §2-1 → references/preflight.md exactly
-  3. Only after the answer, run again with CR_CONFIRMED=1 (plus CR_MODEL / CR_EFFORT if a combination other than the current settings was chosen)
+  2. Ask the user model · reasoning (Codex's config values first) and depth (shallow / normal / deep) in one go, using the question frame of SKILL.md §2-1 → references/preflight.md exactly
+  3. Only after the answer, run again with CR_CONFIRMED=1 (plus CR_MODEL / CR_EFFORT only for values other than the config)
   🔴 Never add it without an answer. If there is no answer or it is unclear, ask again."
 }
 
@@ -426,9 +426,20 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
 
   # 문서의 thread_id 를 비우고 끊긴 사유를 남긴다. 실제로 비워졌을 때만 0 을 돌려준다 —
   # 실패를 성공으로 보고하면 다음 턴이 어긋난 세션을 조용히 재개한다.
+  # frontmatter 의 thread_id 값을 비운다. 성공하면 0.
+  # 🔴 `sed -i` 로 되돌리지 마라 (2026-09-30, 공개 준비 C-03). 맥(BSD) sed 는 `-i` 바로 뒤 인자를
+  #    백업 확장자로 먹어 항상 실패했다 — 핑퐁 닫기·끊긴 스레드 폐기가 맥에서 매번 멈췄다.
+  #    임시 파일에 쓰고 mv 한다. 결과는 GNU `sed -i` 와 글자 단위로 같다(CRLF 문서 포함, 실측).
+  ch_clear_thread_id() {   # $1=문서 경로
+    sed "1,/^---$/ s|^thread_id:.*|thread_id:|" "$1" > "$1.tmp.$$" 2>/dev/null \
+      && mv -f -- "$1.tmp.$$" "$1" 2>/dev/null && return 0
+    rm -f -- "$1.tmp.$$" 2>/dev/null
+    return 1
+  }
+
   ch_discard_thread() {   # $1=문서 경로  $2=사유 한 줄
     [ -f "$1" ] || return 1
-    sed -i "1,/^---$/ s|^thread_id:.*|thread_id:|" "$1" 2>/dev/null
+    ch_clear_thread_id "$1"
     [ -z "$(sed -n "1,/^---\$/ s/^thread_id:[[:space:]]*//p" "$1" | head -1 | tr -d '\r')" ] || return 1
     {
       echo
@@ -474,7 +485,8 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
         "지난 실행이 codex 호출과 기록 사이에서 강제 종료됐다(마커: ${CH_IF_WHEN:-시각 불명})." \
         && echo "⚠️ the previous run had died midway — discarded the thread of that conversation ($CH_IF_STAMP)." \
         || die "could not discard the thread of the previous run: $CH_IF_DOC
-  Left as is, the mismatched session would be resumed. Clear thread_id by hand and retry."
+  Left as is, the mismatched session would be resumed. Clear thread_id by hand and retry.
+  (in-flight marker: $CH_INFLIGHT — it stays until the discard succeeds, so this slug keeps stopping here)"
     else
       # 첫 턴이 문서 생성 전에 죽은 경우다. 닫을 문서가 없다 — 과거 대화는 건드리지 않는다.
       # orphan Codex 세션이 남을 수는 있지만, 멀쩡한 과거 기록을 깨뜨리는 것보다 낫다.
@@ -524,8 +536,8 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
   #    닫을 대상을 glob 으로 추측해서 **잘못 고른 문서를 영구히 닫을** 수 있었다.
   if [ "$CH_ACTION" = close ]; then
     [ -n "$CH_THREAD" ] || die "conversation already closed: ${CH_STAMP}_chat_${CH_SLUG}.md"
-    sed -i "1,/^---$/ s|^thread_id:.*|thread_id:|" "$CH_DOC" \
-      || die "could not close the conversation: $CH_DOC (check file permissions)"
+    ch_clear_thread_id "$CH_DOC" \
+      || die "could not close the conversation: $CH_DOC (rewriting its frontmatter failed)"
     # 정말 비었는지 되읽어 확인한다. 실패를 성공으로 보고하지 않기 위해서다.
     [ -z "$(ch_fm "$CH_DOC" thread_id)" ] || die "thread_id was not cleared: $CH_DOC"
     {
@@ -1469,14 +1481,17 @@ IS_GIT=0
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 && IS_GIT=1
 
 # ── 실행 전 상태 기록 ───────────────────────────────────────────
-# 응답 파일이 **실행 전에 이미 있었는지**와 그 해시를 남긴다. 이게 없으면 Codex 가 아무것도
+# 응답 파일이 **실행 전에 이미 있었는지**와 그 사본을 남긴다. 이게 없으면 Codex 가 아무것도
 # 쓰지 않았는데도 "응답 도착(author: codex)" 으로 성공 보고한다 — 이전 실행이 남긴 파일을
 # 이번 결과로 착각하는 것이다.
-hashof() { sha256sum -- "$1" 2>/dev/null | cut -d' ' -f1; }
-RESP_EXISTED=0; RESP_HASH_BEFORE=""
+# 🔴 해시(sha256sum)로 되돌리지 마라 (2026-09-30, 공개 준비 C-02). 맥 13·14 에는 sha256sum 이 없어
+#    해시가 빈 값이 되고, 판정이 그걸 "응답 파일 없음"으로 읽어 **Codex 가 쓴 조사 원문을 최종 메시지로
+#    덮어썼다.** 사본은 RUN_DIR(작업 공간 밖 — Codex 가 못 고친다)에 두고, 끝나면 cleanup 이 지운다.
+RESP_EXISTED=0; RESP_COPY="$RUN_DIR/response_before"
 if [ -e "$RESP_REL" ]; then
   RESP_EXISTED=1
-  RESP_HASH_BEFORE=$(hashof "$RESP_REL")
+  cp -- "$RESP_REL" "$RESP_COPY" \
+    || die "cannot copy the existing response file for comparison: $RESP_REL — whether Codex writes it this run could not be judged"
 fi
 
 if [ -z "${CR_DRYRUN:-}" ]; then
@@ -2051,8 +2066,10 @@ fi
 #    응답 회수·in-flight 복구는 전부 이 스크립트에 그대로 남는다. 중계기에 `--log-dir` 을
 #    주지 않는 이유가 그것이다 — status/heartbeat 를 두 곳에서 쓰면 서로 덮는다.
 #
-# 응답 문서는 Codex 가 아니라 이 스크립트가 만든다. 중계기가 최종 메시지를 `$LASTMSG` 에
-# 남기면 아래 회수 구간이 REVIEW·FOLLOWUP 과 같은 경로로 처리한다. 그래서 read-only 로 돈다.
+# 응답 문서는 exec 경로와 같이 Codex 가 요청서가 가리킨 경로에 직접 쓴다 — 샌드박스는 exec 와 같은
+# `$SANDBOX_RAW`(기본 workspace-write)다. 중계기는 최종 메시지를 `$LASTMSG` 에 남기고, 아래 회수 구간이
+# 실행 전 사본과 비교해 판정한다(Codex 가 못 썼을 때만 최종 메시지로 대신 저장 — codex-via-stdout).
+# (예전 이 자리의 "스크립트가 만든다 · read-only 로 돈다"는 옛 설명이었다 — 2026-09-30 정정, 공개 준비 C-24)
 LIVE_BRIDGE=""
 # 🔴 판정은 위에서 한 번 한 `LIVE_STEER_ON` 하나로 한다 (2026-08-26).
 #    예전에는 같은 조건식이 여기에만 있고 표시부는 `$SANDBOX` 를 그냥 찍어서,
@@ -2084,11 +2101,14 @@ if [ -n "$LIVE_BRIDGE" ]; then
     LIVE_EXTRA=(--resume-thread "$THREAD" --turn-seq "$FUP_TURN")
     LIVE_REQ="$ROOT/$PARENT_REQ"
   fi
+  # 🔴 `${LIVE_EXTRA[@]+"${LIVE_EXTRA[@]}"}` 를 `"${LIVE_EXTRA[@]}"` 로 되돌리지 마라 (2026-09-30, 공개 준비 C-01).
+  #    bash 4.4 미만(맥 기본 /bin/bash 3.2.57)은 set -u 에서 빈 배열 펼치기를 "unbound variable" 로 보고
+  #    스크립트를 죽인다 — 끼어들기 1턴(CONSULT·EDIT·REVIEW)이 시작하자마자 끝났다. 바깥 따옴표 없이 쓴다.
   # shellcheck disable=SC2086
   node $NODE_WS_FLAG "$LIVE_BRIDGE" run \
     --prompt-file "$LIVE_PROMPT" \
     $([ "$LIVE_NET" = 1 ] && printf -- '--network') \
-    "${LIVE_EXTRA[@]}" \
+    ${LIVE_EXTRA[@]+"${LIVE_EXTRA[@]}"} \
     --request-file "$LIVE_REQ" \
     --events-file "$LIVE_EVENTS" \
     --last-message-file "$LASTMSG" \
@@ -2163,10 +2183,24 @@ SCRATCH_MADE=$(printf '%s\n%s\n' "$TOUCHED" "$ADDED" | grep -v '^[[:space:]]*$' 
         | grep -v '^docs/codex_rescue/\.scratch/\.gitignore$' || true)
 
 # ── 응답 회수 및 판정 ───────────────────────────────────────────
-# 파일 존재만으로 성공 판정하지 않는다. 실행 전 해시와 비교해 **이번 실행의 산물인지** 가린다.
+# 파일 존재만으로 성공 판정하지 않는다. 실행 전 사본과 비교해 **이번 실행의 산물인지** 가린다.
+# cmp: 0 = 같음 · 1 = 다름 · 2 = 비교 오류. 🔴 2 를 "다름"으로 뭉개지 않는다 — 판정할 수 없으면 멈춘다.
 AUTHOR=none
-RESP_HASH_AFTER=""
-[ -e "$RESP_REL" ] && RESP_HASH_AFTER=$(hashof "$RESP_REL")
+RESP_NOW=0; RESP_CHANGED=0
+if [ -e "$RESP_REL" ]; then
+  RESP_NOW=1
+  if [ "$RESP_EXISTED" = 0 ]; then
+    RESP_CHANGED=1
+  else
+    CMP_RC=0; cmp -s "$RESP_COPY" "$RESP_REL" || CMP_RC=$?
+    case "$CMP_RC" in
+      0) RESP_CHANGED=0 ;;
+      1) RESP_CHANGED=1 ;;
+      *) die "cannot compare the response file with its pre-run copy (cmp exit $CMP_RC) — whether Codex wrote it this run is unknown.
+  Codex already ran. The response file is left as is: $RESP_REL — read it before trusting it." ;;
+    esac
+  fi
+fi
 
 if [ "$KIND" = followup ]; then
   # 🔴 Codex 가 파일을 쓰지 않는다(read-only). `-o` 회수분을 **스크립트가** 이어 붙인다.
@@ -2263,8 +2297,8 @@ elif [ "$KIND" = review ]; then
     node "$SELF_DIR/scripts/set-thread-name.mjs" --thread "$REVIEW_THREAD" --mode review \
       --subject "${SUBJECT:-}" --slug "$SLUG" || true
   fi
-elif [ -n "$RESP_HASH_AFTER" ]; then
-  if [ "$RESP_EXISTED" = 0 ] || [ "$RESP_HASH_AFTER" != "$RESP_HASH_BEFORE" ]; then
+elif [ "$RESP_NOW" = 1 ]; then
+  if [ "$RESP_CHANGED" = 1 ]; then
     # 파일이 바뀌었어도 codex 가 비정상 종료했으면 완성본이 아니다 (2026-09-13).
     # 요청서가 "조사하면서 적어라"를 시키므로 한도로 끊겨도 파일은 이미 바뀌어 있다.
     # 여기서 codex 로 판정하면 미완성 초안이 "✅ 응답 도착"으로 보고된다.
@@ -2430,8 +2464,9 @@ if [ "$KIND" = followup ]; then
   # 🔴 `tee -a` 로 이미 이어 붙었다. 여기서 덮으면 EVENTS 에는 이번 턴만 있으므로
   #    **앞 턴 이벤트가 통째로 사라진다** — 감사 근거를 지우면서 굴러가게 된다.
   :
-elif [ "$(hashof "$EVENTS")" = "$(hashof "$LIVE_EVENTS")" ]; then
+elif cmp -s "$EVENTS" "$LIVE_EVENTS"; then
   :   # 동일 — live 미러가 곧 권위 사본이다. 건드리지 않는다
+  # (비교 오류 — cmp 종료 코드 2 — 는 아래 교체로 간다. 교체도 실패하면 LOGCOPY_FAIL 로 보고된다)
 else
   if cp -f -- "$EVENTS" "$LIVE_EVENTS.tmp.$$" 2>/dev/null \
      && mv -f -- "$LIVE_EVENTS.tmp.$$" "$LIVE_EVENTS" 2>/dev/null; then
@@ -2497,7 +2532,7 @@ case "$AUTHOR" in
     echo "   See $LOGD/${STAMP}_stderr.log for why it could not write."
     ;;
   stale)
-    echo "🔴 the response file was **not updated** — same content as before the run (hash match)."
+    echo "🔴 the response file was **not updated** — same content as before the run (byte-identical to the pre-run copy)."
     echo "   $RESP_REL is **the output of an earlier run**. Do not take it for this response."
     echo "   Codex wrote nothing this time. Read $LOGD/${STAMP}_stderr.log and report the cause."
     [ -s "$LASTMSG" ] && echo "   The final message of this run is in $LOGD/${STAMP}_last_message.md — compare it with the existing file."

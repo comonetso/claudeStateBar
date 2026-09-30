@@ -8,7 +8,7 @@ Bash(run_in_background: true):
 ```
 
 - 🔴 **Never drop `CR_LIVE_STEER=1`** — same reason as turn 1: without it the old `codex exec resume` runs and nothing can be passed in mid-turn. Drop it only when the user asked for "the old way".
-- Do §2-1 (preflight.md) before sending. If the chosen combination differs from the current settings, prefix `CR_MODEL` / `CR_EFFORT`.
+- Do §2-1 (preflight.md) before sending — model · reasoning · depth, every turn. Prefix `CR_MODEL` / `CR_EFFORT` only for values other than Codex's config, and put the chosen depth's section into the follow-up file (template below).
 - Write the follow-up file first (template below). `turn:` is the response's `turns` + 1 — `send.sh` refuses a wrong value.
 - 🔴 **Never pass the follow-up text as an argument.** Write it in the file.
 - Codex only **reads** in this turn (read-only is fixed). `send.sh` appends the turn to the response document.
@@ -26,6 +26,8 @@ Bash(run_in_background: true):
 ## Follow-up template
 
 Write `docs/codex_rescue/<stamp>_followup<N>_<slug>.md`. 🔴 **Use the original case's stamp and slug.** `turn` = the response's `turns` + 1. Keep the template in Korean exactly as it is (same reason as request-template.md).
+
+The `## 조사 깊이` section takes the block from request-template.md "조사 깊이 문안". A follow-up has no source table and its gate table sits above, so in **얕게** write `우선 볼 원본: <1~2개>` and `완료 게이트는 이 범위에서 …` (drop "위 표에서" and "아래").
 
 For more edits on an EDIT case only, add one line `edit: yes` to the frontmatter, drop the sentence "너는 파일을 쓰지 않는다" from "## 이 턴의 성격", and write the **target files and expected behaviour** under "## 이번 턴에 묻는 것". Run it only after the user confirms, with `CR_ALLOW_EDIT=1`.
 
@@ -83,6 +85,8 @@ G3 가 핵심 판별식이다 — 원인 가설이 맞으면 **과거의 실패�
 
 ## 이번 턴에 묻는 것
 1. <구체적 질문 1>
+
+## 조사 깊이 — <얕게|보통|깊게>     ← 이번 턴 실행 전 확인(§ 2-1)에서 고른 깊이의 문안 하나 (request-template.md "조사 깊이 문안")
 
 ## 답변 형식 — 이 순서로 답해라
 1. `내 해석 교정` — 내가 네 말을 잘못 읽은 곳. 없으면 "없음"

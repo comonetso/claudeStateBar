@@ -81,9 +81,10 @@ codex_rescue — get a second view from Codex when Claude is stuck (fully automa
           260726_014119_review_auth-refactor.md        ← result of an old-way review (no request)
           .log/260726_014119_events.jsonl              ← full record of what Codex actually did
 
-[Limits]  Before calling I weigh the task's difficulty and Codex's limits (headroom, past usage) and ask
-          which model and reasoning level to use: "as recommended / keep current / narrow scope / choose myself / stop".
-          If a limit cuts it midway, what Codex **wrote down while investigating** remains.
+[Limits]  Before calling I check Codex's limits and ask three things at once: the model and the reasoning level
+          (your Codex config is the recommended first choice) and how deep Codex should dig (shallow / normal / deep,
+          my pick first). If that combination once used more than today's share of the limit, I warn you.
+          To stop, type "stop" in Other. If a limit cuts a run midway, what Codex **wrote down while investigating** remains.
 
 [Env]     CR_MODEL=<model>     Codex model          CR_EFFORT=<level>   reasoning level
           CR_SANDBOX=<mode>    permission level

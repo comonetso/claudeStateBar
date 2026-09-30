@@ -26,7 +26,7 @@ For when you and the user want **another view once**, asked and answered on the 
    - **Suspect `--look` first.** `--explore` is rarely really needed.
 
 3. **Run synchronously.** 🔴 **Never `run_in_background`** — the opposite of the other modes; the point is to put the answer straight into the chat.
-   Before the first `--start` turn, do §2-1 (preflight.md). Not for `--resume-stamp` turns.
+   Before the first `--start` turn, do §2-1 (preflight.md) — model and reasoning only, no depth question. Not for `--resume-stamp` turns.
    🔴 **Every turn takes exactly one of `--start` / `--resume-stamp`.** Without it the script refuses — it is the only signal that splits conversations per skill call.
 
    ```

@@ -10,7 +10,10 @@
    - "my current work" · "before committing" → `--uncommitted`
    - nothing said → **pass nothing**; `send.sh` decides (the uncommitted changes if any, otherwise against the default branch)
 
-4. **Do §2-1 (preflight.md), then run in the background.** If "narrow scope" was chosen, narrow it with the focus instruction.
+4. **Do §2-1 (preflight.md), then run in the background.** Append the line for the chosen depth to the focus instruction (with no focus, the line alone is the focus):
+   - 얕게: `변경분 안에서 눈에 띄는 결함만 빠르게 짚어라. 변경분 밖 호출부는 따라가지 마라.`
+   - 보통: `변경분과 직접 닿는 호출부까지 읽고, 지적마다 파일 경로와 줄 번호를 적어라.`
+   - 깊게: `변경분이 닿는 호출 관계와 엣지 케이스까지 따라가고, 지적마다 스스로 반증해 본 뒤 남은 것만 적어라.`
 
    ```
    Bash(run_in_background: true):
