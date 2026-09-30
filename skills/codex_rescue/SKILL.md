@@ -49,6 +49,7 @@ RESUME goes by file name:
 - **EDIT gate** — `CR_ALLOW_EDIT=1` **only after explicit approval**, and again on **every** EDIT follow-up turn.
 - **Changes outside the response file** (🔴 in `send.sh`'s report) go to the user **before anything else. Never revert them yourself.**
 - **Live steering is always on** — add `CR_LIVE_STEER=1` to CONSULT · EDIT · REVIEW · FOLLOWUP runs; drop it only when the user asks for "the old way". It can't be switched on after the start, and nobody knows at the start whether it will be needed. CHAT can't be steered. Under workspace-write it also opens the network (`CR_NETWORK=false` turns that off).
+- **Runs started together share a group name** — when you start two or more runs at once, put the same `CR_GROUP="<short name>"` on every one of them (a few words naming the batch, in the user's language, e.g. the cycle or step). The progress panel shows them as one group card. Never set it for a single run; a follow-up keeps its run's group by itself.
 - Never use `CR_SANDBOX=danger-full-access` (change detection can't see outside the cwd and would falsely report "no changes").
 - Stamps come only from running `date "+%y%m%d_%H%M%S"`. Every request carries its complete `response_path`.
 - **Never edit Codex's text**; your review goes below it as `## Claude 검토`. "Arrived" isn't "succeeded" — read the content.

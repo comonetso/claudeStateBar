@@ -599,27 +599,28 @@ export function toExecEvent(notification, ctx) {
         }
 
         case 'thread/tokenUsage/updated': {
-            // 🔴 이벤트로 내보내지 않는다. 대신 ctx 에 최신값을 쌓아 두고 turn.completed 에 싣는다.
+            // ctx 에 최신값을 쌓아 두고 turn.completed 에 싣는다. 그리고 2026-10-01 부터는
+            // 진행 중 표시용으로 `token_usage` 한 줄도 그때그때 내보낸다(사용자 결정 — 패널이
+            // 실행 중 카드에도 누적 토큰을 실시간으로 적는다).
             //
-            // 그래야 하는 이유: app-server 의 `turn/completed` 알림 params 에는 **usage 가 없다**
+            // ctx 에 쌓는 이유: app-server 의 `turn/completed` 알림 params 에는 **usage 가 없다**
             // (실측 원문 확인: threadId 와 turn{id,status,startedAt,completedAt,durationMs} 뿐).
-            // exec 는 turn.completed 에 usage 를 실어 보냈고 패널도 거기서만 읽는다. 여기서
-            // 안 받아 두면 토큰 표시가 통째로 사라진다.
+            // exec 는 turn.completed 에 usage 를 실어 보냈다. 여기서 안 받아 두면 완료 줄의 토큰이 빠진다.
             //
-            // 중간값을 그때그때 이벤트로 내지 않는 이유:
+            // 중간값을 `turn.completed` 나 notice 로 내면 안 되는 이유는 그대로다:
             //  · turn.completed 를 미리 내면 패널이 실행을 끝난 것으로 그린다 — 절대 안 된다.
-            //  · 새 type 은 파서가 모르니 안 보인다.
             //  · notice 로 내면 긴 턴에서 노란 줄이 계속 쌓인다(실측 58초 턴에 4회).
-            // 즉 화면 표시는 exec 와 동일하게 "완료 시 한 번"으로 유지하고, 값만 잃지 않게 한다.
+            // 그래서 **exec 에 없던 별도 type** 으로 낸다. 확장 1.17.2 부터 이 type 을 읽는다.
+            // 그보다 옛 확장은 모르는 type 으로 세고 넘어간다(execEvents 는 unknown type 에 던지지 않는다).
+            // send.sh 의 사후 판독(thread_id 추출·`turn.failed|error` 한도 판정)은 이 줄과 겹치는 키가 없다.
+            // 값은 스레드 누적이다(되묻기 턴에도 1턴부터 더한 값) — turn.completed 의 usage 와 같은 뜻.
             const usage = readTokenUsage(notification);
-            if (usage) {
-                c.tokenUsage = usage;
-                // 컨텍스트 창 크기는 exec 에 없던 값이라 패널이 쓰지 않는다. 그래도 runtime 상태나
-                // 향후 표시에 쓸 수 있게 ctx 에는 남겨 둔다(파일로는 안 나간다).
-                const w = p.tokenUsage && p.tokenUsage.modelContextWindow;
-                if (typeof w === 'number' && w > 0) c.modelContextWindow = w;
-            }
-            return null;
+            if (!usage) return null;
+            c.tokenUsage = usage;
+            // 컨텍스트 창 크기는 exec 에 없던 값이라 패널이 쓰지 않는다. ctx 에만 남긴다.
+            const w = p.tokenUsage && p.tokenUsage.modelContextWindow;
+            if (typeof w === 'number' && w > 0) c.modelContextWindow = w;
+            return { type: 'token_usage', usage };
         }
 
         default:

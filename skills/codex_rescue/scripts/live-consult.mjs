@@ -655,13 +655,19 @@ async function cmdRun(opts, lib) {
     const startedAtIso = new Date(t0).toISOString().replace(/\.\d+Z$/, 'Z');
     let hbTimer = null;
 
+    // 병렬 묶음(2026-10-01) — send.sh 가 다듬어 export 한 값을 그대로 쓴다. 여기서 다르게 다듬으면
+    // send.sh 가 쓴 status 와 값이 어긋나 카드가 쓸 때마다 묶음을 오간다.
+    const group = process.env.CR_GROUP || '';
+    const groupSession = process.env.CR_GROUP_SESSION || '';
+    const groupFields = group ? Object.assign({ group }, groupSession ? { group_session: groupSession } : {}) : {};
+
     const writeStatus = (state, extra) => {
         if (!statusFile) return;
         const body = Object.assign({
             schema: 1, stamp, slug: reqSlug,
             mode: 'live', kind: 'consult', state,
             started_at: startedAtIso, finished_at: null, codex_exit: null, tee_exit: null,
-        }, reqSubject ? { subject: reqSubject } : {}, extra || {});
+        }, reqSubject ? { subject: reqSubject } : {}, groupFields, extra || {});
         try {
             const tmp = `${statusFile}.tmp`;
             fs.writeFileSync(tmp, JSON.stringify(body), 'utf8');

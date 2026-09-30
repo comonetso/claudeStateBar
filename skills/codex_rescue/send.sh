@@ -30,6 +30,8 @@
 #                           그 밖의 수정은 **원리적으로 못 본다.** 감시자가 눈을 감은 채
 #                           "변경 없음"을 보고하는 상태가 된다(이 스크립트가 가장 나쁘다고 한 것)
 #   CR_NETWORK=false      네트워크를 이 실행에서만 차단한다 (기본: 허용)
+#   CR_GROUP=<이름>       한 번에 띄운 병렬 실행의 묶음 이름 (2026-10-01). 같은 이름·같은 대화의 실행을
+#                         확장이 묶음 카드 하나로 보여 준다. 되묻기는 비워 두면 앞 턴 것을 이어 쓴다
 #                         ★ workspace-write 에서 실제로 막혀 있던 것은 네트워크 하나뿐이었다.
 #                           2026-08-25 사용자 결정으로 기본 허용. 조회 전용이며 업로드는 금지다
 #                           (프롬프트 지시 + 사후 `.log/events.jsonl` 감사)
@@ -1454,6 +1456,8 @@ write_status() {
     printf ',"stamp":"%s"'  "$(jsan "$STAMP")"
     printf ',"slug":"%s"'   "$(jsan "$SLUG")"
     [ -n "$SUBJECT" ] && printf ',"subject":"%s"' "$(jsan "$SUBJECT")"
+    [ -n "${GROUP:-}" ] && printf ',"group":"%s"' "$GROUP"
+    [ -n "${GROUP:-}" ] && [ -n "${GROUP_SESSION:-}" ] && printf ',"group_session":"%s"' "$GROUP_SESSION"
     printf ',"mode":"%s"'   "$(jsan "$MODE")"
     printf ',"kind":"%s"'   "$(jsan "$KIND")"
     { [ "$KIND" = review ] || [ "$MODE" = review ]; } && [ -n "$SCOPE" ] && printf ',"scope":"%s"' "$(jsan "$SCOPE${SCOPE_VAL:+:$SCOPE_VAL}")"
@@ -1466,6 +1470,22 @@ write_status() {
   } > "$tmp" 2>/dev/null && mv -f -- "$tmp" "$STATUS" 2>/dev/null || rm -f -- "$tmp" 2>/dev/null
 }
 STARTED_AT=$(date -u "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+
+# ── 병렬 묶음 (2026-10-01 사용자 결정) ─────────────────────────
+# 한 번에 여러 건을 띄울 때 Claude 가 같은 CR_GROUP 이름을 붙인다. 확장은 이름과 대화 번호
+# (CLAUDE_CODE_SESSION_ID)가 둘 다 같은 실행을 묶음 카드 하나로 보여 준다 — 다른 대화가
+# 우연히 같은 이름을 써도 섞이지 않게(사용자 결정).
+# 되묻기는 같은 스탬프의 status 를 다시 쓴다. CR_GROUP 이 없으면 앞 턴 것을 이어 쓴다 —
+# 안 그러면 되묻는 순간 카드가 묶음에서 빠진다(카드 제목 subject 를 원 건에서 잇는 것과 같은 이유).
+# 끼어들기 경로는 status 를 live-consult.mjs 도 쓰므로 export 로 넘긴다. 두 쪽이 다른 값을 쓰면
+# 쓸 때마다 카드가 묶음을 오가니, 값은 여기서 한 번 jsan 으로 다듬어 그대로 넘긴다(저쪽은 다시 다듬지 않는다).
+GROUP=$(jsan "${CR_GROUP:-}")
+GROUP_SESSION=$(jsan "${CLAUDE_CODE_SESSION_ID:-}")
+if [ -z "$GROUP" ] && [ -f "$STATUS" ]; then
+  GROUP=$(sed -n 's/.*"group":"\([^"]*\)".*/\1/p' "$STATUS" 2>/dev/null | head -n 1)
+  GROUP_SESSION=$(sed -n 's/.*"group_session":"\([^"]*\)".*/\1/p' "$STATUS" 2>/dev/null | head -n 1)
+fi
+export CR_GROUP="$GROUP" CR_GROUP_SESSION="$GROUP_SESSION"
 
 # ── 스캔 정의 ───────────────────────────────────────────────────
 # `-name build` 등에 `-type d` 를 붙인다. 안 붙이면 같은 이름의 **일반 파일**까지 prune 된다.

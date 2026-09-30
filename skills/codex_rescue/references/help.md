@@ -91,6 +91,7 @@ codex_rescue — get a second view from Codex when Claude is stuck (fully automa
           CR_ALLOW_EDIT=1      unlock edit (after approval)   CR_DRYRUN=1   check without running
           CR_LIVE_STEER=1      interject path (default for analyze · review · fix · follow-up; without it, the old way)
           CR_CONFIRMED=1       marks that the pre-run check was answered (runs are refused without it)
+          CR_GROUP=<name>      group name for runs started together (one group card in the progress panel)
 ```
 
 ## All environment variables (reference — print only if asked)
@@ -105,6 +106,7 @@ codex_rescue — get a second view from Codex when Claude is stuck (fully automa
 | `CR_WIN_SANDBOX` | Windows sandbox mode override |
 | `CR_NETWORK` | network allowed by default under workspace-write; `false` blocks it (proxy-based on Windows — troubleshooting.md) |
 | `CR_DRYRUN=1` | check everything without running Codex |
+| `CR_GROUP=<name>` | runs started together share it; the progress panel groups runs with the same name from the same Claude conversation. A follow-up keeps its run's group |
 | `CR_CONSULT_MAX_TURN` | follow-up turn limit, default 11 |
 | `CR_CHAT_LIMIT` | CHAT time limit in seconds, default 60; required with `--explore` |
 | `CR_CHAT_LOOK_MAX` | CHAT `--look` total size in bytes, default 65536 |
