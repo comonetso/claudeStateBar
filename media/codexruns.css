@@ -20,6 +20,21 @@
   #pane-codexRuns .mode-chip.tree-chip { background:transparent; color: var(--vscode-descriptionForeground);
     border:1px solid var(--vscode-panel-border); letter-spacing:0; }
   #pane-codexRuns .run-time { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; font-variant-numeric: tabular-nums; }
+  /* "model - effort · tokens" in small print under a card's title, and the token total under a
+     group's. Indented past the fold arrow so it lines up with the title text. */
+  #pane-codexRuns .run-sub { margin:3px 0 0 20px; color: var(--vscode-descriptionForeground); font-size:.72em;
+               white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-variant-numeric: tabular-nums; }
+  /* Runs Claude started together. The frame holds ordinary run cards; the left rule is what tells
+     it apart from a run card at a glance. */
+  #pane-codexRuns .grp { border:1px solid var(--vscode-panel-border); border-left:3px solid var(--vscode-textLink-foreground);
+               border-radius:6px; padding:10px 14px; margin-bottom:12px; }
+  #pane-codexRuns .grp-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+  #pane-codexRuns .grp.collapsed .grp-head .arrow { transform: rotate(-90deg); }
+  #pane-codexRuns .grp-name { font-weight:600; font-size:1.05em; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #pane-codexRuns .grp-count { flex-shrink:0; color: var(--vscode-descriptionForeground); font-size:.8em; white-space:nowrap; }
+  #pane-codexRuns .grp-body { margin-top:10px; }
+  #pane-codexRuns .grp.collapsed .grp-body { display:none; }
+  #pane-codexRuns .grp-body .run:last-child { margin-bottom:0; }
   #pane-codexRuns .spacer { flex:1 1 auto; }
   #pane-codexRuns .badge { font-size:.8em; padding:2px 9px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
   #pane-codexRuns .badge.running, #pane-codexRuns .badge.starting, #pane-codexRuns .badge.finalizing { background: var(--vscode-statusBarItem-warningBackground); color: var(--vscode-statusBarItem-warningForeground); }

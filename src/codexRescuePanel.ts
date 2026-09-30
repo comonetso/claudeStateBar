@@ -43,6 +43,12 @@ export interface CodexRunView {
     tag?: string;
     tagPath?: string;
     mode: string;
+    /**
+     * Batch name for runs Claude started together, and the key the panel groups on (name plus
+     * the conversation that started them). Two or more runs sharing the key draw as one group card.
+     */
+    group?: string;
+    groupKey?: string;
     phase: RunPhase;
     startedAt?: number;
     endedAt?: number;
@@ -52,7 +58,10 @@ export interface CodexRunView {
     effort?: string;
     items: CodexItemView[];
     todo?: { text: string; done: boolean }[];
-    /** Only known once the turn completes — exec JSONL has no live token counter. */
+    /**
+     * The thread's running total, cached input included. Plain exec reports it once the turn
+     * completes; a live-steer run on codex_rescue 1.17.3+ updates it after every model call.
+     */
     totalTokens?: number;
     /**
      * Present when the run's own doc exists on disk; clicking opens it. A URI *string*, not
@@ -113,7 +122,7 @@ export { workspaceLabel } from './core/workspaceLabel';
 // stops re-rendering; a live one keeps changing and keeps updating.
 function signature(runs: CodexRunView[]): string {
     return JSON.stringify((runs || []).map(r => ({
-        s: r.stamp, g: r.tag || '', p: r.phase, e: r.endedAt || 0, t: r.totalTokens || 0,
+        s: r.stamp, g: r.tag || '', b: r.groupKey || '', p: r.phase, e: r.endedAt || 0, t: r.totalTokens || 0,
         d: r.todo, k: r.staleForMs ? Math.floor(r.staleForMs / 5000) : 0,
         r: !!r.resultUri, m: (r.model || '') + '/' + (r.effort || ''),
         i: r.items.map(i => [i.id, i.status, i.label, i.body, i.durationMs, i.turn || 1]),

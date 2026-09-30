@@ -78,6 +78,29 @@
     const d = new Date(ms);
     return pad2(d.getHours())+':'+pad2(d.getMinutes());
   }
+  // Same short form as the workflow tab's agent tokens (7.1M, 256k); the exact count is on hover.
+  function trimZero(x) { const v = x.toFixed(1); return v.slice(-2) === '.0' ? v.slice(0, -2) : v; }
+  function fmtTok(n) {
+    if (!n || n <= 0) return '';
+    if (n >= 1000000) return trimZero(n / 1000000) + 'M';
+    if (n >= 1000) return trimZero(n / 1000) + 'k';
+    return String(n);
+  }
+  function isOver(r) { return r.phase === 'done' || r.phase === 'failed' || r.phase === 'stopped'; }
+  // "model - effort · tokens" in small print under a card's title, so a folded card says what ran
+  // and how much it used (user's request, 2026-10-01). It sits on its own line rather than in the
+  // head: on the head line it crowded the title and left a long one nowhere to go (user's call,
+  // same day). Tokens are the thread's running total with cached input included (user's call) —
+  // the same figure the expanded card has always shown. A live run gets the count while it works
+  // only on codex_rescue 1.17.3+; before that it appears at the end.
+  function runStat(run) {
+    const parts = [];
+    if (run.model) parts.push(run.model + (run.effort ? ' - ' + run.effort : ''));
+    if (run.totalTokens) parts.push(fmtTok(run.totalTokens));
+    if (!parts.length) return '';
+    const hover = run.totalTokens ? t('cx.tokens', run.totalTokens.toLocaleString()) : '';
+    return '<div class="run-sub"' + (hover ? ' title="' + esc(hover) + '"' : '') + '>' + esc(parts.join(' · ')) + '</div>';
+  }
   // Independent 1s ticker so a running run's clock advances even when its data is unchanged.
   function tick() {
     const now = Date.now();
@@ -122,7 +145,7 @@
   }
   function sigOf(runs) {
     return JSON.stringify((runs||[]).map(function (r) {
-      return [r.stamp, r.tag||'', r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultUri, (r.model||'') + '/' + (r.effort||''),
+      return [r.stamp, r.tag||'', r.groupKey||'', r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultUri, (r.model||'') + '/' + (r.effort||''),
         r.items.map(function (i) { return [i.id,i.status,i.label,i.body,i.durationMs,i.turn||1]; }),
         (r.turnDocs||[]).map(function (d) { return [d.startedAt||0, d.endedAt||0]; })];
     }));
@@ -433,6 +456,8 @@
           // Only finished runs get a delete button — deleting mid-write would race send.sh.
           (finished ? '<button class="del-btn" data-del="' + esc(run.stamp) + '" title="' + esc(t('common.delete')) + '">🗑</button>' : '') +
         '</div>' +
+        // Outside run-body, so it stays visible on a folded card.
+        runStat(run) +
         '<div class="run-body">' +
           '<div class="meta">' + esc(run.stamp) +
             (run.threadId ? ' · thread ' + esc(run.threadId.slice(0,8)) : '') +
@@ -444,17 +469,81 @@
       '</div>';
     });
 
-    // Live and not-yet-settled runs stay on top; finished ones go into the group below them.
-    // 'stale' is not finished: it is the one state that asks the user to go and look.
-    const liveCards = [], overCards = [];
-    let gFail = 0, gStop = 0;
+    // Runs Claude started together — same batch name from the same conversation, carried in
+    // groupKey — draw as one group card (user's call, 2026-10-01). A key only one run holds stays
+    // a plain card, the same rule as the command groups inside a card. The list is newest first,
+    // so a group sits where its newest run would have.
+    const keyCount = {};
+    lastRuns.forEach(function (r) { if (r.groupKey) keyCount[r.groupKey] = (keyCount[r.groupKey] || 0) + 1; });
+    const units = [];
+    const unitAt = {};
     lastRuns.forEach(function (r, i) {
-      const over = r.phase==='done' || r.phase==='failed' || r.phase==='stopped';
-      if (!over) watchedLive[r.stamp] = true;
-      if (!over || watchedLive[r.stamp]) { liveCards.push(cards[i]); return; }
-      overCards.push(cards[i]);
-      if (r.phase === 'failed') gFail++;
-      if (r.phase === 'stopped') gStop++;
+      const k = (r.groupKey && keyCount[r.groupKey] >= 2) ? r.groupKey : null;
+      if (!k) { units.push({ idx: [i] }); return; }
+      if (!(k in unitAt)) { unitAt[k] = units.length; units.push({ key: k, idx: [] }); }
+      units[unitAt[k]].idx.push(i);
+    });
+
+    function groupCard(u, rs) {
+      const gid = 'g:' + u.key;
+      const nLiveG = rs.filter(function (r) { return r.phase==='running'||r.phase==='starting'||r.phase==='finalizing'; }).length;
+      const nStaleG = rs.filter(function (r) { return r.phase === 'stale'; }).length;
+      const nDoneG = rs.filter(function (r) { return r.phase === 'done'; }).length;
+      const nFailG = rs.filter(function (r) { return r.phase === 'failed'; }).length;
+      const nStopG = rs.filter(function (r) { return r.phase === 'stopped'; }).length;
+      const allOver = rs.every(isOver);
+      // Open while anything in it is still going, folded once it is all over (user's call,
+      // 2026-10-01). A click overrides that and sticks, like a run card's.
+      const open = (gid in userToggled) ? userToggled[gid] : !allOver;
+      // The worst state inside wins the badge, so a failure is visible with the group folded.
+      const state = nLiveG ? 'running' : nStaleG ? 'stale' : nFailG ? 'failed' : nStopG ? 'stopped' : 'done';
+      const badge = '<span class="badge ' + state + '">' + esc(t('cx.phase.' + state)) + '</span>';
+      const counts = [t('cx.grp.progress', nDoneG, rs.length)];
+      if (nFailG) counts.push(t('cx.nFailed', nFailG));
+      if (nStopG) counts.push(t('cx.nStopped', nStopG));
+      // The combined count goes under the title in small print, the same place a run card puts
+      // its own. Only the count: runs in one group can use different models.
+      const tok = rs.reduce(function (a, r) { return a + (r.totalTokens || 0); }, 0);
+      const tokHtml = tok
+        ? '<div class="run-sub" title="' + esc(t('cx.grp.tokens', tok.toLocaleString())) + '">' + esc(fmtTok(tok)) + '</div>'
+        : '';
+      // First start to last end. Left out when a finished group lacks an end on record: a start
+      // with nothing to stop it would count up forever, as if the group were still running.
+      const starts = rs.map(function (r) { return r.startedAt || 0; }).filter(Boolean);
+      const ends = rs.map(function (r) { return r.endedAt || 0; }).filter(Boolean);
+      let timeHtml = '';
+      if (starts.length && (!allOver || ends.length === rs.length)) {
+        timeHtml = '<span class="run-time" data-started="' + Math.min.apply(null, starts) +
+          '" data-done="' + (allOver ? Math.max.apply(null, ends) : '') + '"></span>';
+      }
+      return '<div class="grp' + (open ? '' : ' collapsed') + '">' +
+        '<div class="grp-head" data-gid="' + esc(gid) + '" data-gopen="' + (open ? '1' : '0') + '">' +
+          '<span class="arrow">▾</span>' +
+          '<span class="grp-name" title="' + esc(rs[0].group || '') + '">' + esc(rs[0].group || '') + '</span>' +
+          '<span class="grp-count">' + esc(counts.join(' · ')) + '</span>' +
+          timeHtml + '<span class="spacer"></span>' + badge +
+        '</div>' + tokHtml +
+        '<div class="grp-body">' + u.idx.map(function (i) { return cards[i]; }).join('') + '</div>' +
+      '</div>';
+    }
+
+    // Live and not-yet-settled runs stay on top; finished ones go into the group below them.
+    // 'stale' is not finished: it is the one state that asks the user to go and look. A group
+    // card moves as one: it stays up while any run in it does.
+    const liveCards = [], overCards = [];
+    let gFail = 0, gStop = 0, overRuns = 0;
+    lastRuns.forEach(function (r) { if (!isOver(r)) watchedLive[r.stamp] = true; });
+    units.forEach(function (u) {
+      const rs = u.idx.map(function (i) { return lastRuns[i]; });
+      const html1 = u.key ? groupCard(u, rs) : cards[u.idx[0]];
+      const stayUp = rs.some(function (r) { return !isOver(r) || watchedLive[r.stamp]; });
+      if (stayUp) { liveCards.push(html1); return; }
+      overCards.push(html1);
+      overRuns += rs.length;
+      rs.forEach(function (r) {
+        if (r.phase === 'failed') gFail++;
+        if (r.phase === 'stopped') gStop++;
+      });
     });
     let html = liveCards.join('');
     if (overCards.length) {
@@ -467,7 +556,8 @@
       html += '<div class="done-group' + (doneGroupOpen ? '' : ' collapsed') + '">' +
         '<div class="done-head" data-dgroup="1">' +
           '<span class="arrow">▾</span>' +
-          '<span>' + esc(t('cx.doneGroup', overCards.length)) + '</span>' +
+          // Counts runs, not cards: a group card inside holds several.
+          '<span>' + esc(t('cx.doneGroup', overRuns)) + '</span>' +
           (extra.length ? '<span>· ' + esc(extra.join(' · ')) + '</span>' : '') +
         '</div>' +
         '<div class="done-body">' + overCards.join('') + '</div>' +
@@ -575,6 +665,13 @@
     }
     const dg = e.target.closest('[data-dgroup]');
     if (dg) { doneGroupOpen = !doneGroupOpen; render(lastRuns, true); return; }
+    // Group card head. The run cards inside have heads of their own, which this does not match.
+    const gh = e.target.closest('.grp-head');
+    if (gh) {
+      userToggled[gh.getAttribute('data-gid')] = gh.getAttribute('data-gopen') !== '1';
+      render(lastRuns, true);
+      return;
+    }
     const del = e.target.closest('[data-del]');
     if (del) { vscodeApi.postMessage({ type:'delete', stamp: del.getAttribute('data-del') }); return; }
     // A fully-visible row has nothing to open; swallow the click so it doesn't flicker.

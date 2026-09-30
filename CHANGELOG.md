@@ -23,6 +23,18 @@ the newest one of this session. A chat document does not record which Claude con
 this session is taken to start with the earliest Claude conversation the status bar shows for the
 workspace.
 
+A card on the Codex progress tab now has a small line under its title, visible with the card folded,
+with the model, the reasoning effort and the tokens the run used, as in `gpt-6.1-sol - max · 7.1M`,
+and the exact count on hover. The count is the thread's running total with cached input included, the
+figure the expanded card already had. With codex-rescue 1.17.3 or later, a run on the live-steering
+route updates it after every model call; before that, and on the old route, it appears when the run
+ends. Runs Claude starts together under one batch name, which the plugin records from 1.17.3, share a
+group card. Its head shows the batch name, how many are done out of how many, any failures, the time
+from the first start to the last end and the state of the worst run, with the combined tokens in small
+print below. The group is open while anything in it runs and folds when all are over; clicking its head
+opens or folds it, and that choice sticks. A finished group moves into the finished list as a whole.
+Runs from another Claude conversation stay apart even under the same name.
+
 The codex-rescue plugin moved to 1.17.2 on 2026-09-30. Before a run it now asks three things at once:
 the model, the reasoning effort and how deep Codex should dig. The model and the effort start from
 your own Codex setting, which is always the first and recommended choice; the other choices are picked

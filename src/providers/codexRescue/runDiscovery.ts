@@ -32,6 +32,13 @@ export interface RunStatus {
     mode?: string;
     kind?: string;
     scope?: string;
+    /**
+     * Batch name Claude gave runs it started together (codex_rescue 1.17.3+, `CR_GROUP`), and the
+     * Claude conversation that started them. The panel groups on both, so another conversation
+     * reusing the name stays apart (user's call, 2026-10-01).
+     */
+    group?: string;
+    group_session?: string;
     state?: 'running' | 'finalizing' | 'done' | 'failed' | 'interrupted' | string;
     started_at?: string;
     finished_at?: string | null;
@@ -53,6 +60,9 @@ export interface CodexRun {
     subject?: string;
     mode: string;
     scope?: string;
+    /** Batch name and the key the panel groups on (name + starting conversation). See RunStatus.group. */
+    group?: string;
+    groupKey?: string;
     phase: RunPhase;
     startedAtMs?: number;
     endedAtMs?: number;
@@ -558,6 +568,9 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
             subject: status?.subject?.trim() || undefined,
             mode: status?.mode || 'readonly',
             scope: status?.scope,
+            group: status?.group?.trim() || undefined,
+            groupKey: status?.group?.trim()
+                ? JSON.stringify([status.group_session || '', status.group.trim()]) : undefined,
             phase,
             staleForMs,
             startedAtMs: isFollowup

@@ -4552,6 +4552,8 @@ async function collectCodexRuns(roots?: CodexRoot[]): Promise<CodexRunView[]> {
                 tag: f.tag,
                 tagPath: f.tagPath,
                 mode: run.mode,
+                group: run.group,
+                groupKey: run.groupKey,
                 phase: run.phase,
                 startedAt: run.startedAtMs,
                 endedAt: run.endedAtMs,
