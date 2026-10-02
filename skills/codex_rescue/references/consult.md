@@ -67,20 +67,24 @@
 
 7. **Write the request file** from `${CLAUDE_SKILL_DIR}/references/request-template.md`. Put the **complete real path** in frontmatter `response_path` — `send.sh` reads it and stops without it. `subject` is a one-line title of about 20 characters, in the user's language; the Claude State Bar progress panel shows it as the card title (without it the card shows the slug).
 
-8. **Run `send.sh` in the background** — this is the handoff. Never make the user paste anything.
+8. **Launch `send.sh` detached, then watch it** — this is the handoff. Never make the user paste anything.
 
    ```
-   Bash(run_in_background: true):
-     CR_CONFIRMED=1 CR_LIVE_STEER=1 bash "${CLAUDE_SKILL_DIR}/send.sh" docs/codex_rescue/<stamp>_request_<slug>.md
+   ① Bash (synchronous — returns within seconds):
+     CR_CONFIRMED=1 CR_LIVE_STEER=1 node "${CLAUDE_SKILL_DIR}/scripts/launch.mjs" --bash "$BASH" docs/codex_rescue/<stamp>_request_<slug>.md
+   ② Bash(run_in_background: true, timeout: 7200000):
+     <the watch command ① printed, exactly as printed>
    ```
 
-   - Prefix the values chosen in §2-1 ④ (only those differing from the current settings): `CR_MODEL=<model> CR_EFFORT=<level> CR_CONFIRMED=1 CR_LIVE_STEER=1 bash …`.
+   - Prefix the values chosen in §2-1 ④ (only those differing from the current settings): `CR_MODEL=<model> CR_EFFORT=<level> CR_CONFIRMED=1 CR_LIVE_STEER=1 node …`.
    - 🔴 **Never drop `CR_LIVE_STEER=1`.** Without it the run goes through the old `codex exec` and **can't be steered** mid-run. Drop it only when the user asked for "the old way".
-   - **EDIT the same way** — after approval: `CR_CONFIRMED=1 CR_ALLOW_EDIT=1 CR_LIVE_STEER=1 bash …`. While it runs, something like "leave that file, fix only this" can be passed via steer.md.
-   - **Always `run_in_background: true`.** Run synchronously it hits the Bash timeout (10 minutes at most) and blocks other work meanwhile.
-   - Right after, post only the short output (SKILL.md §3). If you picked the problem yourself, say which in one line.
+   - **EDIT the same way** — after approval: `CR_CONFIRMED=1 CR_ALLOW_EDIT=1 CR_LIVE_STEER=1 node …`. While it runs, something like "leave that file, fix only this" can be passed via steer.md.
+   - **If ① says `send.sh ended right away`**, nothing is running: the output is `send.sh`'s refusal (missing `CR_CONFIRMED`, the EDIT gate, a bad argument) and the exit code is `send.sh`'s. Handle it as that refusal says; don't start a watcher.
+   - **If ① says the same stamp is already running**, don't launch again and don't delete the lock — watch it with the command it printed.
+   - **Always `run_in_background: true, timeout: 7200000` for the watcher.** The default background limit is 30 minutes and the maximum 2 hours; they end only the watcher, never the run. The watcher ends by itself before 2 hours with `⏳ still running — re-arm: <command>` — run that same command again the same way. **Never launch the run again.**
+   - Right after ①, post only the short output (SKILL.md §3). If you picked the problem yourself, say which in one line.
 
-   **Confirm on stderr that live steering is on.** This line must appear:
+   **Confirm that live steering is on.** The run's stderr goes to `docs/codex_rescue/.log/<stamp>_launch.err`; read that file once shortly after launching (the line comes after the pre-run file snapshot, usually within seconds). This line must appear:
 
    ```
    → running on the live-steer path (app-server) — conversation key: <stamp>
@@ -88,7 +92,7 @@
 
    **If it is missing, the run went the old way.** Tell the user as soon as you notice — nothing they say mid-run can be passed on.
 
-   - The live path needs Node's **global WebSocket**: built into Node 22 / 24 · Node 20.18 / 20.19 need `--experimental-websocket` · Node 18.20 can't. `send.sh` **measures the capability, never the version string** (backports differ per distribution) to decide on the flag; if nothing works it falls back to the old exec path and says so on stderr. Relay that warning — **tell the user up front that this run can't be steered**. If `scripts/live-consult.mjs` is missing, `send.sh` stops with that reason — reinstall the skill.
+   - The live path needs Node's **global WebSocket**: built into Node 22 / 24 · Node 20.18 / 20.19 need `--experimental-websocket` · Node 18.20 can't. `send.sh` **measures the capability, never the version string** (backports differ per distribution) to decide on the flag; if nothing works it falls back to the old exec path and says so on stderr (`<stamp>_launch.err`). Relay that warning — **tell the user up front that this run can't be steered**. If `scripts/live-consult.mjs` is missing, `send.sh` stops with that reason — reinstall the skill.
    - Exit codes and what to do on failure: results.md "Failure".
 
 ## Artifacts
@@ -101,7 +105,7 @@
 | Slug | English kebab-case, 2–4 words (e.g. `mms-jar-encoding`, `fcm-token-null`) |
 | Request | `docs/codex_rescue/<stamp>_request_<slug>.md` — **you write it** (CONSULT · EDIT; REVIEW's is generated by `send.sh`) |
 | Response | `docs/codex_rescue/<stamp>_response_<slug>.md` — **Codex writes it** (`send.sh` does when Codex couldn't). Same stamp and slug as the request |
-| Run logs | `docs/codex_rescue/.log/<stamp>_events.jsonl` (every Codex event, **written live**) · `_status.json` (progress) · `_heartbeat` (every 5 s) · `_last_message.md` · `_stderr.log`. `.log/` gets a `.gitignore` (`*`) and is never committed. Each trigger cleans old records: a finished (`done`) run's `_appserver.jsonl` right away, `.log/` and `.scratch/` entries last modified more than `CR_KEEP_DAYS` days ago (default 7; `0` turns it off). Requests, responses, the trash, locked runs and this run are never touched; while another run is alive, `.scratch/` cleaning is skipped. Full rules in `scripts/cleanup-logs.mjs`'s header |
+| Run logs | `docs/codex_rescue/.log/<stamp>_events.jsonl` (every Codex event, **written live**) · `_status.json` (progress) · `_heartbeat` (every 5 s) · `_last_message.md` · `_stderr.log` · from the detached launch (SKILL.md §3): `_launch.out` (`send.sh`'s stdout — the report) · `_launch.err` (its stderr) · `_launch.exit` (its exit code, written once it has fully ended) · `_reported` (the watcher handed the result over); a follow-up turn N uses `<stamp>_t<N>_launch.*` and `<stamp>_t<N>_reported`. `.log/` gets a `.gitignore` (`*`) and is never committed. Each trigger reads `<home>/.claude/codex_rescue/settings.json` via Node `os.homedir()` (ignores `CLAUDE_CONFIG_DIR`): `{"scratchDays":1,"logDays":7}`. Missing file/keys use defaults; each `0` disables that target; only nonnegative integers are valid. Unknown keys are ignored. Explicit `CR_KEEP_DAYS` overrides both periods; malformed settings skip all cleanup with one warning even with an override. A set `CR_KEEP_DAYS` that is not a whole number of days, empty included, stops the cleanup with an argument error: nothing is cleaned, `_usage.json` is not rewritten and no Codex conversation cleanup starts (one line on stderr). The plugin never writes settings. With log cleanup enabled, a finished (`done`) run's `_appserver.jsonl` goes right away; other logs age by the stamp group's newest modification. Workbench: `docs/codex_rescue/.scratch/<stamp>/`, aged by its newest nested modification. Locked/current run folders are protected; other old folders and legacy shared items are cleaned even while another run is alive (`.gitignore` stays). Codex conversations: with valid settings, `logDays > 0` and not a dry run, the cleanup ends by starting `scripts/prune-codex-sessions.mjs` detached (the run never waits for it). It deletes, oldest first and one at a time per machine (lock `<home>/.claude/codex_rescue/.codex-prune.lock`), the Codex conversations codex_rescue created on this machine (session file's first line has `originator` `claude-state-bar-live-consult` — live-steering runs only; CHAT and runs on the old `codex exec` route are recorded by Codex as `codex_exec`, can't be told apart from other tools' conversations, and are never cleaned or counted; any project) whose file is older than `logDays`, only with Codex's official `codex delete --force <id>` — never by deleting files. A parent's deletion takes its sub-agent conversations with it, so sub-agents are never deleted on their own. The conversation a follow-up is resuming is left out (`send.sh` passes it as `--keep-thread`, which becomes the prune's `--skip-thread`); each candidate's modification time is checked again right before its delete, so one resumed meanwhile is skipped; a single delete that takes over 2 minutes is abandoned for that conversation only and its leftover `codex delete` process is killed. Result: `<home>/.claude/codex_rescue/codex-prune.log` (overwritten). A case whose Codex conversation is gone can no longer be followed up. Requests, responses, trash and conversations other tools created are never touched automatically. Every cleanup (even one skipped for malformed settings; not a dry run) rewrites `.log/_usage.json`: `{schema:1, computed_at, root, items:{scratch,log,trash,codex:{bytes,count}}, clean:{script,dir}}` — `codex` is this project's rescue conversations (`cwd` = root) plus their sub-agents. Clean now (what the VS Code panel's clean button runs): `node <clean.script> --dir <clean.dir> --now "<scratch,log,trash,codex>" [--yes] [--lang en|ko]` — without `--yes` it only previews; with it, it deletes every chosen item regardless of age, keeps what belongs to in-progress (locked) runs and to runs whose result has not been handed to Claude yet (the latest turn's `_launch.exit` exists but its `_reported` is not `done`), skips `codex` when the conversation id of any kept run (in progress, or finished with its result not handed over yet) isn't in its events file yet, or when the machine lock is held, empties trash but keeps the folders and their `.gitignore`, and rewrites `_usage.json`; unknown item names exit 2. `--lang` (default `en`) is the language of its output, which a person reads in the terminal; the panel passes its own language. For a valid `CLAUDE_CODE_SESSION_ID`, non-CHAT, non-dry runs atomically write `<home>/.claude/codex_rescue/runs/<session>/<stamp>_<root-hash>.json` to attach the run to its Claude conversation; ledger files age by `logDays` and empty session folders are removed. Full rules in `scripts/cleanup-logs.mjs`'s header |
 
 **You choose the response file name and put it into the request's `response_path`.** Letting Codex name it breaks the pair (invented stamps, mismatched slugs).
 
@@ -112,8 +116,10 @@ Before an EDIT run, get one line of confirmation: "Codex will edit the code dire
 🔴 `send.sh` **refuses EDIT by default**; run it only after approval:
 
 ```bash
-CR_CONFIRMED=1 CR_ALLOW_EDIT=1 bash "${CLAUDE_SKILL_DIR}/send.sh" <request>
+CR_CONFIRMED=1 CR_ALLOW_EDIT=1 CR_LIVE_STEER=1 node "${CLAUDE_SKILL_DIR}/scripts/launch.mjs" --bash "$BASH" <request>
 ```
+
+(then watch it as in step 8 ②)
 
 **Never add `CR_ALLOW_EDIT=1` without approval** — adding it means "the user approved"; without that, the gate is pointless.
 

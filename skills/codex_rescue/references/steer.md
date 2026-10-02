@@ -17,7 +17,9 @@ This applies **while** a run is going (a CONSULT · EDIT · REVIEW turn or a fol
 
 🔴 **Never pass the text as an argv.** Windows CreateProcess caps a command line at 32,767 characters, and non-ASCII text (3 UTF-8 bytes per character) hits it sooner (measured: 32,000 B succeeds, 32,700 B fails). Use a file even when it looks short — measuring the length is one more judgement to get wrong. (`--input-file -` reads stdin.)
 
-**`<stamp>` is the one in the request file name** — you set it yourself when writing the request. **Never guess it or make a new one.** It equals the `conversation key:` value on `send.sh`'s stderr.
+**`<stamp>` is the one in the request file name** — you set it yourself when writing the request (for a REVIEW, the launcher made it and printed it). **Never guess it or make a new one.** It equals the `stamp` the launcher printed and the `conversation key:` value on `send.sh`'s stderr (`.log/<stamp>_launch.err`).
+
+A detached run (SKILL.md §3) is steered exactly the same way, while it runs and also after a window reload: the relay finds the run by its stamp, not by the command that started it.
 
 ## When — only when the user said something
 

@@ -67,9 +67,9 @@ Paths are `${CLAUDE_SKILL_DIR}/references/<file>`. Read the whole file.
 | CHAT | `chat.md` (+ `preflight.md` before `--start`) |
 | FOLLOWUP | `preflight.md` → `followup.md` |
 | RESUME | `results.md` ("RESUME") |
-| a run finished (`send.sh` stdout arrived) | `results.md` |
+| a run finished (the watcher printed `send.sh`'s report) | `results.md` |
 | the user speaks while a run is going | `steer.md` |
-| errors, `stale`, `codex-via-stdout`, Windows sandbox trouble | `troubleshooting.md` |
+| errors, `stale`, `STALE` from the watcher, a launcher refusal, re-arming after a reload, `codex-via-stdout`, Windows sandbox trouble | `troubleshooting.md` |
 
 After a context compaction, re-read the file for the current step — the details don't survive it.
 
@@ -79,7 +79,14 @@ Query Codex's limits and settings, then ask model · reasoning (Codex's config f
 
 ## 3. Output after sending
 
-After starting `send.sh`, post only this (in the user's language):
+CONSULT, EDIT, REVIEW, FOLLOWUP and RESUME always run **detached** from your command, in two steps:
+
+1. **Launch — synchronous Bash**, the `CR_*` variables in front: `node "${CLAUDE_SKILL_DIR}/scripts/launch.mjs" --bash "$BASH" <the send.sh arguments>`. It returns within seconds and prints the stamp and **a watch command**. If `send.sh` refused before starting (no `CR_CONFIRMED`, the EDIT gate, a bad argument), the launcher prints that refusal and exits with `send.sh`'s code — nothing is running; handle it as you would a `send.sh` refusal.
+2. **Watch — `Bash(run_in_background: true, timeout: 7200000)`** with that exact watch command. It ends with `send.sh`'s report → `results.md`. Before your command's 2-hour maximum it ends by itself with `⏳ still running — re-arm: <command>` — run the same watch command again. **Never launch the run again.**
+
+The run doesn't depend on the watcher: Claude's command time limit (30 minutes by default, 2 hours at most) and a window reload end only the watcher. After a reload, resume or compaction the plugin's session-start hook lists this conversation's runs whose result you haven't received, each with its watch command — re-arm them. CHAT stays synchronous (chat.md).
+
+After launching, post only this (in the user's language):
 
 1. **Mode** — e.g. `mode: consult (Codex only analyzes)` / `mode: code review (git diff, Codex only analyzes)` / `mode: edit (Codex edits directly)`
 2. **Target** — CONSULT · EDIT: which problem (always say it if you picked it yourself); REVIEW: the scope (`uncommitted changes` / `against main` / `commit abc123`)

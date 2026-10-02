@@ -731,6 +731,9 @@ async function cmdRun(opts, lib) {
     //    turn.completed 에 실리지 않아 패널의 토큰 표시가 통째로 사라지고, 대기 상태 안내가
     //    중복으로 쌓인다. (bridge.mjs 가 명시적으로 경고하는 함정이다)
     const ctx = { threadId: null, turnId: null, turnSeq };
+    const pendingNotes = [];
+    let resolveDone;
+    const done = new Promise((resolve) => { resolveDone = resolve; });
 
     // 이어받기면 같은 스탬프에 앞 턴의 개입 기록이 남아 있다. 이번 실행 요약에는 이번 턴 것만 보인다 —
     // 안 그러면 1턴에서 이미 보고된 미전달이 "이번에 말이 안 들어갔다"로 다시 찍힌다.
@@ -803,7 +806,18 @@ async function cmdRun(opts, lib) {
         });
 
         // ── 4) 알림 → exec 호환 이벤트 ──
-        conn.onNotification((note) => {
+        const consumeNotification = (note) => {
+            // turn/start 응답 전에는 보류한다. 응답 id 와 일치한 알림만 본 상태에 넣는다.
+            const ownership = bridge.notificationOwnership(note, ctx);
+            if (ownership === 'pending') {
+                pendingNotes.push(note);
+                return;
+            }
+            if (ownership !== 'owned' && ownership !== 'global') {
+                const meta = bridge.makeSubagentEvent(note, ctx);
+                if (meta) appendJson(eventsFile, meta);
+                return;
+            }
             // 최종 메시지는 알림에서 직접 건진다. app-server 에는 `-o` 가 없으므로 우리가 모아야 한다.
             if (note.method === 'item/completed') {
                 const item = (note.params && note.params.item) || {};
@@ -813,6 +827,7 @@ async function cmdRun(opts, lib) {
             }
             if (note.method === 'turn/completed') {
                 turnStatus = (note.params && note.params.turn && note.params.turn.status) || 'unknown';
+                resolveDone('completed');
             }
 
             try {
@@ -828,7 +843,8 @@ async function cmdRun(opts, lib) {
 
             const sig = classifySignal(note);
             if (sig) emitSignal(sig);
-        });
+        };
+        conn.onNotification(consumeNotification);
 
         // ── 5) 핸드셰이크 ──
         await conn.request('initialize', {
@@ -942,6 +958,7 @@ async function cmdRun(opts, lib) {
 
         started = true;
         ctx.turnId = turnId;
+        for (const note of pendingNotes.splice(0)) consumeNotification(note);
         await runtime.setPhase(stamp, 'active', { activeTurnId: turnId });
         mirror(true, turnId);
         err(`→ turn started (thread=${threadId} turn=${turnId})`);
@@ -965,11 +982,6 @@ async function cmdRun(opts, lib) {
         }
 
         // ── 9) turn/completed 대기 + steer 큐 펌프 ──
-        const done = new Promise((resolve) => {
-            conn.onNotification((note) => {
-                if (note.method === 'turn/completed') resolve('completed');
-            });
-        });
         const serverDied = new Promise((resolve) => {
             conn.onClose(() => resolve('closed'));
         });

@@ -489,6 +489,42 @@ export function readTokenUsage(notification) {
     return pickUsage(tu && (tu.total || tu));
 }
 
+// 본 턴 id 는 알림에서 직접 읽는다. ctx 의 폴백으로 외부 턴을 본 턴으로 만들지 않는다.
+export function notificationOwnership(notification, ctx = {}) {
+    const method = String((notification && notification.method) || '');
+    const p = (notification && notification.params) || {};
+    const turnId = firstString(p.turnId, p.turn && p.turn.id);
+    const threadId = firstString(p.threadId, p.thread && p.thread.id);
+    // thread/status/changed 는 턴 id 없이 온다(실측) — 스레드 id 로만 가른다. 승인·입력 대기
+    // 신호가 여기 실리고, 실행을 끝내는 알림이 아니라 본 스레드 것이면 살려도 안전하다.
+    const turnScoped = !!turnId || /^(turn|item)\//.test(method)
+        || method === 'thread/tokenUsage/updated';
+    if (turnScoped) {
+        if (!turnId) return 'unknown';
+        if (!ctx.turnId) return 'pending';
+        if (turnId !== ctx.turnId || (threadId && threadId !== ctx.threadId)) return 'external';
+        return 'owned';
+    }
+    if (threadId) {
+        if (!ctx.threadId) return 'pending';
+        if (threadId !== ctx.threadId) return 'external';
+    }
+    return 'global';
+}
+
+// 하위 스레드의 생명주기는 본 턴의 시작·종료와 다른 type 으로만 남긴다.
+export function makeSubagentEvent(notification, ctx) {
+    if (notificationOwnership(notification, ctx) !== 'external') return null;
+    const p = notification.params || {};
+    const threadId = firstString(p.threadId, p.thread && p.thread.id);
+    const turnId = firstString(p.turnId, p.turn && p.turn.id);
+    if (!threadId || threadId === ctx.threadId || !turnId) return null;
+    const type = notification.method === 'turn/started' ? 'subagent.started'
+        : notification.method === 'turn/completed' ? 'subagent.completed' : null;
+    return type ? { type, thread_id: threadId, turn_id: turnId,
+        status: firstString(p.turn && p.turn.status, p.status) || 'unknown' } : null;
+}
+
 /**
  * app-server 알림 하나를 exec 호환 이벤트로 바꾼다.
  *
@@ -514,6 +550,10 @@ export function toExecEvent(notification, ctx) {
 
     const p = (notification.params && typeof notification.params === 'object') ? notification.params : {};
     const c = (ctx && typeof ctx === 'object') ? ctx : {};
+    if (Object.prototype.hasOwnProperty.call(c, 'turnId')) {
+        const ownership = notificationOwnership(notification, c);
+        if (ownership !== 'owned' && ownership !== 'global') return null;
+    }
     // 알림에 실려 온 값이 항상 우선이다. ctx 는 그게 없을 때만 쓰는 폴백이다.
     const turnId = firstString(p.turnId, p.turn && p.turn.id, c.turnId);
 

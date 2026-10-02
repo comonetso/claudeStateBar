@@ -12,9 +12,14 @@
 #
 #   CR_LIVE_STEER=1       요청서 기반 1턴(readonly·edit·review)을 끼어들기 경로(app-server)로 돌린다
 #
-# Claude 는 이걸 **Bash(run_in_background: true)** 로 던진다. 명령이 끝나면 Claude Code 가
-# Claude 를 자동 재호출하며 이 스크립트의 stdout 을 넘긴다. 그래서 출력은 사람용 로그가
+# Claude 는 이걸 **분리 실행 런처**로 띄운다 (2026-10-02 사용자 결정 — CHAT 을 뺀 전부):
+#   node scripts/launch.mjs --bash "$BASH" <이 스크립트의 인자>     ← 동기 Bash, 몇 초 안에 끝난다
+# 런처는 이 스크립트를 Claude 명령과 떼어서 띄우고 stdout·stderr 를 `.log/<스탬프>_launch.out|.err` 로 받는다.
+# Claude 는 런처가 알려 준 감시 명령(scripts/wait-run.mjs)을 Bash(run_in_background: true) 로 걸고,
+# 끝나면 감시 명령이 이 스크립트의 stdout 을 그대로 넘긴다. Claude 명령의 시간 제한(최대 2시간)과
+# 창 재로드에 실행이 같이 끊기지 않게 하려는 것이다. 그래서 출력은 사람용 로그가
 # 아니라 **Claude 에게 주는 지시문** 형태로 쓴다. 사용자가 붙여넣거나 "다 됐다"고 알릴 필요가 없다.
+# CHAT 은 지금처럼 이 스크립트를 동기 Bash 로 직접 부른다.
 #
 # 환경변수
 #   CR_MODEL=<모델>       Codex 모델 지정. 미설정이면 codex 자체 설정값을 쓴다
@@ -47,14 +52,21 @@
 #                           CONSULT 단발로는 3회 물어도 결론이 안 났다
 #   CR_CHAT_LIMIT=<초>    CHAT 시간 상한 (기본 60). --explore 를 쓰면 **명시 필수**
 #   CR_CHAT_LOOK_MAX=<바이트>  CHAT --look 총 크기 상한 (기본 65536)
-#   CR_KEEP_DAYS=<일>     지난 기록 보존 기간 (기본 7, 0 이면 정리하지 않는다). 발동할 때마다
-#                         scripts/cleanup-logs.mjs 로 정리한다 (2026-09-19)
+#   CR_STAMP=<ymd_His>    REVIEW 의 스탬프. 분리 실행 런처가 넘긴다(2026-10-02). 없으면 이 스크립트가 만든다
+#   CR_KEEP_DAYS=<일>     명시하면 작업폴더·로그/장부 기간을 모두 덮어쓴다(0 이면 정리 끔).
+#                         미지정이면 홈의 .claude/codex_rescue/settings.json (scratchDays=1, logDays=7).
+#                         발동할 때마다 scripts/cleanup-logs.mjs 로 정리한다. 설정 파일은 읽기만 한다.
+#                         logDays 는 codex_rescue 가 만든 Codex 대화 기록에도 적용된다 — 정리기가
+#                         prune-codex-sessions.mjs 를 떼어 띄워 뒤에서 `codex delete --force` 로 지운다(2026-10-02).
 #
 #   ⛔ CR_TIMEOUT 은 제거됐다 — Windows 에서 작동하지 않는다(실측). 쓰면 거부한다
 #
 # 🔴 fail-closed 원칙 — 이 스크립트는 감시자다. 감지 준비에 실패하면 "변경 없음"으로 흐르지 않고
 #    반드시 중단한다. 감지 실패를 정상으로 보고하는 것이 가장 나쁜 실패 양식이다.
 set -uo pipefail
+# 끊긴 실행의 경과를 재는 기준(초). 신호 처리기는 새 프로세스를 띄우지 않고 이 값만 쓴다 —
+# 시간 제한으로 끊길 때는 곧 강제 종료가 따라올 수 있어 기록을 서둘러 끝내야 한다.
+SIGNAL_STARTED_SECONDS=$SECONDS
 
 die() { printf 'codex_rescue: %s\n' "$*" >&2; exit 2; }
 
@@ -72,6 +84,9 @@ confirm_gate() {
 # 스킬 폴더. 아래에서 `cd "$ROOT"` 를 하므로 그 전에 한 번만 잡는다 —
 # 상대경로로 불렸을 때 cd 뒤에 계산하면 엉뚱한 곳을 가리킨다.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || die "cannot find the skill folder"
+# 다시 띄우라고 안내할 때 쓰는 런처 호출 (2026-10-02 — CHAT 을 뺀 실행은 모두 분리 실행 런처로 띄운다).
+# `$BASH` 는 Claude 가 붙여 넣을 셸에서 펼쳐지도록 글자 그대로 남긴다.
+LAUNCH_HINT="node \"$SELF_DIR/scripts/launch.mjs\" --bash \"\$BASH\""
 
 # ── Codex 에 넘기는 경로는 Windows 형식으로 바꾼다 ──────────────
 # codex 진입점은 Node 스크립트(Windows 네이티브)다. Git Bash 의 MSYS 경로(`/d/OneDrive/...`)를
@@ -94,17 +109,57 @@ winp() {
 # 발동할 때마다 이 프로젝트의 지난 기록을 정리한다. 무엇을 지우고 무엇을 두는지는
 # scripts/cleanup-logs.mjs 머리말에 있다. 예전엔 VS Code 확장의 자동 정리(기본 꺼짐)뿐이라
 # 서버 한 프로젝트에 211MB 가 쌓였다. 부가 기능이라 실패해도 실행은 계속한다.
+# 정리기는 끝에 용량 기록 `.log/_usage.json` 을 쓰고, Codex 대화 기록 정리기를 떼어 띄운다(2026-10-02).
+# 떼어 띄운 쪽은 stdio 를 물려받지 않으므로 아래 `>&2` 가 그걸 기다리지 않는다.
 # 🔴 부르는 자리는 두 조건을 지킨다 —
 #    ① 잠금과 trap 을 건 **뒤**: 이번 실행의 스탬프가 잠금으로 빠지고, 도중에 끊겨도 잠금이 풀린다
 #    ② 변경 감시 스냅샷(BEFORE)보다 **앞**: 뒤에 돌면 정리가 지운 `.scratch/` 항목이
 #       "Codex 가 지운 파일"로 보고된다
-cr_cleanup() {   # $1=docs/codex_rescue 경로  $2=건너뛸 스탬프  $3=자기 잠금 파일 이름(핑퐁) — 없으면 비운다
+cr_cleanup() {   # $1=docs/codex_rescue 경로  $2=건너뛸 스탬프  $3=자기 잠금 파일 이름(핑퐁)  $4=되묻기가 이어받는 Codex 대화 번호 — 없으면 비운다
   [ -n "${CR_DRYRUN:-}" ] && return 0
   command -v node >/dev/null 2>&1 || return 0
   local js="$SELF_DIR/scripts/cleanup-logs.mjs"
   [ -f "$js" ] || return 0
-  node "$(winp "$js")" --dir "$(winp "$1")" --keep-days "${CR_KEEP_DAYS:-7}" \
-    ${2:+--skip-stamp "$2"} ${3:+--skip-lock "$3"} >&2 || true
+  local keep_args=()
+  [ "${CR_KEEP_DAYS+x}" = x ] && keep_args=(--keep-days "$CR_KEEP_DAYS")
+  node "$(winp "$js")" --dir "$(winp "$1")" ${keep_args[@]+"${keep_args[@]}"} \
+    ${2:+--skip-stamp "$2"} ${3:+--skip-lock "$3"} ${4:+--keep-thread "$4"} >&2 || true
+}
+
+# ── 실행 장부 — Claude 대화가 다른 폴더에서 띄운 실행도 자기 창에 붙일 수 있게 한다.
+# 홈은 Node os.homedir() 기준이다. CLAUDE_CONFIG_DIR 은 따르지 않는다. 실패해도 실행은 계속한다.
+cr_write_ledger() {
+  [ -n "${CR_DRYRUN:-}" ] && return 0
+  local session="${CLAUDE_CODE_SESSION_ID:-}" root LC_ALL=C
+  case "$session" in ''|*[!A-Za-z0-9_-]*) return 0 ;; esac
+  if ! command -v node >/dev/null 2>&1 || ! root=$(winp "$ROOT" 2>/dev/null); then
+    echo '⚠️ could not write the run ledger — the run continues' >&2
+    return 0
+  fi
+  node - "$root" "$STAMP" "$MODE" "$KIND" "$STARTED_AT" "$session" 2>/dev/null <<'NODE' \
+    || echo '⚠️ could not write the run ledger — the run continues' >&2
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { createHash, randomBytes } = require('node:crypto');
+let tmp;
+try {
+    const [rawRoot, stamp, mode, kind, started_at, session] = process.argv.slice(2);
+    const root = path.resolve(rawRoot).replace(/\\/g, '/');
+    const hash = createHash('sha256').update(root).digest('hex').slice(0, 12);
+    const folder = path.join(os.homedir(), '.claude', 'codex_rescue', 'runs', session);
+    fs.mkdirSync(folder, { recursive: true });
+    const dest = path.join(folder, `${stamp}_${hash}.json`);
+    tmp = `${dest}.tmp.${process.pid}.${randomBytes(8).toString('hex')}`;
+    fs.writeFileSync(tmp, JSON.stringify({ schema: 1, session, stamp, root, started_at, mode, kind }) + '\n',
+                     { flag: 'wx', mode: 0o600 });
+    fs.renameSync(tmp, dest);
+} catch {
+    if (tmp) { try { fs.unlinkSync(tmp); } catch { /* 실패한 임시 파일만 정리 */ } }
+    process.exitCode = 1;
+}
+NODE
+  return 0
 }
 
 # ── frontmatter 헬퍼 (2026-08-25, FOLLOWUP 신설과 함께) ─────────
@@ -423,7 +478,7 @@ $(sed 's/^/    /' "$CH_LOCK" 2>/dev/null)
   ch_cleanup() { rm -rf -- "${CH_TMP:-}" 2>/dev/null; ch_unlock; return 0; }
   trap ch_cleanup EXIT
   trap 'ch_cleanup; echo "codex_rescue: interrupted (signal received)" >&2; exit 130' HUP INT TERM
-  # CHAT 은 `.log/` 에 스탬프 파일을 안 쓴다 — 건너뛸 스탬프는 없고, 자기 잠금만 '다른 실행'에서 뺀다
+  # CHAT 은 `.log/` 에 스탬프 파일을 안 쓴다 — 건너뛸 스탬프는 없다. 장부와 작업폴더도 쓰지 않는다.
   cr_cleanup "$CH_DOCS" "" "$(basename -- "$CH_LOCK")"
 
   # 문서의 thread_id 를 비우고 끊긴 사유를 남긴다. 실제로 비워졌을 때만 0 을 돌려준다 —
@@ -1003,7 +1058,16 @@ if [ "$KIND" = review ]; then
   Code review works on git diff, so only in a git repository.
   To ask about a stuck problem, use a request file (without --review)."
 
-  STAMP=$(date "+%y%m%d_%H%M%S") || die "cannot create a stamp"
+  # 분리 실행 런처(scripts/launch.mjs)는 로그 파일 이름을 먼저 정해야 해서 스탬프를 CR_STAMP 로 넘긴다 (2026-10-02).
+  # 없으면 예전처럼 여기서 만든다.
+  if [ -n "${CR_STAMP:-}" ]; then
+    case "$CR_STAMP" in
+      [0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]) STAMP="$CR_STAMP" ;;
+      *) die "CR_STAMP must be ymd_His (e.g. 261002_012141): $CR_STAMP" ;;
+    esac
+  else
+    STAMP=$(date "+%y%m%d_%H%M%S") || die "cannot create a stamp"
+  fi
   RESP_REL="docs/codex_rescue/${STAMP}_review_${SLUG}.md"
 
   # 스코프 자동 판정 — 플러그인(codex-plugin-cc)의 auto 규칙과 같은 기준으로 맞췄다.
@@ -1165,7 +1229,7 @@ elif [ "$KIND" = followup ]; then
      \"Codex will continue the same conversation and edit more code. If you have uncommitted work, committing it first is recommended. Go ahead?\" (ask in the language of the user)
 
   Only after approval, run it again like this:
-     CR_ALLOW_EDIT=1 bash \"\$0\" --followup \"$FUP\"
+     CR_ALLOW_EDIT=1 $LAUNCH_HINT --followup \"$FUP\"   ← synchronous Bash; then arm the watch command it prints
 
   (approval for turn 1 does not carry over to this turn. Ask every turn.)"
     EDITLOG_REL="docs/codex_rescue/${STAMP}_edit${FUP_TURN}_${SLUG}.md"
@@ -1251,7 +1315,7 @@ else
      ($RESP — the follow-up and the original request point to the same response document)
 
   Follow up like this:
-     bash \"\$0\" --followup $REQ" ;;
+     $LAUNCH_HINT --followup $REQ" ;;
   esac
   case "$MODE" in
     followup) die "mode: followup cannot run as a request: $REQ
@@ -1284,7 +1348,7 @@ else
       If you have uncommitted work, committing it first is recommended. Go ahead?\" (ask in the language of the user)
 
   Only after approval, run it again like this:
-     CR_ALLOW_EDIT=1 bash \"\$0\" \"$REQ\"
+     CR_ALLOW_EDIT=1 $LAUNCH_HINT \"$REQ\"   ← synchronous Bash; then arm the watch command it prints
 
   (never add this variable without approval — that would defeat the gate.)"
   fi
@@ -1327,9 +1391,9 @@ mkdir -p -- "$LOGD" "$(dirname -- "$RESP_REL")" || die "cannot create the log/re
 # 🔴 여기에 **권위 데이터를 두지 마라.** marker·baseline·last_message 는 RUN_DIR(workspace 밖)에
 #    그대로 둔다. `.log/` 를 "비권위 telemetry" 로 못박은 것과 같은 이유다 — 피감시자가 쓸 수 있는
 #    곳에 감시 기준을 두면 안 된다.
-SCRATCH_REL="docs/codex_rescue/.scratch"
+SCRATCH_REL="docs/codex_rescue/.scratch/$STAMP"
 mkdir -p -- "$SCRATCH_REL" || die "cannot create the scratch directory: $SCRATCH_REL"
-[ -e "$SCRATCH_REL/.gitignore" ] || printf '# codex_rescue scratch — Codex 가 조사 중 만든 임시 산출물.\n# 판단 근거로 남기되 커밋하지는 않는다.\n# 요청/응답 .md 는 한 단계 위에 있고 그건 커밋 대상이다.\n*\n' > "$SCRATCH_REL/.gitignore" 2>/dev/null
+[ -e "docs/codex_rescue/.scratch/.gitignore" ] || printf '# codex_rescue scratch — Codex 가 조사 중 만든 임시 산출물.\n# 판단 근거로 남기되 커밋하지는 않는다.\n# 요청/응답 .md 는 한 단계 위에 있고 그건 커밋 대상이다.\n*\n' > "docs/codex_rescue/.scratch/.gitignore" 2>/dev/null
 
 # ── 🔴 동시 실행 차단 (2026-08-17) ─────────────────────────────
 #
@@ -1406,12 +1470,40 @@ cleanup() {
   [ -n "${HEARTBEAT:-}" ] && rm -f -- "$HEARTBEAT" 2>/dev/null
   return 0
 }
+handle_signal() {
+  local signal="$1" received_at elapsed_ms limit_match=null err_dest
+  # 중첩 신호가 보관·상태 기록을 끊지 않게 한다. 출처는 신호만으로 확정할 수 없다.
+  trap '' HUP INT TERM
+  received_at=$(date -u "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo '')
+  elapsed_ms=$(( (SECONDS - SIGNAL_STARTED_SECONDS) * 1000 ))
+  # 기본 30분·최대 2시간과 15초 이내인 경우만 후보로 남긴다(원인 확정 아님).
+  if [ "$elapsed_ms" -ge 1785000 ] && [ "$elapsed_ms" -le 1815000 ]; then limit_match=1800
+  elif [ "$elapsed_ms" -ge 7185000 ] && [ "$elapsed_ms" -le 7215000 ]; then limit_match=7200
+  fi
+  err_dest="${ERR_DEST:-$LOGD/${STAMP}_stderr.log}"
+  if [ "$KIND" = followup ]; then err_dest="$LOGD/${STAMP}_t${FUP_TURN}_stderr.log"; fi
+  # RUN_DIR 을 지우기 전에, 아직 잠금을 보유한 상태에서 stderr 를 보관한다.
+  if [ -f "${ERRLOG:-$RUN_DIR/stderr.log}" ]; then
+    cp -f -- "${ERRLOG:-$RUN_DIR/stderr.log}" "$err_dest" 2>/dev/null \
+      || echo "codex_rescue: could not preserve stderr: $err_dest" >&2
+  fi
+  [ -n "${HB_PID:-}" ] && kill "$HB_PID" 2>/dev/null
+  [ -n "${STATUS:-}" ] && write_status interrupted "\"$received_at\"" null null \
+    "\"termination_signal\":\"$signal\",\"elapsed_ms\":$elapsed_ms,\"received_at\":\"$received_at\",\"limit_match\":$limit_match,\"exit_code\":130" 2>/dev/null
+  cleanup
+  echo "codex_rescue: interrupted (signal=$signal). A person may have stopped it, or Claude's command time limit (default 30 minutes, maximum 2 hours) may have expired." >&2
+  echo "Check termination_signal, elapsed_ms, received_at and limit_match in ${STATUS:-the status log}, and stderr in $err_dest. The signal alone does not identify the cause." >&2
+  exit 130
+}
 trap cleanup EXIT
 # 신호로 죽을 때 status 를 interrupted 로 남긴다 — best effort 다.
 # hard kill(작업관리자 등)은 여기 못 오므로 그건 heartbeat stale 이 담당한다.
-trap '[ -n "${STATUS:-}" ] && write_status interrupted "\"$(date -u "+%Y-%m-%dT%H:%M:%SZ")\"" 2>/dev/null
-      cleanup; echo "codex_rescue: interrupted (signal received)" >&2; exit 130' HUP INT TERM
-cr_cleanup "docs/codex_rescue" "$STAMP"   # 잠금·trap 뒤, 스냅샷 앞 — cr_cleanup 주석 참조
+trap 'handle_signal HUP' HUP
+trap 'handle_signal INT' INT
+trap 'handle_signal TERM' TERM
+# 되묻기면 이어받을 대화를 뒤에서 도는 Codex 대화 기록 삭제에서 뺀다(사용자 결정 10-02) — 7일 넘은 실행에 되묻기하면
+# 띄우는 순간 그 대화가 지워질 수 있었다. THREAD 는 FOLLOWUP 일 때만 채워진다(993·1246행).
+cr_cleanup "docs/codex_rescue" "$STAMP" "" "$THREAD"   # 잠금·trap 뒤, 스냅샷 앞 — cr_cleanup 주석 참조
 EVENTS="$RUN_DIR/events.jsonl"
 ERRLOG="$RUN_DIR/stderr.log"
 LASTMSG="$RUN_DIR/last_message.md"
@@ -1449,7 +1541,7 @@ jsan() { printf '%s' "$1" | tr -d '"\\' | tr -d '\000-\037'; }
 # status.json 을 atomic 하게 갈아끼운다. 읽는 쪽(확장)이 반쯤 쓰인 파일을 보면 안 된다.
 # 같은 디렉토리 안에서의 mv 라 rename(2) 로 원자적이다.
 write_status() {
-  local st="$1" fin="${2:-null}" cx="${3:-null}" te="${4:-null}"
+  local st="$1" fin="${2:-null}" cx="${3:-null}" te="${4:-null}" extra="${5:-}"
   local tmp="$STATUS.tmp.$$"
   {
     printf '{"schema":1'
@@ -1466,10 +1558,12 @@ write_status() {
     printf ',"finished_at":%s' "$fin"
     printf ',"codex_exit":%s'  "$cx"
     printf ',"tee_exit":%s'    "$te"
+    [ -n "$extra" ] && printf ',%s' "$extra"
     printf '}\n'
   } > "$tmp" 2>/dev/null && mv -f -- "$tmp" "$STATUS" 2>/dev/null || rm -f -- "$tmp" 2>/dev/null
 }
 STARTED_AT=$(date -u "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+cr_write_ledger   # 잠금·trap 뒤에 한 번. 되묻기는 같은 대화/스탬프/루트 파일을 원자적으로 갱신한다.
 
 # ── 병렬 묶음 (2026-10-01 사용자 결정) ─────────────────────────
 # 한 번에 여러 건을 띄울 때 Claude 가 같은 CR_GROUP 이름을 붙인다. 확장은 이름과 대화 번호
@@ -2136,6 +2230,7 @@ if [ -n "$LIVE_BRIDGE" ]; then
     --steers-log "$LOGD/${STAMP}_steers.jsonl" \
     --stamp "$STAMP" \
     --cwd "$ROOT" \
+    --scratch-rel "$SCRATCH_REL" \
     --sandbox "${SANDBOX_RAW:-read-only}" \
     ${CR_MODEL:+--model "$CR_MODEL"} \
     ${CR_EFFORT:+--effort "$CR_EFFORT"} \
@@ -2562,7 +2657,7 @@ case "$AUTHOR" in
     echo "⚠️ partial save arrived: $RESP_REL   (Codex stopped midway — codex exit: $RC)"
     case "${STOP_REASON:-other}" in
       limit)       echo "   cause: looks like the usage limit was hit (limit traces in the logs)." ;;
-      interrupted) echo "   cause: interrupted (exit 130 signal or a turn-interrupt event) — a person stopped it or the process ended." ;;
+      interrupted) echo "   cause: interrupted (exit 130 signal or a turn-interrupt event) — a person may have stopped it, or Claude's command time limit (default 30 minutes, maximum 2 hours) may have expired. Check termination_signal, elapsed_ms, received_at and limit_match in $STATUS, plus $ERR_DEST; the signal alone does not identify the cause." ;;
       *)           echo "   cause: no limit trace and no interrupt signal — check $LOGD/${STAMP}_stderr.log and events." ;;
     esac
     echo "   This document is **not finished.** status: partial · stop_reason: ${STOP_REASON:-other} was set in its frontmatter."
@@ -2625,7 +2720,7 @@ if [ "$KIND" = followup ] && [ "$AUTHOR" = codex ]; then
   echo "      · no new information (the same points reshuffled) → **stop.** Asking more will not produce it"
   echo "      · one of the 3 follow-up reasons applies → next follow-up file (limit ${CONSULT_MAX} turns):"
   echo "          docs/codex_rescue/${STAMP}_followup$((FUP_TURN + 1))_${SLUG}.md   (turn: $((FUP_TURN + 1)))"
-  echo "          bash \$0 --followup <that path>   ← run_in_background: true"
+  echo "          $LAUNCH_HINT --followup <that path>   ← synchronous Bash; then arm the watch command it prints (references/followup.md)"
   echo "      · everything else → **stop.** Move on to adopt / hold / reject"
   echo "   🔴 **The default is to stop.** Round trips are not the goal — **new information**, not turns, makes the answer"
 elif [ "$KIND" = followup ]; then
@@ -2654,7 +2749,7 @@ elif [ "$AUTHOR" = partial ]; then
   echo "   3. Report to the user — why it stopped, what was confirmed, what is left"
   case "${STOP_REASON:-other}" in
     limit)       echo "      · limit hit — check the reset time with codex-status.mjs and include it" ;;
-    interrupted) echo "      · interrupted by a signal — first check whether the user stopped it. Do not assume a limit problem" ;;
+    interrupted) echo "      · interrupted — a person may have stopped it, or Claude's command time limit (default 30 minutes, maximum 2 hours) may have expired. Check termination_signal, elapsed_ms, received_at and limit_match in $STATUS, plus $ERR_DEST; confirm the cause against Claude's time-limit notice, not the signal alone" ;;
     *)           echo "      · cause unknown — relay the failure reason found in the logs as is. Do not assume a limit problem" ;;
   esac
   if [ "$MODE" = edit ]; then
@@ -2700,7 +2795,7 @@ if [ "$KIND" = doc ] && [ "$AUTHOR" != partial ]; then
     echo
     echo "   How:"
     echo "     1. Write docs/codex_rescue/${STAMP}_followup2_${SLUG}.md (turn: 2)"
-    echo "     2. bash \$0 --followup <that path>   ← run_in_background: true"
+    echo "     2. $LAUNCH_HINT --followup <that path>   ← synchronous Bash; then arm the watch command it prints (references/followup.md)"
   elif [ -n "$THREAD_WHY" ]; then
     echo
     echo "⚠️ this case **cannot be followed up** — $THREAD_WHY"
