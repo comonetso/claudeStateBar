@@ -244,3 +244,33 @@ button.small {
 }
 
 .telegram-guide b { color: var(--vscode-foreground); }
+
+/* Codex retention section */
+.ret-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: 8px;
+    font-size: 10.5px;
+    font-weight: 500;
+    background: var(--vscode-badge-background, rgba(128,128,128,0.25));
+    color: var(--vscode-badge-foreground, var(--vscode-foreground));
+}
+
+.ret-badge[hidden] { display: none; }
+
+.ret-state {
+    min-height: 16px;
+    font-size: 11.5px;
+    margin: 4px 0 0;
+    color: var(--vscode-descriptionForeground);
+}
+
+.ret-state.ok { color: var(--vscode-testing-iconPassed, #4ade80); }
+.ret-state.warn { color: var(--vscode-editorWarning-foreground, #f59e0b); }
+.ret-state.err { color: var(--vscode-errorForeground, #ef4444); }
+
+.ret-path {
+    font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+    word-break: break-all;
+}

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { getDict } from './i18n';
 import * as creds from './credentials';
 import type { RunPhase } from './providers/codexRescue/runDiscovery';
+import type { UsageView } from './providers/codexRescue/usageFile';
 import { registerActivityTab, showActivityPanel, isActivityPanelOpen, postToActivityTab } from './activityPanel';
 
 // Live view of codex_rescue runs — the Codex counterpart to the Claude workflow view.
@@ -96,13 +97,20 @@ export interface CodexTrashView {
 
 export interface CodexPanelCallbacks {
     onOpenDoc: (docUri: string, anchor?: string) => void;
-    /** User clicked a run's delete button (confirmation happens on the extension side). */
-    onDelete: (stamp: string) => void;
+    /**
+     * User clicked a run's delete button (confirmation happens on the extension side). `root`
+     * is the card's working tree, since two trees can hold the same stamp.
+     */
+    onDelete: (stamp: string, root?: string) => void;
     /** User opened the trash drawer — the host answers with pushTrash(). */
     onTrashOpen: () => void;
+    /** User clicked "show earlier" — the host loads the rest and answers with pushOlderDone(). */
+    onLoadOlder: () => void;
     onRestore: (stamp: string) => void;
     onPurge: (stamp: string) => void;
     onEmptyTrash: () => void;
+    /** User clicked "Clean up" on the disk-use line — the host asks what to delete, then runs it. */
+    onClean: () => void;
 }
 
 let callbacks: CodexPanelCallbacks | null = null;
@@ -110,6 +118,12 @@ let lastPushedSignature: string | null = null;
 // Latest list handed over, kept across a close so a reopened panel shows it at once. Null until
 // the first scan: the tab then opens on its "loading…" line and fills in when one lands.
 let lastRuns: CodexRunView[] | null = null;
+// How many runs on disk the list leaves out, for the "show earlier" row. 0 hides the row.
+let lastOlder = 0;
+// The disk-use line above the list (codex_rescue 1.17.3+), kept across a close like the runs.
+// Null until first read: the line stays hidden rather than claiming there is nothing to show.
+let lastUsage: UsageView | null = null;
+let lastUsageSig: string | null = null;
 
 /** Kept for existing callers. The runs are a tab now, so this is simply "is the panel open". */
 export function isCodexPanelOpen(): boolean { return isActivityPanelOpen(); }
@@ -158,13 +172,30 @@ export function pushTrash(items: CodexTrashView[]): void {
     postToActivityTab('codexRuns', { type: 'trash', items });
 }
 
-export function pushRuns(runs: CodexRunView[]): void {
+/** `older` is left as it was when omitted, so a re-push of the last list keeps its count. */
+export function pushRuns(runs: CodexRunView[], older?: number): void {
     lastRuns = runs;
+    if (older !== undefined) lastOlder = older;
     if (!isActivityPanelOpen()) return;
-    const sig = signature(runs);
+    const sig = lastOlder + signature(runs);
     if (sig === lastPushedSignature) return;
     lastPushedSignature = sig;
-    postToActivityTab('codexRuns', { type: 'runs', runs });
+    postToActivityTab('codexRuns', { type: 'runs', runs, older: lastOlder });
+}
+
+/** "Show earlier" finished loading — the row stops saying it is loading. */
+export function pushOlderDone(): void {
+    postToActivityTab('codexRuns', { type: 'olderDone' });
+}
+
+/** Hand the tab its disk-use line. Same dedup as the runs: an unchanged record is not re-sent. */
+export function pushUsage(view: UsageView | null): void {
+    lastUsage = view;
+    if (!isActivityPanelOpen()) return;
+    const sig = JSON.stringify(view);
+    if (sig === lastUsageSig) return;
+    lastUsageSig = sig;
+    postToActivityTab('codexRuns', { type: 'usage', usage: view });
 }
 
 function onMessage(msg: any): void {
@@ -173,12 +204,18 @@ function onMessage(msg: any): void {
         postToActivityTab('codexRuns', { type: 'i18n', dict: getDict(lang), lang });
         lastPushedSignature = null;
         if (lastRuns) pushRuns(lastRuns);
+        lastUsageSig = null;
+        if (lastUsage) pushUsage(lastUsage);
+    } else if (msg?.type === 'clean') {
+        callbacks?.onClean();
     } else if (msg?.type === 'open' && typeof msg.path === 'string') {
         callbacks?.onOpenDoc(msg.path, typeof msg.anchor === 'string' ? msg.anchor : undefined);
     } else if (msg?.type === 'delete' && typeof msg.stamp === 'string') {
-        callbacks?.onDelete(msg.stamp);
+        callbacks?.onDelete(msg.stamp, typeof msg.root === 'string' ? msg.root : undefined);
     } else if (msg?.type === 'trashOpen') {
         callbacks?.onTrashOpen();
+    } else if (msg?.type === 'loadOlder') {
+        callbacks?.onLoadOlder();
     } else if (msg?.type === 'restore' && typeof msg.stamp === 'string') {
         callbacks?.onRestore(msg.stamp);
     } else if (msg?.type === 'purge' && typeof msg.stamp === 'string') {
@@ -190,6 +227,7 @@ function onMessage(msg: any): void {
 
 function onDispose(): void {
     lastPushedSignature = null;
+    lastUsageSig = null;
 }
 
 // The pane's markup; media/codexruns.js looks its ids up with the cx- prefix. No title and no
@@ -202,6 +240,10 @@ function bodyHtml(): string {
     <span class="flabel" data-i18n="wf.fontSize">Font size</span>
     <button class="fbtn" data-font="dec" data-i18n-title="wf.fontSmaller" title="Smaller">A−</button>
     <button class="fbtn" data-font="inc" data-i18n-title="wf.fontLarger" title="Larger">A+</button>
+  </div>
+  <div id="cx-usage" class="usage" style="display:none">
+    <span id="cx-usage-text" class="usage-text"></span>
+    <button class="fbtn usage-clean" id="cx-usage-clean" data-usage="clean" data-i18n="cx.usage.clean" data-i18n-title="cx.usage.cleanHover" title="Clean up">Clean up</button>
   </div>
   <div class="sub" id="cx-sub" data-i18n="wf.autoRefreshing">Auto-refreshing with the status bar…</div>
   <div id="cx-trash" class="trash" style="display:none">

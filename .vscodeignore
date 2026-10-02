@@ -12,6 +12,8 @@
 
 # Dev-only files
 .file_history/**
+# Local working copies (e.g. a plugin edited by Codex before it is copied back to its source).
+.work/**
 .github/**
 .vscode/**
 .claude/**

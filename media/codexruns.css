@@ -4,6 +4,12 @@
   #pane-codexRuns .fbtn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; padding:2px 11px; cursor:pointer; font-size:1em; line-height:1.4; }
   #pane-codexRuns .fbtn:hover { background: var(--vscode-button-secondaryHoverBackground); }
   #pane-codexRuns .sub { color: var(--vscode-descriptionForeground); font-size:.85em; margin-bottom:16px; }
+  /* This project's disk use, from the plugin's _usage.json. The text wraps instead of clipping:
+     the four figures are the point of the line, and a narrow panel would cut off the last ones. */
+  #pane-codexRuns .usage { display:flex; align-items:center; gap:10px; margin-bottom:8px;
+               color: var(--vscode-descriptionForeground); font-size:.85em; }
+  #pane-codexRuns .usage-text { flex:1 1 auto; min-width:0; font-variant-numeric: tabular-nums; }
+  #pane-codexRuns .usage-clean { flex-shrink:0; font-size:.95em; }
 
   #pane-codexRuns .run { border:1px solid var(--vscode-panel-border); border-radius:6px; padding:10px 14px; margin-bottom:12px; }
   #pane-codexRuns .run-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
@@ -53,6 +59,12 @@
                border-radius:6px; color: var(--vscode-descriptionForeground); }
   #pane-codexRuns .done-group.collapsed .done-head .arrow { transform: rotate(-90deg); }
   #pane-codexRuns .done-group.collapsed .done-body { display:none; }
+  /* "Show earlier": the same dashed row as the finished group's head, last on the list. */
+  #pane-codexRuns .older-row { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
+               padding:6px 14px; margin-bottom:12px; border:1px dashed var(--vscode-panel-border);
+               border-radius:6px; color: var(--vscode-descriptionForeground); }
+  #pane-codexRuns .older-row:hover { color: var(--vscode-foreground); }
+  #pane-codexRuns .older-row.loading { cursor:default; }
   #pane-codexRuns .meta { color: var(--vscode-descriptionForeground); font-size:.78em; font-family: var(--vscode-editor-font-family); margin-bottom:8px; line-height:1.6; }
   #pane-codexRuns .doclink { color: var(--vscode-textLink-foreground); cursor:pointer; text-decoration:none; }
   #pane-codexRuns .doclink:hover { text-decoration:underline; }

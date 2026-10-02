@@ -336,6 +336,42 @@ export async function discoverChats(folderUri: vscode.Uri, limit = 50): Promise<
     return out.sort((a, b) => (b.lastAtMs ?? 0) - (a.lastAtMs ?? 0));
 }
 
+/**
+ * How many conversations discoverChats would mark live, without reading a single document — the
+ * chat tab's badge while that tab is not on screen (user's call, 2026-09-30). discoverChats' rule:
+ * each marker makes one conversation live — its own document, or a card of its own when it names
+ * its stamp. A marker from before the stamp field counts only when a document of its slug is
+ * among the `limit` newest. With no marker this is one directory listing.
+ */
+export async function countLiveChats(folderUri: vscode.Uri, limit = 50): Promise<number> {
+    const docs = await docsDir(folderUri);
+    if (!docs) return 0;
+    const logDir = vscode.Uri.joinPath(docs, '.log');
+    const slugs: string[] = [];
+    for (const n of (await listNames(logDir)) ?? []) {
+        const m = /^\.chat_(.+)\.inflight$/.exec(n);
+        if (m) slugs.push(m[1]);
+    }
+    if (!slugs.length) return 0;
+    let newestSlugs: Set<string> | null = null;
+    let live = 0;
+    for (const slug of slugs) {
+        const mk = parseInflight(slug, (await readText(vscode.Uri.joinPath(logDir, '.chat_' + slug + '.inflight'))) ?? '');
+        if (mk.stamp) { live++; continue; }
+        if (!newestSlugs) {
+            const found: { stamp: string; slug: string }[] = [];
+            for (const n of (await listNames(docs)) ?? []) {
+                const m = /^(\d{6}_\d{6})_chat_(.+)\.md$/.exec(n);
+                if (m) found.push({ stamp: m[1], slug: m[2] });
+            }
+            found.sort((a, b) => (a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0));
+            newestSlugs = new Set(found.slice(0, limit).map(f => f.slug));
+        }
+        if (newestSlugs.has(slug)) live++;
+    }
+    return live;
+}
+
 // ---------------------------------------------------------------------------
 // Trash
 //

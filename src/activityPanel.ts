@@ -69,6 +69,7 @@ const FALLBACK: Record<string, string> = {
 const modules = new Map<ActivityTabId, ActivityTabModule>();
 const createdHandlers = new Set<() => void>();
 const tabChangedHandlers = new Set<(tab: ActivityTabId) => void>();
+const shownHandlers = new Set<(tab: ActivityTabId) => void>();
 
 let panel: vscode.WebviewPanel | null = null;
 /** The context the open panel was created with — for workspaceState writes from webview messages. */
@@ -194,6 +195,15 @@ export function onActivityTabChanged(fn: (tab: ActivityTabId) => void): vscode.D
     return new vscode.Disposable(() => { tabChangedHandlers.delete(fn); });
 }
 
+/**
+ * Fires when the open panel comes back on screen after another editor tab covered it, with the tab
+ * it shows. The host reads only the tab on screen (user's call, 2026-09-30), so it reads it here.
+ */
+export function onActivityPanelShown(fn: (tab: ActivityTabId) => void): vscode.Disposable {
+    shownHandlers.add(fn);
+    return new vscode.Disposable(() => { shownHandlers.delete(fn); });
+}
+
 // ── panel ─────────────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -243,6 +253,17 @@ export function showActivityPanel(context: vscode.ExtensionContext, tab?: Activi
             }
         }, null, context.subscriptions);
         created.webview.onDidReceiveMessage((msg) => onWebviewMessage(created, msg), null, context.subscriptions);
+        let wasVisible = created.visible;
+        created.onDidChangeViewState(e => {
+            const now = e.webviewPanel.visible;
+            const back = now && !wasVisible;
+            wasVisible = now;
+            if (!back || panel !== created || !active) return;
+            const tab = active;
+            for (const fn of Array.from(shownHandlers)) {
+                try { fn(tab); } catch (e2) { log(`activityPanel: onActivityPanelShown handler failed: ${String(e2)}`); }
+            }
+        }, null, context.subscriptions);
 
         for (const fn of Array.from(createdHandlers)) {
             if (panel !== created) break;   // a handler closed it
@@ -290,6 +311,11 @@ function onWebviewMessage(from: vscode.WebviewPanel, msg: any): void {
 
 export function isActivityPanelOpen(): boolean {
     return panel !== null;
+}
+
+/** Open and on screen — not behind another editor tab in its group. */
+export function isActivityPanelVisible(): boolean {
+    return panel !== null && panel.visible;
 }
 
 /** The tab currently selected in the open panel; null when the panel is closed. */

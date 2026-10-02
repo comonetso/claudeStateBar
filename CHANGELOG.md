@@ -12,8 +12,12 @@ opens the first tab with something running, or else the tab last looked at in th
 the status-bar dots open their own tab. The Codex tabs appear only when `codex_rescue` is installed,
 as their menu entries did. "Clean up stale/zombie items" moved to the bottom of the menu.
 
-While the panel is open all four tabs are kept up to date, so each tab's count matches what it lists.
-The background tab's 2-second output refresh now runs only while that tab is showing.
+Only the tab on screen is re-read, which keeps Remote-SSH windows light. The workflow, background and
+chat lists refresh while their tab is showing and the panel is not behind another editor tab, and a
+tab is read the moment you switch to it or the panel comes back into view. Codex progress is read
+either way, for its completion beep. The counts on the other tabs keep updating without reading their
+lists. The background tab's 2-second output refresh runs only while that tab is on screen. No beep
+depends on these reads.
 
 With the panel in front, Ctrl+Tab and Ctrl+Shift+Tab switch to the next and previous tab, also when
 keybindings.json binds Ctrl+Tab to something else, as long as the focus is in the panel's content;
@@ -34,6 +38,61 @@ from the first start to the last end and the state of the worst run, with the co
 print below. The group is open while anything in it runs and folds when all are over; clicking its head
 opens or folds it, and that choice sticks. A finished group moves into the finished list as a whole.
 Runs from another Claude conversation stay apart even under the same name.
+
+In a project that commits its codex_rescue request documents, the completion beep could sound every
+two seconds. A worktree created after a run started carries a copy of its request, which the progress
+tab read as a finished documents-only run with the same stamp as the live one, and the two overwrote
+each other on every poll. Runs are now told apart by working tree as well as stamp. A run held by
+several trees is listed once, from the tree with its records or else the tree the window has open, and
+one trashed there stays hidden in the other trees, where git keeps the documents. 🗑 on a card only
+ever touches that card's own tree; before, a refusal there could fall through to another tree's run of the same
+stamp. On the Codex progress and workflow tabs 🗑 now sits left of the status badge, so the badge keeps
+the right edge whether a card is finished or not.
+
+The Codex progress tab reads only the newest 20 runs of each working tree, and nothing said so: in a
+busy project the previous night's runs were simply missing. A `Show N earlier runs` row now closes the
+list when there are more on disk. Clicking it reads them once, opens the finished group and keeps them
+listed until the window reloads; they are not re-read on the 2-second refresh, so a Remote-SSH window
+costs no more than before.
+
+The workflow scan transferred every sub-agent log of every live session in full on each status-bar
+pass, and a workflow agent's log twice. In a busy Remote-SSH project that was 47MB a pass and about
+five of the seven seconds each pass took. A log is now read once and its result kept while its size and
+modification time stay the same, which a finished agent's log always does. A sub-agent that has just
+ended on a text reply is still re-read until it has been quiet for the four seconds that mark it done,
+so its chime is not lost. The results were compared against the previous build on 20 local
+conversations with 238 agents and came out identical. Opening the workflow tab in a new window also
+used to wait out that window's first full read, 29 seconds in the same project; it now shows the list
+from the last window meanwhile, under a "Last list · reading again…" line. The badges, the session menu
+and the chime never use that saved list.
+
+With codex-rescue 1.17.3 or later, the Codex progress tab also lists runs that this window's Claude
+conversations started in another folder, such as another repository or a folder outside any
+repository. The plugin records which conversation started each run and where, under
+`~/.claude/codex_rescue/runs/` on the machine it ran on, and the tab reads that record on the machine
+the window points at. A conversation counts as this window's when it belongs to the window's project
+and was active within `hideAfter`, including ones hidden from the status bar, cleared or replaced by a
+newer one; runs another conversation started elsewhere stay out. Such a card carries the folder chip
+other working trees' cards have, chimes when it finishes, is always listed in full, and goes to that
+folder's own trash. The trash now also takes the plugin's new launch and watch files with a run
+(`_launch.out`, `_launch.err`, `_launch.exit`, `_reported` and their per-turn copies).
+
+The settings panel has a new Codex — Run History Retention section. It is not a VS Code setting: it
+edits the codex-rescue plugin's own retention file, `~/.claude/codex_rescue/settings.json`, on the
+machine the window points at, because the plugin does the cleaning and also runs without VS Code.
+From plugin 1.17.3 that file keeps work folders for 1 day and run records for 7 by default, and the
+run-record period also covers Codex's own session logs of the conversations codex_rescue started on
+the live-steering route, which the plugin removes with Codex's official delete command. 0 turns a cleanup off. A broken file is
+reported and left as it is until you change a value, and the section notes that `CR_KEEP_DAYS`, when
+set where Codex runs, replaces both periods.
+
+With plugin 1.17.3 or later, the Codex progress tab shows under its toolbar how much the project's
+codex_rescue records take up, as measured at the last run: work folders, run records, the trash and
+the Codex conversations. Clean up beside it removes the ones you tick, whatever their age. It asks once
+more, then runs the plugin's cleanup command in a terminal opened in the project. Runs still in
+progress, and runs whose result Claude has not picked up yet, keep their files. It only runs a cleanup
+program the plugin recorded under `~/.claude` for that project, and refuses a record copied from
+another folder.
 
 The codex-rescue plugin moved to 1.17.2 on 2026-09-30. Before a run it now asks three things at once:
 the model, the reasoning effort and how deep Codex should dig. The model and the effort start from

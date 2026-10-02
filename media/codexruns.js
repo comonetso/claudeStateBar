@@ -52,6 +52,11 @@
   // until the panel is closed (user's call, 2026-09-19): the finish chime brings you here to read
   // the result, and the card folding away at that moment would undo the reason you came.
   const watchedLive = {};
+  // Runs on disk the host left off the list, and whether a "show earlier" click is being served.
+  let olderCount = 0;
+  let olderLoading = false;
+  // This project's disk-use record as the host read it (usageFile.ts UsageView); null = not read yet.
+  let usage = null;
 
   function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
   function pad2(n) { return String(n).padStart(2, '0'); }
@@ -87,6 +92,35 @@
     return String(n);
   }
   function isOver(r) { return r.phase === 'done' || r.phase === 'failed' || r.phase === 'stopped'; }
+
+  // The disk-use line (codex_rescue 1.17.3+): the total, the four items and when the plugin worked
+  // them out — time only when that was today. The figures come from the plugin, which rewrites
+  // them after each run's cleanup; this line only shows them. Without a record there is just the
+  // hint and no button: there would be nothing to build the cleanup command from.
+  function usageClock(ms) {
+    const d = new Date(ms), now = new Date();
+    const today = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    return today ? fmtHM(ms) : fmtClock(ms);
+  }
+  function renderUsage() {
+    const box = document.getElementById('cx-usage');
+    const text = document.getElementById('cx-usage-text');
+    const btn = document.getElementById('cx-usage-clean');
+    if (!box || !text || !btn) return;
+    if (!usage) { box.style.display = 'none'; return; }
+    box.style.display = '';
+    if (usage.state !== 'ok' || !usage.items) {
+      text.textContent = t('cx.usage.none');
+      text.title = t('cx.usage.noneHover');
+      btn.style.display = 'none';
+      return;
+    }
+    const parts = usage.items.map(function (it) { return t('cx.usage.' + it.key) + ' ' + it.size; });
+    text.textContent = t('cx.usage.lead', usage.total) + ' — ' + parts.join(' · ') +
+      ' · ' + t('cx.usage.at', usageClock(usage.computedAt));
+    text.title = t('cx.usage.hover', fmtClock(usage.computedAt));
+    btn.style.display = '';
+  }
   // "model - effort · tokens" in small print under a card's title, so a folded card says what ran
   // and how much it used (user's request, 2026-10-01). It sits on its own line rather than in the
   // head: on the head line it crowded the title and left a long one nowhere to go (user's call,
@@ -137,6 +171,12 @@
   // list below a wall of commands before the user has chosen anything to look at.
   function isExpanded(id) {
     return (id in userToggled) ? userToggled[id] : false;
+  }
+  // What a card's remembered state (folded, open rows, kept on top) is filed under. Another
+  // working tree can hold the same stamp, so its cards add the tree; this window's own trees
+  // carry no tag and keep the bare stamp they always had.
+  function cardKey(r) {
+    return r.tag ? r.stamp + '@' + r.root : r.stamp;
   }
   function captureOpenDetails() {
     root.querySelectorAll('details[data-dkey]').forEach(function (d) {
@@ -255,7 +295,7 @@
           // A label the parser itself truncated is known-clipped without measuring. Everything
           // else depends on the panel's width, so markClipped() decides after layout.
           const more = !!(it.body && it.body.length > it.label.length);
-          const dkey = run.stamp + ' ' + it.id;
+          const dkey = cardKey(run) + ' ' + it.id;
           const openAttr = openDetails[dkey] ? ' open' : '';
           const rowCls = it.kind === 'claude_steer' ? 'it steer' : 'it';
           return '<div class="' + rowCls + '"><details class="row' + (hasFull ? ' hasfull' : '') +
@@ -349,7 +389,7 @@
       function turnHead(turn) {
         if (maxTurn < 2 || turn === shownTurn) return '';
         shownTurn = turn;
-        const fkey = run.stamp + ':' + turn;
+        const fkey = cardKey(run) + ':' + turn;
         const folded = !!foldedTurns[fkey];
         return '<div class="turn-hd' + (folded ? ' folded' : '') + '" data-tfold="' + esc(fkey) + '">' +
                  '<span class="turn-fold">▾</span>' +
@@ -379,7 +419,7 @@
       function renderNode(node) {
           if (node.one) return renderItem(node.one);
           if (node.cmds.length === 1) return renderItem(node.cmds[0]);
-          const gkey = run.stamp + ' g' + node.cmds[0].id;
+          const gkey = cardKey(run) + ' g' + node.cmds[0].id;
           const openAttr = openDetails[gkey] ? ' open' : '';
           return '<details class="cmdgroup" data-dkey="' + esc(gkey) + '"' + openAttr + '><summary>' +
             '<span class="dot done"></span><span class="kind k-' + esc(node.kind) + '">' +
@@ -400,7 +440,7 @@
             const tn = node.turn || 1;
             if (maxTurn >= 2 && tn !== openTurn) {
               if (openTurn) out += '</div>';
-              const fkey = run.stamp + ':' + tn;
+              const fkey = cardKey(run) + ':' + tn;
               // The says-block lives inside the body so one class toggle hides the whole turn.
               out += turnHead(tn)
                    + '<div class="turn-body' + (foldedTurns[fkey] ? ' folded' : '') + '">'
@@ -439,7 +479,7 @@
           (wc ? ' data-work="' + wc.sum + '" data-wlive="' + (wc.live || '') + '"' : '') + '></span>'
         : '';
 
-      return '<div class="run' + (isExpanded(run.stamp)?'':' collapsed') + '" data-id="' + esc(run.stamp) + '">' +
+      return '<div class="run' + (isExpanded(cardKey(run))?'':' collapsed') + '" data-id="' + esc(cardKey(run)) + '">' +
         '<div class="run-head">' +
           '<span class="arrow">▾</span>' +
           // Prefer the subject: the slug is a filename fragment and reads as a symbol. Either
@@ -452,9 +492,12 @@
           (maxTurn >= 2 ? '<span class="mode-chip">' + esc(t('cx.turnCount', maxTurn)) + '</span>' : '') +
           (run.tag ? '<span class="mode-chip tree-chip" title="' + esc(run.tagPath || run.tag) + '">⎇ ' + esc(run.tag) + '</span>' : '') +
           (run.docsOnly ? '<span class="mode-chip docs-chip">' + esc(t('cx.docsOnly.badge')) + '</span>' : '') +
-          timeHtml + '<span class="spacer"></span>' + badge +
-          // Only finished runs get a delete button — deleting mid-write would race send.sh.
-          (finished ? '<button class="del-btn" data-del="' + esc(run.stamp) + '" title="' + esc(t('common.delete')) + '">🗑</button>' : '') +
+          timeHtml + '<span class="spacer"></span>' +
+          // Only finished runs get a delete button — deleting mid-write would race send.sh. It
+          // sits left of the badge so the badge keeps the right edge on every card, live or not
+          // (user's call, 2026-10-01). The tree goes along: another tree can hold the stamp.
+          (finished ? '<button class="del-btn" data-del="' + esc(run.stamp) + '" data-root="' + esc(run.root || '') + '" title="' + esc(t('common.delete')) + '">🗑</button>' : '') +
+          badge +
         '</div>' +
         // Outside run-body, so it stays visible on a folded card.
         runStat(run) +
@@ -532,11 +575,11 @@
     // card moves as one: it stays up while any run in it does.
     const liveCards = [], overCards = [];
     let gFail = 0, gStop = 0, overRuns = 0;
-    lastRuns.forEach(function (r) { if (!isOver(r)) watchedLive[r.stamp] = true; });
+    lastRuns.forEach(function (r) { if (!isOver(r)) watchedLive[cardKey(r)] = true; });
     units.forEach(function (u) {
       const rs = u.idx.map(function (i) { return lastRuns[i]; });
       const html1 = u.key ? groupCard(u, rs) : cards[u.idx[0]];
-      const stayUp = rs.some(function (r) { return !isOver(r) || watchedLive[r.stamp]; });
+      const stayUp = rs.some(function (r) { return !isOver(r) || watchedLive[cardKey(r)]; });
       if (stayUp) { liveCards.push(html1); return; }
       overCards.push(html1);
       overRuns += rs.length;
@@ -562,6 +605,10 @@
         '</div>' +
         '<div class="done-body">' + overCards.join('') + '</div>' +
       '</div>';
+    }
+    if (olderCount > 0) {
+      html += '<div class="older-row' + (olderLoading ? ' loading' : '') + '" data-older="1">' +
+        '<span>' + esc(olderLoading ? t('cx.olderLoading') : t('cx.older', olderCount)) + '</span></div>';
     }
     list.innerHTML = html;
     tick();
@@ -630,6 +677,8 @@
       fontPx = fb.getAttribute('data-font')==='inc' ? Math.min(28,fontPx+1) : Math.max(10,fontPx-1);
       applyFont(); return;
     }
+    // The host asks what to delete and confirms; nothing is deleted from the webview.
+    if (e.target.closest('[data-usage]')) { vscodeApi.postMessage({ type: 'clean' }); return; }
     const tt = e.target.closest('[data-trash]');
     if (tt) {
       const act = tt.getAttribute('data-trash');
@@ -665,6 +714,17 @@
     }
     const dg = e.target.closest('[data-dgroup]');
     if (dg) { doneGroupOpen = !doneGroupOpen; render(lastRuns, true); return; }
+    // "Show earlier": everything it adds is finished, so the finished group opens to show it.
+    const ol = e.target.closest('[data-older]');
+    if (ol) {
+      if (!olderLoading) {
+        olderLoading = true;
+        doneGroupOpen = true;
+        vscodeApi.postMessage({ type: 'loadOlder' });
+        render(lastRuns, true);
+      }
+      return;
+    }
     // Group card head. The run cards inside have heads of their own, which this does not match.
     const gh = e.target.closest('.grp-head');
     if (gh) {
@@ -673,7 +733,11 @@
       return;
     }
     const del = e.target.closest('[data-del]');
-    if (del) { vscodeApi.postMessage({ type:'delete', stamp: del.getAttribute('data-del') }); return; }
+    if (del) {
+      vscodeApi.postMessage({ type:'delete', stamp: del.getAttribute('data-del'),
+                              root: del.getAttribute('data-root') || undefined });
+      return;
+    }
     // A fully-visible row has nothing to open; swallow the click so it doesn't flicker.
     const plain = e.target.closest('details.row.plain > summary');
     if (plain) { e.preventDefault(); return; }
@@ -709,8 +773,16 @@
   // list when the language arrives would swap that line for "no runs" while they are still coming.
   let gotRuns = false;
   window.ActivityHost.onMessage('codexRuns', m => {
-    if (m && m.type === 'i18n') { dict = m.dict || {}; applyI18n(); if (gotRuns) render(lastRuns, true); }
-    else if (m && m.type === 'runs') { gotRuns = true; render(m.runs); }
+    if (m && m.type === 'i18n') { dict = m.dict || {}; applyI18n(); renderUsage(); if (gotRuns) render(lastRuns, true); }
+    else if (m && m.type === 'usage') { usage = m.usage || null; renderUsage(); }
+    else if (m && m.type === 'runs') {
+      gotRuns = true;
+      const n = m.older || 0;
+      const changed = n !== olderCount;
+      olderCount = n;
+      render(m.runs, changed);
+    }
+    else if (m && m.type === 'olderDone') { olderLoading = false; render(lastRuns, true); }
     else if (m && m.type === 'trash') renderTrash(m.items || []);
   });
   vscodeApi.postMessage({ type: 'ready' });

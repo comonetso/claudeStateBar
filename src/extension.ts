@@ -23,19 +23,22 @@ import { parseAgentActivity, AgentActivityItem } from './providers/claude/agentA
 import { parseBackgroundTasks, exitCodeFromOutputTail, BgTask, BgTaskStatus } from './providers/claude/backgroundTasks';
 import { attachBgTaskTab, pushBgTasks, getOpenBgTaskKeys,
          BgTaskView, BgTaskGroupId, BgTaskPanelData, BgTaskPanelCallbacks } from './bgTaskPanel';
-import { attachCodexTab, pushRuns, pushTrash, CodexRunView, CodexTrashView, CodexPanelCallbacks } from './codexRescuePanel';
+import { attachCodexTab, pushRuns, pushTrash, pushOlderDone, pushUsage, CodexRunView, CodexTrashView, CodexPanelCallbacks } from './codexRescuePanel';
 import { attachChatTab, pushChats, pushChatTrash, CodexChatView, ChatTrashView, ChatPanelCallbacks } from './codexChatPanel';
-import { ActivityTabId, ACTIVITY_TABS, onActivityPanelCreated, onActivityTabChanged, showActivityPanel, isActivityPanelOpen,
-         activeActivityTab, lastActivityTab, setActivityBadges, setActivityTabVisible, pushActivityLanguage,
-         cycleActivityTab } from './activityPanel';
-import { discoverChats, trashChat, listChatTrash, restoreChat, purgeChat, emptyChatTrash } from './providers/codexRescue/chatDiscovery';
-import { discoverRuns, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runCacheKey, RunPhase,
-         trashRun, listTrash, restoreTrashed, purgeTrashed, emptyTrash } from './providers/codexRescue/runDiscovery';
+import { ActivityTabId, ACTIVITY_TABS, onActivityPanelCreated, onActivityTabChanged, onActivityPanelShown, showActivityPanel,
+         isActivityPanelOpen, isActivityPanelVisible, activeActivityTab, lastActivityTab, setActivityBadges,
+         setActivityTabVisible, pushActivityLanguage, cycleActivityTab } from './activityPanel';
+import { discoverChats, countLiveChats, trashChat, listChatTrash, restoreChat, purgeChat, emptyChatTrash } from './providers/codexRescue/chatDiscovery';
+import { discoverRuns, trashedStamps, codexRescueDocsDir, isTerminalPhase, pruneTailCache, runCacheKey, RunPhase,
+         trashRun, listTrash, restoreTrashed, purgeTrashed, emptyTrash, CodexRun } from './providers/codexRescue/runDiscovery';
 import { codexRoots, CodexRoot } from './providers/codexRescue/repoRoots';
+import { readLedger, markLedgerStale, ledgerRootUri, folderKey, folderName } from './providers/codexRescue/runLedger';
+import { codexUsageFolder, readUsage, usageView } from './providers/codexRescue/usageFile';
+import { runCodexCleanNow } from './codexCleanNow';
 import { getDict, Lang } from './i18n';
 import { readTextFile } from './core/fs';
 import { readAutoUpdateState, enableAutoUpdate, AutoUpdateState, installedPluginLabels } from './providers/codex/pluginAutoUpdate';
-import { beginRefreshShare, endRefreshShare, readShared, readParsed, statShared, pruneParsed, recordPass, recordFolded, recordTickLag, recordMenu, recordMenuFill, takeRefreshSummary } from './core/refreshPerf';
+import { beginRefreshShare, endRefreshShare, readShared, readParsed, statShared, pruneParsed, recordPass, recordStage, recordAgentLogReuse, recordFolded, recordTickLag, recordMenu, recordMenuFill, takeRefreshSummary } from './core/refreshPerf';
 import { parseTaskNotices } from './workflowNotices';
 import { log, setLogChannel, getLogChannel } from './core/logger';
 import { getLatestTokenCount } from './providers/claude/tokenParser';
@@ -302,7 +305,8 @@ export function activate(context: vscode.ExtensionContext) {
     const openSettingsCmd = vscode.commands.registerCommand('claudeContextBar.openSettings', () => {
         createOrShowSettingsPanel(context, {
             onPlanSettingsChanged: () => { restartPlanPolling(); refreshPlanUsage(); },
-            onRefreshRequested: () => { refreshAllUsageNow(); }
+            onRefreshRequested: () => { refreshAllUsageNow(); },
+            getClaudeBaseUri
         });
     });
     context.subscriptions.push(openSettingsCmd);
@@ -615,7 +619,13 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 // Conversations are not (with their panel closed): read each time the menu opens.
                 fills.push(collectCodexChats()
-                    .then(c => { menuCodexChats = c; known.cxChats = c; publishCodexChats(c); repaint(); }, failed('codex chat')));
+                    .then(c => {
+                        menuCodexChats = c;
+                        known.cxChats = c;
+                        known.cxChatsLive = undefined;   // counted from this fresh list now
+                        publishCodexChats(c);
+                        repaint();
+                    }, failed('codex chat')));
             }
             if (fills.length) {
                 void Promise.all(fills).then(() => recordMenuFill(Date.now() - fillStarted));
@@ -731,6 +741,7 @@ export function activate(context: vscode.ExtensionContext) {
     // `claudeStateBar.hasCodexRescue` is set, i.e. codex_rescue is installed.
     context.subscriptions.push(vscode.commands.registerCommand('claudeContextBar.showWorkflows',
         () => openActivityTab(context, 'workflows')));
+    restoreSavedWorkflowViews(context.workspaceState);
     bgStore = context.workspaceState;
     context.subscriptions.push(vscode.commands.registerCommand('claudeContextBar.showBackgroundTasks',
         () => openActivityTab(context, 'background')));
@@ -748,10 +759,17 @@ export function activate(context: vscode.ExtensionContext) {
         () => cycleActivityTab(1)));
     context.subscriptions.push(vscode.commands.registerCommand('claudeContextBar.activityPrevTab',
         () => cycleActivityTab(-1)));
-    // A new panel gets every tab wired and filled, whichever tab it opens on; a tab the user
-    // switches to is read afresh.
+    // A new panel gets every tab wired, whichever tab it opens on; the tab on screen is read when the
+    // panel opens on it, when the user switches to it, and when the panel comes back into view.
     context.subscriptions.push(onActivityPanelCreated(prepareActivityPanel));
-    context.subscriptions.push(onActivityTabChanged(onActivityTabSwitched));
+    context.subscriptions.push(onActivityTabChanged(tab => {
+        log(`[activity] tab switched → ${tab}, reading it`);
+        onActivityTabSwitched(tab);
+    }));
+    context.subscriptions.push(onActivityPanelShown(tab => {
+        log(`[activity] panel back in view on ${tab}, reading it`);
+        onActivityTabSwitched(tab);
+    }));
 
     // Shown only to people who DON'T have the skill: a pointer to the guide, nothing more.
     // The extension never installs the skill itself — it spawns `codex exec` with workspace
@@ -1088,9 +1106,56 @@ function unwrapHarnessPrompt(text: string): string | null {
 // {key, agentId}; the meta.json sidecar holds only {agentType:"workflow-subagent"}), so the
 // prompt is the only available role signal. Harness framing is removed first (see
 // unwrapHarnessPrompt). Returns '' when no user text is found.
+// Sub-agent log results, by kind and file, valid while the file's size and mtime hold (user's call,
+// 2026-10-01). The workflow scan used to read every agent log of every live session in full on each
+// status-bar pass — 38 logs and 47MB for one session in a Remote-SSH window, about 5s of every pass —
+// and a workflow agent's log twice over. A finished agent's log no longer changes, so it is now read
+// once. A result that can change with the clock alone is never kept (parseTaskAgent's settle rule),
+// or a running agent would never be seen finishing and its chime would never sound. Callers hand out
+// copies: some mark the agents they are given as stopped. Entries go when their file does.
+const agentLogResults = new Map<string, { size: number; mtime: number; value: unknown }>();
+
+async function readAgentLog<T>(uri: vscode.Uri, kind: string,
+        parse: (text: string, st: vscode.FileStat) => Promise<{ value: T; keep: boolean }> | { value: T; keep: boolean }): Promise<T> {
+    const key = kind + '|' + uri.toString();
+    let st: vscode.FileStat;
+    try {
+        st = await statShared(uri);
+    } catch (e) {
+        agentLogResults.delete(key);
+        throw e;
+    }
+    const hit = agentLogResults.get(key);
+    if (hit && hit.size === st.size && hit.mtime === st.mtime) {
+        recordAgentLogReuse();
+        return hit.value as T;
+    }
+    const { value, keep } = await parse(await readShared(uri), st);
+    if (keep) agentLogResults.set(key, { size: st.size, mtime: st.mtime, value });
+    else agentLogResults.delete(key);
+    return value;
+}
+
+/**
+ * A workflow agent's log, read once for both things the workflow scan takes from it — the first
+ * prompt and the timing. Read separately, a scan outside a status-bar pass (opening the workflow
+ * tab) transferred every log twice. Keyed by language: the timing's `activity` falls back to a
+ * translated "working" label.
+ */
+function readWorkflowAgentLog(wfDirUri: vscode.Uri, agentId: string): Promise<{ prompt: string; timing: AgentTiming }> {
+    return readAgentLog(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`), 'wf-agent|' + planLang(),
+        text => ({ value: { prompt: firstPromptOf(text), timing: agentTimingOf(text) }, keep: true }));
+}
+
 async function getAgentFirstPromptText(wfDirUri: vscode.Uri, agentId: string): Promise<string> {
     try {
-        const content = await readTextFile(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`));
+        return (await readWorkflowAgentLog(wfDirUri, agentId)).prompt;
+    } catch { /* agent log not readable yet */ }
+    return '';
+}
+
+function firstPromptOf(content: string): string {
+    try {
         for (const line of content.trim().split('\n')) {
             if (!line.trim()) continue;
             let e: any;
@@ -1108,7 +1173,7 @@ async function getAgentFirstPromptText(wfDirUri: vscode.Uri, agentId: string): P
             const task = unwrapHarnessPrompt(text);
             if (task !== null && task.trim()) return task;
         }
-    } catch { /* agent log not readable yet */ }
+    } catch { /* malformed log */ }
     return '';
 }
 
@@ -1221,7 +1286,17 @@ function agentWasInterrupted(lines: string[]): boolean {
     return false;
 }
 
-async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ durationMs: number; activity: string; firstTs: number; lastTs: number; interrupted: boolean; tokens: number; model: string }> {
+type AgentTiming = { durationMs: number; activity: string; firstTs: number; lastTs: number; interrupted: boolean; tokens: number; model: string };
+
+async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<AgentTiming> {
+    try {
+        return { ...(await readWorkflowAgentLog(wfDirUri, agentId)).timing };
+    } catch { /* agent log not readable yet */ }
+    return agentTimingOf(null);
+}
+
+/** @param content the agent log, or null when it could not be read. */
+function agentTimingOf(content: string | null): AgentTiming {
     let firstTs = 0;
     let lastTs = 0;
     let activity = planT('wf.working');
@@ -1237,8 +1312,7 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
     let tokens = 0;
     let tokensFound = false;
     let model = '';
-    try {
-        const content = await readTextFile(vscode.Uri.joinPath(wfDirUri, `agent-${agentId}.jsonl`));
+    if (content !== null) try {
         const lines = content.trim().split('\n');
         interrupted = agentWasInterrupted(lines);
 
@@ -1297,7 +1371,7 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
                 if (lastTs && foundActivity) break;
             } catch { /* skip malformed line */ }
         }
-    } catch { /* agent log not readable yet */ }
+    } catch { /* malformed log */ }
     const durationMs = (firstTs && lastTs && lastTs >= firstTs) ? lastTs - firstTs : 0;
     return { durationMs, activity, firstTs, lastTs, interrupted, tokens, model };
 }
@@ -1316,22 +1390,31 @@ async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<{ 
 // a final answer. (An earlier version also required ≥1500 chars, but that wrongly missed
 // short finals like "핑 완료", leaving completed agents stuck as running.) A killed agent
 // instead carries a "[Request interrupted]" marker → stopped (see agentWasInterrupted).
+type TaskAgentParse = { agent: WorkflowAgentInfo; mtime: number; firstTs: number; lastTs: number };
+
 async function parseTaskAgent(
     subagentsDirUri: vscode.Uri,
     jsonlName: string
-): Promise<{ agent: WorkflowAgentInfo; mtime: number; firstTs: number; lastTs: number } | null> {
+): Promise<TaskAgentParse | null> {
     const idMatch = jsonlName.match(/^agent-(.+)\.jsonl$/);
     if (!idMatch) return null;
-    let agentId = idMatch[1];
-
-    let content: string;
+    let r: TaskAgentParse | null;
     try {
-        content = await readTextFile(vscode.Uri.joinPath(subagentsDirUri, jsonlName));
+        // Keyed by language too: `summary` falls back to a translated "working" label.
+        r = await readAgentLog(vscode.Uri.joinPath(subagentsDirUri, jsonlName), 'task|' + planLang(),
+            (content, st) => taskAgentOf(subagentsDirUri, jsonlName, idMatch[1], content, st.mtime));
     } catch {
         return null;  // unreadable / vanished
     }
+    return r ? { ...r, agent: { ...r.agent } } : null;
+}
+
+/** parseTaskAgent's reading of one log; `keep` is false while the verdict can still change with the clock. */
+async function taskAgentOf(subagentsDirUri: vscode.Uri, jsonlName: string, idFromName: string,
+        content: string, mtime: number): Promise<{ value: TaskAgentParse | null; keep: boolean }> {
+    let agentId = idFromName;
     const lines = content.trim().split('\n');
-    if (lines.length === 0 || !lines[0].trim()) return null;
+    if (lines.length === 0 || !lines[0].trim()) return { value: null, keep: true };
 
     // Display name from the meta.json sidecar (description preferred, then agentType).
     let displayName = '';
@@ -1369,6 +1452,9 @@ async function parseTaskAgent(
     let tokens = 0;
     let tokensFound = false;
     let model = '';
+    // True while the verdict below hangs on the settle clock alone: a text-only last entry that has
+    // not yet been idle 4s reads as running now and as done later, with the file unchanged.
+    let clockBound = false;
     for (let i = lines.length - 1; i >= 0; i--) {
         if (!lines[i].trim()) continue;
         let e: any;
@@ -1395,6 +1481,7 @@ async function parseTaskAgent(
         // a final answer. Size-agnostic — an earlier ≥1500-char gate wrongly missed short
         // finals (e.g. "핑 완료"), leaving completed agents stuck as running.
         const settled = lastTs > 0 && (Date.now() - lastTs) >= 4000;
+        clockBound = !!textBlock && !toolUseBlock && sr !== 'tool_use' && sr !== 'end_turn' && !settled;
         if (textBlock && !toolUseBlock && sr !== 'tool_use' && (sr === 'end_turn' || settled)) {
             isDone = true;
             fullText = textBlock.text.trim();
@@ -1440,11 +1527,7 @@ async function parseTaskAgent(
         ...(model ? { model: getShortModelName(model, false) } : {}),
         ...(lastTs ? { lastAt: lastTs } : {}),
     };
-    let mtime = 0;
-    try {
-        mtime = (await vscode.workspace.fs.stat(vscode.Uri.joinPath(subagentsDirUri, jsonlName))).mtime;
-    } catch { /* ignore */ }
-    return { agent, mtime, firstTs, lastTs };
+    return { value: { agent, mtime, firstTs, lastTs }, keep: !clockBound };
 }
 
 // Scan subagents/ for Task-subagent logs (agent-*.jsonl, NOT under workflows/) and
@@ -2246,8 +2329,36 @@ async function pushProjectWorkflows(): Promise<void> {
  * session menu count (activityCounts reads lastProjectWorkflows, which the scan just set).
  */
 function publishProjectWorkflows(wfs: WorkflowInfo[]): void {
-    if (isActivityPanelOpen()) pushWorkflows(wfs.map(w => toWorkflowView(w, lastWorkflowsBySession)));
+    // Handed over even with the panel closed, so a saved list from an earlier window never
+    // outlives this window's first scan; the tab only posts when the panel is open.
+    const views = wfs.map(w => toWorkflowView(w, lastWorkflowsBySession));
+    pushWorkflows(views);
+    saveWorkflowViews(views);
     refreshActivityBadges();
+}
+
+// The workflow tab's list from the last window, shown while a new window's first scan runs (user's
+// call, 2026-10-01). Over Remote-SSH that scan reads every sub-agent log of the project once — 29s
+// measured in a busy project — and the tab used to sit on its loading line all that time. Display
+// only: the badges, the session menu and the chimes never read it, and the tab marks it as old.
+const SAVED_WF_KEY = 'claudeStateBar.savedWorkflowViews';
+let savedWfStore: vscode.Memento | undefined;
+let savedWfSig = '';
+
+function restoreSavedWorkflowViews(store: vscode.Memento): void {
+    savedWfStore = store;
+    const saved = store.get<WorkflowView[]>(SAVED_WF_KEY);
+    if (!saved?.length || projectWorkflowsKnown) return;
+    savedWfSig = JSON.stringify(saved);
+    pushWorkflows(saved, true);
+}
+
+function saveWorkflowViews(views: WorkflowView[]): void {
+    if (!savedWfStore) return;
+    const sig = JSON.stringify(views);
+    if (sig === savedWfSig) return;
+    savedWfSig = sig;
+    void savedWfStore.update(SAVED_WF_KEY, views.length ? views : undefined);
 }
 
 /**
@@ -2524,8 +2635,8 @@ async function pushBgTaskPanel(): Promise<void> {
         pushBgTasks(data);
         refreshActivityBadges();
         // Only a background task has output that grows while it runs, and only the tab on screen
-        // needs it by the second — another tab still gets this push on the status-bar tick.
-        ensureBgFastPolling(data.background.running.length > 0 && activeActivityTab() === 'background');
+        // needs it by the second.
+        ensureBgFastPolling(data.background.running.length > 0 && activityTabOnScreen('background'));
     } finally {
         bgPushing = false;
     }
@@ -2535,11 +2646,14 @@ async function pushBgTaskPanel(): Promise<void> {
 // watcher triggers a refresh — does not change while it does. So while the background tab is the
 // one showing and something runs, its output is re-read every 2s: the rate the Codex panel uses
 // for a live run. The end itself needs no timer: its notice lands in the conversation and the
-// watcher sees that.
+// watcher sees that. A panel covered by another editor tab stops it without one more read.
 let bgFastTimer: NodeJS.Timeout | null = null;
 function ensureBgFastPolling(on: boolean): void {
     if (on && !bgFastTimer) {
-        bgFastTimer = setInterval(() => { void pushBgTaskPanel().catch(e => log(`[bg] poll error: ${e}`)); }, 2000);
+        bgFastTimer = setInterval(() => {
+            if (!activityTabOnScreen('background')) { ensureBgFastPolling(false); return; }
+            void pushBgTaskPanel().catch(e => log(`[bg] poll error: ${e}`));
+        }, 2000);
     } else if (!on && bgFastTimer) {
         clearInterval(bgFastTimer);
         bgFastTimer = null;
@@ -2645,6 +2759,40 @@ function refreshActivityDots(): void {
 // one the panel opened on; each old command opens its tab; and the tab badges and the session
 // menu's Activity entry count through one function (activityCounts).
 
+/**
+ * The tab the user can see: the panel is in view (not behind another editor tab) and shows it.
+ * Only that tab is re-read on the status-bar tick (user's call, 2026-09-30: over Remote-SSH every
+ * read of a tab nobody looks at crosses the wire). The others are read when they come on screen —
+ * a tab switch, or the panel coming back into view (onActivityTabSwitched). None of this gates a
+ * chime: those are decided by the status-bar pass and the Codex scan, panel or no panel.
+ */
+function activityTabOnScreen(tab: ActivityTabId): boolean {
+    return isActivityPanelVisible() && activeActivityTab() === tab;
+}
+
+/**
+ * Log line for the status-bar tick's Activity re-reads, written only when what it re-reads changes
+ * (a tab switch, the panel covered or closed) — enough to check the rule above without a line per tick.
+ */
+let lastTickReadsLogged = '';
+function logActivityTickReads(): void {
+    const reads = (['workflows', 'background'] as ActivityTabId[]).filter(activityTabOnScreen);
+    const what = reads.length ? reads.join(',')
+        : !isActivityPanelOpen() ? 'none (panel closed)'
+        : !isActivityPanelVisible() ? 'none (panel covered)'
+        : `none (on ${activeActivityTab()})`;
+    if (what === lastTickReadsLogged) return;
+    lastTickReadsLogged = what;
+    log(`[activity] status-bar tick re-reads: ${what}`);
+}
+
+/** A conversation of one of this window's workspace folders (its project directory matches one). */
+function isWorkspaceSessionFile(sessionFile: string): boolean {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const dir = path.posix.basename(path.posix.dirname(vscode.Uri.parse(sessionFile).path));
+    return folders.some(f => projectDirMatchesFolder(dir, f));
+}
+
 /** The old panel commands, now "open this tab" — what showActivity runs for the tab it picks. */
 const ACTIVITY_TAB_COMMANDS: Record<ActivityTabId, string> = {
     workflows: 'claudeContextBar.showWorkflows',
@@ -2666,6 +2814,11 @@ interface ActivitySources {
     workflows: WorkflowInfo[] | undefined;
     cxRuns: CodexRunView[] | undefined;
     cxChats: CodexChatView[] | undefined;
+    /**
+     * Live conversations counted without reading them (countLiveChats) while the chat tab is off
+     * screen, or from the last full read. Newer than cxChats then; undefined = count from cxChats.
+     */
+    cxChatsLive?: number;
 }
 
 interface ActivityCounts {
@@ -2679,11 +2832,11 @@ interface ActivityCounts {
 
 /**
  * The project list with each live session's workflows swapped for the status bar's own copy.
- * lastProjectWorkflows is only re-read while the panel is open or a menu/tab scan runs, so with the
- * panel closed a workflow that has since finished still read as running — and decided which tab
- * showActivity opened (a review finding, 2026-09-30). The status-bar pass refreshes
- * lastWorkflowsBySession every tick without extra reads, and findWorkflowsForProject takes a live
- * session's list from there anyway, so this is the list a scan would return now.
+ * lastProjectWorkflows is only re-read while the workflow tab is on screen or a menu/tab scan runs,
+ * so it can be stale. The status-bar pass refreshes lastWorkflowsBySession every tick without extra
+ * reads, and findWorkflowsForProject takes a live session's list from there anyway, so this is the
+ * list a scan would return now — bar a session that started a workflow since the last scan, which
+ * is why activityCounts counts running agents from lastWorkflowsBySession itself.
  */
 function freshProjectWorkflows(): WorkflowInfo[] {
     const out: WorkflowInfo[] = [];
@@ -2705,26 +2858,27 @@ function activitySources(): ActivitySources {
         workflows: projectWorkflowsKnown ? freshProjectWorkflows() : undefined,
         cxRuns: lastCodexRuns ?? undefined,
         cxChats: lastCodexChats ?? menuCodexChats ?? undefined,
+        cxChatsLive: lastCodexChatsLive ?? undefined,
     };
 }
 
 /**
  * The one count of running work, for the tab badges and the session menu alike (user's call,
- * 2026-09-30). Workflows: every running agent across the project list the workflow tab shows,
- * Agent-tool batches included — a workflow with 6 agents running counts 6. Background: running
- * tasks in both of the tab's groups (background commands and monitors, and ordinary commands past
- * LONG_COMMAND_MS), read the way the tab reads them (bgShownStatus). Codex progress: runs not in a
- * terminal phase. Codex chat: live conversations.
+ * 2026-09-30). Workflows: every running agent in this workspace's live sessions, Agent-tool batches
+ * included — a workflow with 6 agents running counts 6. Only a live session's agents can run (the
+ * project scan shows the rest as stopped), and the status-bar pass reads those every tick, so the
+ * count needs no project scan and catches a workflow started since the last one. Background:
+ * running tasks in both of the tab's groups (background commands and monitors, and ordinary
+ * commands past LONG_COMMAND_MS), read the way the tab reads them (bgShownStatus). Codex progress:
+ * runs not in a terminal phase. Codex chat: live conversations.
  * Background is never "not read yet": lastBgTasks fills on the first status-bar pass, and the menu
  * never had a read of its own to wait on for it.
  */
 function activityCounts(src: ActivitySources = activitySources()): ActivityCounts {
     let wfRunning = 0;
-    for (const wf of src.workflows ?? []) {
-        // A session that has left the status bar since the list was read: the next project scan
-        // shows its "running" agents as stopped (findWorkflowsForProject), so they are not counted.
-        if (wf.sessionFile && !lastWorkflowsBySession.has(wf.sessionFile)) continue;
-        for (const a of wf.agents) if (a.status === 'running') wfRunning++;
+    for (const [sessionFile, wfs] of lastWorkflowsBySession) {
+        if (!isWorkspaceSessionFile(sessionFile)) continue;
+        for (const wf of wfs) for (const a of wf.agents) if (a.status === 'running') wfRunning++;
     }
     const bg = bgMenuCounts();
     return {
@@ -2732,7 +2886,7 @@ function activityCounts(src: ActivitySources = activitySources()): ActivityCount
             workflows: wfRunning,
             background: bg.running,
             codexRuns: (src.cxRuns ?? []).filter(r => !isTerminalPhase(r.phase)).length,
-            codexChats: (src.cxChats ?? []).filter(c => c.live).length,
+            codexChats: src.cxChatsLive ?? (src.cxChats ?? []).filter(c => c.live).length,
         },
         total: {
             workflows: src.workflows?.length ?? 0,
@@ -2740,7 +2894,10 @@ function activityCounts(src: ActivitySources = activitySources()): ActivityCount
             codexRuns: src.cxRuns?.length ?? 0,
             codexChats: src.cxChats?.length ?? 0,
         },
-        unknown: { workflows: !src.workflows, background: false, codexRuns: !src.cxRuns, codexChats: !src.cxChats },
+        unknown: {
+            workflows: !src.workflows, background: false, codexRuns: !src.cxRuns,
+            codexChats: !src.cxChats && src.cxChatsLive === undefined,
+        },
     };
 }
 
@@ -2780,49 +2937,57 @@ function attachActivityTab(tab: ActivityTabId): void {
  * or skips a scan already in flight (menuProjectWorkflows, bgPushing, codexSyncInFlight, chatSync),
  * so callers that overlap never read the same thing twice at once.
  */
-function scanActivityTab(tab: ActivityTabId): Promise<void> {
-    switch (tab) {
-        case 'workflows': return scanWorkflowTab();
-        case 'background': return pushBgTaskPanel();
-        case 'codexRuns': return syncCodexRuns();
-        case 'codexChats': return syncCodexChats();
-    }
-}
+const extensionLoadedAt = Date.now();
 
-/** Whether a new panel reads this tab: the Codex two only with codex_rescue installed. */
-function scannedOnCreate(tab: ActivityTabId): boolean {
-    return (tab !== 'codexRuns' && tab !== 'codexChats') || codexRescueSkillInstalled();
+function scanActivityTab(tab: ActivityTabId): Promise<void> {
+    // Logged for the load-time investigation (2026-10-01): how long a tab's own read takes, and how
+    // long after the window came up, since a window's first pass reads every conversation in full.
+    // A Codex scan already in flight makes this one return at once; the list arrives with that one.
+    const started = Date.now();
+    const joined = tab === 'codexRuns' && codexSyncInFlight;
+    const done = (): void => log(`[activity] ${tab} read took ${Date.now() - started}ms` +
+        ` (window up ${Math.round((started - extensionLoadedAt) / 1000)}s` +
+        (joined ? ', a scan already running brings the list' : '') + ')');
+    const read = (): Promise<void> => {
+        switch (tab) {
+            case 'workflows': return scanWorkflowTab();
+            case 'background': return pushBgTaskPanel();
+            case 'codexRuns': return syncCodexRuns();
+            case 'codexChats': return syncCodexChats(false, true);
+        }
+    };
+    return read().finally(done);
 }
 
 /**
- * onActivityPanelCreated: every tab is wired and filled, whichever tab the panel opens on. The
- * Codex tabs are always wired (cheap) but only read where codex_rescue is installed.
+ * onActivityPanelCreated: every tab is wired, whichever tab the panel opens on, but none is read
+ * here — openActivityTab reads the one it opens on, and the others are read when they come on
+ * screen (user's call, 2026-09-30). The badges need no read of those: see activityCounts. The chat
+ * badge is the one count not already in memory, so the cheap marker count runs for it.
  */
 function prepareActivityPanel(): void {
-    for (const tab of ACTIVITY_TABS) {
-        attachActivityTab(tab);
-        if (scannedOnCreate(tab)) void scanActivityTab(tab).catch(e => log(`[activity] ${tab} scan failed: ${e}`));
-    }
+    for (const tab of ACTIVITY_TABS) attachActivityTab(tab);
+    void syncCodexChats().catch(e => log(`[activity] chat count failed: ${e}`));
     refreshActivityBadges();
 }
 
 /**
- * A tab's own command (palette, status-bar dot, session menu). A panel this call creates is filled
- * by prepareActivityPanel, this tab included, so the tab is read here only when the panel was open
- * already — or when creating it skipped this tab (a Codex tab without codex_rescue here: asked for
- * by name, it is read as its command always did). The panel never waits on a read to appear.
+ * A tab's own command (palette, status-bar dot, session menu): open the panel on the tab and read
+ * it. The panel never waits on a read to appear.
  */
 async function openActivityTab(context: vscode.ExtensionContext, tab: ActivityTabId): Promise<void> {
     const existed = isActivityPanelOpen();
     if (existed) attachActivityTab(tab);
     showActivityPanel(context, tab);
+    log(`[activity] ${existed ? 'panel shown' : 'panel opened'} on ${tab}, reading it`);
     if (tab !== 'background') ensureBgFastPolling(false);
-    if (existed || !scannedOnCreate(tab)) await scanActivityTab(tab);
+    await scanActivityTab(tab);
 }
 
 /**
- * onActivityTabChanged (the user clicked a tab; a tab the host selects does not fire it): the tab
- * switched to is read afresh; the 2s background re-read stops off its tab.
+ * onActivityTabChanged (the user clicked a tab; a tab the host selects does not fire it) and
+ * onActivityPanelShown (the panel came back into view): the tab now on screen is read afresh; the
+ * 2s background re-read stops off its tab.
  */
 function onActivityTabSwitched(tab: ActivityTabId): void {
     if (tab !== 'background') ensureBgFastPolling(false);
@@ -2854,6 +3019,8 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
     let fallbackCandidate: { uri: vscode.Uri, mtime: Date, projectDir: string } | null = null;
     // Every conversation this scan parsed; parsed results for anything else are dropped at the end.
     const scannedFiles = new Set<string>();
+    // The ids of this window's conversations among them — see setWindowSessionIds.
+    const windowIds = new Set<string>();
     const projectsUri = await getClaudeProjectsUri();
     if (!projectsUri) return sessions;
 
@@ -2951,9 +3118,13 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
 
             if (files.length === 0) continue;
 
+            // This window's own conversations, for the codex_rescue runs they started elsewhere.
+            const ownProject = !!workspaceFolders?.some(f => projectDirMatchesFolder(projectDir, f));
+
             // Get token count from EACH active session file (1 per Claude Code tab)
             for (const file of files) {
                 scannedFiles.add(file.uri.toString());
+                if (ownProject) windowIds.add(file.name.slice(0, -'.jsonl'.length));
                 const usage = await getLatestTokenCount(file.uri);
 
                 if (usage.totalTokens > 0) {
@@ -2998,6 +3169,8 @@ async function findActiveSessions(): Promise<SessionInfo[]> {
                 }
             }
         }
+        // Only a scan that got through every project replaces the set; a failed one keeps the last.
+        setWindowSessionIds(windowIds);
     } catch (e) {
         console.error('Error scanning Claude projects:', e);
     }
@@ -3220,10 +3393,12 @@ async function getGlobalEffortLevel(): Promise<string> {
 // of the pass that will cover its change.
 // What the latest refresh found, kept so the session menu can open without scanning the disk
 // first. Empty until a scan has run, and the menu then scans for itself as it always did.
-// Codex chats are only polled while their panel is open, so that one is often empty.
+// Codex chats are only read in full while their tab is on screen, so that one is often empty or
+// stale; lastCodexChatsLive is its badge count meanwhile (see syncCodexChatsInner).
 const lastWorkflowsBySession = new Map<string, WorkflowInfo[]>();
 let lastCodexRuns: CodexRunView[] | null = null;
 let lastCodexChats: CodexChatView[] | null = null;
+let lastCodexChatsLive: number | null = null;
 
 let refreshLoop: Promise<void> | null = null;
 let refreshAgain = false;
@@ -3255,12 +3430,21 @@ function refreshAllSessions(): Promise<void> {
 }
 
 async function refreshAllSessionsOnce() {
+    // Stage timing for the one-minute summary line (refreshPerf.recordStage). Each call closes the
+    // stage that ends there; nothing below depends on it.
+    let stageAt = Date.now();
+    const stage = (name: string): void => {
+        const now = Date.now();
+        recordStage(name, now - stageAt);
+        stageAt = now;
+    };
     const suppressBeep = getFirstScan();
     setFirstScan(false);
     // File watchers are best effort (especially after sleep). The regular refresh also
     // adopts a newer account snapshot written by another extension host.
     syncCodexUsageFromSharedCache();
     const sessions = await findAllSessions();
+    stage('sessions');
     lastScannedSessions = sessions;
     const config = vscode.workspace.getConfiguration('claudeContextBar');
     const warningThreshold = config.get<number>('warningThreshold', 50);
@@ -3718,6 +3902,7 @@ async function refreshAllSessionsOnce() {
     // reuses below instead of reading those sessions a second time.
     // Only providers that actually have workflow journals on disk are scanned. Codex has
     // no equivalent structure yet (Phase 4), so walking its files here would be pure waste.
+    stage('statusBar');
     const workflowCapableFiles = new Set(
         sessions.filter(s => capabilitiesFor(s.provider).workflows).map(s => s.sessionFile)
     );
@@ -3803,6 +3988,8 @@ async function refreshAllSessionsOnce() {
         }
     }
 
+    stage('workflows');
+
     // --- Background tasks: the same sessions, the same chime and the same setting as the
     // workflow beep above (user's call, 2026-09-22). Only a notice saying `completed` sounds,
     // as only a completed workflow does, and a long foreground command never does — Claude was
@@ -3871,28 +4058,30 @@ async function refreshAllSessionsOnce() {
         !s.isFallback && (s.provider !== 'codex' || s.codexActive === true)
     ) ?? null);
 
-    // Keep the workflow tab in sync while the Activity panel is open (on any tab — its badge counts
-    // this list): the project-wide list, then, only while the workflow tab is the one showing, the
-    // rows of any agent the user has open (a switch back to the tab catches them up). Live sessions
-    // reuse the scans the loop above just made; finished ones come from projectWfCache; an open
-    // agent is re-read only when its log moved (readAgentActivity).
-    if (isActivityPanelOpen()) {
+    // Keep the Activity tab on screen in sync, and only that one (user's call, 2026-09-30): a tab
+    // switch or the panel coming back into view reads the others (onActivityTabSwitched), and their
+    // badges need no read (activityCounts). Workflows: the project-wide list, then the rows of any
+    // agent the user has open. Live sessions reuse the scans the loop above just made; finished ones
+    // come from projectWfCache; an open agent is re-read only when its log moved (readAgentActivity).
+    // The chimes above do not depend on any of this.
+    stage('background');
+    logActivityTickReads();
+    if (activityTabOnScreen('workflows')) {
         try {
             await pushProjectWorkflows();
-            if (activeActivityTab() === 'workflows') {
-                for (const ak of getOpenAgentKeys()) await pushAgentRows(ak, true);
-            }
+            for (const ak of getOpenAgentKeys()) await pushAgentRows(ak, true);
         } catch (e) {
             log(`[workflows] push error: ${e}`);
         }
     }
-    if (isActivityPanelOpen()) {
+    if (activityTabOnScreen('background')) {
         try {
             await pushBgTaskPanel();
         } catch (e) {
             log(`[bg] push error: ${e}`);
         }
     }
+    stage('tabs');
     refreshActivityDots();
     // The tab badges ride the same tick (cached by the shell while the panel is closed).
     refreshActivityBadges();
@@ -3943,8 +4132,9 @@ function codexRunCallbacks(): CodexPanelCallbacks {
                 e => log(`[codex-rescue] open failed: ${e}`)
             );
         },
-        onDelete: async (stamp: string) => {
-            const target = (await collectCodexRuns()).find(r => r.stamp === stamp);
+        onDelete: async (stamp: string, root?: string) => {
+            const target = (await collectCodexRuns())
+                .find(r => r.stamp === stamp && (!root || r.root === root));
             if (!target) return;
             // No prompt, and documents always go along: the destination is the trash, so
             // there is nothing here to get wrong. Asking "logs only or documents too?" made
@@ -3952,9 +4142,14 @@ function codexRunCallbacks(): CodexPanelCallbacks {
             // and an action they can undo. The questions live at the irreversible end
             // instead — purging one run, or emptying the trash.
             let moved = false;
-            // The card's own tree first: another working tree could hold the same stamp.
-            const roots = (await codexRoots()).sort((a, b) =>
-                Number(b.uri.toString() === target.root) - Number(a.uri.toString() === target.root));
+            // The card's own tree only. Another working tree can hold the same stamp, and
+            // falling through to it when this one refused (a live run's lock) trashed a run the
+            // user never clicked.
+            const roots: { uri: vscode.Uri }[] = (await codexRoots()).filter(f => f.uri.toString() === target.root);
+            // A card attached from another folder goes into that folder's own trash.
+            if (!roots.length) {
+                roots.push(...(await attachedCodexRoots([])).filter(a => a.uri.toString() === target.root));
+            }
             for (const f of roots) {
                 if (await trashRun(f.uri, stamp, target.slug, true, target.subject,
                                    target.mode || undefined, Date.now())) { moved = true; break; }
@@ -3971,8 +4166,10 @@ function codexRunCallbacks(): CodexPanelCallbacks {
             void pushCodexTrash();
         },
         onTrashOpen: () => { void pushCodexTrash(); },
+        onLoadOlder: () => { void loadOlderCodexRuns(); },
         onRestore: async (stamp: string) => {
-            for (const f of await codexRoots()) {
+            for (const f of await codexTrashFolders()) {
+                if (f.only && !f.only.has(stamp)) continue;
                 const res = await restoreTrashed(f.uri, stamp);
                 if (!res.restored && !res.conflicts.length) continue;
                 if (res.conflicts.length) {
@@ -4017,7 +4214,8 @@ function codexRunCallbacks(): CodexPanelCallbacks {
             }
             if (choice !== logsOnly && choice !== withDocs && choice !== purgeNow) return;
             const takeDocs = choice !== logsOnly;
-            for (const f of await codexRoots()) {
+            for (const f of await codexTrashFolders()) {
+                if (f.only && !f.only.has(stamp)) continue;
                 if (await purgeTrashed(f.uri, stamp, takeDocs)) {
                     log(`[codex-rescue] purged ${stamp} (docs: ${takeDocs})`);
                     break;
@@ -4041,12 +4239,25 @@ function codexRunCallbacks(): CodexPanelCallbacks {
             if (choice !== logsOnly && choice !== withDocs && choice !== purgeNow) return;
             const takeDocs = choice !== logsOnly;
             let n = 0;
-            for (const f of await codexRoots()) {
-                n += await emptyTrash(f.uri, takeDocs);
+            for (const f of await codexTrashFolders()) {
+                if (!f.only) { n += await emptyTrash(f.uri, takeDocs); continue; }
+                // An attached folder's trash holds other conversations' runs too: only ours go.
+                for (const t of await listTrash(f.uri)) {
+                    if (f.only.has(t.stamp) && await purgeTrashed(f.uri, t.stamp, takeDocs)) n++;
+                }
             }
             log(`[codex-rescue] emptied trash: ${n} run(s), docs: ${takeDocs}`);
             vscode.window.showInformationMessage(planT('cx.trash.emptied', n));
             void pushCodexTrash();
+        },
+        // The disk-use line's button. The plugin does the deleting in a terminal and rewrites
+        // _usage.json; the tab's next scan shows the new figures (codexCleanNow.ts).
+        onClean: () => {
+            const folder = codexUsageFolder();
+            if (!folder) return;
+            void getClaudeBaseUri()
+                .then(base => runCodexCleanNow(folder, base))
+                .catch(e => log(`[codex-rescue] clean-up failed: ${e}`));
         }
     };
 }
@@ -4123,14 +4334,23 @@ function codexChatCallbacks(): ChatPanelCallbacks {
     };
 }
 
-/** Phase observed on the previous poll, per stamp — the edge the chime fires on. */
+/**
+ * Phase observed on the previous poll, per working tree and stamp — the edge the chime fires
+ * on. The stamp alone is not enough: two trees can hold the same stamp, and keying on it made
+ * one tree's live run and another tree's finished copy overwrite each other every poll, so the
+ * chime sounded every 2s (2026-10-01, 124 chimes). See codexRunKey.
+ */
 const codexRunPhases = new Map<string, RunPhase>();
 /**
- * Stamps we actually saw in a live phase during this runtime. Mirrors the workflow-done
+ * Runs (same key) we actually saw in a live phase during this runtime. Mirrors the workflow-done
  * gate: a run first seen already-finished (extension restart, or an old log directory
  * surfacing) is baselined silently rather than chiming as if it had just completed.
  */
 const codexSeenLive = new Set<string>();
+
+function codexRunKey(r: { root?: string; stamp: string }): string {
+    return (r.root ?? '') + '\n' + r.stamp;
+}
 
 /**
  * True when the codex_rescue skill is installed for Claude Code on this machine.
@@ -4363,10 +4583,23 @@ async function workspaceUsesCodexRescue(roots?: CodexRoot[]): Promise<boolean> {
 /** Everything in the trash across all open folders, newest deletion first. */
 async function collectCodexTrash(): Promise<CodexTrashView[]> {
     const out: CodexTrashView[] = [];
-    for (const f of await codexRoots()) {
-        out.push(...await listTrash(f.uri));
+    for (const f of await codexTrashFolders()) {
+        const items = await listTrash(f.uri);
+        out.push(...(f.only ? items.filter(t => f.only!.has(t.stamp)) : items));
     }
     return out.sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+/**
+ * The folders whose trash the drawer covers, this window's trees first. A folder runs were
+ * attached from (attachedCodexRoots) comes with `only`: its trash also holds runs other
+ * conversations put there, and the drawer shows and acts on just this window's.
+ */
+async function codexTrashFolders(): Promise<{ uri: vscode.Uri; only?: Set<string> }[]> {
+    const roots = await codexRoots();
+    const out: { uri: vscode.Uri; only?: Set<string> }[] = roots.map(f => ({ uri: f.uri }));
+    for (const a of await attachedCodexRoots(roots)) out.push({ uri: a.uri, only: a.stamps });
+    return out;
 }
 
 async function pushCodexTrash(): Promise<void> {
@@ -4417,39 +4650,73 @@ let chatSync: Promise<void> | null = null;
  * list back for up to a poll interval (a review finding, 2026-09-30), so the scan runs once more.
  */
 let chatSyncAgain = false;
+/** Whether the scan in flight reads the documents (a full scan), or only counts the live ones. */
+let chatSyncFull = false;
+/** A caller that needs a full scan joined one that only counts: the loop runs once more, in full. */
+let chatSyncWantFull = false;
 
 /**
- * Refresh the chat tab while the Activity panel is open. Cheap enough to ride the same poll as the
- * runs. `afterChange`: the caller just changed what is on disk — see chatSyncAgain.
+ * Refresh the chat tab while the Activity panel is open, riding the same poll as the runs. The
+ * documents are read only while the tab is on screen, or when `full` asks for it (the tab just came
+ * on screen); otherwise only the live ones are counted, for the badge (user's call, 2026-09-30).
+ * `afterChange`: the caller just changed what is on disk — see chatSyncAgain.
  */
-function syncCodexChats(afterChange = false): Promise<void> {
+function syncCodexChats(afterChange = false, full = false): Promise<void> {
     if (chatSync) {
         if (afterChange) chatSyncAgain = true;
+        if (full && !chatSyncFull) chatSyncWantFull = true;
         return chatSync;
     }
     chatSync = (async () => {
         try {
+            let wantFull = full;
             do {
                 chatSyncAgain = false;
-                await syncCodexChatsInner();
-            } while (chatSyncAgain);
+                chatSyncWantFull = false;
+                chatSyncFull = wantFull || activityTabOnScreen('codexChats');
+                logChatReadMode(chatSyncFull);
+                await syncCodexChatsInner(chatSyncFull);
+                wantFull = chatSyncWantFull;
+            } while (chatSyncAgain || chatSyncWantFull);
         } finally {
             // Cleared in the same step the loop ends, so a request can't land in between and be lost.
             chatSync = null;
+            chatSyncFull = false;
         }
     })();
     return chatSync;
 }
 
-async function syncCodexChatsInner(): Promise<void> {
+/** One log line when the chat poll switches between reading the documents and counting markers. */
+let lastChatReadModeLogged = '';
+function logChatReadMode(full: boolean): void {
+    const mode = !isActivityPanelOpen() ? 'none (panel closed)'
+        : !codexRescueSkillInstalled() && !full ? 'none (codex_rescue not installed)'
+        : full ? 'full (documents)' : 'count only (markers)';
+    if (mode === lastChatReadModeLogged) return;
+    lastChatReadModeLogged = mode;
+    log(`[codex-chat] read mode: ${mode}`);
+}
+
+async function syncCodexChatsInner(full: boolean): Promise<void> {
     // Closed panel: nothing refreshes this list, so drop it rather than let the menu show a
     // count frozen at whenever the panel was last open. The menu scans for itself instead.
-    if (!isActivityPanelOpen()) { lastCodexChats = null; return; }
+    if (!isActivityPanelOpen()) { lastCodexChats = null; lastCodexChatsLive = null; return; }
     // Open, but without codex_rescue installed here the chat tab is hidden and has no badge to
     // keep: skip the reads (round trips over Remote-SSH) unless the user is on that tab.
-    if (!codexRescueSkillInstalled() && activeActivityTab() !== 'codexChats') { lastCodexChats = null; return; }
+    if (!codexRescueSkillInstalled() && !full) { lastCodexChats = null; lastCodexChatsLive = null; return; }
     try {
-        publishCodexChats(await collectCodexChats());
+        if (full) {
+            publishCodexChats(await collectCodexChats());
+        } else {
+            // Off screen: the tab keeps its last list, the badge gets a count read without a
+            // single document (countLiveChats).
+            let live = 0;
+            for (const f of await codexRoots()) live += await countLiveChats(f.uri);
+            if (!isActivityPanelOpen()) return;
+            lastCodexChatsLive = live;
+            refreshActivityBadges();
+        }
     } catch (e) {
         log(`[codex-chat] scan error: ${e}`);
     }
@@ -4463,6 +4730,7 @@ function publishCodexChats(chats: CodexChatView[]): void {
     if (!isActivityPanelOpen()) return;
     const marked = markCurrentChats(chats);
     lastCodexChats = marked;
+    lastCodexChatsLive = marked.filter(c => c.live).length;
     pushChats(marked);
     refreshActivityBadges();
 }
@@ -4474,12 +4742,10 @@ function publishCodexChats(chats: CodexChatView[]): void {
  * when none is showing.
  */
 function currentChatSince(): number | null {
-    const folders = vscode.workspace.workspaceFolders ?? [];
     let since: number | null = null;
     for (const s of lastClaudeSessions) {
         if (s.isFallback || !s.sessionCreated) continue;
-        const dir = path.posix.basename(path.posix.dirname(vscode.Uri.parse(s.sessionFile).path));
-        if (!folders.some(f => projectDirMatchesFolder(dir, f))) continue;
+        if (!isWorkspaceSessionFile(s.sessionFile)) continue;
         const t = s.sessionCreated.getTime();
         if (since === null || t < since) since = t;
     }
@@ -4527,74 +4793,242 @@ async function codexRunModel(threadId: string, turns: number, finished: boolean)
     return entry;
 }
 
-async function collectCodexRuns(roots?: CodexRoot[]): Promise<CodexRunView[]> {
+/**
+ * One scanned run as the progress tab shows it. `root` is the URI string of the folder it was read
+ * from; `tag`/`tagPath` mark a folder this window does not have open. `keepThreads` collects the
+ * thread ids still on the list, for the codexRunModels prune.
+ */
+async function codexRunView(run: CodexRun, root: string, tag: string | undefined, tagPath: string | undefined,
+                            keepThreads: Set<string>): Promise<CodexRunView> {
+    const usage = run.events.usage;
+    const threadId = run.events.threadId;
+    const turns = run.events.items.reduce((n, i) => Math.max(n, i.turn || 1), 1);
+    if (threadId) keepThreads.add(threadId);
+    const mdl = threadId ? await codexRunModel(threadId, turns, isTerminalPhase(run.phase)) : undefined;
+    return {
+        stamp: run.stamp,
+        slug: run.slug,
+        subject: run.subject,
+        root,
+        tag,
+        tagPath,
+        mode: run.mode,
+        group: run.group,
+        groupKey: run.groupKey,
+        phase: run.phase,
+        startedAt: run.startedAtMs,
+        endedAt: run.endedAtMs,
+        threadId,
+        model: mdl?.model || undefined,
+        effort: mdl?.effort || undefined,
+        todo: run.events.todo,
+        staleForMs: run.staleForMs,
+        docsOnly: run.docsOnly,
+        requestUri: run.requestUri,
+        resultUri: run.resultUri,
+        turnDocs: run.turnDocs?.map(d => ({
+            turn: d.turn, requestUri: d.requestUri, resultAnchor: d.resultAnchor,
+            startedAt: d.startedAtMs, endedAt: d.endedAtMs,
+        })),
+        totalTokens: usage ? usage.inputTokens + usage.outputTokens : undefined,
+        items: run.events.items.map(i => ({
+            id: i.id,
+            kind: i.kind,
+            status: i.status,
+            label: i.label,
+            body: i.body,
+            raw: i.raw,
+            // Carried through so the panel can draw turn boundaries; without it a
+            // followup run reads as one unbroken 20-row list.
+            turn: i.turn,
+            // Observation-based: exec JSONL carries no timestamps. A run scanned only
+            // after it finished yields 0 here, which the webview renders as blank
+            // rather than a fake "0.0s".
+            durationMs: i.lastSeenMs && i.lastSeenMs > i.firstSeenMs
+                ? i.lastSeenMs - i.firstSeenMs : undefined,
+        })),
+    };
+}
+
+// --- Attach: codex_rescue runs this window's conversations started in other folders ---
+//
+// The user's decisions: only runs started by this window's own Claude conversations; their cards
+// carry the folder chip that other working trees' cards carry; they chime on finishing exactly as
+// this window's cards do (same path, keyed by folder + stamp, so a same-stamp run elsewhere stays
+// apart), and a run already finished before the window opened stays silent as ever; only the
+// window's host is looked at; trashing a card leaves the plugin's `.scratch` alone (the trash
+// never touched it). The ledger itself is in runLedger.ts.
+
+/**
+ * Session ids of this window's Claude conversations: the `<id>.jsonl` files of the projects
+ * matching its folders that the last status-bar scan covered (active within `hideAfter`). Wider
+ * than the status bar's own list on purpose — a conversation hidden from the bar, cleared, or
+ * superseded by a newer one is still the one that started its runs.
+ */
+let windowSessionIds = new Set<string>();
+
+/** Set by findActiveSessions on each completed scan; the ledger is listed again on the next Codex scan. */
+function setWindowSessionIds(ids: Set<string>): void {
+    windowSessionIds = ids;
+    markLedgerStale();
+}
+
+interface AttachedRoot {
+    uri: vscode.Uri;
+    tag: string;
+    tagPath: string;
+    /** The stamps this window's conversations ran there — the only ones read from that folder. */
+    stamps: Set<string>;
+}
+
+/**
+ * The folders outside this window (and outside its repositories' working trees, `skip`) that the
+ * ledger says this window's conversations ran codex_rescue in. Never throws: a ledger that cannot
+ * be read only means nothing is attached this time.
+ */
+async function attachedCodexRoots(skip: CodexRoot[]): Promise<AttachedRoot[]> {
+    if (!windowSessionIds.size) return [];
+    try {
+        const home = await getClaudeBaseUri();
+        if (!home) return [];
+        const entries = await readLedger(vscode.Uri.joinPath(home, 'codex_rescue', 'runs'), windowSessionIds);
+        if (!entries.length) return [];
+        const own = new Set(skip.map(f => folderKey(f.uri)));
+        const byFolder = new Map<string, AttachedRoot>();
+        for (const e of entries) {
+            const uri = ledgerRootUri(home, e.root);
+            if (!uri) continue;
+            const k = folderKey(uri);
+            if (own.has(k)) continue;
+            let a = byFolder.get(k);
+            if (!a) {
+                byFolder.set(k, a = {
+                    uri, tag: folderName(uri),
+                    tagPath: uri.scheme === 'file' ? uri.fsPath : uri.path,
+                    stamps: new Set(),
+                });
+            }
+            a.stamps.add(e.stamp);
+        }
+        return [...byFolder.values()];
+    } catch (e) {
+        log(`[codex-rescue] run ledger read failed: ${e}`);
+        return [];
+    }
+}
+
+/**
+ * Finished runs read by "show earlier" on the Codex progress tab (user's call, 2026-10-01), keyed
+ * by codexRunKey. The regular scan reads only each tree's newest 20; these ride along after them
+ * and are never re-read, so a remote window pays for them once, on the click. Kept for the life of
+ * the window. While loaded, every finished run the regular scan sees is filed here as well, so one
+ * pushed past the newest 20 by a new run stays on the list instead of dropping off it.
+ */
+const codexOlderRuns = new Map<string, CodexRunView>();
+let codexOlderLoaded = false;
+/** Runs on disk the list leaves out — the number the "show earlier" row offers. */
+let codexOlderCount = 0;
+
+async function collectCodexRuns(roots?: CodexRoot[], opts?: { all?: boolean }): Promise<CodexRunView[]> {
+    const all = !!opts?.all;
     const now = Date.now();
     const out: CodexRunView[] = [];
     const keepKeys = new Set<string>();
     const keepThreads = new Set<string>();
+    // Which trees hold a stamp with its event log, counting runs past the limit too.
+    const recordedIn = new Map<string, Set<string>>();
+    // Which trees hold a stamp at all, each marked true when it is one this window has open.
+    const heldIn = new Map<string, Map<string, boolean>>();
+    // Stamps in the trash of a tree this window has open.
+    const ownTrash = new Set<string>();
+    // Everything on disk past the limit, and every key on disk at all.
+    const older: { root: string; stamp: string }[] = [];
+    const onDisk = new Set<string>();
+    const scanRoots = roots ?? await codexRoots();
 
-    for (const f of roots ?? await codexRoots()) {
+    for (const f of scanRoots) {
         const docsDir = await codexRescueDocsDir(f.uri);
         if (!docsDir) continue;
         const logDir = vscode.Uri.joinPath(docsDir, '.log');
-        for (const run of await discoverRuns(f.uri, now)) {
+        const rootStr = f.uri.toString();
+        const own = !f.tag;
+        const held = (stamp: string): void => {
+            let m = heldIn.get(stamp);
+            if (!m) heldIn.set(stamp, m = new Map());
+            m.set(rootStr, own);
+            onDisk.add(codexRunKey({ root: rootStr, stamp }));
+        };
+        const scan = await discoverRuns(f.uri, now, all ? Infinity : undefined);
+        if (own) for (const stamp of await trashedStamps(f.uri)) ownTrash.add(stamp);
+        for (const stamp of scan.recorded) {
+            let s = recordedIn.get(stamp);
+            if (!s) recordedIn.set(stamp, s = new Set());
+            s.add(rootStr);
+        }
+        for (const stamp of scan.older) {
+            older.push({ root: rootStr, stamp });
+            held(stamp);
+        }
+        for (const run of scan.runs) {
+            held(run.stamp);
             keepKeys.add(runCacheKey(logDir, run.stamp));
-            const usage = run.events.usage;
-            const threadId = run.events.threadId;
-            const turns = run.events.items.reduce((n, i) => Math.max(n, i.turn || 1), 1);
-            if (threadId) keepThreads.add(threadId);
-            const mdl = threadId ? await codexRunModel(threadId, turns, isTerminalPhase(run.phase)) : undefined;
-            out.push({
-                stamp: run.stamp,
-                slug: run.slug,
-                subject: run.subject,
-                root: f.uri.toString(),
-                tag: f.tag,
-                tagPath: f.tagPath,
-                mode: run.mode,
-                group: run.group,
-                groupKey: run.groupKey,
-                phase: run.phase,
-                startedAt: run.startedAtMs,
-                endedAt: run.endedAtMs,
-                threadId,
-                model: mdl?.model || undefined,
-                effort: mdl?.effort || undefined,
-                todo: run.events.todo,
-                staleForMs: run.staleForMs,
-                docsOnly: run.docsOnly,
-                requestUri: run.requestUri,
-                resultUri: run.resultUri,
-                turnDocs: run.turnDocs?.map(d => ({
-                    turn: d.turn, requestUri: d.requestUri, resultAnchor: d.resultAnchor,
-                    startedAt: d.startedAtMs, endedAt: d.endedAtMs,
-                })),
-                totalTokens: usage ? usage.inputTokens + usage.outputTokens : undefined,
-                items: run.events.items.map(i => ({
-                    id: i.id,
-                    kind: i.kind,
-                    status: i.status,
-                    label: i.label,
-                    body: i.body,
-                    raw: i.raw,
-                    // Carried through so the panel can draw turn boundaries; without it a
-                    // followup run reads as one unbroken 20-row list.
-                    turn: i.turn,
-                    // Observation-based: exec JSONL carries no timestamps. A run scanned only
-                    // after it finished yields 0 here, which the webview renders as blank
-                    // rather than a fake "0.0s".
-                    durationMs: i.lastSeenMs && i.lastSeenMs > i.firstSeenMs
-                        ? i.lastSeenMs - i.firstSeenMs : undefined,
-                })),
-            });
+            out.push(await codexRunView(run, rootStr, f.tag, f.tagPath, keepThreads));
         }
     }
-    out.sort((a, b) => b.stamp.localeCompare(a.stamp));
+    if (!all && codexOlderLoaded) {
+        for (const r of out) {
+            if (isTerminalPhase(r.phase)) codexOlderRuns.set(codexRunKey(r), r);
+        }
+        // Trashed (or otherwise gone) since it was loaded.
+        for (const k of [...codexOlderRuns.keys()]) {
+            if (!onDisk.has(k)) codexOlderRuns.delete(k);
+        }
+        const listed = new Set(out.map(codexRunKey));
+        for (const [k, r] of codexOlderRuns) {
+            if (!listed.has(k)) out.push(r);
+        }
+    }
+    // A project that commits its request docs hands every one of them to each working tree
+    // checked out afterwards, so another tree shows a "documents only" copy of runs that live
+    // here — the same run twice, and while it runs, the copy reads as finished. One card per
+    // stamp (user's call, 2026-10-01): the tree holding the run's records wins; failing that, a
+    // tree this window has open. A stamp trashed in this window's tree stays hidden in the
+    // others, where git keeps putting the documents back. Where neither rule picks one tree —
+    // two other trees and no records — every copy still shows.
+    const isCopy = (root: string, stamp: string): boolean => {
+        const at = heldIn.get(stamp);
+        const own = at?.get(root) ?? false;
+        if (!at || at.size < 2) return !own && ownTrash.has(stamp);
+        const rec = recordedIn.get(stamp);
+        if (rec && rec.size) return !rec.has(root);
+        return !own && [...at.values()].some(Boolean);
+    };
+    const shown = out.filter(r => !isCopy(r.root ?? '', r.stamp));
+    // Runs this window's own Claude conversations started in other folders (runLedger.ts). Added
+    // after the rules above on purpose: each is a run the ledger names, never a copy git brought
+    // in, and it is read whole every scan — no "show earlier" for it, and no older-runs entry that
+    // would outlive the conversation leaving the status bar. The "show earlier" read (`all`) still
+    // reads them, only so the cache prunes below keep their parse state and model lookup.
+    for (const a of await attachedCodexRoots(scanRoots)) {
+        const logDir = vscode.Uri.joinPath(a.uri, 'docs', 'codex_rescue', '.log');
+        const rootStr = a.uri.toString();
+        const scan = await discoverRuns(a.uri, now, Infinity, a.stamps);
+        for (const run of scan.runs) {
+            keepKeys.add(runCacheKey(logDir, run.stamp));
+            const view = await codexRunView(run, rootStr, a.tag, a.tagPath, keepThreads);
+            if (!all) shown.push(view);
+        }
+    }
+    shown.sort((a, b) => b.stamp.localeCompare(a.stamp));
+    if (!all) {
+        codexOlderCount = older.filter(o =>
+            !codexOlderRuns.has(codexRunKey(o)) && !isCopy(o.root, o.stamp)).length;
+    }
     pruneTailCache(keepKeys);
     for (const id of [...codexRunModels.keys()]) {
         if (!keepThreads.has(id)) codexRunModels.delete(id);
     }
-    return out;
+    return shown;
 }
 
 /**
@@ -4635,17 +5069,34 @@ async function syncCodexRuns(): Promise<void> {
     } finally {
         codexSyncInFlight = false;
     }
+    // The tab's disk-use line rides this scan, but only while the tab is on screen — the rule every
+    // tab read follows (user's call, 2026-09-30); a tab coming into view is scanned at once. Outside
+    // the guard above and not awaited, so the run scan and its chime never wait on this read.
+    if (activityTabOnScreen('codexRuns')) {
+        void syncCodexDiskUsage().catch(e => log(`[codex-rescue] usage read failed: ${e}`));
+    }
     // The blue dot follows the Codex scan, which runs every 2s while a run is live; so does the
     // Codex progress tab's badge.
     refreshActivityDots();
     refreshActivityBadges();
 }
 
+/** One read of this window's project's _usage.json (usageFile.ts), handed to the Codex tab. */
+async function syncCodexDiskUsage(): Promise<void> {
+    const folder = codexUsageFolder();
+    pushUsage(folder ? usageView(await readUsage(folder.uri)) : null);
+}
+
 async function syncCodexRunsInner(): Promise<void> {
     // Scanning only makes sense where run records actually exist. The roots are resolved once
     // here and shared, since over SSH each resolution is a few round trips.
     const roots = await codexRoots();
-    if (!await workspaceUsesCodexRescue(roots)) { lastCodexRuns = []; return; }
+    // A window whose own folders never ran the skill can still have runs its conversations
+    // started elsewhere (attachedCodexRoots — the ledger is listed once per status-bar pass).
+    if (!await workspaceUsesCodexRescue(roots) && !(await attachedCodexRoots(roots)).length) {
+        lastCodexRuns = [];
+        return;
+    }
 
     let runs: CodexRunView[];
     try {
@@ -4660,26 +5111,27 @@ async function syncCodexRunsInner(): Promise<void> {
         .get<boolean>('workflowCompleteBeep', true);
 
     for (const r of runs) {
-        const prev = codexRunPhases.get(r.stamp);
+        const key = codexRunKey(r);
+        const prev = codexRunPhases.get(key);
         const live = !isTerminalPhase(r.phase);
-        if (live) codexSeenLive.add(r.stamp);
+        if (live) codexSeenLive.add(key);
 
         // Chime only on a transition we actually witnessed: the run must have been seen
         // live at some point AND have just crossed into a terminal phase. `stale` is
         // deliberately NOT terminal — a run whose heartbeat died may still be alive.
         if (prev !== undefined && !isTerminalPhase(prev) && isTerminalPhase(r.phase)) {
-            if (beepEnabled && codexSeenLive.has(r.stamp)) {
+            if (beepEnabled && codexSeenLive.has(key)) {
                 log(`[codex-rescue] ${r.stamp} ${prev} → ${r.phase} → beep`);
                 playWorkflowCompleteSound();
             } else {
                 log(`[codex-rescue] ${r.stamp} → ${r.phase} (silent: ${beepEnabled ? 'never-saw-live' : 'beep-disabled'})`);
             }
         }
-        codexRunPhases.set(r.stamp, r.phase);
+        codexRunPhases.set(key, r.phase);
     }
 
     if (isActivityPanelOpen()) {
-        try { pushRuns(runs); }
+        try { pushRuns(runs, codexOlderCount); }
         catch (e) { log(`[codex-rescue] push error: ${e}`); }
     }
 
@@ -4687,6 +5139,30 @@ async function syncCodexRunsInner(): Promise<void> {
     // panel lags visibly and the completion chime could land half a minute late. Note this
     // is NOT gated on the panel being open — the chime has to fire either way.
     ensureCodexFastPolling(runs.some(r => !isTerminalPhase(r.phase)));
+}
+
+/**
+ * "Show earlier" on the Codex progress tab: read every run on disk once, keep the finished ones,
+ * then rescan so they join the list. Holds the same in-flight guard as the regular scan — two
+ * scans at once would feed one live run's events to the incremental parser twice.
+ */
+async function loadOlderCodexRuns(): Promise<void> {
+    codexOlderLoaded = true;
+    while (codexSyncInFlight) await new Promise(r => setTimeout(r, 100));
+    codexSyncInFlight = true;
+    try {
+        const runs = await collectCodexRuns(undefined, { all: true });
+        for (const r of runs) {
+            if (isTerminalPhase(r.phase)) codexOlderRuns.set(codexRunKey(r), r);
+        }
+        log(`[codex-rescue] loaded earlier runs: ${codexOlderRuns.size} finished on record`);
+    } catch (e) {
+        log(`[codex-rescue] loading earlier runs failed: ${e}`);
+    } finally {
+        codexSyncInFlight = false;
+    }
+    await syncCodexRuns();
+    pushOlderDone();
 }
 
 let codexFastTimer: NodeJS.Timeout | null = null;

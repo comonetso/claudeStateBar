@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { getDict, Lang } from './i18n';
 import * as creds from './credentials';
 import * as telegram from './telegram';
+import { readRetentionSettings, writeRetentionSettings } from './providers/codexRescue/retentionSettings';
 
 export interface PanelCallbacks {
     // Called when plan-usage-affecting settings change (enabled/orgId/cookie/interval).
@@ -9,6 +10,10 @@ export interface PanelCallbacks {
     // Called when the user clicks "Refresh now". Should fetch usage and report back
     // via SettingsPanel.notifyUsage(...).
     onRefreshRequested: () => void;
+    // The ~/.claude folder of the host this window is attached to — the server for a
+    // Remote-SSH window. The Codex retention section reads and writes the codex-rescue
+    // plugin's settings file under it.
+    getClaudeBaseUri: () => Promise<vscode.Uri | null>;
 }
 
 let panel: vscode.WebviewPanel | null = null;
@@ -119,6 +124,35 @@ async function collectState() {
     };
 }
 
+// The Codex retention section is filled after 'init', in its own message: on a Remote-SSH window
+// the read is a round trip to the server, and the rest of the form should not wait for it.
+async function pushCodexRetention(): Promise<void> {
+    let base: vscode.Uri | null = null;
+    try { base = (await callbacks?.getClaudeBaseUri()) ?? null; } catch { /* reported as unavailable */ }
+    const view = await readRetentionSettings(base);
+    panel?.webview.postMessage({ type: 'codexRetention', view });
+}
+
+async function saveCodexRetention(values: any): Promise<void> {
+    try {
+        const base = await callbacks?.getClaudeBaseUri();
+        if (!base) throw new Error('~/.claude not found');
+        const view = await writeRetentionSettings(base, {
+            scratchDays: values?.scratchDays,
+            logDays: values?.logDays
+        });
+        panel?.webview.postMessage({ type: 'codexRetention', view, saved: true });
+    } catch (e: any) {
+        const tmpl = getDict(creds.getLanguage())['cxret.msg.saveFailed'];
+        const reason = e?.message ?? String(e);
+        const text = typeof tmpl === 'string' ? tmpl.replace('{0}', reason) : reason;
+        // Shown in the section as well as the shared status line, which the plan-usage refresh
+        // started by the same save may overwrite a moment later.
+        panel?.webview.postMessage({ type: 'codexRetentionError', text });
+        panel?.webview.postMessage({ type: 'status', text, kind: 'err' });
+    }
+}
+
 async function handleMessage(msg: any): Promise<void> {
     if (!panel) return;
 
@@ -131,6 +165,7 @@ async function handleMessage(msg: any): Promise<void> {
                 dict: getDict(lang),
                 state: await collectState()
             });
+            void pushCodexRetention();
             break;
         }
 
@@ -223,6 +258,9 @@ async function handleMessage(msg: any): Promise<void> {
                 const text = typeof tmpl === 'string' ? tmpl.replace('{0}', e?.message ?? String(e)) : String(e);
                 panel.webview.postMessage({ type: 'status', text, kind: 'err' });
             }
+            // The webview sends this only when a retention value changed (a broken file too is
+            // rewritten only then), so saving other settings does not create or rewrite the plugin's file.
+            if (p.codexRetention) await saveCodexRetention(p.codexRetention);
             break;
         }
 
@@ -485,6 +523,30 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
           <p class="hint" data-i18n="codex.scanDays.hint">Codex stores sessions under sessions/YYYY/MM/DD. Only this many recent day folders are scanned.</p>
         </div>
       </div>
+    </div>
+
+    <!-- Codex run-history retention: the codex-rescue plugin's own settings file on this
+         window's host (not a claudeContextBar.* setting). Filled by the 'codexRetention' message. -->
+    <div class="section">
+      <h2 class="section-header" data-i18n="section.codexRetention">Codex — Run History Retention</h2>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="ret-scratchDays"><span data-i18n="cxret.scratchDays.label">Keep work folders (days)</span> <span class="ret-badge" id="ret-scratchDays-default" data-i18n="cxret.default" hidden>default</span></label>
+          <input type="number" id="ret-scratchDays" min="0" step="1" disabled />
+          <p class="hint" data-i18n="cxret.scratchDays.hint"></p>
+        </div>
+        <div class="field">
+          <label for="ret-logDays"><span data-i18n="cxret.logDays.label">Keep run records (days)</span> <span class="ret-badge" id="ret-logDays-default" data-i18n="cxret.default" hidden>default</span></label>
+          <input type="number" id="ret-logDays" min="0" step="1" disabled />
+          <p class="hint" data-i18n="cxret.logDays.hint"></p>
+        </div>
+      </div>
+
+      <p class="hint" data-i18n="cxret.zeroHint"></p>
+      <p class="hint" data-i18n="cxret.envHint"></p>
+      <p class="ret-state" id="ret-state"></p>
+      <p class="note"><span data-i18n="cxret.note"></span><br><span id="ret-path" class="ret-path"></span></p>
     </div>
 
     <!-- Sound settings -->

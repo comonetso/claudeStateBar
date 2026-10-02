@@ -487,13 +487,26 @@ partial, so check `status` in the document header.
 How much a run adds **varies a lot with what it did.** The measurements on record: one run came
 to 105 lines / 409 KB, other samples had event files of 394–750 KB, and in one 464 KB sample 86%
 was captured command output. Read those as **samples, not an average.**
-**Old records are cleaned up automatically** (1.16.7). Each time the skill runs, it removes from
-that project the app-server transcript of runs that finished successfully — the largest file a
-run writes, often several MB — and anything in `.log/` and `.scratch/` last touched more than
-`CR_KEEP_DAYS` days ago (default 7; `0` turns it off). Request/response documents, the trash and
-a run still holding its lock are never touched. `.scratch/` is skipped altogether while another run in the same project is still going, since runs share it. It happens inside the skill, so it works without
-VS Code. To set `CR_KEEP_DAYS` for every session, put it in the `env` block of
-`~/.claude/settings.json`.
+**Old records are cleaned up automatically** (1.16.7, reworked in 1.17.3). Each time the skill
+runs, it removes from that project the app-server transcript of runs that finished successfully —
+the largest file a run writes, often several MB — anything in `.scratch/` untouched for more than
+a day, and a run's files in `.log/` once the newest of them is more than 7 days old. A run still
+holding its lock keeps its own `.scratch/` folder, but another run going no longer stops the
+cleanup. From 1.17.3 it also removes, in the background, Codex's own history
+(`~/.codex/sessions`) of the conversations the skill started on that machine once they pass the
+same 7 days. It does that only with Codex's official `codex delete --force`, one conversation at a
+time, never by deleting files. Only runs on the live-steering route are covered: short-chat
+conversations and runs that took the old `codex exec` route are recorded like any other `codex exec`
+session and cannot be told apart, so they stay. Conversations you start yourself are never touched, the conversation
+a follow-up is resuming is left out, and a run whose conversation is gone can no longer be followed
+up. Request/response documents, the trash and a run still holding its lock are never touched. It
+happens inside the skill, so it works without VS Code.
+
+The two periods live in `~/.claude/codex_rescue/settings.json` on each machine:
+`{"scratchDays": 1, "logDays": 7}` by default, and `0` turns one off. While the file is broken the
+skill skips cleanup altogether. The claudeStateBar settings panel edits it under **Codex — Run
+History Retention**. `CR_KEEP_DAYS`, when set, replaces both periods; to set it for every session,
+put it in the `env` block of `~/.claude/settings.json`.
 
 With the claudeStateBar extension you can also delete by hand:
 
@@ -501,6 +514,11 @@ With the claudeStateBar extension you can also delete by hand:
   trash** without asking; the 🗑 at the top of the panel is where you get it back. Only appears
   on finished runs. Whether the documents go too is decided **when you delete for good from the
   trash** — keep them and the run stays visible as a `documents only` card
+- **Clean up now** (skill 1.17.3 or later) — a line under the Codex progress tab's toolbar shows how
+  much the project's work folders, run records, trash and Codex conversations take, as of the last
+  run. **Clean up** beside it deletes the ones you tick, whatever their age, after asking once more,
+  by running the skill's cleanup command in a terminal. Nothing goes through the trash. Runs in
+  progress, and runs whose result Claude has not picked up yet, keep their files
 
 ---
 

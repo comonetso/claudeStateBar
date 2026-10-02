@@ -69,6 +69,9 @@ let callbacks: WorkflowPanelCallbacks | null = null;
 let lastPushedSignature: string | null = null;
 // Null until the first project scan: the tab then opens on its loading line (see createOrShow).
 let lastWorkflows: WorkflowView[] | null = null;
+// Whether lastWorkflows is the list saved from an earlier window, shown until this window's first
+// scan lands (user's call, 2026-10-01). The tab says so above the list.
+let lastSaved = false;
 // Agents the user has open. Their rows are re-read while they run, so the host needs to know.
 const openAgents = new Set<string>();
 
@@ -95,8 +98,8 @@ export function createOrShowWorkflowPanel(
  */
 export function attachWorkflowTab(workflows: WorkflowView[] | null, cb: WorkflowPanelCallbacks): void {
     callbacks = cb;
-    if (workflows) lastWorkflows = workflows;
-    if (lastWorkflows) pushWorkflows(lastWorkflows);
+    if (workflows) { lastWorkflows = workflows; lastSaved = false; }
+    if (lastWorkflows) pushWorkflows(lastWorkflows, lastSaved);
 }
 
 function handleMessage(msg: any): void {
@@ -106,7 +109,7 @@ function handleMessage(msg: any): void {
         case 'ready':
             postToActivityTab('workflows', { type: 'i18n', dict: getDict(creds.getLanguage()), lang: creds.getLanguage() });
             lastPushedSignature = null;
-            if (lastWorkflows) pushWorkflows(lastWorkflows);
+            if (lastWorkflows) pushWorkflows(lastWorkflows, lastSaved);
             break;
         case 'delete': if (k) callbacks?.onDelete(k); break;
         case 'trashOpen': callbacks?.onTrashOpen(); break;
@@ -123,13 +126,15 @@ function handleDispose(): void {
     openAgents.clear();
 }
 
-export function pushWorkflows(workflows: WorkflowView[]): void {
+/** @param saved the list saved from an earlier window, not yet replaced by this window's scan. */
+export function pushWorkflows(workflows: WorkflowView[], saved = false): void {
     lastWorkflows = workflows;
+    lastSaved = saved;
     if (!isActivityPanelOpen()) return;
-    const sig = JSON.stringify(workflows);
+    const sig = (saved ? 'saved:' : '') + JSON.stringify(workflows);
     if (sig === lastPushedSignature) return;
     lastPushedSignature = sig;
-    postToActivityTab('workflows', { type: 'workflows', workflows });
+    postToActivityTab('workflows', { type: 'workflows', workflows, saved });
 }
 
 export function pushWorkflowTrash(items: WorkflowTrashView[]): void {

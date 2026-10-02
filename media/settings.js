@@ -3,6 +3,11 @@
     const vscode = acquireVsCodeApi();
     let dict = {};
     let hasCookie = false;
+    // Codex retention: the last view the extension sent (null until read), the values put into
+    // the two fields from it (to tell whether the user changed them), and the last save result.
+    let ret = null;
+    let retShown = null;
+    let retExtra = null;
 
     function t(key, ...args) {
         let v = dict[key];
@@ -98,6 +103,51 @@
         $('cb-stuckToolUseThresholdSec').value = cb.stuckToolUseThresholdSec ?? 90;
     }
 
+    // --- Codex retention (the codex-rescue plugin's settings file on this window's host) ---
+
+    function retEditable() {
+        return !!ret && (ret.status === 'ok' || ret.status === 'missing' || ret.status === 'broken');
+    }
+
+    function retWhyText(v) {
+        if (v.why === 'json') return t('cxret.why.json');
+        if (v.why === 'object') return t('cxret.why.object');
+        return t('cxret.why.value', v.whyKey || '');
+    }
+
+    function fillRetention(v) {
+        ret = v;
+        $('ret-scratchDays').value = v.scratchDays;
+        $('ret-logDays').value = v.logDays;
+        retShown = { scratchDays: String(v.scratchDays), logDays: String(v.logDays) };
+    }
+
+    function renderRetention() {
+        const v = ret;
+        const editable = retEditable();
+        $('ret-scratchDays').disabled = !editable;
+        $('ret-logDays').disabled = !editable;
+        // "default" = the key is not in the file, so the plugin falls back to its default.
+        // Not shown for a broken file: the plugin then skips cleanup instead of using defaults.
+        const plain = !!v && (v.status === 'ok' || v.status === 'missing');
+        $('ret-scratchDays-default').hidden = !(plain && !v.scratchFromFile);
+        $('ret-logDays-default').hidden = !(plain && !v.logFromFile);
+        $('ret-path').textContent = v && v.path ? t('cxret.file', v.path) : '';
+
+        let text = '';
+        let kind = '';
+        if (retExtra && retExtra.error) { text = retExtra.error; kind = 'err'; }
+        else if (!v) { text = t('cxret.state.loading'); }
+        else if (retExtra && retExtra.saved) { text = t('cxret.state.saved'); kind = 'ok'; }
+        else if (v.status === 'missing') { text = t('cxret.state.missing'); }
+        else if (v.status === 'broken') { text = t('cxret.state.broken', retWhyText(v)); kind = 'warn'; }
+        else if (v.status === 'unreadable') { text = t('cxret.state.unreadable', v.error || ''); kind = 'err'; }
+        else if (v.status === 'unavailable') { text = t('cxret.state.unavailable'); kind = 'err'; }
+        const el = $('ret-state');
+        el.textContent = text;
+        el.className = 'ret-state ' + kind;
+    }
+
     // --- Outgoing actions ---
 
     $('language').addEventListener('change', () => {
@@ -116,6 +166,22 @@
             setStatus(t('state.err.badInterval'), 'err'); return;
         }
 
+        // Write the plugin's file only when a retention value changed — a broken file too is
+        // left alone until the user edits a value (owner's decision, 2026-10-02). Otherwise
+        // saving other settings leaves it untouched.
+        let codexRetention;
+        if (retEditable()) {
+            const s = $('ret-scratchDays').value.trim();
+            const l = $('ret-logDays').value.trim();
+            const changed = !retShown || s !== retShown.scratchDays || l !== retShown.logDays;
+            if (changed) {
+                if (!/^\d+$/.test(s) || !/^\d+$/.test(l)) {
+                    setStatus(t('cxret.err.bad'), 'err'); return;
+                }
+                codexRetention = { scratchDays: Number(s), logDays: Number(l) };
+            }
+        }
+
         const payload = {
             orgId,
             sessionCookie: cookie || undefined, // undefined = keep existing
@@ -124,6 +190,7 @@
             autoStartBlockOnReset: $('st-autoStartBlock').checked,
             codexTelegramNotifyOnReset: $('tg-codexNotifyOnReset').checked,
             codexAutoStartBlockOnReset: $('st-codexAutoStartBlock').checked,
+            codexRetention,
             cb: {
                 baseColor: $('cb-baseColor').value,
                 contextLimitDefault: parseInt($('cb-contextLimitDefault').value, 10) || 200000,
@@ -228,12 +295,24 @@
                 document.documentElement.lang = m.lang;
                 applyI18n();
                 fillForm(m.state);
+                renderRetention();
                 break;
             case 'i18n':
                 dict = m.dict || {};
                 document.documentElement.lang = m.lang;
                 applyI18n();
                 if (hasCookie) $('sessionCookie').placeholder = t('state.cookie.saved');
+                renderRetention();
+                break;
+            case 'codexRetention':
+                fillRetention(m.view);
+                retExtra = m.saved ? { saved: true } : null;
+                renderRetention();
+                break;
+            case 'codexRetentionError':
+                // Keep what the user typed; only report why it was not written.
+                retExtra = { error: m.text };
+                renderRetention();
                 break;
             case 'status':
                 setStatus(m.text, m.kind);
