@@ -1,0 +1,16 @@
+{
+  "description": "android-check: on session start, check only that the private config and the adb binary exist — stat-only, never contacts the device, ARTEMIS or the network",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/android_check.py\" session-start --data-dir \"${CLAUDE_PLUGIN_DATA}\""
+          }
+        ]
+      }
+    ]
+  }
+}

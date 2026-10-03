@@ -1,0 +1,9 @@
+{
+  "name": "android-check",
+  "version": "0.1.0",
+  "description": "Let Claude tap, look at, read the logcat of, and debug a real Android device or emulator — Flutter and native (View/Compose) apps. Taps by element name, captures the screen right after, cuts the logcat of that moment for the app process, measures response time, and drives the app run (hot reload / reinstall) itself. Explores with the ARTEMIS MCP when judgement is needed. Korean natural-language trigger: \"폰 화면 봐\", \"눌러 봐\", \"로그캣 봐\", \"반응 속도 재 봐\", \"앱 디버깅해\".",
+  "author": { "name": "Blueming" },
+  "repository": "https://github.com/comonetso/claudeStateBar",
+  "license": "MIT",
+  "keywords": ["android", "adb", "flutter", "logcat", "device-testing", "artemis", "qa"]
+}
