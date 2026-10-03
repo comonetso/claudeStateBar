@@ -228,7 +228,7 @@ Claude Code가 막힌 문제를 Codex에 넘겨 2차 의견을 받는 동안, Co
 
 동작하려면 Claude Code용 [`codex_rescue`](skills/codex_rescue/) 스킬이 필요합니다. 확장에는 포함돼 있지 않습니다 — 워크스페이스에 쓰기 권한을 가진 `codex exec`를 실행하는 도구라, 상태바 확장을 깔았다고 따라와서는 안 되는 물건입니다. 설치 방법과 사용법은 [가이드](docs/codex-rescue-guide.ko.md)([English](docs/codex-rescue-guide.md))에 있습니다.
 
-1.16.0부터 이 스킬은 Claude Code 플러그인으로도 설치할 수 있고, 이 방법을 권합니다. Claude Code 안에서 `/plugin marketplace add comonetso/claudeStateBar` 를 실행한 뒤 `/plugin install codex-rescue@comonetso` 를 실행하면 됩니다. 확장은 두 설치 방식을 모두 알아봅니다. 예전에 `~/.claude/skills/codex_rescue/` 로 복사해 두셨다면 그 사본은 계속 동작하지만 업데이트가 자동으로 오지 않습니다. 그래서 창을 열 때마다 플러그인 전환을 권하는 알림이 뜨며, "다시 보지 않기"를 누르면 멈춥니다. 플러그인을 설치하고 나면 같은 알림에서 옛 사본을 휴지통으로 옮길 수 있습니다. Anthropic 공식 마켓이 아닌 마켓은 자동 업데이트가 기본으로 꺼져 있습니다. 그래서 확장이 창이 가리키는 곳(로컬 창이면 이 PC, Remote-SSH 창이면 그 서버)에서 `comonetso` 자동 업데이트가 켜져 있는지 확인합니다. 꺼져 있으면 알림에서 **켜기**를 누르면 됩니다. 그곳의 `~/.claude/settings.json` 을 백업한 뒤 `"autoUpdate": true` 를 넣습니다(마켓 항목이 없으면 새로 만듭니다). **여기서 다시 보지 않기**는 곳마다 따로 기억합니다. 꺼져 있는 동안에는 세션 메뉴의 작업 현황 바로 아래에도 같은 동작을 하는 항목이 있습니다. Claude Code를 다시 시작하면 적용됩니다. 이 설정은 마켓 단위라서, 아래의 peer_req 나 browser_check 만 설치해도 같은 알림이 뜨고 세 플러그인이 함께 최신으로 유지됩니다.
+1.16.0부터 이 스킬은 Claude Code 플러그인으로도 설치할 수 있고, 이 방법을 권합니다. Claude Code 안에서 `/plugin marketplace add comonetso/claudeStateBar` 를 실행한 뒤 `/plugin install codex-rescue@comonetso` 를 실행하면 됩니다. 확장은 두 설치 방식을 모두 알아봅니다. 예전에 `~/.claude/skills/codex_rescue/` 로 복사해 두셨다면 그 사본은 계속 동작하지만 업데이트가 자동으로 오지 않습니다. 그래서 창을 열 때마다 플러그인 전환을 권하는 알림이 뜨며, "다시 보지 않기"를 누르면 멈춥니다. 플러그인을 설치하고 나면 같은 알림에서 옛 사본을 휴지통으로 옮길 수 있습니다. Anthropic 공식 마켓이 아닌 마켓은 자동 업데이트가 기본으로 꺼져 있습니다. 그래서 확장이 창이 가리키는 곳(로컬 창이면 이 PC, Remote-SSH 창이면 그 서버)에서 `comonetso` 자동 업데이트가 켜져 있는지 확인합니다. 꺼져 있으면 알림에서 **켜기**를 누르면 됩니다. 그곳의 `~/.claude/settings.json` 을 백업한 뒤 `"autoUpdate": true` 를 넣습니다(마켓 항목이 없으면 새로 만듭니다). **여기서 다시 보지 않기**는 곳마다 따로 기억합니다. 꺼져 있는 동안에는 세션 메뉴의 작업 현황 바로 아래에도 같은 동작을 하는 항목이 있습니다. Claude Code를 다시 시작하면 적용됩니다. 이 설정은 마켓 단위라서, 아래의 peer_req, browser_check, android_check 중 하나만 설치해도 같은 알림이 뜨고 네 플러그인이 함께 최신으로 유지됩니다.
 
 스킬이 설치돼 있으면 [작업 현황 패널](#-작업-현황-패널)의 Codex 진행 탭으로 보이고, `claudeStateBar: Show Codex Runs` 는 패널을 이 탭으로 엽니다. 실행 한 건이 카드 하나입니다:
 
@@ -356,6 +356,12 @@ Remote‑SSH에서도 동작합니다. 실행 기록은 `vscode.workspace.fs`로
 이 레포에서 함께 배포하는 세 번째 플러그인이며, 이것도 확장 기능은 아닙니다. 서버 로그와 소스만 보고 "시험 통과"라고 보고하는 대신, Claude Code가 사용자의 실제 브라우저(Chromium 기반인 Aside)를 열어 화면, 콘솔 오류, 실패한 요청, CSS, 반응형·다크 화면, 접근성, 성능을 직접 확인합니다. 서버 세션이 PC의 브라우저를 원격으로 다룰 수도 있고, PC에서 바로 돌 수도 있습니다. "화면 확인해 봐", "콘솔 에러 봐" 같은 한국어 말로 시작합니다.
 
 Claude와 브라우저 사이에는 정책층이 있습니다. 자기가 연 탭에서만 작업하고, 데이터 변경은 그 변경 하나를 승인받았을 때만 하며, 비밀 값은 읽지도 남기지도 않습니다. 다른 머신의 브라우저를 다루려면 Aside Pro의 원격 호스트나 PC에서 서버로 여는 SSH 터널이 필요합니다. 설치는 `/plugin install browser-check@comonetso` 입니다. 처음 쓸 때 기기를 살펴 비공개 설정 파일을 만들고 무엇을 넣었는지 보여 줍니다. 터널·전체 안전 규칙은 [browser_check README](skills/browser_check/README.ko.md) ([English](skills/browser_check/README.md))에 있습니다. 아직 초기 버전이며, Windows PC 와 실제 PC → 서버 터널에서 실측했습니다. 확장의 자동 업데이트 알림이 이 플러그인에도 적용됩니다.
+
+## 📱 android_check — Claude가 안드로이드 실기기를 직접 누르고 디버깅 (플러그인)
+
+이 레포에서 함께 배포하는 네 번째 플러그인이며, 이것도 확장 기능은 아닙니다. 사람이 화면을 캡처해 붙여 주는 디버깅을 없앱니다. Claude Code가 안드로이드 실기기나 에뮬레이터에서 요소를 이름으로 찾아 누르고, 같은 순간 화면을 캡처하고, 그 사이 로그캣을 그 앱 것만 잘라(오류, 프레임 건너뜀 경고, 터치가 앱에 닿았는지) 보여 주고, 반응 시간을 잽니다. 고친 뒤에는 앱을 직접 다시 띄워(Flutter 는 hot reload, 네이티브 앱은 Gradle 재설치) 같은 곳을 다시 눌러 봅니다. 판단하며 여러 단계를 눌러야 하는 흐름은 ARTEMIS MCP 가 있으면 그쪽으로 넘깁니다. Flutter 앱과 네이티브(View, Compose) 앱 모두 되고, "폰 화면 봐", "눌러 봐" 같은 한국어 말로 시작합니다.
+
+adb 가 있어야 하고, 반응 시간 측정에는 Pillow 가 있는 파이썬도 필요합니다. 설치는 `/plugin install android-check@comonetso` 입니다. 처음 쓸 때 기기를 살펴 비공개 설정 파일을 만듭니다(adb 경로, 기기·앱 정보는 레포에 올라가지 않습니다). `doctor` 점검이 막는 원인을 알려 줍니다 — 폰이 잠겼거나, 화면 미러링 앱의 검은 덮개 창이 탭을 전부 가져가는 경우 같은 것입니다. 자세한 내용과 실측값은 [android_check README](skills/android_check/README.ko.md) ([English](skills/android_check/README.md))에 있습니다. 아직 초기 버전이며, 갤럭시 폰 한 대에서 무선 adb 로 Flutter 앱과 네이티브 앱의 디버그 빌드를 실측했습니다. 확장의 자동 업데이트 알림이 이 플러그인에도 적용됩니다.
 
 ## 🎚️ Effort 레벨 표시
 

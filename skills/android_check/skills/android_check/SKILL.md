@@ -5,7 +5,7 @@ description: Tap, look at, read the logcat of, measure and debug a real Android 
 
 # android_check — tap, look, read the logcat, measure, fix, re-check
 
-> Why: debugging only works when four links turn together — **tap → see the screen → read the logcat of that moment → fix and re-check**. A human pasting screenshots breaks the loop. Every rule below comes from measurement on a real device (2026-10-04, a Flutter app with native screens inside, Galaxy Z Flip6 over wireless adb). Where a manual and a measurement disagree, follow the measurement.
+> Why: debugging only works when four links turn together — **tap → see the screen → read the logcat of that moment → fix and re-check**. A human pasting screenshots breaks the loop. Every rule below comes from measurement on a real device (2026-10-04, a Flutter app with native screens inside and a pure native Kotlin/View app, Galaxy Z Flip6 over wireless adb). Where a manual and a measurement disagree, follow the measurement.
 
 Language: talk to the user in the user's language, report labels in §6 included.
 
@@ -47,6 +47,7 @@ ac tap "<name>" --measure --log --package P --shot s.png
 ```
 - Look at **both** the screen and the log. Measured: a layout broke (text pushed off-screen, a dark strip) with **0 error lines**, because the area was scrollable. And the reverse: a 1.5 s first response was explained only by `Skipped 67 frames` in the log (first open after a cold start; later opens 0.8 s, no warning).
 - App run: register once — `ac app register --package P --type flutter --project-dir D --run-args "--flavor dev"` (or `--type native --install-task :app:installDebug`) — then `ac app start|reload|restart|stop|status|log`.
+- Re-draw cost (measured): Flutter `app start` 25 s, hot reload 1.2 s, stop 0.26 s · native reinstall + relaunch 120 s on the first Gradle build, 22 s after. Run a native reload in the background and say it takes a while.
 
 ## 4. Request → command
 | The user asks to… | Do |

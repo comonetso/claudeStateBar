@@ -404,18 +404,25 @@ def flutter_app(ctx, package, app):
                               "--serial", ctx.serial, "--package", package],
                              creationflags=DETACH, start_new_session=not IS_WIN,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        deadline = time.time() + (a.wait or 600)
-        while time.time() < deadline:  # 첫 빌드는 몇 분 걸린다
+        t0, state = time.time(), None
+        deadline = t0 + (a.wait or 600)
+        if os.path.exists(sp):
+            os.remove(sp)  # 지난 실행의 상태 파일을 새 실행 것으로 착각하지 않게
+        while time.time() < deadline:  # 첫 빌드는 몇 분 걸린다 — 'app.started'(다 뜸)까지 기다린다
             time.sleep(2)
             if os.path.exists(sp):
-                state = json.load(open(sp, encoding="utf-8"))
-                if state.get("appId") or state.get("error"):
+                try:
+                    state = json.load(open(sp, encoding="utf-8"))
+                except ValueError:
+                    continue
+                if state.get("ready") or state.get("error"):
                     break
             if not pid_alive(p.pid):
                 break
-        if not state or not state.get("appId"):
-            sys.exit(f"앱이 뜨지 않았습니다. `app log --package {package}` 로 빌드 로그를 보세요. {state and state.get('error')}")
-        return print(f"실행 완료 — appId={state['appId']} (Claude 가 맡음)")
+        if not state or not state.get("ready"):
+            sys.exit(f"앱이 뜨지 않았습니다(마지막 진행: {state and state.get('progress')}). "
+                     f"`app log --package {package}` 로 빌드 로그를 보세요. {state and state.get('error') or ''}")
+        return print(f"실행 완료 {round(time.time() - t0)}초 — appId={state['appId']} (Claude 가 맡음)")
     if a.arg in ("reload", "restart", "stop"):
         if not alive:
             sys.exit("맡고 있는 실행이 없습니다. `app start` 부터.")
@@ -460,8 +467,14 @@ def cmd_runner(ctx):
             except (ValueError, IndexError):
                 continue
             ev, params = msg.get("event"), msg.get("params", {})
-            if ev == "app.start":
+            if ev == "app.start":  # 시작 요청 — 빌드·설치는 이 뒤에 한다
                 st["appId"] = params.get("appId")
+                write_state()
+            elif ev == "app.started":  # 앱이 기기에서 다 떴다 — 여기서부터 reload 가 된다
+                st["ready"] = True
+                write_state()
+            elif ev == "app.progress" and params.get("message"):
+                st["progress"] = params["message"]
                 write_state()
             elif ev == "app.stop":
                 st["stopped"] = True

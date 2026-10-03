@@ -42,8 +42,11 @@ test/test_android_check.py        기기 없이 도는 단위 시험(요소 해�
 ```
 `python -m unittest discover -s test` — 외부 패키지 없이 돈다.
 
-## 실측 (2026-10-04 · Galaxy Z Flip6 · Android 16 · 무선 adb · Flutter 디버그 빌드)
-명령 도착 0.15초 · 화면 첫 반응 0.61초 이내(측정 간격 0.4초라 상한값) · 애니메이션 끝 1.41초 · 서버 왕복은 앱 로그 기준 67ms · 앱이 새로 뜬 뒤 첫 메뉴 열기만 1.5초(로그에 `Skipped 67 frames`, 이후 0.8초) · 네이티브 화면(홈 런처·날씨 위젯)에서 `text`·`resource-id` 로 찾아 누르기 확인 · 로그 오류 0줄인데 화면이 틀어진 경우(스크롤 영역)를 캡처로 잡음 · ARTEMIS 로 메뉴 23항목 전수 166초.
+## 실측 (2026-10-04 · Galaxy Z Flip6 · Android 16 · 무선 adb · 디버그 빌드)
+명령 도착 0.15초 · 화면 첫 반응 0.61초 이내(측정 간격 0.4초라 상한값) · 애니메이션 끝 1.41초 · 서버 왕복은 앱 로그 기준 67ms · 앱이 새로 뜬 뒤 첫 메뉴 열기만 1.5초(로그에 `Skipped 67 frames`, 이후 0.8초) · 로그 오류 0줄인데 화면이 틀어진 경우(스크롤 영역)를 캡처로 잡음 · ARTEMIS 로 메뉴 23항목 전수 166초.
+
+- **Flutter 앱 실행 맡기**(`flutter run --machine`): `app start` 앱이 뜰 때까지 25초 · `app reload`(hot reload) 1.2초 · `app stop` 0.26초.
+- **순수 네이티브 앱**(Kotlin, View): `text` 로 찾아 누르고 앱 자체 로그로 터치 도착 확인, 첫 반응 0.76~0.88초, 오류 0줄 · `app reload`(Gradle 설치 + 재실행) 첫 빌드 120초, 이후 22초. Flutter 앱 안의 네이티브 화면(홈 런처·날씨 위젯)도 `text`·`resource-id` 로 눌렀다.
 
 ## 아직 실측되지 않은 것 (짐작하지 말 것)
-`app start/reload` 로 Flutter 실행을 맡는 경로(`flutter run --machine`)와 네이티브 재설치 경로의 실기기 왕복 · Compose 앱 · 에뮬레이터 · macOS/Linux 호스트 · 정밀 반응 측정(`screenrecord` + 터치 표시). 근거 문서: 실측 기록과 표준안(별도 보관).
+Compose 앱 · 에뮬레이터 · macOS/Linux 호스트 · 정밀 반응 측정(`screenrecord` + 터치 표시). 근거 문서: 실측 기록과 표준안(별도 보관).

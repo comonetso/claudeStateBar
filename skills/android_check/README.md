@@ -42,8 +42,11 @@ test/test_android_check.py        device-free unit tests (element parsing · err
 ```
 `python -m unittest discover -s test` — no external packages.
 
-## Measured (2026-10-04 · Galaxy Z Flip6 · Android 16 · wireless adb · Flutter debug build)
-Command arrival 0.15 s · first screen change within 0.61 s (an upper bound at a 0.4 s capture interval) · animation settled 1.41 s · server round trip 67 ms from the app log · only the first menu open after a cold start took 1.5 s (`Skipped 67 frames` in the log, 0.8 s afterwards) · found and tapped by `text`/`resource-id` on native screens (home launcher, weather widget) · caught a broken layout with 0 log errors (scrollable area) from the capture · ARTEMIS swept 23 menu items in 166 s.
+## Measured (2026-10-04 · Galaxy Z Flip6 · Android 16 · wireless adb · debug builds)
+Command arrival 0.15 s · first screen change within 0.61 s (an upper bound at a 0.4 s capture interval) · animation settled 1.41 s · server round trip 67 ms from the app log · only the first menu open after a cold start took 1.5 s (`Skipped 67 frames` in the log, 0.8 s afterwards) · caught a broken layout with 0 log errors (scrollable area) from the capture · ARTEMIS swept 23 menu items in 166 s.
+
+- **Flutter app run** (`flutter run --machine`): `app start` 25 s until the app is up · `app reload` (hot reload) 1.2 s · `app stop` 0.26 s.
+- **Pure native app** (Kotlin, View): found and tapped by `text` with the touch confirmed in the app's own log, first change 0.76–0.88 s, 0 error lines · `app reload` (Gradle install + relaunch) 120 s on the first build, 22 s after. Native screens inside the Flutter app (home launcher, weather widget) were tapped by `text`/`resource-id` as well.
 
 ## Not measured yet (don't assume)
-Driving a Flutter run through `app start/reload` (`flutter run --machine`) and the native reinstall path round trip on a real device · Compose apps · emulators · macOS/Linux hosts · precise response timing (`screenrecord` + show-touches). Background: the measurement log and the standard (kept separately).
+Compose apps · emulators · macOS/Linux hosts · precise response timing (`screenrecord` + show-touches). Background: the measurement log and the standard (kept separately).

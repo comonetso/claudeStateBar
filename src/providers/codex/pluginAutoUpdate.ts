@@ -3,7 +3,8 @@ import { readTextFile } from '../../core/fs';
 
 // Auto-update for the plugins in this repo's `comonetso` marketplace — codex_rescue (2026-09-17
 // user decision), peer_req (2026-09-19: "a user who installed the plugin should get updates,
-// the same way as codex_rescue") and browser_check (2026-09-26, user decision).
+// the same way as codex_rescue"), browser_check (2026-09-26, user decision) and android_check
+// (2026-10-04, user decision).
 //
 // Claude Code leaves background auto-update off for marketplaces outside Anthropic's own, so a
 // `comonetso` install never updates unless `extraKnownMarketplaces.comonetso.autoUpdate` is true in
@@ -19,6 +20,7 @@ const MARKETPLACE_PLUGINS: { id: string; label: string }[] = [
     { id: CODEX_PLUGIN_ID, label: 'codex_rescue' },
     { id: 'peer-req@comonetso', label: 'peer_req' },
     { id: 'browser-check@comonetso', label: 'browser_check' },
+    { id: 'android-check@comonetso', label: 'android_check' },
 ];
 
 /**

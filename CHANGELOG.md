@@ -106,6 +106,15 @@ the effort. Three spots in the plugin's scripts that failed on a stock Mac were 
 under bash 3.2, a checksum tool macOS doesn't have, and GNU-style `sed -i`. They were checked with the
 bash and sed versions macOS ships, not on a Mac itself.
 
+The repository's plugin marketplace (`comonetso`) has a fourth plugin, `android_check` (0.1.0). It lets
+Claude Code tap a real Android device or emulator by element name, capture the screen at the same
+moment, read that moment's logcat for the app alone (errors, frame-skip warnings, and whether the
+touch reached the app), measure the response time, and re-run the app after a fix: hot reload for a
+Flutter app, a Gradle reinstall for a native one. Multi-step flows can go to the ARTEMIS MCP. Like the
+others it is a separate install, not part of the extension; setup is in `skills/android_check/README.md`.
+The auto-update notice now recognises it as well, so it also appears when android_check is the only
+plugin from the marketplace on that machine.
+
 ## [1.17.1] - 2026-09-30
 
 Sub-agents launched with the Agent tool are now handled the same way as workflows. The orange dot
