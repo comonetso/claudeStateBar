@@ -183,6 +183,18 @@ async function statOf(uri: vscode.Uri): Promise<vscode.FileStat | null> {
     }
 }
 
+/** What `trashRun` did: moved the run, left it (locked or nothing to move), or refused because the trash still holds its files. */
+export type TrashOutcome = 'moved' | 'skipped' | 'occupied';
+
+/** True when a trash bin holds anything besides its meta.json — files a restore left behind. */
+async function binHoldsFiles(bin: vscode.Uri): Promise<boolean> {
+    try {
+        return (await vscode.workspace.fs.readDirectory(bin)).some(([name]) => name !== 'meta.json');
+    } catch {
+        return false;   // no bin yet
+    }
+}
+
 /**
  * Split a buffer on newlines, returning decoded complete lines plus the trailing
  * fragment as raw bytes. The fragment is held back because the writer may be mid-write.
@@ -820,22 +832,26 @@ async function readTrashMeta(dir: vscode.Uri): Promise<TrashMeta | null> {
  * Move one run's files into the trash. A run still holding its lock is left alone, because send.sh may be mid-write and moving a file out from under it
  * would corrupt the record rather than preserve it.
  *
- * Returns false when nothing was moved (still locked, or no files found).
+ * Returns 'skipped' when nothing was moved (still locked, or no files found) and 'occupied' when the
+ * trash already holds files of this run.
  */
 export async function trashRun(folderUri: vscode.Uri, stamp: string, slug: string,
                                includeDocs: boolean, subject: string | undefined, mode: string | undefined,
-                               nowMs: number): Promise<boolean> {
-    if (!/^\d{6}_\d{6}$/.test(stamp)) return false;
+                               nowMs: number): Promise<TrashOutcome> {
+    if (!/^\d{6}_\d{6}$/.test(stamp)) return 'skipped';
     const docsDir = await codexRescueDocsDir(folderUri);
-    if (!docsDir) return false;
+    if (!docsDir) return 'skipped';
     const logDir = vscode.Uri.joinPath(docsDir, '.log');
 
-    if (await statOf(vscode.Uri.joinPath(logDir, `.${stamp}.lock`))) return false;
+    if (await statOf(vscode.Uri.joinPath(logDir, `.${stamp}.lock`))) return 'skipped';
 
     const root = await ensureTrashDir(docsDir);
     const bin = vscode.Uri.joinPath(root, stamp);
-    // A run can be trashed, restored and trashed again; start from a clean bin each time so a
-    // stale meta.json can never claim files that are no longer there.
+    // A run can be trashed, restored and trashed again. Restore leaves behind every file whose
+    // name was taken in the meantime, and clearing that bin here destroyed those files for good,
+    // so a bin still holding files is refused. One holding only meta.json (or nothing) carries
+    // no data and starts over clean, so a stale meta.json can never claim files that are gone.
+    if (await binHoldsFiles(bin)) return 'occupied';
     try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* absent */ }
     await vscode.workspace.fs.createDirectory(bin);
 
@@ -868,7 +884,7 @@ export async function trashRun(folderUri: vscode.Uri, stamp: string, slug: strin
 
     if (!entries.length) {
         try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* ignore */ }
-        return false;
+        return 'skipped';
     }
 
     const meta: TrashMeta = {
@@ -881,7 +897,7 @@ export async function trashRun(folderUri: vscode.Uri, stamp: string, slug: strin
     const key = runCacheKey(logDir, stamp);
     tails.delete(key);
     settled.delete(key);
-    return true;
+    return 'moved';
 }
 
 /** Everything currently in the trash, newest deletion first. */

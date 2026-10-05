@@ -50,6 +50,7 @@ import { getContextLimitForModel } from './providers/claude/modelLimits';
 import { getShortModelName, getEffortLabel } from './providers/claude/display';
 import { setRunsOnRemote } from './core/runtimeContext';
 import { SoundKind, getSoundPath, getSoundGain, playSoundFile, playBeep, playCompletionSound, playWorkflowCompleteSound, playQuestionSound } from './core/sound';
+import { pluginSoundsFor } from './providers/paseo/paseoSessions';
 import { alertedSessions, lastKnownEndTurnAt, pendingCompletion, lastKnownQuestionAt, pendingQuestion, alertedStuckToolUseAt, alertedWorkflowDone, seenRunningWorkflowKeys, getFirstScan, setFirstScan } from './core/beepGate';
 import { updateStageItem, startStageTicker, disposeStage, initStageIndicator } from './core/stageIndicator';
 import { updateActivityDots, disposeActivityDots } from './core/activityDots';
@@ -1078,6 +1079,26 @@ async function getClaudeProjectsUri(): Promise<vscode.Uri | null> {
     return base ? vscode.Uri.joinPath(base, 'projects') : null;
 }
 
+// Where the Paseo plugin runs, it plays the completion, question, warning and danger chimes for
+// conversations started from Paseo (user's call, 2026-10-05), so those four stay quiet here for
+// them. The workflow chime still sounds for every conversation: the plugin has none yet. A failed
+// check sounds anyway — a doubled chime beats a missing one.
+function playUnlessPaseo(sessionFile: string, label: string, play: () => void): void {
+    void (async () => {
+        try {
+            const base = await getClaudeBaseUri();
+            const paseoBase = base?.with({ path: base.path.replace(/\/\.claude$/, '/.paseo') });
+            if (paseoBase && await pluginSoundsFor(sessionFile, paseoBase)) {
+                log(`[${label}] skipped — Paseo conversation, its plugin sounds instead`);
+                return;
+            }
+        } catch (e) {
+            log(`[${label}] Paseo check failed (${e}) — sounding anyway`);
+        }
+        play();
+    })();
+}
+
 // Render a structured result object as readable "key: value" multiline text instead
 // of a raw JSON.stringify blob. Nested objects/arrays are JSON-encoded inline.
 // Since Claude Code 2.1.278 the harness frames what it hands a workflow agent. The script's
@@ -1276,17 +1297,21 @@ function agentWasInterrupted(lines: string[]): boolean {
         try {
             const e = JSON.parse(ln);
             if (e.type !== 'user') continue;
+            // The marker is a whole text block — "[Request interrupted by user]" (or "… for tool use]",
+            // 22 of 22 real ones measured 2026-10-05). Matching the phrase anywhere also matched the
+            // agent's own first prompt when that prompt quoted it, so such an agent read as stopped
+            // from its first second (seen on a workflow whose agents were auditing this very check).
             const content = e.message?.content;
-            const text = Array.isArray(content)
-                ? content.map((b: any) => (b && b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join(' ')
-                : (typeof content === 'string' ? content : '');
-            if (text.indexOf('Request interrupted') !== -1) return true;
+            const texts: string[] = Array.isArray(content)
+                ? content.map((b: any) => (b && b.type === 'text' && typeof b.text === 'string' ? b.text : ''))
+                : [typeof content === 'string' ? content : ''];
+            if (texts.some(t => t.trim().startsWith('[Request interrupted'))) return true;
         } catch { /* skip malformed line */ }
     }
     return false;
 }
 
-type AgentTiming = { durationMs: number; activity: string; firstTs: number; lastTs: number; interrupted: boolean; tokens: number; model: string };
+type AgentTiming ={ durationMs: number; activity: string; firstTs: number; lastTs: number; interrupted: boolean; tokens: number; model: string };
 
 async function getAgentTiming(wfDirUri: vscode.Uri, agentId: string): Promise<AgentTiming> {
     try {
@@ -3584,10 +3609,10 @@ async function refreshAllSessionsOnce() {
         if (!suppressBeep && !session.isIdle) {
             const prev = alertedSessions.get(session.sessionFile) ?? { warned: false, dangered: false };
             if (session.percentage >= dangerThreshold && !prev.dangered) {
-                playBeep(2);
+                playUnlessPaseo(session.sessionFile, 'beep:danger', () => playBeep(2));
                 alertedSessions.set(session.sessionFile, { warned: true, dangered: true });
             } else if (session.percentage >= warningThreshold && !prev.warned) {
-                playBeep(1);
+                playUnlessPaseo(session.sessionFile, 'beep:warning', () => playBeep(1));
                 alertedSessions.set(session.sessionFile, { warned: true, dangered: false });
             } else if (session.percentage < warningThreshold && (prev.warned || prev.dangered)) {
                 // Context was cleared / reset — allow alerting again next time
@@ -3710,13 +3735,13 @@ async function refreshAllSessionsOnce() {
                         lastKnownEndTurnAt.set(session.sessionFile, curr);
                     } else if (completionSettleMs <= 0) {
                         log(`[done] new end_turn for ${session.projectName} (settle=0): firing immediately`);
-                        playCompletionSound();
+                        playUnlessPaseo(session.sessionFile, 'beep:completion', playCompletionSound);
                         lastKnownEndTurnAt.set(session.sessionFile, curr);
                     } else {
                         log(`[done] scheduled beep for ${session.projectName} in ${completionSettleMs}ms`);
                         const timer = setTimeout(() => {
                             log(`[done] settled → beep for ${session.projectName}`);
-                            playCompletionSound();
+                            playUnlessPaseo(session.sessionFile, 'beep:completion', playCompletionSound);
                             lastKnownEndTurnAt.set(session.sessionFile, curr);
                             pendingCompletion.delete(session.sessionFile);
                         }, completionSettleMs);
@@ -3760,13 +3785,13 @@ async function refreshAllSessionsOnce() {
                     lastKnownQuestionAt.set(session.sessionFile, curr);
                 } else if (completionSettleMs <= 0) {
                     log(`[q] new question for ${session.projectName} (${session.pendingToolUseName}): firing immediately`);
-                    playQuestionSound();
+                    playUnlessPaseo(session.sessionFile, 'beep:question', playQuestionSound);
                     lastKnownQuestionAt.set(session.sessionFile, curr);
                 } else {
                     log(`[q] scheduled question beep for ${session.projectName} (${session.pendingToolUseName}) in ${completionSettleMs}ms`);
                     const timer = setTimeout(() => {
                         log(`[q] settled → question beep for ${session.projectName}`);
-                        playQuestionSound();
+                        playUnlessPaseo(session.sessionFile, 'beep:question', playQuestionSound);
                         lastKnownQuestionAt.set(session.sessionFile, curr);
                         pendingQuestion.delete(session.sessionFile);
                     }, completionSettleMs);
@@ -3795,7 +3820,7 @@ async function refreshAllSessionsOnce() {
             const alreadyAlerted = alertedStuckToolUseAt.get(session.sessionFile) === toolUseAt;
             if (!alreadyAlerted && ageMs >= stuckThresholdMs) {
                 log(`[q-stuck] tool_use stuck for ${Math.round(ageMs / 1000)}s (${session.pendingToolUseName}) — firing heuristic question beep`);
-                playQuestionSound();
+                playUnlessPaseo(session.sessionFile, 'beep:question', playQuestionSound);
                 alertedStuckToolUseAt.set(session.sessionFile, toolUseAt);
             }
         }
@@ -4150,11 +4175,17 @@ function codexRunCallbacks(): CodexPanelCallbacks {
             if (!roots.length) {
                 roots.push(...(await attachedCodexRoots([])).filter(a => a.uri.toString() === target.root));
             }
+            let occupied = false;
             for (const f of roots) {
-                if (await trashRun(f.uri, stamp, target.slug, true, target.subject,
-                                   target.mode || undefined, Date.now())) { moved = true; break; }
+                const outcome = await trashRun(f.uri, stamp, target.slug, true, target.subject,
+                                               target.mode || undefined, Date.now());
+                if (outcome === 'moved') { moved = true; break; }
+                if (outcome === 'occupied') { occupied = true; break; }
             }
-            if (!moved) {
+            if (occupied) {
+                // Files an earlier restore left in this run's bin; trashing again used to wipe them.
+                vscode.window.showWarningMessage(planT('cx.del.trashOccupied'));
+            } else if (!moved) {
                 // Either the lock is still held or the files were already gone; the lock is
                 // the case worth naming, since it's the one the user can act on.
                 vscode.window.showWarningMessage(planT('cx.del.skippedLive'));
@@ -4278,7 +4309,13 @@ function codexChatCallbacks(): ChatPanelCallbacks {
         onDelete: async (stamp: string) => {
             let moved = false;
             for (const f of await codexRoots()) {
-                if (await trashChat(f.uri, stamp, Date.now())) { moved = true; break; }
+                const outcome = await trashChat(f.uri, stamp, Date.now());
+                if (outcome === 'occupied') {
+                    // A restore that found its name taken left the old file in the bin.
+                    vscode.window.showWarningMessage(planT('cxc.trashOccupied'));
+                    break;
+                }
+                if (outcome === 'moved') { moved = true; break; }
             }
             if (moved) {
                 log(`[codex-chat] trashed ${stamp}`);

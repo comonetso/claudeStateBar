@@ -356,6 +356,7 @@ Three more things worth knowing:
 
 - **The plugin's automatic cleanup never touches the trash.** It exists to reclaim disk, and a trash filling as fast as cleanup empties would defeat that. **Clean up** can empty it when you tick it.
 - **Restoring never overwrites.** codex_rescue re-runs a dead request under the same stamp, so a name a trashed file wants can belong to newer work. Those files stay in the trash and are reported.
+- **A run still in the trash is not trashed again.** If a restore left files of a run behind and you press 🗑 on its card again, nothing is moved and those files are kept; a notice asks you to restore or delete that trash entry first. The Codex chat panel works the same way.
 - **A run still holding its lock is refused** — `send.sh` may be mid-write, and moving a file out from under it would corrupt the record rather than preserve it.
 
 Files move rather than copy, so this costs nothing extra on a Remote-SSH workspace. The trash writes its own `.gitignore`, the way the skill does for `.log/`, so trashed documents never show up as something to commit.
@@ -427,17 +428,19 @@ Claude Code & Codex Status Bar plays configurable WAV sounds for key events:
 
 | Event | Default sound | Setting |
 |---|---|---|
-| Context reaches warning threshold | `Ring01.wav` | `soundWarning` / `soundWarningGain` |
-| Context reaches danger threshold | `Ring02.wav` | `soundDanger` / `soundDangerGain` |
+| Context reaches warning threshold | `Windows Notify.wav` | `soundWarning` / `soundWarningGain` |
+| Context reaches danger threshold | `Windows Critical Stop.wav` | `soundDanger` / `soundDangerGain` |
 | Claude finishes a response (`end_turn`) | `tada.wav` | `soundCompletion` / `soundCompletionGain` |
 | Claude pauses to ask a question | `Speech On.wav` | `soundQuestion` / `soundQuestionGain` |
 | All Claude workflow/task agents or Codex spawned agents complete, or a background task (not a long ordinary command) completes | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
 
-All sound paths can be overridden with your own WAV file. Gain is adjustable from 50% to 5000% (values above ~300% may distort). Use **`claudeStateBar: Test Beep Sound`** from the Command Palette to preview.
+All sound paths can be overridden with your own WAV file. Gain is adjustable from 50% to 300% (high gains can distort). Use **`claudeStateBar: Test Beep Sound`** from the Command Palette to preview.
 
 **Codex shares these sounds.** An ordinary Codex turn's completion beep (fired from `task_complete`) uses `soundCompletion`. When that parent turn spawned agents, its final all-agents completion is routed to `soundWorkflow` instead, so the ordinary and workflow sounds do not both fire. There are no Codex-specific sound settings. Codex question-pause and stuck-detection beeps are not implemented yet.
 
 **Workflow‑complete beep gate** — the beep fires only when the extension watched a workflow go running → done in the current session. For Claude workflows (`wf_*`) it waits for the run's completion record (`workflows/<wfId>.json`, `status: "completed"`). For Codex it follows explicit `source.subagent.thread_spawn.parent_thread_id` links (including nested descendants) from the latest parent `task_started`, then requires both every linked spawned-agent rollout to finish and the parent `task_complete` — the same terminal boundary as `agent-turn-complete`. Sequential batches therefore beep **once at the very end**, not during a gap between batches. Failed/aborted runs do not fire the workflow-success sound, and stale work already complete when VS Code starts is baselined silently.
+
+**Conversations started from Paseo** — [Paseo](https://paseo.sh) is a desktop and mobile front end for Claude Code and Codex. Where this repository's Paseo plugin `claude-state-bar` is installed and enabled, it plays the completion, question, warning and danger sounds for Paseo's conversations inside the Paseo app, so the extension skips those four for them; otherwise each would sound twice. The workflow sound still plays here for every conversation; the plugin plays it too, so with the plugin installed it can sound twice. A conversation counts as Paseo's when its session id is in one of Paseo's records under `~/.paseo/agents/`, and the plugin as enabled when `~/.paseo/config.json` says so, both on the machine the window points at. Both are read only at the moment a sound is due. Without Paseo, or without the plugin, nothing changes.
 
 ---
 
@@ -590,7 +593,7 @@ All keys are prefixed `claudeContextBar.*` or `claudeState.*`.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `claudeContextBar.soundWarning` | `""` | WAV path for warning threshold alert (empty = built‑in) |
-| `claudeContextBar.soundWarningGain` | `100` | Warning sound gain % (50–5000) |
+| `claudeContextBar.soundWarningGain` | `100` | Warning sound gain % (50–300) |
 | `claudeContextBar.soundDanger` | `""` | WAV path for danger threshold alert |
 | `claudeContextBar.soundDangerGain` | `100` | Danger sound gain % |
 | `claudeContextBar.soundCompletion` | `""` | WAV path for response‑complete (`end_turn`) beep |

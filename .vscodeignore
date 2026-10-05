@@ -26,6 +26,8 @@ src/**
 skills/**
 # Claude Code plugin marketplace for that skill (`/plugin marketplace add comonetso/claudeStateBar`).
 .claude-plugin/**
+# Paseo plugins are installed into Paseo itself (`paseo plugin install`), not shipped with the extension.
+paseo-plugins/**
 images/provider-icons-src/**
 images/provider-icons/*.json
 images/icon-src/**

@@ -115,6 +115,30 @@ others it is a separate install, not part of the extension; setup is in `skills/
 The auto-update notice now recognises it as well, so it also appears when android_check is the only
 plugin from the marketplace on that machine.
 
+Conversations started from Paseo, a desktop and mobile front end for Claude Code and Codex, no longer
+get the completion, question, warning and danger sounds twice. Where this repository's Paseo plugin
+`claude-state-bar` is installed and enabled, it plays those four inside the Paseo app, and the
+extension now skips them for Paseo's conversations. It tells them apart by the session ids in Paseo's
+records under `~/.paseo/agents/`, read on the machine the window points at and only when a sound is
+due. The workflow sound is unchanged: the extension still plays it for Paseo's conversations, so with
+the plugin installed it can sound in both. Without Paseo or the plugin nothing changes.
+
+The sound gain settings now say 50–300%, which is what has always been applied: the settings and the
+README offered up to 5000%, but any value above 300 was played at 300. Nothing sounds different. The
+README also named `Ring01.wav` and `Ring02.wav` as the default warning and danger sounds; the defaults
+are `Windows Notify.wav` and `Windows Critical Stop.wav`, as they have been.
+
+A workflow agent whose instructions quoted Claude Code's interruption marker, `[Request interrupted by
+user]`, was shown as stopped from its first second, because the marker was looked for anywhere in the
+agent's messages, its first prompt included. Only a text block that begins with the marker counts now,
+which is the form Claude Code writes when an agent is actually interrupted.
+
+Trashing a Codex run or chat again could destroy files for good. A restore that finds a name already
+taken leaves that file in the trash, and pressing 🗑 on the card afterwards cleared the run's trash
+entry before moving the new files in, so the file the restore had kept was deleted. The trash entry is
+now left alone when it still holds files: nothing is moved, and a notice asks you to restore or delete
+that entry first. An entry holding only its record file is replaced as before.
+
 ## [1.17.1] - 2026-09-30
 
 Sub-agents launched with the Agent tool are now handled the same way as workflows. The orange dot

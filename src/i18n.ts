@@ -111,7 +111,7 @@ const EN: Dict = {
 
     // Sound settings
     'sound.title': 'Beep sounds',
-    'sound.hint': 'WAV / MP3 file path (empty = OS default). Volume 50–5000% (WAV amplifies in-memory above 100%; MP3 only attenuates). Gains above ~300% typically cause clipping/distortion — louder turns into harsher. Plays on the local PC; identical behaviour for Remote-SSH and any workspace.',
+    'sound.hint': 'WAV / MP3 file path (empty = OS default). Volume 50–300% (WAV amplifies in-memory above 100%; MP3 only attenuates). High gains can clip — louder turns into harsher. Plays on the local PC; identical behaviour for Remote-SSH and any workspace.',
     'sound.warning': '⚠️ Warning (1×)',
     'sound.danger': '🔴 Danger (2×)',
     'sound.completion': '✅ Task complete',
@@ -202,6 +202,7 @@ const EN: Dict = {
     'cx.plugin.never': "Don't show again",
     'cx.del.skippedLive': 'That run still holds a lock — it may still be writing. Nothing was deleted.',
     'cx.del.trashed': 'Moved to the trash. Open 🗑 at the top to put it back.',
+    'cx.del.trashOccupied': 'The trash still holds files of this run that an earlier restore left behind. Restore or delete that entry in 🗑 first. Nothing was moved.',
     'cx.trash.btn': '🗑 Trash',
     'cx.trash.title': 'Trash',
     'cx.trash.note': 'Deleted runs stay here until you empty it.',
@@ -256,6 +257,7 @@ const EN: Dict = {
     'cxc.confirmDelete': 'Delete',
     'cxc.cancel': 'Cancel',
     'cxc.restoreConflict': 'Could not restore: a file with that name already exists.',
+    'cxc.trashOccupied': 'The trash still holds this conversation from a restore that could not finish. Restore or delete it in 🗑 first. Nothing was moved.',
     'cx.noItems': 'No activity recorded yet.',
     'cx.nLive': '{0} live',
     'cx.nDone': '{0} done',
@@ -679,7 +681,7 @@ const KO: Dict = {
 
     // Sound settings
     'sound.title': '비프음 설정',
-    'sound.hint': 'WAV / MP3 파일 경로 (비워두면 OS 기본음). 볼륨 50~5000% (WAV만 증폭, MP3는 감쇠만). 300% 이상은 클리핑(파형 왜곡) 발생 — 더 큰 소리가 아니라 거친 소리가 됩니다. 로컬 PC에서 재생되며 Remote-SSH·워크스페이스 무관하게 동일하게 적용됩니다.',
+    'sound.hint': 'WAV / MP3 파일 경로 (비워두면 OS 기본음). 볼륨 50~300% (WAV만 증폭, MP3는 감쇠만). 높이면 클리핑(파형 왜곡)으로 더 큰 소리가 아니라 거친 소리가 될 수 있습니다. 로컬 PC에서 재생되며 Remote-SSH·워크스페이스 무관하게 동일하게 적용됩니다.',
     'sound.warning': '⚠️ 경고 (1×)',
     'sound.danger': '🔴 위험 (2×)',
     'sound.completion': '✅ 작업 완료',
@@ -770,6 +772,7 @@ const KO: Dict = {
     'cx.plugin.never': '다시 보지 않기',
     'cx.del.skippedLive': '아직 lock이 남아 있는 실행입니다 — 기록 중일 수 있어 아무것도 삭제하지 않았습니다.',
     'cx.del.trashed': '휴지통으로 옮겼습니다. 상단 🗑 에서 다시 꺼낼 수 있습니다.',
+    'cx.del.trashOccupied': '앞서 복구할 때 남은 이 실행의 파일이 휴지통에 아직 있습니다. 🗑 에서 그 항목을 먼저 복구하거나 지워 주세요. 아무것도 옮기지 않았습니다.',
     'cx.trash.btn': '🗑 휴지통',
     'cx.trash.title': '휴지통',
     'cx.trash.note': '지운 실행은 비우기 전까지 여기 남습니다.',
@@ -824,6 +827,7 @@ const KO: Dict = {
     'cxc.confirmDelete': '삭제',
     'cxc.cancel': '취소',
     'cxc.restoreConflict': '복구하지 못했습니다 — 같은 이름의 파일이 이미 있습니다.',
+    'cxc.trashOccupied': '앞서 복구하지 못한 이 대화가 휴지통에 아직 있습니다. 🗑 에서 먼저 복구하거나 지워 주세요. 아무것도 옮기지 않았습니다.',
     'cx.noItems': '아직 기록된 활동이 없습니다.',
     'cx.nLive': '진행 중 {0}건',
     'cx.nDone': '완료 {0}건',

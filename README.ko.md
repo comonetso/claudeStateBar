@@ -314,6 +314,7 @@ codex-rescue 1.17.3 이상에서는 두 기간(작업폴더 1일, 실행 기록 
 
 - **플러그인의 자동 정리는 휴지통을 건드리지 않습니다.** 디스크를 되찾는 게 목적인데 지운 만큼 휴지통이 차면 의미가 없습니다. **정리**에서 휴지통을 고르면 비울 수 있습니다.
 - **복구는 덮어쓰지 않습니다.** codex_rescue는 죽은 요청을 같은 스탬프로 재실행하므로, 휴지통 속 파일이 원하는 이름이 새 작업의 것일 수 있습니다. 그런 파일은 휴지통에 남기고 몇 개인지 알려줍니다.
+- **휴지통에 남은 실행은 다시 넣지 않습니다.** 복구하다 남긴 파일이 있는 실행을 카드에서 또 🗑하면, 그 파일을 지우지 않고 아무것도 옮기지 않은 채 알려 줍니다. 휴지통에서 그 항목을 먼저 복구하거나 지우면 됩니다. Codex 채팅 패널도 같습니다.
 - **lock이 남은 실행은 거부합니다** — `send.sh`가 아직 쓰는 중일 수 있고, 그 밑에서 파일을 빼면 보존이 아니라 훼손입니다.
 
 파일은 복사가 아니라 이동이라 Remote-SSH에서도 추가 비용이 없습니다. 휴지통은 스킬이 `.log/`에 하듯 자체 `.gitignore`를 만들어 두므로, 지운 문서가 커밋 후보로 뜨지 않습니다.
@@ -385,17 +386,19 @@ Claude Code & Codex Status Bar는 주요 이벤트에 설정 가능한 WAV 사�
 
 | 이벤트 | 기본 사운드 | 관련 설정 |
 |---|---|---|
-| 컨텍스트가 경고 임계값 도달 | `Ring01.wav` | `soundWarning` / `soundWarningGain` |
-| 컨텍스트가 위험 임계값 도달 | `Ring02.wav` | `soundDanger` / `soundDangerGain` |
+| 컨텍스트가 경고 임계값 도달 | `Windows Notify.wav` | `soundWarning` / `soundWarningGain` |
+| 컨텍스트가 위험 임계값 도달 | `Windows Critical Stop.wav` | `soundDanger` / `soundDangerGain` |
 | Claude가 응답 완료 (`end_turn`) | `tada.wav` | `soundCompletion` / `soundCompletionGain` |
 | Claude가 질문하려고 멈춤 | `Speech On.wav` | `soundQuestion` / `soundQuestionGain` |
 | Claude 워크플로우/Task 에이전트 또는 Codex spawned-agent 전체 완료, 또는 백그라운드 작업(오래 걸린 일반 명령 제외) 완료 | `Ring06.wav` | `soundWorkflow` / `soundWorkflowGain` / `workflowCompleteBeep` |
 
-모든 사운드 경로를 자신의 WAV 파일로 교체할 수 있습니다. 게인은 50%~5000% 조절 가능(~300% 초과 시 왜곡 가능). 명령 팔레트의 **`claudeStateBar: Test Beep Sound`**로 미리 듣기 가능.
+모든 사운드 경로를 자신의 WAV 파일로 교체할 수 있습니다. 게인은 50%~300% 조절 가능(높이면 왜곡될 수 있음). 명령 팔레트의 **`claudeStateBar: Test Beep Sound`**로 미리 듣기 가능.
 
 **Codex도 이 사운드를 공유합니다.** 일반 Codex 턴의 완료 비프(`task_complete` 기반)는 `soundCompletion`을 씁니다. 해당 부모 턴이 에이전트를 생성했다면 최종 전체 완료는 대신 `soundWorkflow`로 보내므로 일반 완료음과 워크플로 완료음이 중복해서 울리지 않습니다. Codex 전용 사운드 설정은 없습니다. Codex 질문 대기 비프와 멈춤 감지 비프는 아직 구현하지 않았습니다.
 
 **워크플로우 완료 비프 게이트** — 이번 세션에서 실제로 워크플로우가 실행 중 → 완료로 전환되는 것을 확인했을 때만 비프가 울립니다. Claude 워크플로우(`wf_*`)는 실행 완료 기록(`workflows/<wfId>.json`의 `status: "completed"`)까지 기다립니다. Codex는 최신 부모 `task_started` 이후의 명시적인 `source.subagent.thread_spawn.parent_thread_id` 연결을 중첩 자손까지 따라가고, 연결된 spawned-agent rollout이 전부 끝난 뒤 부모 `task_complete`까지 확인합니다. 즉 `agent-turn-complete`와 같은 최종 경계입니다. 그래서 **순차 배치**도 중간 공백에는 울리지 않고 **맨 끝에 딱 한 번** 울립니다. 실패·중단된 실행은 워크플로 성공음을 울리지 않으며, VS Code 시작 전부터 이미 완료된 작업은 베이스라인 처리되어 무음입니다.
+
+**Paseo에서 시작한 대화** — [Paseo](https://paseo.sh)는 Claude Code와 Codex를 데스크톱·모바일에서 쓰는 앱입니다. 이 저장소의 Paseo 플러그인 `claude-state-bar`가 설치되어 켜져 있으면, 플러그인이 Paseo 대화의 완료·질문·경고·위험 사운드를 Paseo 앱에서 재생하므로 확장은 그 대화에서 이 네 가지를 건너뜁니다. 그러지 않으면 같은 소리가 두 번 납니다. 워크플로우 사운드는 모든 대화에서 지금처럼 확장이 재생합니다. 플러그인도 이 소리를 내므로, 플러그인을 쓰면 두 번 날 수 있습니다. Paseo 대화인지는 세션 ID가 `~/.paseo/agents/` 아래 Paseo 기록에 있는지로, 플러그인이 켜져 있는지는 `~/.paseo/config.json`으로 판단하며, 둘 다 창이 가리키는 기계에서 읽습니다. 읽는 때는 소리를 낼 순간뿐입니다. Paseo나 플러그인이 없으면 달라지는 것이 없습니다.
 
 ---
 
@@ -548,7 +551,7 @@ VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인�
 | 설정 | 기본값 | 설명 |
 |------|--------|------|
 | `claudeContextBar.soundWarning` | `""` | 경고 임계값 알림 WAV 경로 (비우면 기본음) |
-| `claudeContextBar.soundWarningGain` | `100` | 경고음 게인 % (50–5000) |
+| `claudeContextBar.soundWarningGain` | `100` | 경고음 게인 % (50–300) |
 | `claudeContextBar.soundDanger` | `""` | 위험 임계값 알림 WAV 경로 |
 | `claudeContextBar.soundDangerGain` | `100` | 위험음 게인 % |
 | `claudeContextBar.soundCompletion` | `""` | 응답 완료(`end_turn`) 비프 WAV 경로 |

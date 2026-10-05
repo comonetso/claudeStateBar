@@ -220,7 +220,7 @@ async function handleMessage(msg: any): Promise<void> {
                     const clampGain = (v: any) => {
                         const n = Number(v);
                         if (!Number.isFinite(n)) return 100;
-                        return Math.max(50, Math.min(5000, Math.round(n)));
+                        return Math.max(50, Math.min(300, Math.round(n)));
                     };
                     await cbCfg.update('soundWarningGain', clampGain(p.cb.soundWarningGain), T);
                     await cbCfg.update('soundDangerGain', clampGain(p.cb.soundDangerGain), T);
@@ -552,12 +552,12 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
     <!-- Sound settings -->
     <div class="section">
       <h2 class="section-header" data-i18n="sound.title">비프음 설정</h2>
-      <p class="hint" style="margin-bottom:10px;" data-i18n="sound.hint">WAV / MP3 파일 경로 (비워두면 OS 기본음). 볼륨 50~5000% (WAV만 증폭, MP3는 감쇠만). 300% 이상은 클리핑(왜곡) 발생. 로컬 PC에서 재생되며 Remote-SSH·워크스페이스 무관하게 동일하게 적용됩니다.</p>
+      <p class="hint" style="margin-bottom:10px;" data-i18n="sound.hint">WAV / MP3 파일 경로 (비워두면 OS 기본음). 볼륨 50~300% (WAV만 증폭, MP3는 감쇠만). 높이면 클리핑(왜곡)이 생길 수 있습니다. 로컬 PC에서 재생되며 Remote-SSH·워크스페이스 무관하게 동일하게 적용됩니다.</p>
 
       <div class="sound-row" data-kind="warning">
         <label class="sound-label" data-i18n="sound.warning">⚠️ 경고 (1×)</label>
         <input type="text" id="sound-warning" class="sound-input" placeholder="C:\\Windows\\Media\\Windows Notify.wav (기본)" />
-        <input type="number" id="sound-warning-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <input type="number" id="sound-warning-gain" class="sound-gain" min="50" max="300" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="warning" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="warning" title="파일 찾기">📁</button>
       </div>
@@ -565,7 +565,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       <div class="sound-row" data-kind="danger">
         <label class="sound-label" data-i18n="sound.danger">🔴 위험 (2×)</label>
         <input type="text" id="sound-danger" class="sound-input" placeholder="C:\\Windows\\Media\\Windows Critical Stop.wav (기본)" />
-        <input type="number" id="sound-danger-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <input type="number" id="sound-danger-gain" class="sound-gain" min="50" max="300" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="danger" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="danger" title="파일 찾기">📁</button>
       </div>
@@ -573,7 +573,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       <div class="sound-row" data-kind="completion">
         <label class="sound-label" data-i18n="sound.completion">✅ 작업 완료</label>
         <input type="text" id="sound-completion" class="sound-input" placeholder="C:\\Windows\\Media\\tada.wav (기본)" />
-        <input type="number" id="sound-completion-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <input type="number" id="sound-completion-gain" class="sound-gain" min="50" max="300" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="completion" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="completion" title="파일 찾기">📁</button>
       </div>
@@ -581,7 +581,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       <div class="sound-row" data-kind="question">
         <label class="sound-label" data-i18n="sound.question">❓ 질문 대기</label>
         <input type="text" id="sound-question" class="sound-input" placeholder="C:\\Windows\\Media\\Speech On.wav (기본)" />
-        <input type="number" id="sound-question-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <input type="number" id="sound-question-gain" class="sound-gain" min="50" max="300" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="question" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="question" title="파일 찾기">📁</button>
       </div>
@@ -589,7 +589,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       <div class="sound-row" data-kind="workflow">
         <label class="sound-label" data-i18n="sound.workflow">🔁 워크플로우 완료음</label>
         <input type="text" id="sound-workflow" class="sound-input" placeholder="C:\\Windows\\Media\\Ring06.wav (기본)" />
-        <input type="number" id="sound-workflow-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <input type="number" id="sound-workflow-gain" class="sound-gain" min="50" max="300" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="workflow" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="workflow" title="파일 찾기">📁</button>
       </div>

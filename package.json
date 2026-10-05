@@ -400,22 +400,22 @@
           "type": "number",
           "default": 100,
           "minimum": 50,
-          "maximum": 5000,
-          "description": "Warning sound volume gain in percent (50–5000). 100 = original WAV volume. Values above 100 amplify samples in-memory above the Windows master volume; values below 100 attenuate. WARNING: gains above ~300 typically cause clipping/distortion — the sound becomes harsher rather than louder. MP3 files only support attenuation (gain ≤ 100)."
+          "maximum": 300,
+          "description": "Warning sound volume gain in percent (50–300). 100 = original WAV volume. Values above 100 amplify samples in-memory above the Windows master volume, up to 300; values below 100 attenuate. High gains can clip, making the sound harsher rather than louder. MP3 files only support attenuation (gain ≤ 100)."
         },
         "claudeContextBar.soundDangerGain": {
           "type": "number",
           "default": 100,
           "minimum": 50,
-          "maximum": 5000,
-          "description": "Danger sound volume gain in percent (50–5000). See soundWarningGain for details."
+          "maximum": 300,
+          "description": "Danger sound volume gain in percent (50–300). See soundWarningGain for details."
         },
         "claudeContextBar.soundCompletionGain": {
           "type": "number",
           "default": 100,
           "minimum": 50,
-          "maximum": 5000,
-          "description": "Completion sound volume gain in percent (50–5000). Useful when watching videos: raise this to hear the completion beep above the video's audio without raising the system master volume. WARNING: gains above ~300 cause clipping."
+          "maximum": 300,
+          "description": "Completion sound volume gain in percent (50–300). Useful when watching videos: raise this to hear the completion beep above the video's audio without raising the system master volume. High gains can clip."
         },
         "claudeContextBar.completionBeepSettleMs": {
           "type": "number",
@@ -433,8 +433,8 @@
           "type": "number",
           "default": 100,
           "minimum": 50,
-          "maximum": 5000,
-          "description": "Question sound volume gain in percent (50–5000). See soundWarningGain for details."
+          "maximum": 300,
+          "description": "Question sound volume gain in percent (50–300). See soundWarningGain for details."
         },
         "claudeContextBar.soundWorkflow": {
           "type": "string",
@@ -445,8 +445,8 @@
           "type": "number",
           "default": 100,
           "minimum": 50,
-          "maximum": 5000,
-          "description": "Workflow complete sound volume gain in percent (50–5000). See soundWarningGain for details."
+          "maximum": 300,
+          "description": "Workflow complete sound volume gain in percent (50–300). See soundWarningGain for details."
         },
         "claudeContextBar.workflowCompleteBeep": {
           "type": "boolean",

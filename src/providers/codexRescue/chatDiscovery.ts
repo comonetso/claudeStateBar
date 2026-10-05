@@ -88,6 +88,15 @@ async function statOf(uri: vscode.Uri): Promise<vscode.FileStat | null> {
     }
 }
 
+/** True when a trash bin holds anything besides its meta.json — a file a restore left behind. */
+async function binHoldsFiles(bin: vscode.Uri): Promise<boolean> {
+    try {
+        return (await vscode.workspace.fs.readDirectory(bin)).some(([name]) => name !== 'meta.json');
+    } catch {
+        return false;   // no bin yet
+    }
+}
+
 async function readText(uri: vscode.Uri): Promise<string | null> {
     try {
         return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
@@ -436,22 +445,25 @@ async function readMeta(bin: vscode.Uri): Promise<ChatTrashMeta | null> {
     }
 }
 
-/** Move one conversation into the trash. Returns false when there was nothing to move. */
-export async function trashChat(folderUri: vscode.Uri, stamp: string, nowMs: number): Promise<boolean> {
-    if (!/^\d{6}_\d{6}$/.test(stamp)) return false;   // never accept a stamp we didn't parse ourselves
+/** Move one conversation into the trash. Returns 'skipped' when there was nothing to move and 'occupied' when the trash still holds it. */
+export async function trashChat(folderUri: vscode.Uri, stamp: string, nowMs: number): Promise<'moved' | 'skipped' | 'occupied'> {
+    if (!/^\d{6}_\d{6}$/.test(stamp)) return 'skipped';   // never accept a stamp we didn't parse ourselves
     const docs = await docsDir(folderUri);
-    if (!docs) return false;
+    if (!docs) return 'skipped';
 
     const names = (await listNames(docs)) ?? [];
     const name = names.find(n => new RegExp('^' + stamp + '_chat_.+\\.md$').test(n));
-    if (!name) return false;
+    if (!name) return 'skipped';
 
     const src = vscode.Uri.joinPath(docs, name);
     const text = await readText(src);
     const root = await ensureTrashDir(docs);
     const bin = vscode.Uri.joinPath(root, stamp);
-    // A conversation can be trashed, restored and trashed again; start clean so a stale
-    // meta.json can never claim a file that is no longer there.
+    // A conversation can be trashed, restored and trashed again. A restore that found its name
+    // taken leaves the file in the bin, and clearing that bin here destroyed it for good, so a
+    // bin still holding a file is refused. One holding only meta.json (or nothing) starts over
+    // clean, so a stale meta.json can never claim a file that is no longer there.
+    if (await binHoldsFiles(bin)) return 'occupied';
     try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* absent */ }
     await vscode.workspace.fs.createDirectory(bin);
 
@@ -459,7 +471,7 @@ export async function trashChat(folderUri: vscode.Uri, stamp: string, nowMs: num
         await vscode.workspace.fs.rename(src, vscode.Uri.joinPath(bin, name), { overwrite: true });
     } catch {
         try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* ignore */ }
-        return false;
+        return 'skipped';
     }
 
     const meta: ChatTrashMeta = {
@@ -471,7 +483,7 @@ export async function trashChat(folderUri: vscode.Uri, stamp: string, nowMs: num
     };
     await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(bin, 'meta.json'),
                                         Buffer.from(JSON.stringify(meta), 'utf8'));
-    return true;
+    return 'moved';
 }
 
 /** Everything in the chat trash, newest deletion first. */
