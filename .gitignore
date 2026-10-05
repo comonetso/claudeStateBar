@@ -38,3 +38,6 @@ Thumbs.db
 
 # Byte-compiled icon build script
 __pycache__/
+
+# 개인 API 키(Google 등) — 공개 저장소에 올리지 않는다(10-06)
+.env
