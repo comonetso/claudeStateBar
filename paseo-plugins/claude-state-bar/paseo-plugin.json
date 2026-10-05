@@ -1,0 +1,6 @@
+{
+  "id": "claude-state-bar",
+  "requirements": {
+    "paseo": ">=0.10.3"
+  }
+}
