@@ -1,5 +1,8 @@
 // 확장 media/codexruns.js 와 같은 표기
 
+// 진행 중 색 — 확장 Codex 카드 점(media/codexruns.css .dot.running)과 같은 주황. 테마 강조색은 테마에 따라 완료(초록)와 헷갈려서 고정(리규형님 10-06)
+export const RUNNING_COLOR = "#e3b341";
+
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
 export function fmtDur(ms: number | undefined): string {

@@ -4,7 +4,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { codexDoc, codexRunItems, codexRuns, codexTrashRun, codexUsage, type RunCard, type RunItem, type RunPhase } from "../shared/codex";
 import { RunItemsView } from "./codexItems";
 import { TrashDrawer } from "./codexTrash";
-import { fmtBytes, fmtClock, fmtDur, fmtElapsed, fmtStamp, fmtTok } from "./format";
+import { fmtBytes, fmtClock, fmtDur, fmtElapsed, fmtStamp, fmtTok, RUNNING_COLOR } from "./format";
 import { NoticeLine, panelStyles, useNotice } from "./ui";
 import { useFontScale } from "./fontScale";
 
@@ -178,7 +178,7 @@ export function CodexRunsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
   };
 
   const phaseColor = (p: RunPhase) =>
-    p === "done" ? c.statusSuccess : p === "failed" ? c.statusDanger : p === "stale" || p === "stopped" ? c.statusWarning : c.accent;
+    p === "done" ? c.statusSuccess : p === "failed" ? c.statusDanger : p === "stale" || p === "stopped" ? c.statusWarning : RUNNING_COLOR;
 
   if (!directory) {
     return (
@@ -244,13 +244,12 @@ export function CodexRunsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
         </Text>
         {!over && run.latest ? (
           <View style={{ borderLeftWidth: 2, borderLeftColor: run.latestSteer ? STEER_COLOR : c.accent, paddingLeft: 8 }}>
-            <Text style={styles.text} numberOfLines={2}>
-              {run.latest}
-            </Text>
+            {/* 줄 수 제한 없이 패널 폭에 맞춰 줄바꿈 — 확장 .now(pre-wrap)와 같음(리규형님 10-06 "다 나와야 한다") */}
+            <Text style={styles.text}>{run.latest}</Text>
           </View>
         ) : null}
         {run.phase === "failed" && run.failureMessage ? (
-          <Text style={styles.error} numberOfLines={3}>
+          <Text style={styles.error}>
             {run.failureMessage}
           </Text>
         ) : null}

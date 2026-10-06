@@ -2,7 +2,7 @@ import { useRpc, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { agentActivity, type AgentRow, type WorkflowCard } from "../shared/activity";
-import { fmtDur, fmtElapsed, fmtHM, fmtStamp, fmtTok } from "./format";
+import { fmtDur, fmtElapsed, fmtHM, fmtStamp, fmtTok, RUNNING_COLOR } from "./format";
 import { panelStyles, type PanelStyles } from "./ui";
 import { useFontScale } from "./fontScale";
 import { useActivity } from "./useActivity";
@@ -84,13 +84,10 @@ function ActivityRows({ act, styles, colors }: { act: Activity; styles: PanelSty
     );
     return (
       <View key={it.id}>
-        {hasFull ? (
-          <Pressable onPress={() => setRowOpen({ ...rowOpen, [it.id]: !isOpen })} accessibilityRole="button">
-            {line}
-          </Pressable>
-        ) : (
-          line
-        )}
+        {/* 펼칠 본문이 없어도 누르면 잘린 줄이 전부 보인다 — Codex 카드와 같음(리규형님 10-06) */}
+        <Pressable onPress={() => setRowOpen({ ...rowOpen, [it.id]: !isOpen })} accessibilityRole="button">
+          {line}
+        </Pressable>
         {hasFull && isOpen ? (
           <Text style={[styles.small, { marginLeft: 44, marginTop: 2, lineHeight: styles.fs(18) }]} selectable>
             {it.body}
@@ -154,7 +151,7 @@ export function WorkflowsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
   const fontScale = useFontScale();
   const styles = useMemo(() => panelStyles(theme, layout.compact, fontScale), [theme, layout.compact, fontScale]);
   const c = theme.colors;
-  const colors: PanelColors = { accent: c.accent, danger: c.statusDanger, warning: c.statusWarning, success: c.statusSuccess, muted: c.foregroundMuted };
+  const colors: PanelColors = { accent: RUNNING_COLOR, danger: c.statusDanger, warning: c.statusWarning, success: c.statusSuccess, muted: c.foregroundMuted };
 
   const loadActivity = (w: WorkflowCard, a: AgentRow) => {
     if (!directory) return;
@@ -195,7 +192,7 @@ export function WorkflowsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
     );
   }
 
-  const stateColor = (s: WfState) => (s === "done" ? c.statusSuccess : s === "stopped" ? c.statusWarning : c.accent);
+  const stateColor = (s: WfState) => (s === "done" ? c.statusSuccess : s === "stopped" ? c.statusWarning : RUNNING_COLOR);
 
   const agentRow = (w: WorkflowCard, a: AgentRow, label: string, title: string) => {
     const key = `${w.key}|${a.id}`;
@@ -214,7 +211,7 @@ export function WorkflowsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
           accessibilityLabel={`${title} 활동 보기`}
         >
           <View style={[styles.head, { flexWrap: "nowrap" }]}>
-            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: running ? c.accent : a.status === "stopped" ? c.statusWarning : c.statusSuccess }} />
+            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: running ? RUNNING_COLOR : a.status === "stopped" ? c.statusWarning : c.statusSuccess }} />
             <Text style={[styles.small, { fontWeight: "600", flexShrink: 1 }]} numberOfLines={1}>
               {label}
             </Text>
@@ -226,7 +223,7 @@ export function WorkflowsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
             <Text style={styles.muted}>{isOpen ? "접기" : "펼치기"}</Text>
           </View>
           {a.summary ? (
-            <Text style={[styles.muted, { marginLeft: 14 }]} numberOfLines={2}>
+            <Text style={[styles.muted, { marginLeft: 14 }]} numberOfLines={isOpen ? undefined : 2}>
               {a.summary}
             </Text>
           ) : null}

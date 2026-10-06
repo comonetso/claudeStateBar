@@ -2,7 +2,7 @@ import { useRpc, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client"
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { bgClear, bgOutput, type BgCard } from "../shared/activity";
-import { fmtElapsed, fmtStamp } from "./format";
+import { fmtElapsed, fmtStamp, RUNNING_COLOR } from "./format";
 import { NoticeLine, panelStyles, useNotice, type PanelStyles } from "./ui";
 import { useFontScale } from "./fontScale";
 import { useActivity } from "./useActivity";
@@ -121,7 +121,7 @@ export function BackgroundPanel({ theme, layout, workspaceId }: PluginWorkspaceP
     );
   }
 
-  const dotColor = (s: BgCard["status"]) => (s === "completed" ? c.statusSuccess : s === "failed" ? c.statusDanger : s === "stopped" ? c.statusWarning : c.accent);
+  const dotColor = (s: BgCard["status"]) => (s === "completed" ? c.statusSuccess : s === "failed" ? c.statusDanger : s === "stopped" ? c.statusWarning : RUNNING_COLOR);
 
   const renderCard = (b: BgCard, upper: boolean) => {
     const open = upper ? !closedUpper[b.key] : !!openLower[b.key];

@@ -1,7 +1,8 @@
-import type { PluginSidebarItemProps } from "@getpaseo/plugin/client";
+import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { usePaseo } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
+import { soundProvider } from "./sounds";
 import { readAppFontSizes } from "./web";
 
 // 왼쪽 목록 칸 맨 아래에 Claude·Codex 사용량을 늘 펼쳐 둔다(리규형님 10-05 결정 — Paseo 자체 "사용량" 줄은 눌러야 보인다).
@@ -24,30 +25,25 @@ function useUiPx(): number {
   return px;
 }
 
-type Usage = Awaited<ReturnType<ReturnType<typeof usePaseo>["providers"]["listUsage"]>>;
+export type Usage = Awaited<ReturnType<ReturnType<typeof usePaseo>["providers"]["listUsage"]>>;
 type Provider = Usage["providers"][number];
 type Window = Provider["windows"][number];
 
-function resetText(iso: string | null | undefined, now: number): string {
-  if (!iso) return "";
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return "";
-  const d = new Date(t);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return t - now < 86_400_000 ? `${p(d.getHours())}:${p(d.getMinutes())}` : `${d.getMonth() + 1}/${d.getDate()}`;
-}
-
-export function UsageFooter({ theme }: PluginSidebarItemProps) {
+/**
+ * 사용량 — 1분마다 데몬에 묻는다. 왼쪽 아래 표와 오른쪽 위 사용량 단추(usageButton)가 같이 쓴다.
+ * 소리 담당 호스트(이 PC)가 공급자로 올라와 있으면 그 데몬에 묻는다 — 서버 작업 공간의 단추도 같은 숫자를 보이게(10-06).
+ * 아직 안 올라왔으면 이 호스트 데몬에 묻는다
+ */
+export function useUsage(): { usage: Usage | null; error: string | null } {
   const paseo = usePaseo();
-  const ui = useUiPx();
   const [usage, setUsage] = useState<Usage | null>(null);
   const [error, setError] = useState<string | null>(null);
-
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const next = await paseo.providers.listUsage();
+        const fromProvider = soundProvider()?.usage;
+        const next = fromProvider ? await fromProvider() : await paseo.providers.listUsage();
         if (alive) {
           setUsage(next);
           setError(null);
@@ -63,25 +59,48 @@ export function UsageFooter({ theme }: PluginSidebarItemProps) {
       clearInterval(timer);
     };
   }, [paseo]);
+  return { usage, error };
+}
+
+/** 보일 계정 — 사용량을 읽을 수 있고 창이 하나라도 있는 것 */
+export const availableProviders = (usage: Usage | null): Provider[] => (usage?.providers ?? []).filter((p) => p.status === "available" && p.windows.length);
+/** 보일 창 — Paseo 가 요약에 쓰라고 표시한 것(summary)만, 없으면 전부 */
+export const shownWindows = (p: Provider): Window[] => (p.windows.some((w) => w.summary) ? p.windows.filter((w) => w.summary) : p.windows);
+/** 계정 이름에서 뒤의 "(메일 주소)"를 뗀 짧은 이름 — "Claude (a@b.com)" → "Claude" */
+export const shortName = (p: Provider): string => p.displayName.replace(/\s*\([^)]*\)\s*$/, "") || p.providerId;
+export const clampPct = (n: number | null | undefined): number | null => (typeof n === "number" ? Math.max(0, Math.min(100, n)) : null);
+
+function resetText(iso: string | null | undefined, now: number): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const d = new Date(t);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return t - now < 86_400_000 ? `${p(d.getHours())}:${p(d.getMinutes())}` : `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+export function UsageFooter({ theme }: Pick<PluginHostProps, "theme">) {
+  const ui = useUiPx();
+  const { usage, error } = useUsage();
 
   const c = theme.colors;
   const toneColor = (w: Window) => (w.tone === "danger" ? c.statusDanger : w.tone === "warning" ? c.statusWarning : c.accent);
   const now = Date.now();
-  const providers = (usage?.providers ?? []).filter((p) => p.status === "available" && p.windows.length);
+  const providers = availableProviders(usage);
 
   if (!usage) return error ? <Text style={{ color: c.foregroundMuted, fontSize: ui - 1, paddingHorizontal: 12 }}>사용량을 못 읽었습니다</Text> : null;
   if (!providers.length) return null;
   return (
     <View style={{ paddingHorizontal: 12, paddingVertical: 8, gap: 8 }} accessibilityLabel="Claude·Codex 사용량">
       {providers.map((p) => {
-        const shown = p.windows.some((w) => w.summary) ? p.windows.filter((w) => w.summary) : p.windows;
+        const shown = shownWindows(p);
         return (
           <View key={p.providerId} style={{ gap: 3 }}>
             <Text style={{ color: c.foregroundMuted, fontSize: ui, fontWeight: "600" }} numberOfLines={1}>
               {p.displayName}
             </Text>
             {shown.map((w) => {
-              const pct = typeof w.usedPct === "number" ? Math.max(0, Math.min(100, w.usedPct)) : null;
+              const pct = clampPct(w.usedPct);
               const reset = resetText(w.resetsAt, now);
               return (
                 <View key={w.id} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>

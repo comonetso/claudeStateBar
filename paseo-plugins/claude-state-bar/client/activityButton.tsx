@@ -8,6 +8,8 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect } from "react";
 import type { ActivityCounts } from "../shared/activity";
 import { ACTIVITY_PANEL_ID, KINDS } from "./activityKinds";
+import { RUNNING_COLOR } from "./format";
+import type { HeaderButtonSet } from "./usageButton";
 import { latestCounts, requestTab, totalOf, useCounts } from "./useCounts";
 
 // 작업 공간 머리줄 단추 "작업 현황"(리규형님 10-05 결정: 돌고 있는 것 수는 머리줄 단추로).
@@ -30,8 +32,9 @@ function presentation(c: ActivityCounts | null): Pick<PluginButton, "label" | "t
 /**
  * 작업 공간마다 머리줄 단추 하나. 앱이 단추를 보이는 작업 공간에서만 그리므로, 수 읽기는 단추 그림(아이콘 컴포넌트)이
  * 맡는다 — 다른 작업 공간·다른 호스트는 화면에 나올 때까지 읽지 않는다. 작업 공간 목록은 이 호스트의 것을 구독한다.
+ * leading: 작업 현황 단추 왼쪽에 둘 단추(사용량, 10-06) — Paseo 는 등록한 순서대로 왼쪽부터 그려서 먼저 등록한다.
  */
-export function createActivityButtons(client: PluginClientContext, log: (message: string) => void): () => void {
+export function createActivityButtons(client: PluginClientContext, log: (message: string) => void, leading?: HeaderButtonSet): () => void {
   const registrations = new Map<string, PluginButtonRegistration>();
   const shown = new Map<string, string>();
   let disposed = false;
@@ -49,7 +52,7 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     const counts = useCounts(workspaceId);
     const running = counts ? totalOf(counts) > 0 : false;
     useEffect(() => present(workspaceId, counts), [workspaceId, counts]);
-    return <Icon name={running ? "LoaderCircle" : "Activity"} size={size} color={running ? theme.colors.accent : color} />;
+    return <Icon name={running ? "LoaderCircle" : "Activity"} size={size} color={running ? RUNNING_COLOR : color} />;
   }
 
   // 누르면 작업 현황 패널을 바로 연다(작은 창은 두 번 떠 보였다 — 리규형님 10-05). 돌고 있는 갈래가 있으면 그 탭으로
@@ -62,6 +65,11 @@ export function createActivityButtons(client: PluginClientContext, log: (message
 
   const add = (workspaceId: string) => {
     if (disposed || registrations.has(workspaceId)) return;
+    try {
+      leading?.add(workspaceId);
+    } catch (error) {
+      log(`leading header button ${workspaceId}: ${String(error)}`);
+    }
     try {
       registrations.set(
         workspaceId,
@@ -76,6 +84,7 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     }
   };
   const drop = (workspaceId: string) => {
+    leading?.drop(workspaceId);
     registrations.get(workspaceId)?.remove();
     registrations.delete(workspaceId);
     shown.delete(workspaceId);
@@ -130,5 +139,6 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     disposed = true;
     release?.();
     for (const id of [...registrations.keys()]) drop(id);
+    leading?.dispose?.();
   };
 }

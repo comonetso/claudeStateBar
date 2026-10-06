@@ -1,15 +1,22 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { clearFinishedBg, countRunning, listActivity, readAgentActivity, readBgOutput } from "./server/activity/workflows";
 import { checkSession, forgetClient } from "./server/chime/tracker";
+import { lastTurnCommandOnly } from "./server/chime/lastTurn";
 import { countLiveChats, listChats } from "./server/codex/chats";
 import { isTerminal, listRuns, readDoc, runItems } from "./server/codex/runs";
 import { emptyTrash, listTrash, purgeTrashed, restoreTrashed, trashRun } from "./server/codex/trash";
 import { emptyChatTrash, listChatTrash, purgeChat, restoreChat, trashChat } from "./server/codex/chatTrash";
 import { readUsage } from "./server/codex/usage";
-import { listProjects } from "./server/projects";
+import { listProjects, readProjectsFile, writeProjectsFile } from "./server/projects";
+import { startRcSync } from "./server/rcSync";
+import { translateTexts } from "./server/translate";
+import { getGoogleStatus } from "./server/googleKeys";
+import { synthesizeText } from "./server/tts";
+import { translateKo } from "./shared/translate";
+import { googleStatus, ttsSynthesize } from "./shared/tts";
 import { canPlayHere, createSoundReader } from "./server/sound";
 import { activityCounts, activityList, agentActivity, bgClear, bgOutput } from "./shared/activity";
-import { chimeCheck, chimeForget } from "./shared/chime";
+import { chimeCheck, chimeForget, lastTurnCheck } from "./shared/chime";
 import {
   chatTrashEmpty,
   chatTrashList,
@@ -28,8 +35,14 @@ import {
   codexUsage,
 } from "./shared/codex";
 import { clientLog } from "./shared/log";
-import { projectsManager } from "./shared/projects";
+import { projectsManager, projectsPinOrder, projectsPinSet, projectsPins } from "./shared/projects";
+import { projectPins, setProjectPin, setProjectPinOrder } from "./server/projectsPins";
+import { projectsFileRead, projectsFileWrite } from "./shared/projectsFile";
 import { DEFAULT_SETTINGS, soundSettings } from "./shared/settings";
+import { syncPut, syncWait } from "./shared/settingsSync";
+import { layoutLoad, layoutSave } from "./shared/layoutSync";
+import { putSettings, waitSettings } from "./server/settingsSync";
+import { hostIdentity, loadLayout, saveLayout } from "./server/layoutSync";
 import { hostInfo, soundData } from "./shared/sound";
 
 export default function contribute(server: PluginServerContext) {
@@ -40,8 +53,9 @@ export default function contribute(server: PluginServerContext) {
   };
 
   server.handle(soundData, createSoundReader(readSettings));
-  server.handle(hostInfo, async () => ({ platform: process.platform, canPlay: canPlayHere() }));
+  server.handle(hostInfo, async () => ({ platform: process.platform, canPlay: canPlayHere(), ...(await hostIdentity()) }));
   server.handle(chimeCheck, async ({ clientId, sessionId, cwd }) => checkSession(clientId, sessionId, cwd));
+  server.handle(lastTurnCheck, async ({ sessionId }) => ({ commandOnly: await lastTurnCommandOnly(sessionId) }));
   server.handle(chimeForget, async ({ clientId }) => {
     forgetClient(clientId);
     return { ok: true };
@@ -112,9 +126,28 @@ export default function contribute(server: PluginServerContext) {
   });
   // 프로젝트 매니저 목록(VS Code 가 있는 이 PC 데몬에서만 뜻이 있다 — 화면도 PC 플러그인만 붙인다)
   server.handle(projectsManager, async () => listProjects());
+  server.handle(projectsPins, async () => projectPins());
+  server.handle(projectsPinSet, async ({ key, pinned }) => setProjectPin(key, pinned));
+  server.handle(projectsPinOrder, async ({ keys }) => setProjectPinOrder(keys));
+  server.handle(projectsFileRead, async () => readProjectsFile());
+  server.handle(projectsFileWrite, async ({ text, baseMtimeMs }) => writeProjectsFile(text, baseMtimeMs));
   server.handle(clientLog, async ({ message }) => {
     console.log(`[client] ${message}`);
     return { ok: true };
   });
-  return () => {};
+  // 생각 상자 번역·읽기 — 이 기기 키 파일로 구글 API를 호출한다
+  server.handle(translateKo, async ({ texts }) => translateTexts(texts));
+  server.handle(ttsSynthesize, async ({ text }) => synthesizeText(text));
+  server.handle(googleStatus, async () => getGoogleStatus());
+  // 기기 사이 Paseo 설정 맞추기의 정본(10-07) — 화면은 이 PC 플러그인만 묻는다
+  server.handle(syncWait, async ({ slot, rev }) => waitSettings(slot, rev));
+  server.handle(syncPut, async ({ slot, changes, seed }) => putSettings(slot, changes, seed));
+  // 머리줄 동기화 단추 — PC 앱이 맡기고 웹·폰이 가져간다(10-07)
+  server.handle(layoutSave, async ({ slot, key, value }) => saveLayout(slot, key, value));
+  server.handle(layoutLoad, async ({ slot }) => loadLayout(slot));
+  // 웹·폰 원격과 Paseo 보관 상태 맞추기 + 열린 대화의 Claude 를 띄워 원격에 붙이기(10-06)
+  const stopRcSync = startRcSync();
+  return () => {
+    stopRcSync();
+  };
 }

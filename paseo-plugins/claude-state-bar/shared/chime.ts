@@ -13,6 +13,13 @@ export const chimeCheck = defineRpc({
   }),
 });
 
+// 끝남 소리 직전에 묻는다 — 방금 끝난 차례가 슬래시 명령만으로 끝났으면(모델 답 없음) 울리지 않는다(리규형님 10-06 결정)
+export const lastTurnCheck = defineRpc({
+  name: "chime.last-turn",
+  input: z.object({ sessionId: z.string() }),
+  output: z.object({ commandOnly: z.boolean() }),
+});
+
 export const chimeForget = defineRpc({
   name: "chime.forget",
   input: z.object({ clientId: z.string() }),

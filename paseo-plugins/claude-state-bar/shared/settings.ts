@@ -21,6 +21,9 @@ export const settingsSchema = z.object({
   dangerPercent: z.number().min(1).max(100).default(75),
   // 확장 workflowCompleteBeep 과 같다: 워크플로우·서브에이전트 묶음·백그라운드 작업이 끝나면 따르릉
   workflowBeep: z.boolean().default(true),
+  // 머리줄 동기화 단추(웹·폰)가 PC 앱에서 가져올 항목(리규형님 10-07 결정 — 처음 값은 모두 켬)
+  syncWorkspaceOrder: z.boolean().default(true),
+  syncLayout: z.boolean().default(true),
 });
 
 export type SoundSettings = z.output<typeof settingsSchema>;

@@ -11,7 +11,7 @@ function projectsDir(): string {
 // 대화 번호 → 기록 파일. 대화 번호는 폴더가 달라도 겹치지 않는다.
 const located = new Map<string, string>();
 
-async function locateSession(sessionId: string): Promise<string | null> {
+export async function locateSession(sessionId: string): Promise<string | null> {
   const hit = located.get(sessionId);
   if (hit) {
     try {

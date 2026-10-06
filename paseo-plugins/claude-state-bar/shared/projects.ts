@@ -15,6 +15,26 @@ const entrySchema = z.object({
 });
 export type ProjectEntry = z.infer<typeof entrySchema>;
 
+// 맨 위 고정(10-06) — 키는 "<host>|<path>". 데몬(PC)의 플러그인 전용 파일에 둔다(server/projectsPins)
+export const projectsPins = defineRpc({
+  name: "projects.pins",
+  input: z.object({}),
+  output: z.object({ keys: z.array(z.string()) }),
+});
+
+export const projectsPinSet = defineRpc({
+  name: "projects.pin-set",
+  input: z.object({ key: z.string(), pinned: z.boolean() }),
+  output: z.object({ keys: z.array(z.string()) }),
+});
+
+// 고정 묶음 순서 바꾸기(10-06, PC·웹에서 마우스 드래그) — keys 의 순서가 화면 순서
+export const projectsPinOrder = defineRpc({
+  name: "projects.pin-order",
+  input: z.object({ keys: z.array(z.string()) }),
+  output: z.object({ keys: z.array(z.string()) }),
+});
+
 export const projectsManager = defineRpc({
   name: "projects.manager",
   input: z.object({}),

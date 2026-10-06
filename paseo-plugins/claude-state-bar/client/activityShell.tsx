@@ -1,4 +1,5 @@
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { RUNNING_COLOR } from "./format";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
@@ -70,7 +71,7 @@ export function ActivityPanel(props: PluginWorkspacePanelProps) {
       tabOn: { borderBottomColor: c.accent },
       label: { color: c.foregroundMuted, fontSize: scaled(13, scale) },
       labelOn: { color: c.foreground, fontWeight: "600" as const },
-      count: { color: c.accent, fontSize: scaled(12, scale), fontWeight: "600" as const },
+      count: { color: RUNNING_COLOR, fontSize: scaled(12, scale), fontWeight: "600" as const },
       tools: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4, marginLeft: "auto" as const, paddingLeft: 12 },
       flabel: { color: c.foregroundMuted, fontSize: scaled(12, scale) },
       fbtn: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 4, backgroundColor: c.surface2 },
@@ -95,7 +96,7 @@ export function ActivityPanel(props: PluginWorkspacePanelProps) {
               onPress={() => setTab(k.key)}
               style={[s.tab, on && s.tabOn]}
             >
-              <Icon name={n > 0 ? "LoaderCircle" : k.icon} size={scaled(14, scale)} color={n > 0 ? c.accent : on ? c.foreground : c.foregroundMuted} />
+              <Icon name={n > 0 ? "LoaderCircle" : k.icon} size={scaled(14, scale)} color={n > 0 ? RUNNING_COLOR : on ? c.foreground : c.foregroundMuted} />
               <Text style={[s.label, on && s.labelOn]}>{k.tab}</Text>
               {n > 0 ? <Text style={s.count}>{n}</Text> : null}
             </Pressable>

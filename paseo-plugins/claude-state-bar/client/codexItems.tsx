@@ -2,7 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { RunCard, RunItem, TurnDoc } from "../shared/codex";
-import { fmtDur, fmtElapsed, fmtHM } from "./format";
+import { fmtDur, fmtElapsed, fmtHM, RUNNING_COLOR } from "./format";
 import type { PanelStyles } from "./ui";
 
 // Codex 진행 카드를 펼쳤을 때의 활동 목록. 확장 media/codexruns.js 의 규칙을 옮겼다:
@@ -101,7 +101,7 @@ export function RunItemsView({
   const turnFinished = (turn: number) => turn < maxTurn || runOver;
 
   const dotColor = (s: RunItem["status"]) =>
-    s === "running" ? c.accent : s === "failed" ? c.statusDanger : s === "warn" ? c.statusWarning : c.statusSuccess;
+    s === "running" ? RUNNING_COLOR : s === "failed" ? c.statusDanger : s === "warn" ? c.statusWarning : c.statusSuccess;
 
   // 문서는 열 때마다 새로 받는다(진행 중인 실행은 결과 문서에 턴이 덧붙는다)
   const openTurnDoc = (turn: number, next: TurnOpen) => {
@@ -134,13 +134,10 @@ export function RunItemsView({
     );
     return (
       <View key={it.id} style={steer ? { borderLeftWidth: 2, borderLeftColor: STEER_COLOR, paddingLeft: 6 } : undefined}>
-        {hasFull ? (
-          <Pressable onPress={() => setRowOpen({ ...rowOpen, [it.id]: !isOpen })} accessibilityRole="button">
-            {row}
-          </Pressable>
-        ) : (
-          row
-        )}
+        {/* 펼칠 본문이 없어도(파일 경로 등) 누르면 잘린 줄이 전부 보인다 — 확장 details.row 와 같음(리규형님 10-06 "펼쳐도 쩜쩜쩜") */}
+        <Pressable onPress={() => setRowOpen({ ...rowOpen, [it.id]: !isOpen })} accessibilityRole="button">
+          {row}
+        </Pressable>
         {hasFull && isOpen ? (
           <Text style={[it.kind === "command_execution" ? styles.mono : styles.small, { marginLeft: 44, marginTop: 2, lineHeight: styles.fs(18) }]} selectable>
             {full}

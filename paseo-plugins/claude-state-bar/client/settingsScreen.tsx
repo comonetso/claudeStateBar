@@ -1,9 +1,13 @@
 import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { settingsSchema, soundSettings, type SoundSettings } from "../shared/settings";
 import { soundData, type SoundKind } from "../shared/sound";
 import { playSoundUrl } from "./web";
+import { WebLoginSection } from "./webLoginSection";
+
+/** Paseo 설정 안의 우리 항목 이름(10-07: "Claude 상태 소리" → 웹 로그인·소리를 칸으로 나눈 플러그인 설정 화면). */
+export const SETTINGS_TITLE = "Claude State Bar";
 
 const ORDER: SoundKind[] = ["completion", "question", "warning", "danger", "workflow"];
 
@@ -20,6 +24,8 @@ type Draft = Record<SoundKind, { file: string; gain: string }> & {
   warningPercent: string;
   dangerPercent: string;
   workflowBeep: boolean;
+  syncWorkspaceOrder: boolean;
+  syncLayout: boolean;
 };
 
 function toDraft(values: SoundSettings): Draft {
@@ -32,6 +38,8 @@ function toDraft(values: SoundSettings): Draft {
     warningPercent: String(values.warningPercent),
     dangerPercent: String(values.dangerPercent),
     workflowBeep: values.workflowBeep,
+    syncWorkspaceOrder: values.syncWorkspaceOrder,
+    syncLayout: values.syncLayout,
   };
 }
 
@@ -45,6 +53,8 @@ function fromDraft(draft: Draft) {
     warningPercent: Number(draft.warningPercent),
     dangerPercent: Number(draft.dangerPercent),
     workflowBeep: draft.workflowBeep,
+    syncWorkspaceOrder: draft.syncWorkspaceOrder,
+    syncLayout: draft.syncLayout,
   });
 }
 
@@ -68,6 +78,7 @@ export function createSettingsScreen(onSaved: () => void) {
         screen: { flex: 1, backgroundColor: theme.colors.surface0 },
         content: { padding: layout.compact ? 16 : 24, gap: layout.compact ? 12 : 16 },
         title: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 20, fontWeight: "600" as const },
+        section: { color: theme.colors.foreground, fontSize: 16, fontWeight: "600" as const, marginTop: 8 },
         muted: { color: theme.colors.foregroundMuted, fontSize: 13 },
         text: { color: theme.colors.foreground, fontSize: 14 },
         card: {
@@ -103,23 +114,20 @@ export function createSettingsScreen(onSaved: () => void) {
       [theme, layout.compact],
     );
 
+    // 웹 로그인 칸은 소리 설정을 읽는 동안에도 보인다(로그아웃이 소리 설정에 묶이지 않게).
+    const shell = (body: ReactNode) => (
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        <Text style={styles.title}>{SETTINGS_TITLE}</Text>
+        <WebLoginSection theme={theme} compact={layout.compact} />
+        {body}
+      </ScrollView>
+    );
+
     if (state.status === "loading" || (state.status === "ready" && !draft)) {
-      return (
-        <View style={styles.screen}>
-          <View style={styles.content}>
-            <Text style={styles.muted}>설정을 읽는 중입니다</Text>
-          </View>
-        </View>
-      );
+      return shell(<Text style={styles.muted}>동기화·소리 설정을 읽는 중입니다</Text>);
     }
     if (state.status === "error" || !draft) {
-      return (
-        <View style={styles.screen}>
-          <View style={styles.content}>
-            <Text style={styles.error}>설정을 읽지 못했습니다: {state.status === "error" ? state.error : ""}</Text>
-          </View>
-        </View>
-      );
+      return shell(<Text style={styles.error}>설정을 읽지 못했습니다: {state.status === "error" ? state.error : ""}</Text>);
     }
 
     const setSound = (kind: SoundKind, patch: Partial<{ file: string; gain: string }>) =>
@@ -163,9 +171,26 @@ export function createSettingsScreen(onSaved: () => void) {
       if (ok) onSaved();
     };
 
-    return (
-      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-        <Text style={styles.title}>Claude 상태 소리</Text>
+    const syncSwitch = (key: "syncWorkspaceOrder" | "syncLayout", title: string, hint: string) => (
+      <View style={[styles.card, styles.switchRow]}>
+        <View style={styles.switchText}>
+          <Text style={styles.text}>{title}</Text>
+          <Text style={styles.muted}>{hint}</Text>
+        </View>
+        <Switch value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={`동기화 단추로 ${title} 가져오기`} />
+      </View>
+    );
+
+    return shell(
+      <>
+        <Text style={styles.section}>동기화</Text>
+        <Text style={styles.muted}>
+          웹·폰 화면을 열 때마다 PC 앱에서 아래 켜 둔 항목을 가져옵니다. 머리줄 동기화 단추로 바로 다시 맞출 수도 있습니다. Paseo 설정은 이와 따로 늘 자동으로 맞춰집니다.
+        </Text>
+        {syncSwitch("syncWorkspaceOrder", "작업 공간 순서", "왼쪽 목록의 프로젝트·작업 공간 순서와 고정한 작업 공간")}
+        {syncSwitch("syncLayout", "화면 구성", "작업 공간마다 칸 나누기·칸 크기·탭 배치·탐색기 폭·고정한 대화")}
+
+        <Text style={styles.section}>소리</Text>
         <Text style={styles.muted}>
           이 PC 와 연결된 서버의 대화 소리가 모두 여기 설정을 따릅니다. 파일 칸을 비우면 기본 소리, 크기는 50~300% 이며
           WAV 파일만 키울 수 있습니다.
@@ -254,7 +279,7 @@ export function createSettingsScreen(onSaved: () => void) {
             <Text style={styles.buttonText}>기본값으로</Text>
           </Pressable>
         </View>
-      </ScrollView>
+      </>,
     );
   };
 }

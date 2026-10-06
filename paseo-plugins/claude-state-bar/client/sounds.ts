@@ -1,5 +1,7 @@
+import type { LayoutSnapshot } from "../shared/layoutSync";
 import { DEFAULT_SETTINGS, type SoundSettings } from "../shared/settings";
 import type { SoundKind } from "../shared/sound";
+import type { Usage } from "./usageFooter";
 
 // 앱은 호스트마다 이 플러그인을 따로 띄우지만 실행 공간(globalThis)은 하나다.
 // 서버 데몬에는 소리 파일이 없으므로, 소리를 낼 수 있는 호스트(이 PC 데몬)의 플러그인이
@@ -11,6 +13,14 @@ export interface SoundProvider {
   // 마지막으로 읽은 설정. 판정기가 동기로 쓴다.
   settings(): SoundSettings;
   refreshSettings(): Promise<void>;
+  // 이 PC 데몬의 Claude·Codex 사용량(10-06). 다른 호스트 작업 공간의 사용량 단추도 같은 숫자를 보이게 이것을 쓴다.
+  // 옛 판 공급자에는 없을 수 있다
+  usage?(): Promise<Usage>;
+  // 이 PC 플러그인이 등록한 설정 화면(Claude State Bar)을 연다(10-07 머리줄 톱니). 옛 판 공급자에는 없을 수 있다
+  openSettings?(): void;
+  // PC 앱이 맡겨 둔 작업 공간 순서·화면 구성(10-07 머리줄 동기화 단추). 서버 작업 공간 단추도 이 PC 데몬 것을 읽게 공급자를 거친다.
+  // 옛 판 공급자에는 없을 수 있다
+  loadLayout?(slot: string): Promise<LayoutSnapshot>;
 }
 
 interface Shared {

@@ -20,5 +20,6 @@ export const soundData = defineRpc({
 export const hostInfo = defineRpc({
   name: "host.info",
   input: z.object({}),
-  output: z.object({ platform: z.string(), canPlay: z.boolean() }),
+  // serverId·hostname(10-07): 웹 연결 목록에서 이 PC 항목 이름을 서버 번호 대신 컴퓨터 이름으로 보이게. 옛 판 데몬은 안 준다
+  output: z.object({ platform: z.string(), canPlay: z.boolean(), serverId: z.string().nullable().optional(), hostname: z.string().optional() }),
 });

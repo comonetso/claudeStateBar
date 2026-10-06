@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { copyFile, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { projectsTextProblem } from "../shared/projectsFile";
 import type { ProjectEntry } from "../shared/projects";
 
 // VS Code 프로젝트 매니저(alefragnani.project-manager — 리규형님은 고친 판 project-manager-blueming) 목록을 그대로 읽는다.
@@ -45,12 +46,50 @@ function pathOf(rootPath: string): string {
   return slash < 0 ? "/" : decodeURIComponent(rest.slice(slash));
 }
 
-export async function listProjects(): Promise<{ source: string | null; entries: ProjectEntry[]; error?: string }> {
+/** 목록 파일 후보 — 설정한 폴더가 먼저, 없으면 확장 기본 저장소 */
+async function projectsCandidates(): Promise<string[]> {
   const folder = await projectsLocation();
-  const candidates = [
-    ...(folder ? [join(folder, "projects.json")] : []),
-    join(vscodeUserDir(), "globalStorage", "alefragnani.project-manager", "projects.json"),
-  ];
+  return [...(folder ? [join(folder, "projects.json")] : []), join(vscodeUserDir(), "globalStorage", "alefragnani.project-manager", "projects.json")];
+}
+
+/** 편집 화면이 여는 파일 — 목록 읽기(listProjects)와 같은 순서로 처음 있는 것 */
+async function projectsFile(): Promise<string | null> {
+  for (const file of await projectsCandidates()) if (existsSync(file)) return file;
+  return null;
+}
+
+// 편집 화면(리규형님 10-06 결정: Paseo 안에서 고친다). 저장은 ① 목록을 못 읽게 되는 글이면 거부 ② 읽은 뒤 다른 곳(VS Code
+// 프로젝트 매니저 등)에서 바뀌었으면 덮어쓰지 않음 ③ 직전 내용을 같은 폴더 projects.json.bak 에 남기고 쓴다
+export async function readProjectsFile(): Promise<{ file: string | null; text: string; mtimeMs: number | null; error?: string }> {
+  const file = await projectsFile();
+  if (!file) return { file: null, text: "", mtimeMs: null, error: "목록 파일을 찾지 못했습니다" };
+  try {
+    const [text, info] = await Promise.all([readFile(file, "utf8"), stat(file)]);
+    return { file, text, mtimeMs: info.mtimeMs };
+  } catch (error) {
+    return { file, text: "", mtimeMs: null, error: `목록 파일을 읽지 못했습니다: ${String(error)}` };
+  }
+}
+
+export async function writeProjectsFile(text: string, baseMtimeMs: number | null): Promise<{ ok: boolean; mtimeMs?: number; error?: string }> {
+  const file = await projectsFile();
+  if (!file) return { ok: false, error: "목록 파일을 찾지 못했습니다" };
+  const problem = projectsTextProblem(text);
+  if (problem) return { ok: false, error: problem };
+  try {
+    if ((await stat(file)).mtimeMs !== baseMtimeMs) {
+      return { ok: false, error: "편집하는 사이 다른 곳에서 파일이 바뀌었습니다. [다시 읽기]로 새 내용을 받은 뒤 고쳐 주세요" };
+    }
+    await copyFile(file, `${file}.bak`);
+    await writeFile(file, text, "utf8");
+    return { ok: true, mtimeMs: (await stat(file)).mtimeMs };
+  } catch (error) {
+    return { ok: false, error: `저장하지 못했습니다: ${String(error)}` };
+  }
+}
+
+export async function listProjects(): Promise<{ source: string | null; entries: ProjectEntry[]; error?: string }> {
+  const candidates = await projectsCandidates();
   for (const file of candidates) {
     let text: string;
     try {

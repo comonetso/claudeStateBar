@@ -97,15 +97,20 @@ export function TrashDrawer({
     void load();
   };
 
+  // 휴지통 버튼은 줄 글자(12)에 맞춰 작게(리규형님 10-06 "휴지통 버튼이 너무 크다") — 공용 버튼은 다른 패널도 써서 여기서만 줄인다
   const btn = (text: string, onPress: () => void, tone?: "danger" | "warn") => (
     <Pressable
       key={text}
       disabled={busy}
-      style={[styles.button, tone === "danger" ? { backgroundColor: c.statusDanger } : tone === "warn" ? { backgroundColor: c.statusWarning } : {}]}
+      style={[
+        styles.button,
+        { paddingHorizontal: styles.fs(9), paddingVertical: styles.fs(1) },
+        tone === "danger" ? { backgroundColor: c.statusDanger } : tone === "warn" ? { backgroundColor: c.statusWarning } : {},
+      ]}
       onPress={onPress}
       accessibilityRole="button"
     >
-      <Text style={[styles.buttonText, tone ? { color: c.accentForeground } : {}]}>{text}</Text>
+      <Text style={[styles.buttonText, { fontSize: styles.fs(12), lineHeight: styles.fs(18) }, tone ? { color: c.accentForeground } : {}]}>{text}</Text>
     </Pressable>
   );
 

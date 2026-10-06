@@ -62,8 +62,15 @@ export function ChatTrashDrawer({
   };
 
   const btn = (text: string, onPress: () => void, danger = false) => (
-    <Pressable key={text} disabled={busy} style={[styles.button, danger ? { backgroundColor: c.statusDanger } : {}]} onPress={onPress} accessibilityRole="button">
-      <Text style={[styles.buttonText, danger ? { color: c.accentForeground } : {}]}>{text}</Text>
+    <Pressable
+      key={text}
+      disabled={busy}
+      style={[styles.button, { paddingHorizontal: styles.fs(9), paddingVertical: styles.fs(1) }, danger ? { backgroundColor: c.statusDanger } : {}]}
+      onPress={onPress}
+      accessibilityRole="button"
+    >
+      {/* Codex 진행 휴지통과 같은 작은 버튼(리규형님 10-06) */}
+      <Text style={[styles.buttonText, { fontSize: styles.fs(12), lineHeight: styles.fs(18) }, danger ? { color: c.accentForeground } : {}]}>{text}</Text>
     </Pressable>
   );
 
