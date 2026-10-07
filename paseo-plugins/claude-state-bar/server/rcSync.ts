@@ -150,7 +150,7 @@ async function saveLastRemote(map: Map<string, string>): Promise<void> {
 const sameEntries = (a: Map<string, string>, b: Map<string, string>) => a.size === b.size && [...a].every(([k, v]) => b.get(k) === v);
 
 /** 이 기기의 Paseo 명령어 — 데몬과 같은 곳에 있다(콜어드민 서버는 데몬 PATH 에 없어서 실행 파일 위치로 찾는다) */
-function findCli(): string | null {
+export function findCli(): string | null {
   const dir = dirname(process.execPath);
   const win = process.platform === "win32";
   const near = win ? [join(dir, "resources", "bin", "paseo.cmd"), join(dir, "paseo.cmd")] : [join(dir, "paseo")];

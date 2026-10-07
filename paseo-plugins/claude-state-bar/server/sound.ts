@@ -4,6 +4,9 @@ import type { SoundSettings } from "../shared/settings";
 import type { SoundKind, soundData } from "../shared/sound";
 import { amplifyWav } from "./amplify";
 
+// 구버전 자동 알림에는 정상 WAV 무음을 반환한다(PCM 16bit 표본 하나). 미리듣기는 실제 음원이다.
+export const LEGACY_SILENT_WAV = "data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAAAAAA==";
+
 // 확장 core/sound.ts 의 DEFAULT_WAVS 와 같은 파일
 const DEFAULT_WAVS: Record<SoundKind, { win32: string; darwin: string }> = {
   warning: { win32: "C:\\Windows\\Media\\Windows Notify.wav", darwin: "/System/Library/Sounds/Glass.aiff" },

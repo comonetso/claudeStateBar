@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import type { ProjectEntry } from "../shared/projects";
 import { scaled, useFontScale } from "./fontScale";
-import { liveOf, serverOf, useHostIndex, useLiveSessions, useProjectsData } from "./projectsData";
+import { liveOf, openProjectsFile, serverOf, useHostIndex, useLiveSessions, useProjectsData } from "./projectsData";
 import { ProjectsList } from "./projectsList";
 import { setProjectsMode, useProjectsMode } from "./projectsMode";
 import { PROJECTS_SCREEN_ID } from "./projectsScreen";
@@ -79,6 +79,9 @@ function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme
     openScreen({ screenId: PROJECTS_SCREEN_ID, params: { openPath: e.path, serverId, n: String(Date.now()), ...(latest ? { agentId: latest.agentId } : {}) } });
   };
 
+  // 목록 JSON은 중간 플러그인 화면 없이 Paseo 편집기 탭으로 바로 간다.
+  const editList = openProjectsFile;
+
   const toWorkspaces = (
     <Pressable
       accessibilityRole="button"
@@ -108,9 +111,9 @@ function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme
           busy={null}
           notice={notice}
           onOpen={open}
+          onEditList={editList}
           onReload={() => void load()}
           toolbarStart={toWorkspaces}
-          onEditList={() => openScreen({ screenId: PROJECTS_SCREEN_ID, params: { edit: "1", n: String(Date.now()) } })}
         />
       </ScrollView>
     </View>

@@ -1,3 +1,4 @@
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 import type { LayoutSnapshot } from "../shared/layoutSync";
 import { DEFAULT_SETTINGS, type SoundSettings } from "../shared/settings";
 import type { SoundKind } from "../shared/sound";
@@ -8,6 +9,8 @@ import type { Usage } from "./usageFooter";
 // 공급자로 등록하고 모든 호스트의 플러그인이 그 공급자의 소리와 설정을 쓴다.
 // 공급자는 먼저 등록한 하나다. 데스크톱 앱은 자기 PC 데몬에 먼저 붙는다.
 export interface SoundProvider {
+  // 옛 공급자는 없어도 된다. v2가 없으면 새 화면은 재생을 건너뛴다.
+  readonly soundRouter?: { coordinatorId: string; rpc: PluginClientContext["rpc"] };
   readonly hostLabel: string;
   sound(kind: SoundKind): Promise<string>;
   // 마지막으로 읽은 설정. 판정기가 동기로 쓴다.
@@ -18,9 +21,12 @@ export interface SoundProvider {
   usage?(): Promise<Usage>;
   // 이 PC 플러그인이 등록한 설정 화면(Claude State Bar)을 연다(10-07 머리줄 톱니). 옛 판 공급자에는 없을 수 있다
   openSettings?(): void;
-  // PC 앱이 맡겨 둔 작업 공간 순서·화면 구성(10-07 머리줄 동기화 단추). 서버 작업 공간 단추도 이 PC 데몬 것을 읽게 공급자를 거친다.
+  // PC 앱이 맡겨 둔 작업 공간 순서·화면 구성(10-07 PC 에서 가져오기). 서버 작업 공간 단추도 이 PC 데몬 것을 읽게 공급자를 거친다.
   // 옛 판 공급자에는 없을 수 있다
   loadLayout?(slot: string): Promise<LayoutSnapshot>;
+  // 소리를 낼 화면 고르기(10-08) — 이 PC 데몬이 화면들의 요청을 모아 한 화면만 true. 옛 판 공급자에는 없을 수 있다
+  // v2 공급자는 옛 화면 호출에 항상 false를 돌려준다.
+  claimSound?(input: { screenId: string; key: string; eventProject: string | null; screenProject: string | null }): Promise<boolean>;
 }
 
 interface Shared {

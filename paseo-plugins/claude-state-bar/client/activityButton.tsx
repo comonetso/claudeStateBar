@@ -8,6 +8,12 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect } from "react";
 import type { ActivityCounts } from "../shared/activity";
 import { ACTIVITY_PANEL_ID, KINDS } from "./activityKinds";
+import { mergeActivitySplit, openActivitySplit } from "./activitySplit";
+import { currentSettings } from "./sounds";
+import { currentWorkspaceFromUrl, isCompactWidth } from "./web";
+
+/** paseo-plugin.json 의 id — Paseo 가 패널 탭에 이 이름을 붙인다 */
+const PLUGIN_ID = "claude-state-bar";
 import { RUNNING_COLOR } from "./format";
 import type { HeaderButtonSet } from "./usageButton";
 import { latestCounts, requestTab, totalOf, useCounts } from "./useCounts";
@@ -55,11 +61,20 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     return <Icon name={running ? "LoaderCircle" : "Activity"} size={size} color={running ? RUNNING_COLOR : color} />;
   }
 
-  // 누르면 작업 현황 패널을 바로 연다(작은 창은 두 번 떠 보였다 — 리규형님 10-05). 돌고 있는 갈래가 있으면 그 탭으로
+  // 누르면 작업 현황 패널을 바로 연다(작은 창은 두 번 떠 보였다 — 리규형님 10-05). 돌고 있는 갈래가 있으면 그 탭으로.
+  // 웹·데스크톱에서 칸이 하나뿐이면 새로고침 없이 왼쪽에 작업 현황 칸을 만든다(activitySplit).
   const openActivity = (workspaceId: string) => {
     const c = latestCounts(workspaceId);
     const running = c ? KINDS.find((k) => c[k.key] > 0) : undefined;
     if (running) requestTab(workspaceId, running.key);
+    const here = currentWorkspaceFromUrl();
+    if (here?.workspaceId === workspaceId) {
+      const target = { serverId: here.serverId, workspaceId, pluginId: PLUGIN_ID, panelId: ACTIVITY_PANEL_ID };
+      // 좁은 화면(폰 모양)은 칸 하나만 보여 주고 탭 전환도 그 칸 탭만 보여 줘서, 나누면 대화 탭이 사라진다(10-08 리규형님
+      // "탭 전환에서 채팅 목록이 아예 안 나타남") → 나누지 않고 같은 칸의 탭으로 연다. 이미 나뉘어 있으면 합친다
+      if (isCompactWidth()) mergeActivitySplit(target);
+      else if (openActivitySplit({ ...target, percent: currentSettings().activitySplitPercent })) return;
+    }
     client.openPanel(ACTIVITY_PANEL_ID, { workspaceId });
   };
 

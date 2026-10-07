@@ -4,7 +4,7 @@ import { translateKo } from "../shared/translate";
 import { googleStatus, ttsSynthesize } from "../shared/tts";
 import { SpeedSlider, thinkingController as controller } from "./thinking";
 import type { ThinkingBoxState } from "./thinkingPlayer";
-import { clearSelection, readAppFontSizes, selectionParagraphs, watchSelection, type SelectionSnapshot } from "./web";
+import { clearSelection, isCompactWidth, readAppFontSizes, selectionParagraphs, startComposerRail, watchCompactWidth, watchSelection, type SelectionSnapshot } from "./web";
 
 // 대화 화면에서 마우스로 선택한 글 읽기(리규형님 10-06). 생각 상자 밖 본문은 플러그인이 버튼을 덧붙일 자리가 없어서
 // (본문을 변환하면 Paseo 대신 통째로 다시 그려야 한다) 입력창 위 알약 줄에 둔다. 글을 선택하는 동안 "선택 읽기"가 보이고,
@@ -77,6 +77,13 @@ export function createSelectionPills(client: PluginClientContext, log: (message:
     return { visible: active };
   };
 
+  // 좁은 화면(폰 모양)은 아이콘만(10-08 리규형님 "모바일에는 아이콘만") — 글자 칸은 늘 채워 보내고 좁으면 안 보이는 한 글자
+  // (Paseo 는 알약 글자가 비면 거절한다). 넓은 화면은 지금 글자 그대로
+  const shownLook = (id: string): Look => {
+    const look: Look = { label: buttons[id].label, ...lookOf(id) };
+    return isCompactWidth() ? { ...look, label: "​" } : look;
+  };
+
   const refresh = () => {
     const st = playing();
     if (box && !st?.active) {
@@ -91,7 +98,7 @@ export function createSelectionPills(client: PluginClientContext, log: (message:
     }
     for (const set of pills.values()) {
       for (const [id, pill] of set) {
-        const look = lookOf(id);
+        const look = shownLook(id);
         const key = JSON.stringify(look);
         if (key === pill.last) continue;
         pill.last = key;
@@ -113,7 +120,7 @@ export function createSelectionPills(client: PluginClientContext, log: (message:
     const set = new Map<string, { reg: PluginButtonRegistration; last: string }>();
     for (const [id, button] of Object.entries(buttons)) {
       try {
-        const look = lookOf(id);
+        const look = shownLook(id);
         const reg = client.addComposerPill({ id: `sel-${id}`, workspaceId: agent.workspaceId, agentId: agent.id, button: { ...button, ...look } });
         set.set(id, { reg, last: JSON.stringify(look) });
       } catch (error) {
@@ -136,6 +143,13 @@ export function createSelectionPills(client: PluginClientContext, log: (message:
     if (changed) refresh();
   });
   const stopController = controller.subscribe(refresh);
+  // 화면 폭이 좁은 화면 ↔ 넓은 화면으로 바뀌면 글자를 다시 그린다
+  // 좁은 화면에서 읽기 조절 단추를 알약 줄 둘째 줄로(10-08) — web.ts startComposerRail
+  const stopRail = startComposerRail(log);
+  const stopWidth = watchCompactWidth(() => {
+    for (const set of pills.values()) for (const pill of set.values()) pill.last = "";
+    refresh();
+  });
 
   return {
     observe,
@@ -143,6 +157,8 @@ export function createSelectionPills(client: PluginClientContext, log: (message:
     dispose: () => {
       stopWatch();
       stopController();
+      stopWidth();
+      stopRail();
       reading?.highlight(null);
       controller.dispose(made);
       for (const id of [...pills.keys()]) remove(id);

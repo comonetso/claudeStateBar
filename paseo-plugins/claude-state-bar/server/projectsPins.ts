@@ -49,6 +49,11 @@ function update(change: (keys: string[]) => string[]): Promise<{ keys: string[] 
   return done;
 }
 
+/** 고정을 모두 푼다(초기화) */
+export function clearProjectPins(): Promise<{ keys: string[] }> {
+  return update(() => []);
+}
+
 /** 새로 고정한 것은 맨 아래에 붙는다 */
 export function setProjectPin(key: string, pinned: boolean): Promise<{ keys: string[] }> {
   return update((keys) => (pinned ? (keys.includes(key) ? keys : [...keys, key]) : keys.filter((k) => k !== key)));

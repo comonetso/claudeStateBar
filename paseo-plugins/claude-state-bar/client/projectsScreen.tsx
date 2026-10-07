@@ -2,8 +2,7 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useEffect, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import type { ProjectEntry } from "../shared/projects";
-import { ProjectsEditor } from "./projectsEdit";
-import { openProjectOn, serverOf, useHostIndex, useLiveSessions, useProjectsData } from "./projectsData";
+import { openProjectOn, openProjectsFile, serverOf, useHostIndex, useLiveSessions, useProjectsData } from "./projectsData";
 import { ProjectsList } from "./projectsList";
 import { goBack } from "./web";
 
@@ -40,12 +39,20 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
   // 왼쪽 목록 칸에서 넘어온 "이 프로젝트 열기" — 같은 요청(n)은 한 번만.
   // 칸이 미리 골라 둔 대화(agentId)가 있으면 데몬에 묻지 않고 바로 연다(10-06 리규형님 결정 — 서버 프로젝트 1~2초).
   // 처리하는 동안은 목록 대신 "여는 중"만 보인다(목록이 잠깐 비쳤다 넘어가던 것, 10-06 리규형님)
-  const routeReq = params?.openPath && params?.serverId ? `${params.serverId}|${params.openPath}|${params.n ?? ""}` : null;
+  // 예전 목록 파일 열기 주소(editList)도 처리하지만, 새 사이드바 동작은 이 중간 화면을 거치지 않는다.
+  const routeReq =
+    params?.serverId && (params.openPath || params.editList) ? `${params.serverId}|${params.openPath ?? ""}|${params.editList ?? ""}|${params.n ?? ""}` : null;
   const [routeDone, setRouteDone] = useState<string | null>(null);
   const routing = routeReq !== null && routeDone !== routeReq;
   useEffect(() => {
     if (!routeReq || handled.current === routeReq) return;
     handled.current = routeReq;
+    if (params.editList) {
+      void openProjectsFile(params.serverId, params.editList)
+        .then((problem) => problem && setNotice(problem))
+        .finally(() => setRouteDone(routeReq));
+      return;
+    }
     if (params.agentId && navigation) {
       navigation.openAgent({ agentId: params.agentId, serverId: params.serverId });
       setRouteDone(routeReq);
@@ -63,25 +70,7 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
     void openOn(serverId, e.path);
   };
 
-  // 목록 파일 편집 상태(10-06) — 이 화면의 아이콘, 또는 왼쪽 칸 아이콘이 넘긴 params.edit 로 들어온다
-  const [editing, setEditing] = useState(false);
-  const editReq = useRef<string | null>(null);
-  useEffect(() => {
-    const req = params?.edit ? `edit|${params.n ?? ""}` : null;
-    if (!req || editReq.current === req) return;
-    editReq.current = req;
-    setEditing(true);
-  }, [params?.edit, params?.n]);
-
   const pad = layout.compact ? 12 : 20;
-  if (editing) {
-    return (
-      <View style={{ flex: 1, padding: pad, backgroundColor: theme.colors.surface0 }}>
-        {/* 닫으면 편집을 열기 전 화면(대개 대화)으로 — 이 묶음 화면으로 돌아오지 않게(10-06 리규형님). 기록이 없으면 목록 */}
-        <ProjectsEditor theme={theme} onClose={() => (goBack() ? undefined : setEditing(false))} />
-      </View>
-    );
-  }
   if (routing) {
     return (
       <View style={{ flex: 1, padding: pad, backgroundColor: theme.colors.surface0 }}>
@@ -100,8 +89,8 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
         busy={busy}
         notice={notice}
         onOpen={open}
+        onEditList={openProjectsFile}
         onReload={() => void load()}
-        onEditList={() => setEditing(true)}
       />
     </ScrollView>
   );

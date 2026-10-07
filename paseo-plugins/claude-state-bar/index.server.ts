@@ -1,22 +1,29 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { clearFinishedBg, countRunning, listActivity, readAgentActivity, readBgOutput } from "./server/activity/workflows";
-import { checkSession, forgetClient } from "./server/chime/tracker";
+import { checkSession, checkSessionV2, forgetClient } from "./server/chime/tracker";
 import { lastTurnCommandOnly } from "./server/chime/lastTurn";
 import { countLiveChats, listChats } from "./server/codex/chats";
 import { isTerminal, listRuns, readDoc, runItems } from "./server/codex/runs";
 import { emptyTrash, listTrash, purgeTrashed, restoreTrashed, trashRun } from "./server/codex/trash";
 import { emptyChatTrash, listChatTrash, purgeChat, restoreChat, trashChat } from "./server/codex/chatTrash";
 import { readUsage } from "./server/codex/usage";
-import { listProjects, readProjectsFile, writeProjectsFile } from "./server/projects";
+import { listProjects, waitProjectsChange } from "./server/projects";
+import { startProjectLabels } from "./server/projectLabels";
+import { applyHeaderTitle, waitHeaderTitles } from "./server/headerTitles";
+import { headerTitleApply, headerTitlesWait } from "./shared/headerTitles";
+import { claimSound, markScreenUsed, createSoundRouter } from "./server/soundClaim";
+import { soundClaim, soundScreenUsed, soundPresence, soundReport, soundWait, soundTake, soundCancel, soundDropScreen, soundResult } from "./shared/soundClaim";
+import { createSoundOrigins } from "./server/soundEvents";
+import { soundOriginObserve, soundOriginPrepare, soundOriginValidate, soundOriginDrop } from "./shared/soundEvents";
 import { startRcSync } from "./server/rcSync";
 import { translateTexts } from "./server/translate";
 import { getGoogleStatus } from "./server/googleKeys";
 import { synthesizeText } from "./server/tts";
 import { translateKo } from "./shared/translate";
 import { googleStatus, ttsSynthesize } from "./shared/tts";
-import { canPlayHere, createSoundReader } from "./server/sound";
+import { canPlayHere, createSoundReader, LEGACY_SILENT_WAV } from "./server/sound";
 import { activityCounts, activityList, agentActivity, bgClear, bgOutput } from "./shared/activity";
-import { chimeCheck, chimeForget, lastTurnCheck } from "./shared/chime";
+import { chimeCheck, chimeCheckV2, chimeForget, lastTurnCheck } from "./shared/chime";
 import {
   chatTrashEmpty,
   chatTrashList,
@@ -35,15 +42,15 @@ import {
   codexUsage,
 } from "./shared/codex";
 import { clientLog } from "./shared/log";
-import { projectsManager, projectsPinOrder, projectsPinSet, projectsPins } from "./shared/projects";
-import { projectPins, setProjectPin, setProjectPinOrder } from "./server/projectsPins";
-import { projectsFileRead, projectsFileWrite } from "./shared/projectsFile";
+import { projectsManager, projectsWait, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsResetOrder } from "./shared/projects";
+import { clearProjectOrders, projectOrders, setProjectOrder } from "./server/projectsOrder";
+import { clearProjectPins, projectPins, setProjectPin, setProjectPinOrder } from "./server/projectsPins";
 import { DEFAULT_SETTINGS, soundSettings } from "./shared/settings";
 import { syncPut, syncWait } from "./shared/settingsSync";
 import { layoutLoad, layoutSave } from "./shared/layoutSync";
 import { putSettings, waitSettings } from "./server/settingsSync";
 import { hostIdentity, loadLayout, saveLayout } from "./server/layoutSync";
-import { hostInfo, soundData } from "./shared/sound";
+import { hostInfo, soundData, soundDataV2 } from "./shared/sound";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(soundSettings);
@@ -52,9 +59,13 @@ export default function contribute(server: PluginServerContext) {
     return state.status === "ready" ? state.values : DEFAULT_SETTINGS;
   };
 
-  server.handle(soundData, createSoundReader(readSettings));
+  const readSound = createSoundReader(readSettings);
+  server.handle(soundDataV2, readSound);
+  server.handle(soundData, async (input) => input.file !== undefined || input.gain !== undefined
+    ? readSound(input) : { dataUrl: LEGACY_SILENT_WAV, path: "" });
   server.handle(hostInfo, async () => ({ platform: process.platform, canPlay: canPlayHere(), ...(await hostIdentity()) }));
   server.handle(chimeCheck, async ({ clientId, sessionId, cwd }) => checkSession(clientId, sessionId, cwd));
+  server.handle(chimeCheckV2, async ({ clientId, sessionId, cwd, baseline }) => checkSessionV2(clientId, sessionId, cwd, baseline));
   server.handle(lastTurnCheck, async ({ sessionId }) => ({ commandOnly: await lastTurnCommandOnly(sessionId) }));
   server.handle(chimeForget, async ({ clientId }) => {
     forgetClient(clientId);
@@ -126,11 +137,41 @@ export default function contribute(server: PluginServerContext) {
   });
   // 프로젝트 매니저 목록(VS Code 가 있는 이 PC 데몬에서만 뜻이 있다 — 화면도 PC 플러그인만 붙인다)
   server.handle(projectsManager, async () => listProjects());
+  server.handle(projectsWait, async ({ mtimeMs }) => waitProjectsChange(mtimeMs));
   server.handle(projectsPins, async () => projectPins());
   server.handle(projectsPinSet, async ({ key, pinned }) => setProjectPin(key, pinned));
   server.handle(projectsPinOrder, async ({ keys }) => setProjectPinOrder(keys));
-  server.handle(projectsFileRead, async () => readProjectsFile());
-  server.handle(projectsFileWrite, async ({ text, baseMtimeMs }) => writeProjectsFile(text, baseMtimeMs));
+  server.handle(projectsOrder, async () => projectOrders());
+  server.handle(projectsOrderSet, async ({ group, keys }) => setProjectOrder(group, keys));
+  server.handle(projectsResetOrder, async () => {
+    await Promise.all([clearProjectOrders(), clearProjectPins()]);
+    return { ok: true };
+  });
+  // 소리는 화면 하나에서만(10-08) — 화면들의 "울려도 되나"를 모아 하나만 고른다(화면은 이 PC 플러그인에만 묻는다)
+  server.handle(soundScreenUsed, async ({ screenId }) => markScreenUsed(screenId));
+  server.handle(soundClaim, async (input) => claimSound(input));
+  // 정본은 이 환경의 Windows PC 하나다. 다른 소리 파일 호스트로 자동 failover하지 않는다.
+  let routerPromise: Promise<ReturnType<typeof createSoundRouter>> | undefined;
+  const router = () => routerPromise ??= (async () => {
+    const { serverId } = await hostIdentity();
+    if (process.platform !== "win32" || !serverId) throw new Error("v2 소리 정본 PC 아님/번호 미확인");
+    return createSoundRouter(serverId);
+  })();
+  const origins = createSoundOrigins();
+  server.handle(soundPresence, async (input) => (await router()).presence(input));
+  server.handle(soundReport, async (input) => (await router()).report(input));
+  server.handle(soundWait, async ({ screenId }) => (await router()).wait(screenId));
+  server.handle(soundTake, async (input) => (await router()).take(input));
+  server.handle(soundCancel, async ({ eventId }) => (await router()).cancel(eventId));
+  server.handle(soundDropScreen, async ({ screenId }) => (await router()).dropScreen(screenId));
+  server.handle(soundResult, async (input) => (await router()).result(input));
+  server.handle(soundOriginObserve, async (input, { paseo }) => origins.observe(input.agentId, input, paseo));
+  server.handle(soundOriginPrepare, async (input, { paseo }) => origins.prepare(input, paseo));
+  server.handle(soundOriginValidate, async (input, { paseo }) => origins.validate(input.event, input, paseo));
+  server.handle(soundOriginDrop, async ({ eventId }) => origins.drop(eventId));
+  // 위쪽 제목 "카테고리 - 이름"(10-08) — 이 기기 이름표의 제목을 주고, 원래 이름 기록·프로젝트 이름 바꾸기
+  server.handle(headerTitlesWait, async ({ sig }) => waitHeaderTitles(sig));
+  server.handle(headerTitleApply, async (input) => applyHeaderTitle(input));
   server.handle(clientLog, async ({ message }) => {
     console.log(`[client] ${message}`);
     return { ok: true };
@@ -142,12 +183,16 @@ export default function contribute(server: PluginServerContext) {
   // 기기 사이 Paseo 설정 맞추기의 정본(10-07) — 화면은 이 PC 플러그인만 묻는다
   server.handle(syncWait, async ({ slot, rev }) => waitSettings(slot, rev));
   server.handle(syncPut, async ({ slot, changes, seed }) => putSettings(slot, changes, seed));
-  // 머리줄 동기화 단추 — PC 앱이 맡기고 웹·폰이 가져간다(10-07)
+  // PC 에서 가져오기 — PC 앱이 맡기고 웹·폰이 가져간다(10-07)
   server.handle(layoutSave, async ({ slot, key, value }) => saveLayout(slot, key, value));
   server.handle(layoutLoad, async ({ slot }) => loadLayout(slot));
   // 웹·폰 원격과 Paseo 보관 상태 맞추기 + 열린 대화의 Claude 를 띄워 원격에 붙이기(10-06)
   const stopRcSync = startRcSync();
+  // 폰·웹 세션 제목의 프로젝트 이름표 — 목록이 있는 PC 데몬만 실제로 보낸다(10-07)
+  const stopProjectLabels = startProjectLabels();
   return () => {
+    void routerPromise?.then((value) => value.dispose(), () => {});
     stopRcSync();
+    stopProjectLabels();
   };
 }

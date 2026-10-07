@@ -8,6 +8,7 @@ import { z } from "zod";
 import { translateKo } from "../shared/translate";
 import { googleStatus, ttsSynthesize } from "../shared/tts";
 import { splitParagraphs, ThinkingController, watchThinking, type ThinkingBoxState } from "./thinkingPlayer";
+import { onThinkingAllOpen, thinkingAllOpen } from "./thinkingFold";
 import { createThinkingAudio, readAppFontSizes, readLocal, writeLocal } from "./web";
 
 const KIND = "csb-thinking";
@@ -206,7 +207,11 @@ export function registerThinking(client: PluginClientContext): () => void {
     transform: ({ item, phase }) => ({ items: [{ type: "plugin", kind: KIND, version: 1, data: { text: item.text, phase } }] }),
   });
   const b = client.addTimelineRenderer({ kind: KIND, version: 1, schema, Component });
+  // 입력창 위 "생각 상자 모두 접기·펼치기" 알약의 상태를 따른다(10-08, thinkingFold) — 기억된 상태로 시작하고 바뀌면 전부 따라간다
+  controller.setAllOpen(thinkingAllOpen());
+  const stopFold = onThinkingAllOpen((open) => controller.setAllOpen(open));
   return () => {
+    stopFold();
     controller.dispose(owned);
     for (const box of owned) statuses.delete(box.hostId);
     a();

@@ -1,21 +1,20 @@
-import type { PluginButtonContentProps, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
+import type { PluginButtonContentProps, PluginButtonMenuEntry, PluginClientContext } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { isLayoutKey, layoutLoad, layoutSave, LAYOUT_ITEMS, type LayoutItemId, type LayoutSnapshot } from "../shared/layoutSync";
 import type { SoundSettings } from "../shared/settings";
 import { fmtStamp } from "./format";
 import { currentSettings, soundProvider } from "./sounds";
-import type { HeaderButtonSet } from "./usageButton";
-import { appBundleId, isDesktopApp, readLocal, readSession, watchLocalWrites, writeLocalAndReload, writeSession } from "./web";
+import { appBundleId, applyPaseoLayoutCopy, isDesktopApp, readLocal, readSession, watchLocalWrites, workspaceInteractionVersion, writeLocal, writeLocalAndReload, writeSession } from "./web";
 
-// 머리줄 동기화 단추(리규형님 10-07 결정 — 다시 묻지 않는다).
+// PC 에서 가져오기(리규형님 10-07 결정 — 다시 묻지 않는다).
 // - PC 앱은 작업 공간 순서·화면 구성이 바뀔 때마다 이 PC 데몬에 조용히 맡긴다(startLayoutSave)
-// - 웹·폰(웹 감싸기 앱)은 화면을 열 때마다 PC 저장본을 가져온다 — 이 화면 값과 다를 때만 덮어쓰고 새로 읽는다(10-07 실화면 뒤
-//   결정: "새로 접속하면 자동으로"). 머리줄 단추로 바로 다시 맞출 수도 있다 — 작은 창에 PC 저장 시각과 항목, [PC 에서 가져오기]
+// - 웹·폰(웹 감싸기 앱)은 화면을 열 때마다 PC 저장본을 가져온다 — 이 화면 값과 다를 때 메모리에 반영한다(10-07 실화면 뒤
+//   결정: "새로 접속하면 자동으로"). 톱니 메뉴로 바로 다시 맞출 수도 있다 — 작은 창에 PC 저장 시각과 항목, [PC 에서 가져오기]
 // - 웹 연결 목록의 이 PC 항목 이름이 서버 번호 그대로면 컴퓨터 이름으로 바꾼다(로그인 서버는 PC 이름을 모른다)
 // - 무엇을 가져올지는 Claude State Bar 설정 화면에서 켜고 끈다(공통 설정, 처음 값 모두 켬)
 // - 설정은 실시간 맞추기가, 서버 3대 열쇠는 로그인 서버가 맡아 여기 없다
-// 폰 공식 앱은 화면 저장소를 만질 수 없어 단추를 달지 않는다.
+// 폰 공식 앱은 화면 저장소를 만질 수 없어 메뉴 항목을 달지 않는다.
 
 const ENABLED: Record<LayoutItemId, keyof SoundSettings> = { order: "syncWorkspaceOrder", layout: "syncLayout" };
 
@@ -27,7 +26,7 @@ export function itemEnabled(settings: SoundSettings, id: LayoutItemId): boolean 
 export function startLayoutSave(client: PluginClientContext, log: (message: string) => void): () => void {
   const slot = appBundleId();
   if (!slot || !isDesktopApp()) {
-    log(`layout sync: not saving here (${!slot ? "app bundle unknown" : "not the PC app — this screen pulls with the header button"})`);
+    log(`layout sync: not saving here (${!slot ? "app bundle unknown" : "not the PC app — this screen pulls on open and from the gear menu"})`);
     return () => {};
   }
   const sending = new Set<string>();
@@ -105,8 +104,8 @@ function pcNameFix(serverId: string | null | undefined, name: string | undefined
 }
 
 /**
- * 웹·폰 화면을 열 때마다 PC 앱 저장본을 가져온다(리규형님 10-07 결정 — 새로 고침해도 PC 배치로). 이 화면 값과 다를 때만 써 넣고
- * 새로 읽는다. 공통 설정을 못 읽었으면(settings=null) 꺼 둔 항목을 알 수 없어 가져오지 않는다. 연결 목록의 이 PC 항목 이름도 함께 고친다.
+ * 웹·폰 화면을 열 때 PC 배치를 메모리에 반영한다. 기다리는 사이 사용자 동작·로컬 변경이 있었으면 그 변경이 우선이다.
+ * 지원하지 않는 판은 자동 복사를 건너뛴다. 설정을 못 읽었으면 꺼 둔 항목을 알 수 없어 가져오지 않는다.
  */
 export function startLayoutAutoPull(
   client: PluginClientContext,
@@ -122,6 +121,12 @@ export function startLayoutAutoPull(
     return () => {};
   }
   let stopped = false;
+  const interaction = workspaceInteractionVersion();
+  if (interaction > 0) {
+    log("layout sync: user already acted — keeping this screen's layout");
+    return () => {};
+  }
+  const before = new Map(LAYOUT_ITEMS.map((item) => [item.key, readLocal(item.key)]));
   void (async () => {
     const changes: Record<string, string> = {};
     const registry = pcNameFix(host.serverId, host.hostname);
@@ -133,7 +138,7 @@ export function startLayoutAutoPull(
         const current = settings();
         for (const item of LAYOUT_ITEMS) {
           const saved = snap.keys?.[item.key];
-          if (saved && itemEnabled(current, item.id) && !sameJson(readLocal(item.key), saved.v)) changes[item.key] = saved.v;
+          if (saved && itemEnabled(current, item.id) && readLocal(item.key) === before.get(item.key) && !sameJson(readLocal(item.key), saved.v)) changes[item.key] = saved.v;
         }
       } catch (error) {
         log(`layout sync: load failed ${String(error)}`);
@@ -143,9 +148,20 @@ export function startLayoutAutoPull(
     }
     const keys = Object.keys(changes);
     if (stopped || !keys.length) return;
-    log(`layout sync: pulling on open ${keys.join(",")}`);
-    writeSession(PULLED_KEY, "1");
-    writeLocalAndReload(changes);
+    if (workspaceInteractionVersion() !== interaction) {
+      log("layout sync: user acted while loading — keeping this screen's layout");
+      return;
+    }
+    for (const key of keys) {
+      if (key === REGISTRY_KEY) {
+        // 이름 보정은 저장본에만 반영하며 문서를 새로 읽지 않는다.
+        if (pcNameFix(host.serverId, host.hostname) === changes[key]) writeLocal(key, changes[key]);
+      } else if (applyPaseoLayoutCopy(key, changes[key])) {
+        log(`layout sync: applied on open without reload ${key}`);
+      } else {
+        log(`layout sync: live copy unavailable — keeping ${key}`);
+      }
+    }
   })();
   return () => {
     stopped = true;
@@ -241,29 +257,12 @@ function SyncPopover({ theme }: PluginButtonContentProps) {
   );
 }
 
-/** 머리줄 동기화 단추(톱니 왼쪽). 웹·폰 웹 감싸기 앱에서만 — PC 앱은 가져올 곳이 자기 자신이다 */
-export function createSyncButtons(client: PluginClientContext): HeaderButtonSet {
-  const registrations = new Map<string, PluginButtonRegistration>();
-  const shown = Platform.OS === "web" && !isDesktopApp();
-  return {
-    add(workspaceId) {
-      if (!shown || registrations.has(workspaceId)) return;
-      registrations.set(
-        workspaceId,
-        client.addHeaderButton({
-          id: "layout-sync",
-          workspaceId,
-          button: { title: "PC 에서 작업 공간 순서·화면 구성 가져오기", icon: "MonitorDown", behavior: { kind: "popover", Content: SyncPopover } },
-        }),
-      );
-    },
-    drop(workspaceId) {
-      registrations.get(workspaceId)?.remove();
-      registrations.delete(workspaceId);
-    },
-    dispose() {
-      for (const registration of registrations.values()) registration.remove();
-      registrations.clear();
-    },
-  };
+/**
+ * 톱니 메뉴의 "PC 에서 가져오기" 항목. 웹·폰 웹 감싸기 앱에서만 — PC 앱은 가져올 곳이 자기 자신이라 null.
+ * 처음엔 톱니 왼쪽 단추였는데 Paseo 가 머리줄 플러그인 단추를 셋까지만 보여 줘(plugins/buttons/view.tsx, 0.11.0-beta.5)
+ * 웹에서 작업 현황이 ⋯ 로 접혔다 → 톱니와 합쳤다(리규형님 10-07 결정). 메뉴 안 작은 창은 Paseo 가 다음 쪽으로 연다
+ */
+export function syncMenuItem(): PluginButtonMenuEntry | null {
+  if (Platform.OS !== "web" || isDesktopApp()) return null;
+  return { kind: "item", id: "layout-sync", title: "PC 에서 가져오기", icon: "MonitorDown", behavior: { kind: "popover", Content: SyncPopover } };
 }

@@ -16,14 +16,19 @@ export const settingsSchema = z.object({
   completion: sound.default({ file: "", gain: 100 }),
   question: sound.default({ file: "", gain: 100 }),
   workflow: sound.default({ file: "", gain: 100 }),
-  settleMs: z.number().int().min(100).max(5000).default(3000),
+  // 끝남·질문 대기 — 확장 기본(3000)과 다르게 1000(리규형님 10-08). Paseo 는 턴이 분명히 끝나고, 소리 직전에 원본이 아직
+  // 끝난 상태인지 두 번 다시 확인해(client/soundPlayback) 확장처럼 오래 기다릴 까닭이 줄었다. 3초면 답이 끝나고 소리까지 5~6초였다
+  settleMs: z.number().int().min(100).max(5000).default(1000),
   warningPercent: z.number().min(1).max(100).default(50),
   dangerPercent: z.number().min(1).max(100).default(75),
   // 확장 workflowCompleteBeep 과 같다: 워크플로우·서브에이전트 묶음·백그라운드 작업이 끝나면 따르릉
   workflowBeep: z.boolean().default(true),
-  // 머리줄 동기화 단추(웹·폰)가 PC 앱에서 가져올 항목(리규형님 10-07 결정 — 처음 값은 모두 켬)
+  // 웹·폰이 PC 앱에서 가져올 항목(리규형님 10-07 결정 — 처음 값은 모두 켬)
   syncWorkspaceOrder: z.boolean().default(true),
   syncLayout: z.boolean().default(true),
+  // 작업 현황 단추로 화면을 나눌 때 왼쪽 작업 현황 칸이 차지할 몫 — 탐색기를 뺀 남은 폭의 %(리규형님 10-07 결정: 기본 40, 설정으로).
+  // 10~90 은 칸이 아예 안 보이게 되는 것만 막으려고 Claude 가 정한 범위(근거 없음 — 바꿔도 된다)
+  activitySplitPercent: z.number().int().min(10).max(90).default(40),
 });
 
 export type SoundSettings = z.output<typeof settingsSchema>;

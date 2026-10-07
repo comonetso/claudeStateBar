@@ -1,13 +1,14 @@
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { usePaseo } from "@getpaseo/plugin/client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { soundProvider } from "./sounds";
 import { readAppFontSizes } from "./web";
 
 // 왼쪽 목록 칸 맨 아래에 Claude·Codex 사용량을 늘 펼쳐 둔다(리규형님 10-05 결정 — Paseo 자체 "사용량" 줄은 눌러야 보인다).
 // 값은 Paseo 데몬이 이미 받아 둔 것을 그대로 쓴다(providers.listUsage — 데몬이 5분 동안 기억하므로 1분마다 물어도
-// 바깥 조회는 5분에 한 번 이하). 창은 Paseo 가 요약에 쓰라고 표시한 것(summary)만, 없으면 전부.
+// 바깥 조회는 5분에 한 번 이하). 표는 Paseo 가 주는 창 전부(10-07부터 — Fable 같은 모델별 주간 창 포함),
+// 상단 단추 글자는 Paseo 가 요약에 쓰라고 표시한 창(summary)만.
 
 const POLL_MS = 60_000;
 // 글자는 Paseo 설정의 "인터페이스 크기"(사이드바 줄과 같은 크기, 리규형님 10-05: "너무 작다, 인터페이스 크기와 같게").
@@ -70,15 +71,34 @@ export const shownWindows = (p: Provider): Window[] => (p.windows.some((w) => w.
 export const shortName = (p: Provider): string => p.displayName.replace(/\s*\([^)]*\)\s*$/, "") || p.providerId;
 export const clampPct = (n: number | null | undefined): number | null => (typeof n === "number" ? Math.max(0, Math.min(100, n)) : null);
 
+/** 끝나는 시각 — 24시간 안이면 "18:29", 넘으면 "10/10 14:59" */
 function resetText(iso: string | null | undefined, now: number): string {
   if (!iso) return "";
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return "";
   const d = new Date(t);
   const p = (n: number) => String(n).padStart(2, "0");
-  return t - now < 86_400_000 ? `${p(d.getHours())}:${p(d.getMinutes())}` : `${d.getMonth() + 1}/${d.getDate()}`;
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  return t - now < 86_400_000 ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
 }
 
+/** 남은 시간 — 큰 단위 둘까지: "2일 22시간" · "2시간 12분" · "12분". 지났으면 "곧" */
+function leftText(iso: string | null | undefined, now: number): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const min = Math.floor((t - now) / 60_000);
+  if (min <= 0) return "곧";
+  const day = Math.floor(min / 1440);
+  const hour = Math.floor((min % 1440) / 60);
+  if (day > 0) return hour ? `${day}일 ${hour}시간` : `${day}일`;
+  if (hour > 0) return min % 60 ? `${hour}시간 ${min % 60}분` : `${hour}시간`;
+  return `${min}분`;
+}
+
+// 한 줄 = 이름 · 막대 · % · 남은 시간 · 끝나는 시각(리규형님 10-07 결정: 막대를 짧게 하고 남은 시간과 끝나는 시각을 함께,
+// Paseo 가 주는 창 전부 — Fable 같은 모델별 주간 창 포함). 줄마다 막대가 같은 자리에서 시작하도록 칸을 세로 열로 나눈다.
+// 상단 사용량 단추의 작은 창도 이 표를 그대로 쓴다(단추 글자는 요약 창만 — usageButton)
 export function UsageFooter({ theme }: Pick<PluginHostProps, "theme">) {
   const ui = useUiPx();
   const { usage, error } = useUsage();
@@ -87,34 +107,74 @@ export function UsageFooter({ theme }: Pick<PluginHostProps, "theme">) {
   const toneColor = (w: Window) => (w.tone === "danger" ? c.statusDanger : w.tone === "warning" ? c.statusWarning : c.accent);
   const now = Date.now();
   const providers = availableProviders(usage);
+  const rowH = Math.round(ui * 1.45);
 
   if (!usage) return error ? <Text style={{ color: c.foregroundMuted, fontSize: ui - 1, paddingHorizontal: 12 }}>사용량을 못 읽었습니다</Text> : null;
   if (!providers.length) return null;
   return (
     <View style={{ paddingHorizontal: 12, paddingVertical: 8, gap: 8 }} accessibilityLabel="Claude·Codex 사용량">
       {providers.map((p) => {
-        const shown = shownWindows(p);
+        const rows = p.windows;
+        const cell = { height: rowH, justifyContent: "center" } as const;
+        const column = (key: string, render: (w: Window) => ReactNode, style?: object) => (
+          <View key={key} style={style}>
+            {rows.map((w) => (
+              <View key={w.id} style={cell}>
+                {render(w)}
+              </View>
+            ))}
+          </View>
+        );
         return (
           <View key={p.providerId} style={{ gap: 3 }}>
             <Text style={{ color: c.foregroundMuted, fontSize: ui, fontWeight: "600" }} numberOfLines={1}>
               {p.displayName}
             </Text>
-            {shown.map((w) => {
-              const pct = clampPct(w.usedPct);
-              const reset = resetText(w.resetsAt, now);
-              return (
-                <View key={w.id} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                  <Text style={{ color: c.foregroundMuted, fontSize: ui - 1, width: ui * 2 }} numberOfLines={1}>
-                    {w.shortLabel || w.label}
+            <View style={{ flexDirection: "row", gap: 6 }}>
+              {column("label", (w) => (
+                <Text style={{ color: c.foregroundMuted, fontSize: ui - 1 }} numberOfLines={1}>
+                  {w.shortLabel || w.label}
+                </Text>
+              ))}
+              {column(
+                "bar",
+                (w) => {
+                  const pct = clampPct(w.usedPct);
+                  return (
+                    <View style={{ height: 6, borderRadius: 3, backgroundColor: c.surface2, overflow: "hidden" }}>
+                      {pct !== null ? <View style={{ width: `${pct}%`, height: 6, backgroundColor: toneColor(w) }} /> : null}
+                    </View>
+                  );
+                },
+                { flex: 1, minWidth: ui * 2 },
+              )}
+              {column(
+                "pct",
+                (w) => {
+                  const pct = clampPct(w.usedPct);
+                  return <Text style={{ color: c.foreground, fontSize: ui - 1, textAlign: "right" }}>{pct !== null ? `${Math.round(pct)}%` : "—"}</Text>;
+                },
+                { alignItems: "flex-end" },
+              )}
+              {column(
+                "left",
+                (w) => (
+                  <Text style={{ color: c.foreground, fontSize: ui - 2, textAlign: "right" }} numberOfLines={1}>
+                    {leftText(w.resetsAt, now)}
                   </Text>
-                  <View style={{ flex: 1, height: 6, borderRadius: 3, backgroundColor: c.surface2, overflow: "hidden" }}>
-                    {pct !== null ? <View style={{ width: `${pct}%`, height: 6, backgroundColor: toneColor(w) }} /> : null}
-                  </View>
-                  <Text style={{ color: c.foreground, fontSize: ui - 1, minWidth: ui * 2.6, textAlign: "right" }}>{pct !== null ? `${Math.round(pct)}%` : "—"}</Text>
-                  {reset ? <Text style={{ color: c.foregroundMuted, fontSize: ui - 2, minWidth: ui * 3, textAlign: "right" }}>{reset}</Text> : null}
-                </View>
-              );
-            })}
+                ),
+                { alignItems: "flex-end" },
+              )}
+              {column(
+                "reset",
+                (w) => (
+                  <Text style={{ color: c.foregroundMuted, fontSize: ui - 2, textAlign: "right" }} numberOfLines={1}>
+                    {resetText(w.resetsAt, now)}
+                  </Text>
+                ),
+                { alignItems: "flex-end" },
+              )}
+            </View>
           </View>
         );
       })}

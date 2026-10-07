@@ -18,6 +18,8 @@ export type ChimeState = "running" | "done" | "ended" | "gap";
 export interface ChimeItem {
   key: string;
   state: ChimeState;
+  /** 화면 시계 대신 기록의 실행/구성원 번호로 만든 세대 */
+  generation: string;
 }
 
 export interface ScanResult {
@@ -182,15 +184,16 @@ async function scanWorkflows(sessionDir: string, facts: ConversationFacts): Prom
     }
 
     const key = `wf|${wfId}`;
+    const generation = JSON.stringify([...journal.started].sort());
     if (!(statuses.length > 0 && statuses.every((s) => s === "done"))) {
-      items.push({ key, state: "running" });
+      items.push({ key, generation, state: "running" });
       continue;
     }
     // 묶음 사이 빈틈도 "모두 끝"으로 보이므로 결과 파일이나 부모 완료 알림으로 진짜 끝을 확인한다
     const terminal = await readParsed(join(sessionDir, "workflows", `${wfId}.json`), `marker:${wfId}`, markerStatus(wfId));
-    if (terminal === "failed" || terminal === "killed") items.push({ key, state: "ended" });
-    else if (terminal === "completed" || facts.completedRuns.has(wfId)) items.push({ key, state: "done" });
-    else items.push({ key, state: "gap" });
+    if (terminal === "failed" || terminal === "killed") items.push({ key, generation, state: "ended" });
+    else if (terminal === "completed" || facts.completedRuns.has(wfId)) items.push({ key, generation, state: "done" });
+    else items.push({ key, generation, state: "gap" });
   }
   return items;
 }
@@ -247,7 +250,7 @@ function taskAgentFacts(idFromName: string) {
 /** 서브에이전트(Agent 도구) 묶음마다 상태(확장 findTaskAgentBundles · taskAgentOf) */
 async function scanTaskBundles(sessionDir: string, facts: ConversationFacts, now: number): Promise<{ items: ChimeItem[]; recheckAfterMs?: number }> {
   const subagentsDir = join(sessionDir, "subagents");
-  const agents: { status: string; firstTs: number }[] = [];
+  const agents: { id: string; status: string; firstTs: number }[] = [];
   let recheckAfterMs: number | undefined;
   for (const name of await listDir(subagentsDir)) {
     const m = /^agent-(.+)\.jsonl$/.exec(name);
@@ -266,7 +269,7 @@ async function scanTaskBundles(sessionDir: string, facts: ConversationFacts, now
       const n = facts.notices.byTask.get(a.id);
       if (n && endedStatus(n.status) && (!a.lastTs || n.at >= a.lastTs)) status = "stopped";
     }
-    agents.push({ status, firstTs: a.firstTs });
+    agents.push({ id: a.id, status, firstTs: a.firstTs });
   }
 
   agents.sort((x, y) => x.firstTs - y.firstTs);
@@ -283,6 +286,7 @@ async function scanTaskBundles(sessionDir: string, facts: ConversationFacts, now
 
   const items = batches.map((batch) => ({
     key: `tasks|${batch[0].firstTs}`,
+    generation: JSON.stringify(batch.map((a) => [a.id, a.firstTs]).sort()),
     state: (batch.every((a) => a.status === "done") ? "done" : "running") as ChimeState,
   }));
   return { items, ...(recheckAfterMs !== undefined ? { recheckAfterMs } : {}) };
@@ -352,7 +356,8 @@ export async function scanCodexRuns(logDir: string): Promise<ChimeItem[]> {
     const state = await readParsed(join(logDir, name), "codex-status", runState);
     if (!state) continue;
     const key = `codex|${logDir}|${m[1]}`;
-    items.push({ key, state: state === "done" || state === "failed" || state === "interrupted" ? "done" : "running" });
+    const generation = m[1];
+    items.push({ key, generation, state: state === "done" || state === "failed" || state === "interrupted" ? "done" : "running" });
   }
   return items;
 }
@@ -374,9 +379,9 @@ export async function scanSession(sessionFile: string, now = Date.now()): Promis
   for (const t of facts.background) {
     if (t.kind === "foreground") continue;
     const key = `bg|${t.taskId}`;
-    if (t.status === "running") background.push({ key, state: "running" });
-    else if (t.status === "completed" && !t.endedByTaskStop) background.push({ key, state: "done" });
-    else background.push({ key, state: "ended" });
+    if (t.status === "running") background.push({ key, generation: String(t.startedAt), state: "running" });
+    else if (t.status === "completed" && !t.endedByTaskStop) background.push({ key, generation: String(t.startedAt), state: "done" });
+    else background.push({ key, generation: String(t.startedAt), state: "ended" });
   }
 
   return {

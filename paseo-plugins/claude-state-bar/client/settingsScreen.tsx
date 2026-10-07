@@ -2,7 +2,9 @@ import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/c
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { settingsSchema, soundSettings, type SoundSettings } from "../shared/settings";
+import { projectsResetOrder } from "../shared/projects";
 import { soundData, type SoundKind } from "../shared/sound";
+import { announceOrders, announcePins } from "./projectsData";
 import { playSoundUrl } from "./web";
 import { WebLoginSection } from "./webLoginSection";
 
@@ -26,6 +28,7 @@ type Draft = Record<SoundKind, { file: string; gain: string }> & {
   workflowBeep: boolean;
   syncWorkspaceOrder: boolean;
   syncLayout: boolean;
+  activitySplitPercent: string;
 };
 
 function toDraft(values: SoundSettings): Draft {
@@ -40,6 +43,7 @@ function toDraft(values: SoundSettings): Draft {
     workflowBeep: values.workflowBeep,
     syncWorkspaceOrder: values.syncWorkspaceOrder,
     syncLayout: values.syncLayout,
+    activitySplitPercent: String(values.activitySplitPercent),
   };
 }
 
@@ -55,6 +59,7 @@ function fromDraft(draft: Draft) {
     workflowBeep: draft.workflowBeep,
     syncWorkspaceOrder: draft.syncWorkspaceOrder,
     syncLayout: draft.syncLayout,
+    activitySplitPercent: Number(draft.activitySplitPercent),
   });
 }
 
@@ -65,6 +70,21 @@ export function createSettingsScreen(onSaved: () => void) {
     const preview = useRpc(soundData);
     const [draft, setDraft] = useState<Draft | null>(null);
     const [message, setMessage] = useState<string | null>(null);
+    // 프로젝트 목록 순서·고정 초기화(10-07 리규형님 결정: 설정 화면 안, 확인 한 번 더) — 누르면 확인 줄이 뜨고 거기서 한 번 더
+    const resetOrder = useRpc(projectsResetOrder);
+    const [confirmReset, setConfirmReset] = useState(false);
+    const [resetMessage, setResetMessage] = useState<string | null>(null);
+    const doReset = async () => {
+      setConfirmReset(false);
+      try {
+        await resetOrder({});
+        announcePins([]);
+        announceOrders({});
+        setResetMessage("목록 순서와 고정을 초기화했습니다 — 목록 파일 순서로 돌아갑니다");
+      } catch (error) {
+        setResetMessage(`초기화하지 못했습니다: ${String(error)}`);
+      }
+    };
     const revision = state.status === "ready" ? state.revision : null;
 
     useEffect(() => {
@@ -177,7 +197,7 @@ export function createSettingsScreen(onSaved: () => void) {
           <Text style={styles.text}>{title}</Text>
           <Text style={styles.muted}>{hint}</Text>
         </View>
-        <Switch value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={`동기화 단추로 ${title} 가져오기`} />
+        <Switch value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={`PC 에서 ${title} 가져오기`} />
       </View>
     );
 
@@ -185,10 +205,59 @@ export function createSettingsScreen(onSaved: () => void) {
       <>
         <Text style={styles.section}>동기화</Text>
         <Text style={styles.muted}>
-          웹·폰 화면을 열 때마다 PC 앱에서 아래 켜 둔 항목을 가져옵니다. 머리줄 동기화 단추로 바로 다시 맞출 수도 있습니다. Paseo 설정은 이와 따로 늘 자동으로 맞춰집니다.
+          웹·폰 화면을 열 때마다 PC 앱에서 아래 켜 둔 항목을 가져옵니다. 머리줄 톱니의 "PC 에서 가져오기"로 바로 다시 맞출 수도 있습니다. Paseo 설정은 이와 따로 늘 자동으로 맞춰집니다.
         </Text>
         {syncSwitch("syncWorkspaceOrder", "작업 공간 순서", "왼쪽 목록의 프로젝트·작업 공간 순서와 고정한 작업 공간")}
         {syncSwitch("syncLayout", "화면 구성", "작업 공간마다 칸 나누기·칸 크기·탭 배치·탐색기 폭·고정한 대화")}
+
+        <Text style={styles.section}>작업 현황</Text>
+        <View style={styles.card}>
+          <Text style={styles.text}>작업 현황 칸 폭 (%, 10~90)</Text>
+          <Text style={styles.muted}>
+            머리줄 작업 현황 단추를 누르면 화면을 둘로 나눠 왼쪽에 작업 현황, 오른쪽에 지금 대화를 둡니다. 탐색기를 뺀 남은 폭에서
+            작업 현황이 차지할 몫입니다. 이미 칸이 둘 이상이면 나누지 않습니다. 나눌 때 화면이 한 번 새로 읽힙니다.
+          </Text>
+          <TextInput
+            style={[styles.input, styles.smallInput]}
+            value={draft.activitySplitPercent}
+            onChangeText={(activitySplitPercent) => setDraft({ ...draft, activitySplitPercent })}
+            keyboardType="numeric"
+            accessibilityLabel="작업 현황 칸 폭 퍼센트"
+          />
+        </View>
+
+        <Text style={styles.section}>프로젝트 목록</Text>
+        <View style={styles.card}>
+          <Text style={styles.text}>순서·고정 초기화</Text>
+          <Text style={styles.muted}>
+            왼쪽 프로젝트 목록에서 끌어 옮긴 순서(카테고리·프로젝트·활성)와 고정을 모두 지웁니다. 목록 파일에 적힌 순서로 돌아가고
+            고정은 모두 풀립니다. 목록 파일 자체는 바뀌지 않습니다.
+          </Text>
+          {confirmReset ? (
+            <View style={styles.row}>
+              <Text style={styles.error}>정말 초기화할까요? 되돌릴 수 없습니다.</Text>
+              <Pressable style={styles.button} onPress={() => void doReset()} accessibilityRole="button" accessibilityLabel="순서와 고정 초기화 확정">
+                <Text style={[styles.buttonText, { color: theme.colors.statusDanger }]}>초기화</Text>
+              </Pressable>
+              <Pressable style={styles.button} onPress={() => setConfirmReset(false)} accessibilityRole="button" accessibilityLabel="초기화 취소">
+                <Text style={styles.buttonText}>취소</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable
+              style={styles.button}
+              onPress={() => {
+                setResetMessage(null);
+                setConfirmReset(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="프로젝트 목록 순서와 고정 초기화"
+            >
+              <Text style={styles.buttonText}>순서·고정 초기화…</Text>
+            </Pressable>
+          )}
+          {resetMessage ? <Text style={styles.muted}>{resetMessage}</Text> : null}
+        </View>
 
         <Text style={styles.section}>소리</Text>
         <Text style={styles.muted}>

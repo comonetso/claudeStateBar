@@ -152,7 +152,7 @@ export class ThinkingController {
     }
     box = {
       key: JSON.stringify([hostId, agentId, stamp, ++this.serial]), hostId, agentId, stamps: new Set([stamp]), text, phase,
-      open: true, maximized: false, translate: false, suspended: false, controls: false, error: "", translations: new Map(), failures: new Map(), pending: new Set(), epoch: 0,
+      open: this.openByDefault, maximized: false, translate: false, suspended: false, controls: false, error: "", translations: new Map(), failures: new Map(), pending: new Set(), epoch: 0,
     };
     this.boxes.set(box.key, box);
     return box;
@@ -177,6 +177,14 @@ export class ThinkingController {
   }
 
   toggleOpen(box: ThinkingBoxState): void { box.open = !box.open; this.notify(); }
+  /** 새 상자가 펼친 채로 시작하는가 — 입력창 위 "모두 접기·펼치기" 알약이 정한다(10-08, thinkingFold) */
+  openByDefault = true;
+  /** 지금 있는 상자 전부와 앞으로 생길 상자를 접거나 펼친다 */
+  setAllOpen(open: boolean): void {
+    this.openByDefault = open;
+    for (const box of this.boxes.values()) box.open = open;
+    this.notify();
+  }
   toggleMaximized(box: ThinkingBoxState): void { box.maximized = !box.maximized; this.notify(); }
   toggleControls(box: ThinkingBoxState): void { box.controls = !box.controls; this.notify(); }
 

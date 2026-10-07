@@ -3,7 +3,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { isLayoutKey } from "../shared/layoutSync";
 
-// 머리줄 동기화 단추의 저장본(리규형님 10-07 결정) — PC 앱이 맡긴 작업 공간 순서·화면 구성. 웹·폰이 단추를 누를 때 가져간다.
+// PC 에서 가져오기의 저장본(리규형님 10-07 결정) — PC 앱이 맡긴 작업 공간 순서·화면 구성. 웹·폰이 열 때와 톱니 메뉴로 가져간다.
 // 설정 맞추기 정본(settingsSync)과 같은 방식으로 판마다 칸을 따로 두고, 한 줄로 바꿔 끼워 쓴다.
 
 const HOME = process.env.PASEO_HOME || join(homedir(), ".paseo");

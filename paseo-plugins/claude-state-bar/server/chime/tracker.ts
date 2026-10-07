@@ -103,3 +103,34 @@ export async function checkSession(
 export function forgetClient(clientId: string): void {
   for (const key of [...gates.keys()]) if (key.startsWith(`${clientId}|`)) gates.delete(key);
 }
+
+// 실제 완료 항목으로 화면 사이에 같은 번호를 만든다. 종전의 running 관측/첫 기준 규칙을 유지한다.
+function judgeEvents(gate: Gate, items: ChimeItem[], baseline: boolean, scope: string): string[] {
+  const events: string[] = [];
+  for (const item of items) {
+    const nativeId = JSON.stringify([scope, item.key, item.generation]);
+    if (item.state === "running") { gate.seenRunning.add(item.key); gate.alerted.delete(nativeId); continue; }
+    if (item.state === "gap" || gate.alerted.has(nativeId)) continue;
+    gate.alerted.add(nativeId);
+    if (item.state === "done" && !baseline && gate.seenRunning.has(item.key)) events.push(nativeId);
+  }
+  return events;
+}
+
+export async function checkSessionV2(clientId: string, sessionId: string, cwd: string | undefined, forceBaseline = false): Promise<{ events: string[]; found: boolean; recheckAfterMs?: number }> {
+  const events: string[] = [];
+  let recheckAfterMs: number | undefined;
+  const file = await locateSession(sessionId);
+  if (file) {
+    const result = await scanSession(file);
+    const { gate, baseline } = gateFor(clientId + "|v2-session|" + sessionId);
+    events.push(...judgeEvents(gate, result.items, baseline || forceBaseline, sessionId));
+    recheckAfterMs = result.recheckAfterMs;
+  }
+  const logDir = cwd ? await findCodexLogDir(cwd) : null;
+  if (logDir) {
+    const { gate, baseline } = gateFor(clientId + "|v2-codex|" + logDir);
+    events.push(...judgeEvents(gate, await scanCodexRuns(logDir), baseline || forceBaseline, "codex"));
+  }
+  return { events, found: !!file, ...(recheckAfterMs !== undefined ? { recheckAfterMs } : {}) };
+}

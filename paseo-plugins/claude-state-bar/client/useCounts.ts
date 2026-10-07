@@ -1,6 +1,7 @@
 import { useRpc, useWorkspace } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activityCounts, type ActivityCounts } from "../shared/activity";
+import { readSession, writeSession } from "./web";
 
 // 작업 공간 폴더에서 돌고 있는 수(확장 activityCounts) — 머리줄 단추와 작업 현황 탭 숫자가 같이 쓴다.
 // 확장 탭과 같은 간격: 무언가 돌고 있으면 2초, 아니면 상태바 기본 새로 고침 30초
@@ -51,13 +52,17 @@ export function useCounts(workspaceId: string): ActivityCounts | null {
 // 머리줄 단추 작은 창에서 고른 탭을 작업 현황 패널에 건넨다(패널 열기에는 탭을 실어 보낼 칸이 없다)
 const requested = new Map<string, string>();
 const listeners = new Set<() => void>();
+// 화면 나누기(activitySplit)는 화면을 새로 읽어 메모리가 비므로 이 탭(브라우저 탭) 세션 저장소에도 남긴다(10-07)
+const sessionKey = (workspaceId: string) => `claude-state-bar.activityTab.${workspaceId}`;
 export function requestTab(workspaceId: string, tab: string): void {
   requested.set(workspaceId, tab);
+  writeSession(sessionKey(workspaceId), tab);
   for (const fn of listeners) fn();
 }
 export function takeRequestedTab(workspaceId: string): string | undefined {
-  const tab = requested.get(workspaceId);
+  const tab = requested.get(workspaceId) ?? readSession(sessionKey(workspaceId)) ?? undefined;
   requested.delete(workspaceId);
+  writeSession(sessionKey(workspaceId), null);
   return tab;
 }
 export function onTabRequest(fn: () => void): () => void {

@@ -25,3 +25,10 @@ export const chimeForget = defineRpc({
   input: z.object({ clientId: z.string() }),
   output: z.object({ ok: z.boolean() }),
 });
+
+// v2는 개수가 아니라 완료한 실제 항목 번호를 보존한다. 옛 check 출력은 그대로 둔다.
+export const chimeCheckV2 = defineRpc({
+  name: "chime.check-v2",
+  input: z.object({ clientId: z.string(), sessionId: z.string(), cwd: z.string().optional(), baseline: z.boolean().optional() }),
+  output: z.object({ events: z.array(z.string()), found: z.boolean(), recheckAfterMs: z.number().optional() }),
+});

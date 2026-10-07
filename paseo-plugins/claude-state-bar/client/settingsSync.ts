@@ -1,6 +1,7 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { APP_SETTINGS_KEY, isSyncKey, SHARED_APP_FIELDS, syncPut, syncWait, toShared } from "../shared/settingsSync";
+import { refreshSettingsCache } from "./settingsCache";
 import {
   appBundleId,
   isDesktopApp,
@@ -18,7 +19,8 @@ import {
 // 기기 사이 Paseo 설정 맞추기 — 화면 쪽(리규형님 10-07 결정). PC 앱·웹·폰 웹 감싸기 앱이 같은 설정을 쓰게, 이 화면의
 // 브라우저 저장소를 PC 데몬의 정본(server/settingsSync)에 맞춘다.
 //  - 맞추는 것: 설정 화면의 설정만(일반·모양·사이드바·채팅·단축키 — 칸 목록은 shared/settingsSync). 글자 크기는 기기별
-//  - 다른 기기에서 바꾸면 열려 있어도 바로 — Paseo 는 설정을 시작할 때만 읽어서 화면을 새로 읽는다
+//  - 다른 기기에서 바꾸면 열려 있어도 바로 — 새로고침 없이 Paseo 캐시에 다시 읽힌다(10-08, settingsCache). 안 되는 판에서만
+//    예전처럼 화면을 새로 읽는다(Paseo 는 설정을 처음 한 번만 저장소에서 읽는다)
 //  - 화면 판이 같을 때만 맞추고, 다른 판 화면에서 바꾼 것이 있으면 알린다
 //  - 처음 기준은 PC 앱: 정본이 비었으면 PC 앱만 칸을 만든다. 판이 올라가 새 칸이 필요하면 전에 맞춰 본 화면이 만든다
 // 정본은 PC 데몬 하나라 이 PC 플러그인(소리 담당 호스트)에서만 시작한다.
@@ -252,6 +254,19 @@ export function startSettingsSync(client: PluginClientContext, log: (message: st
       const changed = apply(res.keys);
       if (changed.length === 0) continue;
       log(`settings sync: applied ${changed.join(",")} (rev ${rev}, ${first ? "on start" : "changed on another device"})`);
+      // 새로고침 없이 Paseo 캐시에 다시 읽힌다(10-08 리규형님 결정). 다시 읽는 동안 Paseo 가 정리해 저장하는 것은 올리지 않는다
+      applying = true;
+      const why = await refreshSettingsCache(changed).finally(() => {
+        applying = false;
+      });
+      if (stopped) return;
+      if (why === null) {
+        log(`settings sync: refreshed in place ${changed.join(",")}`);
+        setNotice({ text: first ? "공통 설정(PC)에 맞췄습니다" : "다른 기기에서 바꾼 설정을 맞췄습니다", warn: false });
+        continue;
+      }
+      // 안 되는 판(Paseo 업데이트 등)은 예전처럼 새로 읽는다(같은 결정)
+      log(`settings sync: cannot refresh in place (${why}) — reloading`);
       if (readSession(RELOADED_KEY) === `${slot}:${rev}`) {
         log(`settings sync: already reloaded for rev ${rev} — not again`);
         continue;

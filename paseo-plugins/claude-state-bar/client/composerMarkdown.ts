@@ -1,7 +1,7 @@
 import type { PluginButtonMenuEntry, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { Platform } from "react-native";
 import { backspaceList, continueList, indentList, outdentList, renumberText, toggleList, type Edit } from "./markdownList";
-import { applyComposerEdit, listenComposer, type ComposerKey, type ComposerTextArea } from "./web";
+import { applyComposerEdit, isCompactWidth, listenComposer, watchCompactWidth, type ComposerKey, type ComposerTextArea } from "./web";
 
 // 대화 입력창 마크다운 목록 보조(리규형님 10-07 결정 — 다시 묻지 않는다).
 // - Shift+Enter: 목록 줄이면 다음 항목, 빈 항목이면 목록 끝. Enter 는 늘 보내기(Paseo 그대로)
@@ -84,6 +84,12 @@ export function createComposerMarkdown(client: PluginClientContext, log: (messag
   ];
 
   const pills = new Map<string, PluginButtonRegistration>();
+  // 좁은 화면(폰 모양)은 "목록" 글자를 빼고 아이콘만(10-08 리규형님). Paseo 는 알약 글자가 비면 거절해서 안 보이는 한 글자(U+200B)
+  const pillLabel = () => (isCompactWidth() ? "​" : "목록");
+  const stopWidth = watchCompactWidth(() => {
+    const label = pillLabel();
+    for (const reg of pills.values()) reg.update({ label });
+  });
   const remove = (agentId: string) => {
     pills.get(agentId)?.remove();
     pills.delete(agentId);
@@ -98,7 +104,7 @@ export function createComposerMarkdown(client: PluginClientContext, log: (messag
           id: "md-list",
           workspaceId: agent.workspaceId,
           agentId: agent.id,
-          button: { title: "목록 쓰기", icon: "List", label: "목록", behavior: { kind: "menu", items } },
+          button: { title: "목록 쓰기", icon: "List", label: pillLabel(), behavior: { kind: "menu", items } },
         }),
       );
     } catch (error) {
@@ -110,6 +116,7 @@ export function createComposerMarkdown(client: PluginClientContext, log: (messag
     observe,
     remove,
     dispose: () => {
+      stopWidth();
       for (const id of [...pills.keys()]) remove(id);
       s.owners = s.owners.filter((o) => o !== owner);
       if (s.active?.owner === owner) {
