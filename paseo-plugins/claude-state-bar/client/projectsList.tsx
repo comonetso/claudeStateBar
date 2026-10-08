@@ -18,7 +18,7 @@ import {
   type ProjectsData,
 } from "./projectsData";
 import { StatusIndicator } from "./statusIndicator";
-import { setDraggableRow, setHoverTitle } from "./web";
+import { setDraggableRow, setHoverTitle, setNoTranslate } from "./web";
 
 // 프로젝트 목록 — 카테고리 묶음을 접고 편다(리규형님 10-05 결정: 꺼 둔 것은 "꺼 둠" 묶음 · 10-07: tags → category).
 // 전체 화면과 왼쪽 목록 칸이 같이 쓴다. 칸(sidebar)은 폭이 좁아 도구 단추를 검색창 아래 줄에 둔다.
@@ -201,8 +201,9 @@ export function ProjectsList(props: {
     </>
   );
 
+  // 브라우저 페이지 번역이 프로젝트·카테고리 이름을 바꾸지 않게(10-09 리규형님 화면: "Claude State Bar" → "클로드 주 변호사 협회") — 왼쪽 칸·묶음 화면 둘 다
   return (
-    <View style={{ gap: sidebar ? 6 : 10 }}>
+    <View ref={setNoTranslate} style={{ gap: sidebar ? 6 : 10 }}>
       {sidebar ? (
         <>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
