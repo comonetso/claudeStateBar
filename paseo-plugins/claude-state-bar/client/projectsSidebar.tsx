@@ -7,13 +7,13 @@ import type { ProjectEntry } from "../shared/projects";
 import { scaled, useFontScale } from "./fontScale";
 import { healthCounts, useHealth } from "./health";
 import { liveOf, openProjectsFile, serverOf, useHostIndex, useLiveSessions, useProjectsData } from "./projectsData";
-import { ProjectsList } from "./projectsList";
+import { ProjectsList, TOOLBAR_ID } from "./projectsList";
 import { setProjectsMode, useProjectsMode } from "./projectsMode";
 import { PROJECTS_SCREEN_ID } from "./projectsScreen";
 import { settingsText } from "./settingsI18n";
 import { clearSyncNotice, useSyncNotice } from "./settingsSync";
 import { soundProvider } from "./sounds";
-import { measureRoomAbove, watchSizeOf } from "./web";
+import { measureRoomAbove, overlapFromRight, watchSizeOf } from "./web";
 
 // 왼쪽 목록 칸 맨 위(리규형님 10-06 결정): 프로젝트 목록을 바로 보이고, 보이는 동안 아래 워크스페이스 목록은 가린다(웹·데스크톱).
 // 칸 높이는 아래쪽 줄(사용량)까지 남은 높이로 맞춘다. 칸에는 대화로 바로 가는 기능이 주어지지 않아서(플러그인 도구에서
@@ -21,6 +21,7 @@ import { measureRoomAbove, watchSizeOf } from "./web";
 
 const ROOT_ID = "claude-state-bar-projects-pane";
 const FOOTER_TEST_ID = "sidebar-footer"; // Paseo 왼쪽 목록 아래쪽 줄(앱 0.11.0-beta.4)
+const CLOSE_ID = "sidebar-close"; // Paseo 폰 서랍 닫기 단추 nativeID(앱 0.11.1)
 
 /** 남은 높이 — 아래쪽 줄 크기가 바뀌는 순간(사용량 올리기·내리기) 바로, 그 밖에는 1초마다 다시 잰다(창 크기·위쪽 메뉴 줄). 웹이 아니면 null */
 function useRoom(enabled: boolean): number | null {
@@ -43,6 +44,30 @@ function useRoom(enabled: boolean): number | null {
     };
   }, [enabled]);
   return room;
+}
+
+/**
+ * 폰 웹에서 왼쪽 칸을 서랍으로 열면 Paseo 가 닫기 단추(X)를 오른쪽 위에 얹어 머리줄 A+ 를 가린다(10-09 리규형님 "폰트 크게 하는
+ * 아이콘이 가려 안 보여") → 겹칠 때만 겹치는 폭만큼 머리줄 오른쪽을 비운다. PC·넓은 화면은 닫기 단추가 없어 0. 서랍이 열리는 순간
+ * 단추가 그려지므로 처음 몇 번은 바로바로, 그다음 1초마다 다시 잰다
+ */
+function useCloseInset(): number {
+  const [inset, setInset] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const read = () => {
+      const next = overlapFromRight(TOOLBAR_ID, CLOSE_ID);
+      setInset((prev) => (prev === next ? prev : next));
+    };
+    read();
+    const early = [50, 200, 500].map((ms) => setTimeout(read, ms));
+    const timer = setInterval(read, 1000);
+    return () => {
+      early.forEach(clearTimeout);
+      clearInterval(timer);
+    };
+  }, []);
+  return inset;
 }
 
 /** 설정 맞추기 알림(10-07)을 토스트로 한 번 띄운다 — 이 PC 플러그인이 늘 붙여 두는 이 칸이 맡는다 */
@@ -103,6 +128,7 @@ function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme
   const live = useLiveSessions();
   const [notice, setNotice] = useState<string | null>(null);
   const room = useRoom(true);
+  const closeInset = useCloseInset();
   const { height: windowHeight } = useWindowDimensions();
   const scale = useFontScale();
   const c = theme.colors;
@@ -156,6 +182,7 @@ function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme
           onEditList={editList}
           onReload={() => void load()}
           toolbarStart={toWorkspaces}
+          toolbarInset={closeInset}
         />
       </ScrollView>
     </View>

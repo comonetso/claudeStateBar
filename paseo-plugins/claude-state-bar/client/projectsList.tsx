@@ -24,6 +24,8 @@ import { setDraggableRow, setHoverTitle, setNoTranslate } from "./web";
 // 전체 화면과 왼쪽 목록 칸이 같이 쓴다. 칸(sidebar)은 폭이 좁아 도구 단추를 검색창 아래 줄에 둔다.
 
 const PINNED_GROUP = "고정";
+/** 왼쪽 칸 머리줄(워크스페이스·새로고침·A−·A+) — 폰 웹에서 Paseo 닫기 단추와 겹치는지 잴 때 쓴다 */
+export const TOOLBAR_ID = "claude-state-bar-projects-toolbar";
 const ACTIVE_GROUP = "활성";
 const DISABLED_GROUP = "꺼 둠";
 const UNTAGGED_GROUP = "카테고리 없음";
@@ -47,8 +49,10 @@ export function ProjectsList(props: {
   onReload: () => void;
   /** 칸 위쪽 도구 줄 왼쪽에 끼울 것(워크스페이스 목록으로 넘기는 단추) */
   toolbarStart?: ReactNode;
+  /** 왼쪽 칸 머리줄 오른쪽에 비울 폭 — 폰 웹에서 Paseo 닫기 단추가 덮는 만큼(projectsSidebar 가 잰다) */
+  toolbarInset?: number;
 }) {
-  const { theme, variant, data, index, live, busy, notice, onOpen, onEditList, onReload, toolbarStart } = props;
+  const { theme, variant, data, index, live, busy, notice, onOpen, onEditList, onReload, toolbarStart, toolbarInset } = props;
   // 목록 파일 편집 = Paseo 편집기 탭(10-07 — 별도 편집 화면을 없앴다). 못 열면 이유를 목록 위에 보인다
   const [editNotice, setEditNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -206,7 +210,7 @@ export function ProjectsList(props: {
     <View ref={setNoTranslate} style={{ gap: sidebar ? 6 : 10 }}>
       {sidebar ? (
         <>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <View nativeID={TOOLBAR_ID} style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingRight: toolbarInset ?? 0 }}>
             {toolbarStart}
             <View style={{ flex: 1 }} />
             {tools}

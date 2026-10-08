@@ -205,7 +205,7 @@ export function writePanelFontPx(px: number): void {
 // 입력창이나 터미널을 누른 뒤에는 가로채지 않는다. Paseo 자체에는 Ctrl+Tab 단축키가 없다(앱 keyboard/ 확인, 10-05).
 type ElementLike = {
   contains(node: unknown): boolean;
-  getBoundingClientRect(): { top: number; bottom: number; height: number };
+  getBoundingClientRect(): { top: number; bottom: number; height: number; left: number; right: number; width: number };
   textContent: string | null;
   remove(): void;
 };
@@ -808,6 +808,22 @@ export function measureRoomAbove(rootId: string, footerTestId: string): number |
   const bottom = Math.min(f.bottom, window.innerHeight);
   const room = bottom - f.height - root.getBoundingClientRect().top;
   return room > 0 ? Math.floor(room) : null;
+}
+
+/**
+ * rowId 줄의 오른쪽 끝을 coverId 요소가 덮고 있으면 비워야 할 폭(px), 아니면 0. 10-09 폰 웹: Paseo 가 왼쪽 칸을 서랍으로 열 때
+ * 닫기 단추(nativeID `sidebar-close`, 32×32·바탕색 칠함, 0.11.1 `mobileCloseButtonRow` 가 칸 위에 절대 위치)를 오른쪽 위에
+ * 얹어 프로젝트 목록 머리줄의 A+ 를 가렸다. 줄 안쪽 여백은 줄 크기를 안 바꾸므로 여백을 줘도 값이 흔들리지 않는다
+ */
+export function overlapFromRight(rowId: string, coverId: string): number {
+  if (!isWeb()) return 0;
+  const row = document.getElementById(rowId);
+  const cover = document.getElementById(coverId);
+  if (!row || !cover) return 0;
+  const r = row.getBoundingClientRect();
+  const c = cover.getBoundingClientRect();
+  if (!c.width || !c.height || c.bottom <= r.top || c.top >= r.bottom || c.left >= r.right || c.right <= r.left) return 0;
+  return Math.ceil(r.right - c.left + 4);
 }
 
 declare class ResizeObserver {
