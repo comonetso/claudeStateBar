@@ -4,7 +4,7 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { soundProvider } from "./sounds";
-import { readAppFontSizes, readLocal, writeLocal } from "./web";
+import { readAppFontSizes, readLocal, setNoTranslate, writeLocal } from "./web";
 
 // 왼쪽 목록 칸 맨 아래에 Claude·Codex 사용량을 둔다(리규형님 10-05 결정 — Paseo 자체 "사용량" 줄은 눌러야 보인다).
 // 10-09 부터 처음엔 접혀 요약 한 줄만 보이고, 올리고 내린 것을 기억한다(아래 UsageFooter).
@@ -120,14 +120,15 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
 
   if (!usage)
     return error ? (
-      <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 6 }}>
+      <View ref={setNoTranslate} style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 6 }}>
         <Text style={{ flex: 1, color: c.foregroundMuted, fontSize: ui - 1 }}>사용량을 못 읽었습니다</Text>
         {action}
       </View>
     ) : null;
   if (!providers.length) return null;
   return (
-    <View style={{ paddingHorizontal: 12, paddingVertical: 8, gap: 8 }} accessibilityLabel="Claude·Codex 사용량">
+    // 브라우저 번역이 날짜·창 이름을 길게 바꿔 칸 밖으로 밀어내지 않게(web.ts setNoTranslate)
+    <View ref={setNoTranslate} style={{ paddingHorizontal: 12, paddingVertical: 8, gap: 8 }} accessibilityLabel="Claude·Codex 사용량">
       {providers.map((p, index) => {
         const rows = p.windows;
         const cell = { height: rowH, justifyContent: "center" } as const;
@@ -235,6 +236,7 @@ export function UsageFooter({ theme }: Pick<PluginHostProps, "theme">) {
   const line = providers.length ? summaryLabel(providers) : error ? "사용량을 못 읽었습니다" : "사용량";
   return (
     <Pressable
+      ref={setNoTranslate}
       onPress={toggle}
       accessibilityRole="button"
       accessibilityLabel="사용량 올리기"

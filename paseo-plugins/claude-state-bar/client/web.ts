@@ -378,6 +378,18 @@ export function setHoverTitle(node: unknown, text: string): void {
 }
 
 /**
+ * 브라우저 페이지 번역(Chrome 번역·DeepL 등)이 이 요소 안 글을 건드리지 않게 표시한다(웹·데스크톱만). 10-09 리규형님 화면:
+ * 번역이 켜져 사용량 표의 "10/10 15:00" 이 "10월 10일 15:00", "5h" 가 "5시간" 으로 바뀌어 길어지면서 칸 밖으로 튀어나갔다
+ * (표가 그려지고 약 0.5초 뒤). 숫자·날짜·계정 이름뿐인 칸에 쓴다
+ */
+export function setNoTranslate(node: unknown): void {
+  if (!isWeb() || !node) return;
+  const el = node as { setAttribute?: (name: string, value: string) => void; classList?: { add(name: string): void } };
+  el.setAttribute?.("translate", "no");
+  el.classList?.add("notranslate");
+}
+
+/**
  * 앱 화면 일부를 스타일로 가린다(웹·데스크톱만). css 를 null 로 주면 걷는다. 플러그인은 Paseo 왼쪽 목록을 숨길 수 없어서
  * (플러그인 도구에 없음, 10-06 확인) 워크스페이스 목록 상자를 이름표(testID → data-testid)로 가린다 — 이름표가 바뀌면
  * 가림만 풀리고 다른 고장은 없다.
