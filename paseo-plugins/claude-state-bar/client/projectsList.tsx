@@ -274,16 +274,22 @@ export function ProjectsList(props: {
                     pinKey(e) === currentKey ? c.statusSuccess : e.missing ? c.foregroundMuted : !known ? c.statusWarning : c.foreground;
                   const key = pinKey(e);
                   const pinned = pins.has(key);
+                  // 고정·활성은 여러 카테고리가 섞여 소속이 안 보인다 → 카테고리 이름 앞 번호("1. MainServers" → 1)를 이름 앞 작은
+                  // 배지로(10-09 리규형님 결정 — 카테고리 이름을 통째로 붙이면 좁은 칸에서 프로젝트 이름이 잘린다). 번호 없는 카테고리는
+                  // 배지 없음. 마우스를 올리면 카테고리 이름도 뜬다. 원래 카테고리 묶음 안 줄은 그대로
+                  const mixed = g.name === PINNED_GROUP || g.name === ACTIVE_GROUP;
+                  const badge = mixed ? (/^\s*(\d+)/.exec(e.category)?.[1] ?? null) : null;
+                  const hoverHost = !known && !e.missing ? `${e.host} · 연결 없음` : e.host;
                   return (
                     <Pressable
                       key={`${g.name}|${e.host}|${e.path}`}
                       ref={(node: unknown) => {
-                        setHoverTitle(node, !known && !e.missing ? `${e.host} · 연결 없음` : e.host);
+                        setHoverTitle(node, mixed && e.category ? `${e.category} · ${hoverHost}` : hoverHost);
                         // 마우스로 끌어 같은 묶음 안 순서를 바꾼다(10-06 고정 → 10-07 모든 묶음, PC·웹 — 폰은 순서 바꾸기 없음)
                         setDraggableRow(node, key, g.name, c.accent, onDrop);
                       }}
                       accessibilityRole="button"
-                      accessibilityLabel={`${e.name} 열기${alive ? ` (열린 대화 ${alive.open}개${alive.running ? `, 돌고 있음 ${alive.running}개` : ""})` : ""}`}
+                      accessibilityLabel={`${e.name}${mixed && e.category ? ` (${e.category})` : ""} 열기${alive ? ` (열린 대화 ${alive.open}개${alive.running ? `, 돌고 있음 ${alive.running}개` : ""})` : ""}`}
                       disabled={!!busy || e.missing}
                       onPress={() => onOpen(e)}
                       style={({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) => [
@@ -294,6 +300,11 @@ export function ProjectsList(props: {
                       {({ hovered }: { hovered?: boolean; pressed: boolean }) => (
                         <>
                           <StatusIndicator bucket={alive?.bucket ?? null} theme={theme} />
+                          {badge ? (
+                            <View style={{ flexShrink: 0, minWidth: fs(15), paddingHorizontal: 3, borderRadius: 4, borderWidth: 1, borderColor: c.border, alignItems: "center" }}>
+                              <Text style={{ color: c.foregroundMuted, fontSize: fs(10) }}>{badge}</Text>
+                            </View>
+                          ) : null}
                           <Text style={{ flexShrink: 1, color: nameColor, fontSize: fs(12) }} numberOfLines={1}>
                             {e.name}
                           </Text>
