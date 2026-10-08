@@ -1,16 +1,13 @@
-import { appBundleId } from "./web";
+import { appBundleId, paseoModuleIds, type InternalsReason } from "./web";
 
 // 다른 기기에서 받은 설정을 새로고침 없이 반영한다(리규형님 10-08 결정: "새로고침 없이 바로", 안 되는 판에서만 예전처럼 새로 읽기).
 // Paseo 는 앱 설정·단축키 덮어쓰기를 화면 안 캐시(react-query)에 들고 있고, 처음 한 번 저장소에서 읽은 뒤로는 다시 읽지 않는다.
 // 저장소에 새 값을 써 둔 뒤 그 캐시에 "저장소에서 다시 읽어라"만 시키면, Paseo 가 켤 때와 같은 읽기 함수로 값이 들어가
 // 테마·글꼴(AppearanceProvider)·언어(I18nProvider)·단축키가 그 자리에서 바뀐다(0.11.0-beta.5 번들에서 확인한 구독 경로).
-//  - 캐시 본체: Metro 848 번 모듈의 queryClient(앱 루트 QueryClientProvider 에 넘기는 것)
-//  - 쿼리 열쇠: 앱 설정 ["app-settings"](모듈 3125 APP_SETTINGS_QUERY_KEY) · 단축키 ["keyboard-shortcut-overrides"](모듈 4028)
-// 모듈 번호는 이 번들에서만 맞다 — 지문이 다르면 손대지 않고 이유를 돌려준다(부르는 쪽이 새로 읽는다). web.ts 의 작업 공간
-// 연결과 같은 번들 지문이다(업데이트 점검표 20번).
+//  - 캐시 본체: queryClient 모듈(앱 루트 QueryClientProvider 에 넘기는 것) — 번호는 판마다 web.ts PASEO_BUNDLES(beta.5 848 · 0.11.1 850)
+//  - 쿼리 열쇠: 앱 설정 ["app-settings"] · 단축키 ["keyboard-shortcut-overrides"] — 글자 열쇠라 판이 바뀌어도 그대로
+// 모르는 판이면 손대지 않고 이유를 돌려준다(부르는 쪽이 새로 읽는다). 업데이트 점검표 20번.
 
-const CACHE_BUNDLE = "f07439c15f40c0ca1689fb49e3dcc6c8";
-const QUERY_CLIENT_MODULE = 848;
 const QUERY_KEYS: Record<string, readonly string[]> = {
   "@paseo:app-settings": ["app-settings"],
   "@paseo:keyboard-shortcut-overrides": ["keyboard-shortcut-overrides"],
@@ -22,15 +19,31 @@ type QueryClientLike = {
 };
 
 function queryClient(): QueryClientLike | string {
-  if (appBundleId() !== CACHE_BUNDLE) return `app bundle ${appBundleId()?.slice(0, 12) ?? "unknown"} is not ${CACHE_BUNDLE.slice(0, 12)}`;
+  const id = paseoModuleIds()?.queryClient;
+  if (id === undefined) return `app bundle ${appBundleId()?.slice(0, 12) ?? "unknown"} is not a known Paseo version`;
   const require = (globalThis as { __r?: (id: number) => unknown }).__r;
   if (typeof require !== "function") return "no metro require";
   try {
-    const qc = (require(QUERY_CLIENT_MODULE) as { queryClient?: Partial<QueryClientLike> } | null)?.queryClient;
-    if (typeof qc?.refetchQueries !== "function" || typeof qc.getQueryState !== "function") return "no queryClient in module 848";
+    const qc = (require(id) as { queryClient?: Partial<QueryClientLike> } | null)?.queryClient;
+    if (typeof qc?.refetchQueries !== "function" || typeof qc.getQueryState !== "function") return `no queryClient in module ${id}`;
     return qc as QueryClientLike;
   } catch (error) {
-    return `module 848 failed: ${String(error)}`;
+    return `module ${id} failed: ${String(error)}`;
+  }
+}
+
+/** 상태 표시(10-08, client/health.ts) — 캐시 연결이 갖춰졌는지 읽기만 한다. null = 갖춰짐 */
+export function probeSettingsCache(): InternalsReason | null {
+  if (!appBundleId()) return "not-web";
+  const id = paseoModuleIds()?.queryClient;
+  if (id === undefined) return "unknown-bundle";
+  const require = (globalThis as { __r?: (id: number) => unknown }).__r;
+  if (typeof require !== "function") return "no-require";
+  try {
+    const qc = (require(id) as { queryClient?: Partial<QueryClientLike> } | null)?.queryClient;
+    return typeof qc?.refetchQueries === "function" && typeof qc.getQueryState === "function" ? null : "no-export";
+  } catch {
+    return "load-failed";
   }
 }
 

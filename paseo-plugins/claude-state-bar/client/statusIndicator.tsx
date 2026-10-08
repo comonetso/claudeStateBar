@@ -36,7 +36,7 @@ export function mostUrgent(a: StatusBucket | undefined, b: StatusBucket): Status
 // 플러그인 테마에는 이 색이 없어서 바탕(surface0) 밝기로 고른다
 const LIGHT = { success: "#299f51", danger: "#f12e2f", warning: "#b37824", running: "#268ae0" };
 const DARK = { success: "#35c264", danger: "#f7796d", warning: "#db932e", running: "#5caaf6" };
-function dotColors(theme: PluginTheme) {
+export function dotColors(theme: PluginTheme) {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(theme.colors.surface0);
   if (!m) return DARK;
   const [r, g, b] = [m[1], m[2], m[3]].map((h) => parseInt(h, 16) / 255);

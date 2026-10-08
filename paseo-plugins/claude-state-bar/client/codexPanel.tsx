@@ -2,6 +2,7 @@ import { useRpc, useWorkspace, type PluginWorkspacePanelProps } from "@getpaseo/
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { codexDoc, codexRunItems, codexRuns, codexTrashRun, codexUsage, type RunCard, type RunItem, type RunPhase } from "../shared/codex";
+import { CleanDrawer } from "./codexClean";
 import { RunItemsView } from "./codexItems";
 import { TrashDrawer } from "./codexTrash";
 import { fmtBytes, fmtClock, fmtDur, fmtElapsed, fmtStamp, fmtTok, RUNNING_COLOR } from "./format";
@@ -10,7 +11,7 @@ import { useFontScale } from "./fontScale";
 
 // 확장 Codex 진행 패널: 실행 카드 목록 · 묶음 카드 · 끝난 실행 접기 · 활동(턴 머리표·명령 묶기) · 요청서·결과 문서.
 // 휴지통: 끝난 카드의 🗑 은 묻지 않고 통째로 옮기고, 묻는 것은 서랍의 완전 삭제·비우기뿐(codexTrash.tsx).
-// 끼어들기·기록 정리는 아직 없다.
+// 용량 줄 옆 [정리]: 항목 고르기 → 미리보기 → [지우기] 한 번 더(codexClean.tsx, 리규형님 10-08 "확장과 같게"). 끼어들기는 아직 없다.
 
 // 클로드가 끼어든 말의 표시색(확장 .now.steer 와 같은 주황)
 const STEER_COLOR = "#d98b45";
@@ -76,6 +77,7 @@ export function CodexRunsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
   const { notice, notify } = useNotice();
   const fetchUsage = useRpc(codexUsage);
   const [usage, setUsage] = useState<Awaited<ReturnType<typeof fetchUsage>> | null>(null);
+  const [cleanOpen, setCleanOpen] = useState(false);
 
   const live = !!data?.runs.some((r) => !isOver(r.phase));
 
@@ -360,7 +362,7 @@ export function CodexRunsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
           <Pressable style={styles.button} onPress={() => setTrashOpen(!trashOpen)} accessibilityRole="button">
             <Text style={styles.buttonText}>{trashOpen ? "▾" : "▸"} 🗑 휴지통</Text>
           </Pressable>
-          {/* 확장 renderUsage: codex_rescue 가 마지막으로 잰 값. [정리] 버튼은 Paseo 에서 어떻게 돌릴지 정해지면 */}
+          {/* 확장 renderUsage: codex_rescue 가 마지막으로 잰 값. [정리]는 값이 있을 때만(확장과 같음) */}
           {usage ? (
             <Text style={[styles.muted, { flexShrink: 1, alignSelf: "center" }]}>
               {usage.ok && usage.items && usage.computedAt
@@ -370,7 +372,32 @@ export function CodexRunsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
                 : "이 프로젝트의 기록 용량은 다음에 Codex 를 실행할 때 계산됩니다."}
             </Text>
           ) : null}
+          {usage?.ok && usage.items ? (
+            <Pressable
+              style={styles.button}
+              onPress={() => setCleanOpen(!cleanOpen)}
+              accessibilityRole="button"
+              accessibilityLabel="정리"
+              accessibilityHint="이 프로젝트에서 지금 지울 항목을 고릅니다. 지우기 전에 한 번 더 확인합니다."
+            >
+              <Text style={styles.buttonText}>정리</Text>
+            </Pressable>
+          ) : null}
         </View>
+      ) : null}
+      {/* 용량 값이 사라져도 도는 정리를 가리지 않게 열린 동안은 그대로 둔다 */}
+      {cleanOpen && directory ? (
+        <CleanDrawer
+          cwd={directory}
+          styles={styles}
+          theme={theme}
+          notify={notify}
+          onDone={() => {
+            setTrashKey((k) => k + 1);
+            void load();
+          }}
+          onClose={() => setCleanOpen(false)}
+        />
       ) : null}
       {trashOpen && directory ? (
         <TrashDrawer cwd={directory} styles={styles} theme={theme} notify={notify} onChanged={() => void load()} reloadKey={trashKey} />

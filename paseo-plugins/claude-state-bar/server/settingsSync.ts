@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { isSyncKey, toShared } from "../shared/settingsSync";
+import { layoutOwner } from "./layoutSync";
 
 // 기기 사이 Paseo 설정 맞추기의 정본(리규형님 10-07 결정). Paseo 화면은 설정을 그 화면의 브라우저 저장소에 따로 둬서
 // 앱에서 바꾼 단축키가 브라우저엔 안 먹었다 — 이 PC 데몬이 정본을 들고, 화면(client/settingsSync)이 거기에 맞춘다.
@@ -101,12 +102,15 @@ export async function waitSettings(slot: string, rev: number) {
   return reply(state, slot);
 }
 
-export async function putSettings(slot: string, changes: Record<string, string | null>, seed: boolean) {
+export async function putSettings(slot: string, changes: Record<string, string | null>, seed: boolean, screen?: string) {
   const state = await load();
   const now = Date.now();
   let s = state.slots[slot];
   if (seed) {
     if (s) return { rev: s.rev, applied: false };
+    // 대표 PC 웹이 정해져 있으면 새 판 칸은 그 화면만 만든다(10-08) — 가끔 켠 PC 앱·다른 브라우저의 값으로 만들지 않게
+    const owner = await layoutOwner();
+    if (owner && screen !== owner.id) return { rev: 0, applied: false, refused: true };
     s = state.slots[slot] = { rev: 0, at: now, keys: {} };
   } else if (!s) {
     // 칸이 없으면 처음 기준(PC 앱)이 만들기 전이다 — 다른 화면의 값으로 만들지 않는다

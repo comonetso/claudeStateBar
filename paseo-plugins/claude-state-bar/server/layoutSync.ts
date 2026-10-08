@@ -16,7 +16,9 @@ export async function hostIdentity(): Promise<{ serverId: string | null; hostnam
 }
 
 type Entry = { v: string; at: number };
-type State = { slots: Record<string, { at: number; keys: Record<string, Entry> }> };
+type Owner = { id: string; label: string; at: number };
+// owner = 대표 PC 웹(10-08, shared/layoutSync.ts) — 없으면 예전처럼 PC 앱이 맡는다
+type State = { slots: Record<string, { at: number; keys: Record<string, Entry> }>; owner?: Owner | null };
 
 let loading: Promise<State> | null = null;
 
@@ -53,10 +55,25 @@ function save(state: State): Promise<void> {
   return done;
 }
 
-export async function saveLayout(slot: string, key: string, value: string) {
+/** 지금 대표 화면 — 설정 칸 만들기(settingsSync seed)도 이것으로 거른다 */
+export async function layoutOwner(): Promise<Owner | null> {
+  return (await load()).owner ?? null;
+}
+
+export async function setLayoutOwner(screen: string | null, label: string) {
+  const state = await load();
+  state.owner = screen ? { id: screen, label, at: Date.now() } : null;
+  await save(state);
+  console.log(`[layout-sync] representative screen ${screen ? `set: ${label}` : "cleared — the PC app saves again"}`);
+  return { owner: state.owner };
+}
+
+export async function saveLayout(slot: string, key: string, value: string, screen?: string) {
   // 가져오는 열쇠만 받는다 — 연결 목록 같은 다른 저장 열쇠가 여기로 새어 나가지 않게
   if (!isLayoutKey(key)) throw new Error(`not a layout key: ${key}`);
   const state = await load();
+  // 대표가 있으면 대표만 — PC 앱을 가끔 켜도 대표 화면 구성을 덮어쓰지 않게(10-08). 거절하면 지금 대표를 알려 그 화면이 저장을 멈춘다
+  if (state.owner && screen !== state.owner.id) return { at: 0, refused: true, owner: state.owner };
   const now = Date.now();
   const s = (state.slots[slot] ??= { at: now, keys: {} });
   if (s.keys[key]?.v === value) return { at: s.keys[key].at };

@@ -78,9 +78,10 @@ export const syncWait = defineRpc({
   }),
 });
 
-/** seed=true 는 칸이 없을 때만 그 값으로 칸을 만든다(이미 있으면 applied=false). seed=false 는 칸이 있을 때만 바꾼다 */
+/** seed=true 는 칸이 없을 때만 그 값으로 칸을 만든다(이미 있으면 applied=false). seed=false 는 칸이 있을 때만 바꾼다.
+ *  대표 PC 웹이 정해져 있으면(10-08, shared/layoutSync.ts) 칸 만들기는 그 화면(screen)만 — 아니면 refused */
 export const syncPut = defineRpc({
   name: "settings-sync.put",
-  input: z.object({ slot: z.string(), changes: z.record(z.string(), z.string().nullable()), seed: z.boolean() }),
-  output: z.object({ rev: z.number(), applied: z.boolean() }),
+  input: z.object({ slot: z.string(), changes: z.record(z.string(), z.string().nullable()), seed: z.boolean(), screen: z.string().optional() }),
+  output: z.object({ rev: z.number(), applied: z.boolean(), refused: z.boolean().optional() }),
 });

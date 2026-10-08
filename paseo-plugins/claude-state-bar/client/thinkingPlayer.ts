@@ -1,10 +1,14 @@
 export type Phase = "streaming" | "complete";
 export type Paragraph = { src: string; done: boolean };
 export type AudioFile = { base64: string; mimeType: string };
+/** 번역 대상·읽기 음성 언어(10-08 — Paseo 언어 설정을 따른다, client/appLanguage uiLanguage) */
+export type Lang = "ko" | "en";
 export type ThinkingRpc = {
-  translate(input: { texts: string[] }): Promise<{ translations: (string | null)[]; error?: string }>;
-  synthesize(input: { text: string }): Promise<({ ok: true } & AudioFile) | { ok: false; error: string }>;
+  translate(input: { texts: string[]; lang?: Lang }): Promise<{ translations: (string | null)[]; error?: string }>;
+  synthesize(input: { text: string; lang?: Lang }): Promise<({ ok: true } & AudioFile) | { ok: false; error: string }>;
 };
+/** 읽기 시작 자리(10-08 생각 상자 선택 읽기) — index 번째 문단의, 화면에 보이던 글 안 offset 번째 글자부터 */
+export type StartAt = { index: number; offset: number };
 export type ThinkingAudio = {
   play(file: AudioFile, rate: number, ended: () => void, error: (reason: string) => void): Promise<void>;
   pause(): void;
@@ -23,6 +27,12 @@ export type ThinkingBoxState = {
   open: boolean;
   /** 본문 높이 제한을 풀어 스크롤 없이 전부 보이는가(리규형님 10-06 최대화·원복) */
   maximized: boolean;
+  /**
+   * 상자 글(\r 뺀 것)에서 Claude 의 말(마지막 생각 칸)이 시작되는 자리 — 데몬이 원본 기록으로 알려 준다(10-09,
+   * shared/thinkingBoundary.ts). 있으면 상자·번역·읽기는 그 앞만 쓰고 뒤는 상자 아래 본문 글로 그린다. text 는 늘 전체 글이다
+   * (같은 상자 알아보기·이어 받기가 전체 글로 맞춘다)
+   */
+  cut?: number | null;
   translate: boolean;
   suspended: boolean;
   controls: boolean;
@@ -31,6 +41,8 @@ export type ThinkingBoxState = {
   failures: Map<string, string>;
   pending: Set<string>;
   epoch: number;
+  /** translations 를 어느 언어로 받았나 — Paseo 언어가 바뀌면 받은 번역을 버리고 새 언어로 다시 받는다(10-08) */
+  translatedLang?: Lang;
   busy?: object;
   rpc?: ThinkingRpc;
   watch?: (update: (text: string, phase: Phase, stamp?: number) => void, error: (reason: string) => void) => () => void;
@@ -51,17 +63,39 @@ type Run = {
   currentText?: string;
   startedAt: number;
   slots: Map<number, Slot>;
+  /** 선택한 자리부터 읽기(10-08): index 문단이 시작할 때 화면 글이 text 그대로면 at 번째 글자부터 읽는다.
+   *  글이 바뀌었으면(번역이 와서 번역문이 됐다 등) 그 문단 처음부터. 이전·다음을 누르면 버린다 */
+  from?: { index: number; text: string; at: number };
 };
 
 /** 빈 줄만 문단 경계로 삼는다. 스트리밍 마지막 비어 있지 않은 문단은 보류한다. */
+/** 상자에 둘 생각 글 — 꺼낼 자리(cut)가 있으면 그 앞만 */
+export function boxText(box: Pick<ThinkingBoxState, "text" | "cut">): string {
+  return box.cut == null ? box.text : box.text.replace(/\r/g, "").slice(0, box.cut);
+}
+/** 꺼낼 자리가 있으면 앞 칸들은 이미 다 들어온 것이라 마지막 문단도 끝난 문단이다 */
+export function boxPhase(box: Pick<ThinkingBoxState, "phase" | "cut">): Phase {
+  return box.cut == null ? box.phase : "complete";
+}
+/** 상자 아래에 그릴 Claude 의 말(꺼낼 자리 뒤) — 없으면 빈 글 */
+export function saidText(box: Pick<ThinkingBoxState, "text" | "cut">): string {
+  return box.cut == null ? "" : box.text.replace(/\r/g, "").slice(box.cut).trim();
+}
+
 export function splitParagraphs(text: string, phase: Phase): Paragraph[] {
   const parts = text.replace(/\r\n?/g, "\n").split(/\n[\t ]*\n(?:[\t ]*\n)*/).filter((s) => s.trim());
   const hasBoundary = /\n[\t ]*\n[\t \n]*$/.test(text.replace(/\r\n?/g, "\n"));
   return parts.map((src, i) => ({ src, done: phase === "complete" || i < parts.length - 1 || hasBoundary }));
 }
 
-/** 기존 생각 상자의 영어·한글 비율 기준. */
-export function needsTranslation(s: string): boolean {
+// 라틴 문자가 아닌 글자(그리스·키릴·아르메니아·히브리·아랍·인도계·타이·한글·가나·한자). 폰 앱(Hermes)에서 \p{...} 정규식을
+// 믿지 않으려고 범위로 적었다
+const NON_LATIN_LETTER = /[\u0370-\u03ff\u0400-\u052f\u0530-\u058f\u0590-\u05ff\u0600-\u06ff\u0900-\u0e7f\u1100-\u11ff\u3040-\u30ff\u3130-\u318f\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7a3]/;
+
+/** 번역할 문단인가. 한국어 대상 = 기존 생각 상자의 영어·한글 비율 기준. 영어 대상(10-08) = 라틴 문자가 아닌 글자가 있으면
+ *  (Claude 가 정한 규칙 — 데몬 server/translate 의 영어 문장 판정과 같은 뜻) */
+export function needsTranslation(s: string, lang: Lang = "ko"): boolean {
+  if (lang === "en") return NON_LATIN_LETTER.test(s);
   const letters = s.replace(/\s/g, "").length;
   if (!letters || !/[A-Za-z]{2,}/.test(s)) return false;
   return (s.match(/[가-힣]/g) ?? []).length / letters < 0.2;
@@ -126,7 +160,13 @@ export class ThinkingController {
   private serial = 0;
   rate = 1;
 
-  constructor(private audio: ThinkingAudio, private saveRate: (rate: number) => void = () => {}, private now = Date.now) {}
+  /** lang = 지금 번역 대상·음성 언어를 그때그때 묻는 함수(10-08). 시험·옛 부르기는 한국어 */
+  constructor(
+    private audio: ThinkingAudio,
+    private saveRate: (rate: number) => void = () => {},
+    private now = Date.now,
+    private lang: () => Lang = () => "ko",
+  ) {}
 
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
@@ -186,6 +226,13 @@ export class ThinkingController {
     this.notify();
   }
   toggleMaximized(box: ThinkingBoxState): void { box.maximized = !box.maximized; this.notify(); }
+  /** 데몬이 알려 준 꺼낼 자리(10-09). 한 번 찾은 자리는 글이 늘어도 그대로다(앞 칸은 이미 끝났다) */
+  setCut(box: ThinkingBoxState, cut: number | null): void {
+    if (cut === (box.cut ?? null) || (cut === null && box.cut != null)) return;
+    box.cut = cut;
+    this.translateMore(box);
+    this.notify();
+  }
   toggleControls(box: ThinkingBoxState): void { box.controls = !box.controls; this.notify(); }
 
   toggleTranslation(box: ThinkingBoxState): void {
@@ -206,14 +253,22 @@ export class ThinkingController {
   }
 
   private translateMore(box: ThinkingBoxState): void {
+    const lang = this.lang();
+    // Paseo 언어가 바뀌었으면 옛 언어로 받은 번역을 버린다(10-08) — 다음 줄부터 새 언어로 다시 받는다
+    if (box.translatedLang !== undefined && box.translatedLang !== lang) {
+      this.cancelTranslation(box);
+      box.translations.clear();
+      box.failures.clear();
+    }
+    box.translatedLang = lang;
     if (!box.translate || box.suspended || box.busy || !box.rpc) return;
-    const texts = [...new Set(splitParagraphs(box.text, box.phase).filter((p) => p.done && needsTranslation(p.src) && !box.translations.has(p.src)).map((p) => p.src))].slice(0, 20);
+    const texts = [...new Set(splitParagraphs(boxText(box), boxPhase(box)).filter((p) => p.done && needsTranslation(p.src, lang) && !box.translations.has(p.src)).map((p) => p.src))].slice(0, 20);
     if (!texts.length) return;
     const epoch = box.epoch;
     const busy = {};
     box.busy = busy;
     texts.forEach((text) => box.pending.add(text));
-    void box.rpc.translate({ texts }).then((result) => {
+    void box.rpc.translate({ texts, lang }).then((result) => {
       if (box.epoch !== epoch) return;
       texts.forEach((text, i) => {
         const value = result.translations[i];
@@ -254,12 +309,23 @@ export class ThinkingController {
     return { active: !!run, index: run?.index ?? -1, paused: run?.paused ?? false, status: run?.status ?? "", strict: run?.strict ?? false };
   }
 
-  start(box: ThinkingBoxState, strict: boolean): void {
+  /** 읽기 시작. at 이 있으면 그 문단(가능하면 그 글자)부터 — 없으면 처음 문단부터(10-08 생각 상자 선택 읽기) */
+  start(box: ThinkingBoxState, strict: boolean, at?: StartAt): void {
     if (this.run) this.stop();
     box.error = "";
     box.suspended = false;
+    // 글자 자리는 누를 때 화면에 보이던 글 기준이다 — 번역읽기가 번역을 켜 화면 글이 바뀌기 전에 그 글을 잡아 둔다
+    const target = at ? splitParagraphs(boxText(box), boxPhase(box))[at.index] : undefined;
+    const shownAtPress = target ? this.shown(box, target) : undefined;
     if (strict) box.translate = true;
     const run: Run = { box, index: 0, strict, paused: false, status: "loading", generation: 0, loaded: false, startedAt: 0, slots: new Map() };
+    if (at && target && shownAtPress !== undefined) {
+      run.index = at.index;
+      // 글자 자리가 글 안이고 그 뒤에 읽을 글이 남을 때만 — 아니면 그 문단 처음부터
+      if (at.offset > 0 && at.offset < shownAtPress.length && shownAtPress.slice(at.offset).trim()) {
+        run.from = { index: at.index, text: shownAtPress, at: at.offset };
+      }
+    }
     this.run = run;
     this.syncWatch(box);
     this.translateMore(box);
@@ -315,15 +381,44 @@ export class ThinkingController {
 
   previous(): void {
     const run = this.run;
-    if (run) this.seek(run.index === 0 || (run.loaded && this.now() - run.startedAt > 3000) ? run.index : Math.max(0, run.index - 1));
+    if (!run) return;
+    // 이전·다음은 문단 단위다 — 선택한 글자 자리는 처음 한 번만 쓴다(10-08)
+    run.from = undefined;
+    this.seek(run.index === 0 || (run.loaded && this.now() - run.startedAt > 3000) ? run.index : Math.max(0, run.index - 1));
   }
 
   next(): void {
     const run = this.run;
     if (!run) return;
-    const complete = splitParagraphs(run.box.text, run.box.phase).filter((p) => p.done).length;
+    const complete = splitParagraphs(boxText(run.box), boxPhase(run.box)).filter((p) => p.done).length;
     if (run.box.phase === "streaming" && run.index >= complete) return;
+    run.from = undefined;
     this.seek(run.index + 1);
+  }
+
+  /** 읽는 문단의 형광펜을 몇 번째 글자부터 칠할지 — 선택한 글자부터 읽는 중이고 화면 글이 그때 그대로면 그 자리, 아니면 0(문단 전체) */
+  readingFrom(box: ThinkingBoxState, index: number, shownText: string): number {
+    const run = this.run;
+    const from = run?.box === box && run.index === index ? run.from : undefined;
+    return from && from.index === index && from.text === shownText ? from.at : 0;
+  }
+
+  /**
+   * 설정 화면에서 번역·읽기를 끄면(10-08) 그 기능을 멈춘다 — 버튼이 숨으므로 켜 둔 채 남으면 끌 방법이 없다.
+   * 읽기를 끄면 읽기를 멈추고, 번역을 끄면 번역읽기를 멈추고 모든 상자의 번역 표시를 끈다. 다시 켜도 저절로 돌아오지 않는다
+   */
+  applyFeatures(translate: boolean, tts: boolean): void {
+    if (this.run && (!tts || (!translate && this.run.strict))) this.stop();
+    if (!translate) {
+      for (const box of this.boxes.values()) {
+        if (!box.translate) continue;
+        box.translate = false;
+        this.cancelTranslation(box);
+        if (this.run?.box === box) this.seek(this.run.index);
+        this.syncWatch(box);
+      }
+    }
+    this.notify();
   }
 
   private seek(index: number): void {
@@ -353,10 +448,13 @@ export class ThinkingController {
   }
 
   private readable(run: Run, index: number): string | undefined {
-    const paragraph = splitParagraphs(run.box.text, run.box.phase)[index];
+    const paragraph = splitParagraphs(boxText(run.box), boxPhase(run.box))[index];
     if (!paragraph?.done) return;
-    if (run.strict && needsTranslation(paragraph.src) && typeof run.box.translations.get(paragraph.src) !== "string") return;
-    return this.shown(run.box, paragraph);
+    if (run.strict && needsTranslation(paragraph.src, this.lang()) && typeof run.box.translations.get(paragraph.src) !== "string") return;
+    const shown = this.shown(run.box, paragraph);
+    // 선택한 글자부터(10-08) — 그 문단 화면 글이 누를 때 그대로일 때만
+    const from = run.from;
+    return from && from.index === index && from.text === shown ? shown.slice(from.at) : shown;
   }
 
   private slot(run: Run, index: number, text: string): Slot {
@@ -365,7 +463,7 @@ export class ThinkingController {
     if (old) old.live = false;
     const slot: Slot = { text, live: true, promise: Promise.resolve().then(async () => {
       if (!slot.live || this.run !== run || run.box.suspended) throw new Error("취소된 합성");
-      const result = await run.box.rpc!.synthesize({ text });
+      const result = await run.box.rpc!.synthesize({ text, lang: this.lang() });
       if (!result.ok) throw new Error(result.error);
       return { base64: result.base64, mimeType: result.mimeType };
     }) };
@@ -377,7 +475,7 @@ export class ThinkingController {
 
   private prefetch(run: Run): void {
     if (this.run !== run || run.paused || !run.loaded) return;
-    const paragraphs = splitParagraphs(run.box.text, run.box.phase);
+    const paragraphs = splitParagraphs(boxText(run.box), boxPhase(run.box));
     for (let index = run.index + 1; index <= run.index + PREFETCH_AHEAD; index++) {
       const paragraph = paragraphs[index];
       // 번역을 켠 채 읽을 때 번역이 아직 안 온 문단은 기다린다 — 원문으로 미리 합성해 두면 번역이 와서 읽을 글이 바뀌어
@@ -390,12 +488,12 @@ export class ThinkingController {
   }
 
   private awaitingTranslation(box: ThinkingBoxState, paragraph: Paragraph): boolean {
-    return box.translate && !box.suspended && paragraph.done && needsTranslation(paragraph.src) && !box.translations.has(paragraph.src);
+    return box.translate && !box.suspended && paragraph.done && needsTranslation(paragraph.src, this.lang()) && !box.translations.has(paragraph.src);
   }
 
   private async pump(run: Run): Promise<void> {
     if (this.run !== run || run.paused || !run.box.rpc) return;
-    const paragraphs = splitParagraphs(run.box.text, run.box.phase);
+    const paragraphs = splitParagraphs(boxText(run.box), boxPhase(run.box));
     const paragraph = paragraphs[run.index];
     if (!paragraph?.done) {
       if (run.box.phase === "complete") { this.finish(run); this.syncWatch(run.box); }
@@ -403,7 +501,7 @@ export class ThinkingController {
       this.notify();
       return;
     }
-    if (run.strict && needsTranslation(paragraph.src) && run.box.translations.get(paragraph.src) === null) {
+    if (run.strict && needsTranslation(paragraph.src, this.lang()) && run.box.translations.get(paragraph.src) === null) {
       this.stop(`번역 실패로 읽기 중지: ${run.box.failures.get(paragraph.src) || "문단 번역 실패"}`);
       return;
     }

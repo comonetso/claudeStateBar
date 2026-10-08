@@ -2,6 +2,7 @@ import type { PluginButton, PluginButtonContentProps, PluginButtonRegistration, 
 import { Platform, View } from "react-native";
 import { translateKo } from "../shared/translate";
 import { googleStatus, ttsSynthesize } from "../shared/tts";
+import { featureSwitches, onSharedSignal } from "./sounds";
 import { SpeedSlider, thinkingController as controller } from "./thinking";
 import type { ThinkingBoxState } from "./thinkingPlayer";
 import { clearSelection, isCompactWidth, readAppFontSizes, selectionParagraphs, startComposerRail, watchCompactWidth, watchSelection, type SelectionSnapshot } from "./web";
@@ -71,7 +72,8 @@ export function createSelectionPills(client: PluginClientContext, log: (message:
   const lookOf = (id: string): Look => {
     const st = playing();
     const active = !!st?.active;
-    if (id === "read") return { visible: canSpeak && !!selected };
+    // 설정 화면 "번역·읽기" 칸에서 읽기를 끄면 숨는다(리규형님 10-08)
+    if (id === "read") return { visible: canSpeak && featureSwitches().tts && !!selected };
     if (id === "toggle") return { visible: active, label: st?.paused ? "재생" : "일시정지", title: st?.paused ? "이어서 읽기" : "일시정지", icon: st?.paused ? "Play" : "Pause" };
     if (id === "speed") return { visible: active, label: `${controller.rate.toFixed(2)}x` };
     return { visible: active };
@@ -130,13 +132,23 @@ export function createSelectionPills(client: PluginClientContext, log: (message:
     pills.set(agent.id, set);
   };
 
-  void client.rpc(googleStatus, {}).then(
-    (status) => {
-      canSpeak = status.tts;
-      refresh();
-    },
-    (error: unknown) => log(`selection read: key check failed ${String(error)}`),
-  );
+  // 이 호스트에 읽기 키가 있는가 — 설정 화면에서 키를 저장·확인하면 다시 묻는다(10-08)
+  let keyCheck = 0;
+  const checkKeys = () => {
+    const mine = ++keyCheck;
+    void client.rpc(googleStatus, {}).then(
+      (status) => {
+        if (mine !== keyCheck) return;
+        canSpeak = status.tts;
+        refresh();
+      },
+      (error: unknown) => log(`selection read: key check failed ${String(error)}`),
+    );
+  };
+  checkKeys();
+  const stopKeys = onSharedSignal("googleKeys", checkKeys);
+  // 켜기·끄기가 바뀌면 알약을 다시 그린다(끈 기능 멈추기는 생각 상자 쪽 thinking.tsx 가 재생기에 한다)
+  const stopSettings = onSharedSignal("settings", refresh);
   const stopWatch = watchSelection((snapshot) => {
     const changed = (snapshot?.text ?? "") !== (selected?.text ?? "");
     selected = snapshot; // 같은 글이어도 범위는 최신으로
@@ -145,7 +157,7 @@ export function createSelectionPills(client: PluginClientContext, log: (message:
   const stopController = controller.subscribe(refresh);
   // 화면 폭이 좁은 화면 ↔ 넓은 화면으로 바뀌면 글자를 다시 그린다
   // 좁은 화면에서 읽기 조절 단추를 알약 줄 둘째 줄로(10-08) — web.ts startComposerRail
-  const stopRail = startComposerRail(log);
+  const stopRail = startComposerRail();
   const stopWidth = watchCompactWidth(() => {
     for (const set of pills.values()) for (const pill of set.values()) pill.last = "";
     refresh();
@@ -155,6 +167,8 @@ export function createSelectionPills(client: PluginClientContext, log: (message:
     observe,
     remove,
     dispose: () => {
+      stopKeys();
+      stopSettings();
       stopWatch();
       stopController();
       stopWidth();

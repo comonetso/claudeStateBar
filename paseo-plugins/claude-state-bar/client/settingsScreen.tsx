@@ -1,25 +1,29 @@
 import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { extSettingsImport } from "../shared/extSettings";
+import { googleKeysCheck, googleKeysSave, googleKeysState, type GoogleKeysState } from "../shared/googleKeys";
 import { settingsSchema, soundSettings, type SoundSettings } from "../shared/settings";
 import { projectsResetOrder } from "../shared/projects";
 import { soundData, type SoundKind } from "../shared/sound";
+import { uiLanguage } from "./appLanguage";
+import { applyExtImport, extImportReport } from "./extImport";
 import { announceOrders, announcePins } from "./projectsData";
+import { settingsText } from "./settingsI18n";
+import { emitSharedSignal } from "./sounds";
+import { MainDeviceSection, VersionStatusSection } from "./versionStatus";
+import { FoldTitle, SectionTitle } from "./sectionTitle";
 import { playSoundUrl } from "./web";
 import { WebLoginSection } from "./webLoginSection";
 
 /** Paseo 설정 안의 우리 항목 이름(10-07: "Claude 상태 소리" → 웹 로그인·소리를 칸으로 나눈 플러그인 설정 화면). */
 export const SETTINGS_TITLE = "Claude State Bar";
 
+// 화면 글자는 사전(client/settingsI18n)에서 — 한글·영어 두 벌, 언어는 Paseo 언어 설정을 따른다(리규형님 10-08 결정).
+// 화면이 열릴 때 한 번 읽는다(Paseo 언어를 바꾸면 설정 화면을 다시 열 때 반영 — 같은 결정).
+
 const ORDER: SoundKind[] = ["completion", "question", "warning", "danger", "workflow"];
 
-const LABELS: Record<SoundKind, { title: string; hint: string }> = {
-  completion: { title: "끝남", hint: "대화가 끝났을 때" },
-  question: { title: "질문", hint: "질문 창이나 계획 승인 창이 떴을 때" },
-  warning: { title: "경고", hint: "컨텍스트가 경고 기준을 처음 넘을 때" },
-  danger: { title: "위험", hint: "컨텍스트가 위험 기준을 처음 넘을 때" },
-  workflow: { title: "따르릉", hint: "워크플로우·서브에이전트 묶음·백그라운드 작업·codex_rescue 실행이 끝났을 때" },
-};
 
 type Draft = Record<SoundKind, { file: string; gain: string }> & {
   settleMs: string;
@@ -29,6 +33,8 @@ type Draft = Record<SoundKind, { file: string; gain: string }> & {
   syncWorkspaceOrder: boolean;
   syncLayout: boolean;
   activitySplitPercent: string;
+  translateEnabled: boolean;
+  ttsEnabled: boolean;
 };
 
 function toDraft(values: SoundSettings): Draft {
@@ -44,6 +50,8 @@ function toDraft(values: SoundSettings): Draft {
     syncWorkspaceOrder: values.syncWorkspaceOrder,
     syncLayout: values.syncLayout,
     activitySplitPercent: String(values.activitySplitPercent),
+    translateEnabled: values.translateEnabled,
+    ttsEnabled: values.ttsEnabled,
   };
 }
 
@@ -60,12 +68,16 @@ function fromDraft(draft: Draft) {
     syncWorkspaceOrder: draft.syncWorkspaceOrder,
     syncLayout: draft.syncLayout,
     activitySplitPercent: Number(draft.activitySplitPercent),
+    translateEnabled: draft.translateEnabled,
+    ttsEnabled: draft.ttsEnabled,
   });
 }
 
 /** 설정이 저장되거나 기본값으로 돌아가면 onSaved 를 부른다(공급자가 설정을 다시 읽게). */
 export function createSettingsScreen(onSaved: () => void) {
   return function SoundSettingsScreen({ theme, layout }: PluginSurfaceProps) {
+    // 열릴 때 한 번 — 이 화면이 떠 있는 동안 언어는 바뀌지 않는다
+    const t = useMemo(() => settingsText(), []);
     const state = useSettings(soundSettings);
     const preview = useRpc(soundData);
     const [draft, setDraft] = useState<Draft | null>(null);
@@ -74,15 +86,50 @@ export function createSettingsScreen(onSaved: () => void) {
     const resetOrder = useRpc(projectsResetOrder);
     const [confirmReset, setConfirmReset] = useState(false);
     const [resetMessage, setResetMessage] = useState<string | null>(null);
+    // "소리" 칸 접기(10-08) — 처음엔 접힘, 웹·PC 앱은 이 기기 저장소에 기억
+    // 항목이 여럿인 칸은 설정 화면을 열 때마다 접힌 채로 시작한다(10-09 리규형님 "너무 길어서 헷갈려"). 소리 칸의
+    // "펼친 상태 기억"(10-08 결정)도 이 지시로 바꿨다 — 기억하지 않는다
+    const [soundOpen, setSoundOpen] = useState(false);
+    const [syncOpen, setSyncOpen] = useState(false);
+    const [speechOpen, setSpeechOpen] = useState(false);
+    // VS Code 확장 설정 가져오기(10-08) — 데몬(PC)이 VS Code 사용자 설정을 읽어 주면 입력 칸만 채운다
+    const importExt = useRpc(extSettingsImport);
+    const [importing, setImporting] = useState(false);
+    const [importReport, setImportReport] = useState<{ text: string; bad: boolean; details: string[] } | null>(null);
+    // 번역·읽기 키(10-08) — 이 PC 데몬의 키 파일에만 저장. 데몬은 키 값을 돌려주지 않는다(있음/없음·마지막 확인 결과만).
+    // 입력 칸 글은 저장하면 바로 비운다
+    const lang = useMemo(() => uiLanguage(), []);
+    const keysStateRpc = useRpc(googleKeysState);
+    const keysSaveRpc = useRpc(googleKeysSave);
+    const keysCheckRpc = useRpc(googleKeysCheck);
+    const [keysState, setKeysState] = useState<GoogleKeysState | null>(null);
+    const [keysStateError, setKeysStateError] = useState<string | null>(null);
+    const [keyInputs, setKeyInputs] = useState({ gemini: "", tts: "" });
+    const [keysBusy, setKeysBusy] = useState<"save" | "check" | null>(null);
+    const [keysMessage, setKeysMessage] = useState<{ text: string; bad: boolean } | null>(null);
+    useEffect(() => {
+      let live = true;
+      keysStateRpc({}).then(
+        (next) => {
+          if (live) setKeysState(next);
+        },
+        (error: unknown) => {
+          if (live) setKeysStateError(t.keysStateFailed(String(error)));
+        },
+      );
+      return () => {
+        live = false;
+      };
+    }, [keysStateRpc, t]);
     const doReset = async () => {
       setConfirmReset(false);
       try {
         await resetOrder({});
         announcePins([]);
         announceOrders({});
-        setResetMessage("목록 순서와 고정을 초기화했습니다 — 목록 파일 순서로 돌아갑니다");
+        setResetMessage(t.resetOrderDone);
       } catch (error) {
-        setResetMessage(`초기화하지 못했습니다: ${String(error)}`);
+        setResetMessage(t.resetOrderFailed(String(error)));
       }
     };
     const revision = state.status === "ready" ? state.revision : null;
@@ -98,7 +145,6 @@ export function createSettingsScreen(onSaved: () => void) {
         screen: { flex: 1, backgroundColor: theme.colors.surface0 },
         content: { padding: layout.compact ? 16 : 24, gap: layout.compact ? 12 : 16 },
         title: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 20, fontWeight: "600" as const },
-        section: { color: theme.colors.foreground, fontSize: 16, fontWeight: "600" as const, marginTop: 8 },
         muted: { color: theme.colors.foregroundMuted, fontSize: 13 },
         text: { color: theme.colors.foreground, fontSize: 14 },
         card: {
@@ -138,16 +184,18 @@ export function createSettingsScreen(onSaved: () => void) {
     const shell = (body: ReactNode) => (
       <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
         <Text style={styles.title}>{SETTINGS_TITLE}</Text>
-        <WebLoginSection theme={theme} compact={layout.compact} />
+        <MainDeviceSection theme={theme} t={t} />
+        <VersionStatusSection theme={theme} t={t} />
+        <WebLoginSection theme={theme} compact={layout.compact} t={t} />
         {body}
       </ScrollView>
     );
 
     if (state.status === "loading" || (state.status === "ready" && !draft)) {
-      return shell(<Text style={styles.muted}>동기화·소리 설정을 읽는 중입니다</Text>);
+      return shell(<Text style={styles.muted}>{t.loading}</Text>);
     }
     if (state.status === "error" || !draft) {
-      return shell(<Text style={styles.error}>설정을 읽지 못했습니다: {state.status === "error" ? state.error : ""}</Text>);
+      return shell(<Text style={styles.error}>{t.readFailed(state.status === "error" ? state.error : "")}</Text>);
     }
 
     const setSound = (kind: SoundKind, patch: Partial<{ file: string; gain: string }>) =>
@@ -164,7 +212,7 @@ export function createSettingsScreen(onSaved: () => void) {
         });
         await playSoundUrl(dataUrl);
       } catch (error) {
-        setMessage(`${LABELS[kind].title} 소리를 틀지 못했습니다: ${String(error)}`);
+        setMessage(t.playFailed(t.sounds[kind].title, String(error)));
       }
     };
 
@@ -172,23 +220,49 @@ export function createSettingsScreen(onSaved: () => void) {
       const parsed = fromDraft(draft);
       if (!parsed.success) {
         const issue = parsed.error.issues[0];
-        setMessage(`값을 확인해 주세요 (${issue?.path.join(".") ?? ""}): ${issue?.message ?? ""}`);
+        setMessage(t.checkValue(issue?.path.join(".") ?? "", issue?.message ?? ""));
         return;
       }
       if (parsed.data.warningPercent >= parsed.data.dangerPercent) {
-        setMessage("경고 기준은 위험 기준보다 낮아야 합니다");
+        setMessage(t.warningBelowDanger);
         return;
       }
       if (state.status !== "ready" && state.status !== "invalid") return;
       const ok = await state.save(parsed.data, state.revision);
-      setMessage(ok ? "저장했습니다" : `저장하지 못했습니다: ${state.saveError ?? ""}`);
-      if (ok) onSaved();
+      setMessage(ok ? t.saved : t.saveFailed(state.saveError ?? ""));
+      if (ok) {
+        // 가져온 값을 저장했으면 "[저장]을 눌러야" 안내는 더 맞지 않는다
+        setImportReport(null);
+        onSaved();
+      }
     };
 
     const reset = async () => {
       const ok = await state.reset();
-      setMessage(ok ? "기본값으로 되돌렸습니다" : `되돌리지 못했습니다: ${state.saveError ?? ""}`);
-      if (ok) onSaved();
+      setMessage(ok ? t.resetDone : t.resetFailed(state.saveError ?? ""));
+      if (ok) {
+        setImportReport(null);
+        onSaved();
+      }
+    };
+
+    const toggleSound = () => {
+      setSoundOpen(!soundOpen);
+    };
+
+    const runImport = async () => {
+      setImportReport(null);
+      setImporting(true);
+      try {
+        const result = await importExt({});
+        // 입력 칸만 채운다 — 저장은 사용자가 [저장]을 눌러야 된다(10-08 결정). 그사이 바뀐 칸을 덮지 않게 지금 칸 위에 얹는다
+        if (result.status === "ok") setDraft((current) => (current ? applyExtImport(current, result.values) : current));
+        setImportReport(extImportReport(t, result));
+      } catch (error) {
+        setImportReport({ text: t.importFailed(String(error)), bad: true, details: [] });
+      } finally {
+        setImporting(false);
+      }
     };
 
     const syncSwitch = (key: "syncWorkspaceOrder" | "syncLayout", title: string, hint: string) => (
@@ -197,50 +271,132 @@ export function createSettingsScreen(onSaved: () => void) {
           <Text style={styles.text}>{title}</Text>
           <Text style={styles.muted}>{hint}</Text>
         </View>
-        <Switch value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={`PC 에서 ${title} 가져오기`} />
+        <Switch value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={t.syncSwitchLabel(title)} />
       </View>
     );
 
+    const speechSwitch = (key: "translateEnabled" | "ttsEnabled", title: string, hint: string) => (
+      <View style={[styles.card, styles.switchRow]}>
+        <View style={styles.switchText}>
+          <Text style={styles.text}>{title}</Text>
+          <Text style={styles.muted}>{hint}</Text>
+        </View>
+        <Switch value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={title} />
+      </View>
+    );
+
+    // 마지막 확인 시각은 시:분만(데몬이 다시 읽히면 확인 결과를 잊으므로 대개 오늘 것이다)
+    const clock = (at: number) => {
+      const d = new Date(at);
+      return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    };
+    const keyField = (field: "gemini" | "tts", name: string, state: GoogleKeysState["translate"] | undefined) => (
+      <View style={{ gap: 6 }}>
+        {state ? (
+          <Text style={state.check && !state.check.ok ? styles.error : styles.text}>
+            {t.keyLine(name, state.saved, state.check ? (state.check.ok ? t.keyCheckOk(clock(state.check.at)) : t.keyCheckFailed(clock(state.check.at))) : t.keyCheckNever)}
+          </Text>
+        ) : (
+          <Text style={styles.text}>{name}</Text>
+        )}
+        <TextInput
+          style={styles.input}
+          value={keyInputs[field]}
+          onChangeText={(value) => setKeyInputs((current) => ({ ...current, [field]: value }))}
+          placeholder={state?.saved ? t.keyPlaceholderSaved : t.keyPlaceholderMissing}
+          placeholderTextColor={theme.colors.foregroundMuted}
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="off"
+          accessibilityLabel={t.keyInputLabel(name)}
+        />
+      </View>
+    );
+
+    const saveKeys = async () => {
+      const gemini = keyInputs.gemini.trim();
+      const tts = keyInputs.tts.trim();
+      if (!gemini && !tts) {
+        setKeysMessage({ text: t.keysNothing, bad: true });
+        return;
+      }
+      setKeysBusy("save");
+      setKeysMessage(null);
+      try {
+        const result = await keysSaveRpc({ ...(gemini ? { gemini } : {}), ...(tts ? { tts } : {}) });
+        if (result.ok) {
+          setKeysState(result.state);
+          setKeysStateError(null);
+          setKeyInputs({ gemini: "", tts: "" });
+          setKeysMessage({ text: t.keysSaved, bad: false });
+          // 생각 상자·선택 읽기 알약이 키 있음을 다시 묻게(thinking.tsx 호스트별 키 확인 기억 비우기)
+          emitSharedSignal("googleKeys");
+        } else {
+          setKeysMessage({
+            text: result.reason === "invalid" ? t.keysInvalid(result.field === "tts" ? t.ttsKeyName : t.geminiKeyName) : t.keysWriteFailed,
+            bad: true,
+          });
+        }
+      } catch (error) {
+        setKeysMessage({ text: t.keysSaveFailed(String(error)), bad: true });
+      } finally {
+        setKeysBusy(null);
+      }
+    };
+
+    const checkKeys = async () => {
+      setKeysBusy("check");
+      setKeysMessage(null);
+      try {
+        const next = await keysCheckRpc({ lang });
+        setKeysState(next);
+        setKeysStateError(null);
+        setKeysMessage({ text: next.translate.saved || next.tts.saved ? t.keysChecked : t.keysCheckNone, bad: false });
+        emitSharedSignal("googleKeys");
+      } catch (error) {
+        setKeysMessage({ text: t.keysCheckFailed(String(error)), bad: true });
+      } finally {
+        setKeysBusy(null);
+      }
+    };
+
     return shell(
       <>
-        <Text style={styles.section}>동기화</Text>
-        <Text style={styles.muted}>
-          웹·폰 화면을 열 때마다 PC 앱에서 아래 켜 둔 항목을 가져옵니다. 머리줄 톱니의 "PC 에서 가져오기"로 바로 다시 맞출 수도 있습니다. Paseo 설정은 이와 따로 늘 자동으로 맞춰집니다.
-        </Text>
-        {syncSwitch("syncWorkspaceOrder", "작업 공간 순서", "왼쪽 목록의 프로젝트·작업 공간 순서와 고정한 작업 공간")}
-        {syncSwitch("syncLayout", "화면 구성", "작업 공간마다 칸 나누기·칸 크기·탭 배치·탐색기 폭·고정한 대화")}
+        <FoldTitle icon="RefreshCw" title={t.syncSection} theme={theme} open={syncOpen} onToggle={() => setSyncOpen(!syncOpen)} labels={t.fold} />
+        {syncOpen ? (
+          <>
+            <Text style={styles.muted}>{t.syncIntro}</Text>
+            {syncSwitch("syncWorkspaceOrder", t.syncWorkspaceOrder, t.syncWorkspaceOrderHint)}
+            {syncSwitch("syncLayout", t.syncLayout, t.syncLayoutHint)}
+          </>
+        ) : null}
 
-        <Text style={styles.section}>작업 현황</Text>
+        <SectionTitle icon="Activity" title={t.activitySection} theme={theme} />
         <View style={styles.card}>
-          <Text style={styles.text}>작업 현황 칸 폭 (%, 10~90)</Text>
-          <Text style={styles.muted}>
-            머리줄 작업 현황 단추를 누르면 화면을 둘로 나눠 왼쪽에 작업 현황, 오른쪽에 지금 대화를 둡니다. 탐색기를 뺀 남은 폭에서
-            작업 현황이 차지할 몫입니다. 이미 칸이 둘 이상이면 나누지 않습니다. 나눌 때 화면이 한 번 새로 읽힙니다.
-          </Text>
+          <Text style={styles.text}>{t.activitySplitTitle}</Text>
+          <Text style={styles.muted}>{t.activitySplitHint}</Text>
           <TextInput
             style={[styles.input, styles.smallInput]}
             value={draft.activitySplitPercent}
             onChangeText={(activitySplitPercent) => setDraft({ ...draft, activitySplitPercent })}
             keyboardType="numeric"
-            accessibilityLabel="작업 현황 칸 폭 퍼센트"
+            accessibilityLabel={t.activitySplitLabel}
           />
         </View>
 
-        <Text style={styles.section}>프로젝트 목록</Text>
+        <SectionTitle icon="Folder" title={t.projectsSection} theme={theme} />
         <View style={styles.card}>
-          <Text style={styles.text}>순서·고정 초기화</Text>
-          <Text style={styles.muted}>
-            왼쪽 프로젝트 목록에서 끌어 옮긴 순서(카테고리·프로젝트·활성)와 고정을 모두 지웁니다. 목록 파일에 적힌 순서로 돌아가고
-            고정은 모두 풀립니다. 목록 파일 자체는 바뀌지 않습니다.
-          </Text>
+          <Text style={styles.text}>{t.resetOrderTitle}</Text>
+          <Text style={styles.muted}>{t.resetOrderHint}</Text>
           {confirmReset ? (
             <View style={styles.row}>
-              <Text style={styles.error}>정말 초기화할까요? 되돌릴 수 없습니다.</Text>
-              <Pressable style={styles.button} onPress={() => void doReset()} accessibilityRole="button" accessibilityLabel="순서와 고정 초기화 확정">
-                <Text style={[styles.buttonText, { color: theme.colors.statusDanger }]}>초기화</Text>
+              <Text style={styles.error}>{t.resetOrderConfirm}</Text>
+              <Pressable style={styles.button} onPress={() => void doReset()} accessibilityRole="button" accessibilityLabel={t.resetOrderDoLabel}>
+                <Text style={[styles.buttonText, { color: theme.colors.statusDanger }]}>{t.resetOrderDo}</Text>
               </Pressable>
-              <Pressable style={styles.button} onPress={() => setConfirmReset(false)} accessibilityRole="button" accessibilityLabel="초기화 취소">
-                <Text style={styles.buttonText}>취소</Text>
+              <Pressable style={styles.button} onPress={() => setConfirmReset(false)} accessibilityRole="button" accessibilityLabel={t.resetOrderCancelLabel}>
+                <Text style={styles.buttonText}>{t.cancel}</Text>
               </Pressable>
             </View>
           ) : (
@@ -251,101 +407,159 @@ export function createSettingsScreen(onSaved: () => void) {
                 setConfirmReset(true);
               }}
               accessibilityRole="button"
-              accessibilityLabel="프로젝트 목록 순서와 고정 초기화"
+              accessibilityLabel={t.resetOrderButtonLabel}
             >
-              <Text style={styles.buttonText}>순서·고정 초기화…</Text>
+              <Text style={styles.buttonText}>{t.resetOrderButton}</Text>
             </Pressable>
           )}
           {resetMessage ? <Text style={styles.muted}>{resetMessage}</Text> : null}
         </View>
 
-        <Text style={styles.section}>소리</Text>
-        <Text style={styles.muted}>
-          이 PC 와 연결된 서버의 대화 소리가 모두 여기 설정을 따릅니다. 파일 칸을 비우면 기본 소리, 크기는 50~300% 이며
-          WAV 파일만 키울 수 있습니다.
-        </Text>
-        {state.status === "invalid" ? <Text style={styles.error}>저장된 설정이 올바르지 않습니다: {state.error}</Text> : null}
+        {/* 번역·읽기(10-08) — 켜기·끄기는 아래 [저장]으로 플러그인 설정에, 키는 [키 저장]으로 이 PC 키 파일에 */}
+        <FoldTitle icon="Languages" title={t.speechSection} theme={theme} open={speechOpen} onToggle={() => setSpeechOpen(!speechOpen)} labels={t.fold} />
+        {speechOpen ? (
+        <>
+        <Text style={styles.muted}>{t.speechIntro}</Text>
+        {speechSwitch("translateEnabled", t.translateTitle, t.translateHint)}
+        {speechSwitch("ttsEnabled", t.ttsTitle, t.ttsHint)}
+        <View style={styles.card}>
+          <Text style={styles.muted}>{t.speechKeysIntro}</Text>
+          {keyField("gemini", t.geminiKeyName, keysState?.translate)}
+          {keyField("tts", t.ttsKeyName, keysState?.tts)}
+          {!keysState ? <Text style={keysStateError ? styles.error : styles.muted}>{keysStateError ?? t.keysReading}</Text> : null}
+          {keyInputs.gemini.trim() || keyInputs.tts.trim() ? <Text style={styles.muted}>{t.keysUnsaved}</Text> : null}
+          <View style={styles.actions}>
+            <Pressable style={styles.button} onPress={() => void saveKeys()} disabled={keysBusy !== null} accessibilityRole="button" accessibilityLabel={t.keysSave}>
+              <Text style={styles.buttonText}>{keysBusy === "save" ? t.keysSaving : t.keysSave}</Text>
+            </Pressable>
+            <Pressable style={styles.button} onPress={() => void checkKeys()} disabled={keysBusy !== null} accessibilityRole="button" accessibilityLabel={t.keysCheck}>
+              <Text style={styles.buttonText}>{keysBusy === "check" ? t.keysChecking : t.keysCheck}</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.muted}>{t.keysCheckHint}</Text>
+          {keysMessage ? <Text style={keysMessage.bad ? styles.error : styles.text}>{keysMessage.text}</Text> : null}
+        </View>
+        </>
+        ) : null}
 
-        {ORDER.map((kind) => (
-          <View key={kind} style={styles.card}>
-            <Text style={styles.text}>{LABELS[kind].title}</Text>
-            <Text style={styles.muted}>{LABELS[kind].hint}</Text>
-            <View style={styles.row}>
-              <TextInput
-                style={[styles.input, styles.fileInput]}
-                value={draft[kind].file}
-                onChangeText={(file) => setSound(kind, { file })}
-                placeholder="비우면 기본 소리"
-                placeholderTextColor={theme.colors.foregroundMuted}
-                accessibilityLabel={`${LABELS[kind].title} 소리 파일 경로`}
-              />
+        {/* "소리" 제목을 누르면 아래 소리 항목 전부가 접히고 펼쳐진다(10-08). 삼각형은 다른 패널 접기와 같은 모양 */}
+        <FoldTitle icon="Volume2" title={t.soundSection} theme={theme} open={soundOpen} onToggle={toggleSound} labels={t.fold} />
+        {/* 저장본이 깨졌다는 알림은 소리만의 일이 아니라 접혀 있어도 보인다 */}
+        {state.status === "invalid" ? <Text style={styles.error}>{t.invalidStored(state.error)}</Text> : null}
+
+        {soundOpen ? (
+          <>
+            <Text style={styles.muted}>{t.soundIntro}</Text>
+
+            <View style={styles.card}>
+              <Text style={styles.text}>{t.importTitle}</Text>
+              <Text style={styles.muted}>{t.importHint}</Text>
+              <View style={styles.actions}>
+                <Pressable
+                  style={styles.button}
+                  onPress={() => void runImport()}
+                  disabled={importing}
+                  accessibilityRole="button"
+                  accessibilityLabel={t.importButton}
+                >
+                  <Text style={styles.buttonText}>{importing ? t.importing : t.importButton}</Text>
+                </Pressable>
+              </View>
+              {importReport ? (
+                <>
+                  <Text style={importReport.bad ? styles.error : styles.text}>{importReport.text}</Text>
+                  {importReport.details.length ? <Text style={styles.text}>{t.importSkippedHead}</Text> : null}
+                  {importReport.details.map((line) => (
+                    <Text key={line} style={styles.muted}>
+                      · {line}
+                    </Text>
+                  ))}
+                </>
+              ) : null}
+            </View>
+
+            {ORDER.map((kind) => (
+              <View key={kind} style={styles.card}>
+                <Text style={styles.text}>{t.sounds[kind].title}</Text>
+                <Text style={styles.muted}>{t.sounds[kind].hint}</Text>
+                <View style={styles.row}>
+                  <TextInput
+                    style={[styles.input, styles.fileInput]}
+                    value={draft[kind].file}
+                    onChangeText={(file) => setSound(kind, { file })}
+                    placeholder={t.filePlaceholder}
+                    placeholderTextColor={theme.colors.foregroundMuted}
+                    accessibilityLabel={t.fileLabel(t.sounds[kind].title)}
+                  />
+                  <TextInput
+                    style={[styles.input, styles.smallInput]}
+                    value={draft[kind].gain}
+                    onChangeText={(gain) => setSound(kind, { gain })}
+                    keyboardType="numeric"
+                    accessibilityLabel={t.gainLabel(t.sounds[kind].title)}
+                  />
+                  <Pressable
+                    style={styles.button}
+                    onPress={() => void play(kind)}
+                    accessibilityRole="button"
+                    accessibilityLabel={t.previewLabel(t.sounds[kind].title)}
+                  >
+                    <Text style={styles.buttonText}>{t.preview}</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+
+            <View style={styles.card}>
+              <Text style={styles.text}>{t.settleTitle}</Text>
+              <Text style={styles.muted}>{t.settleHint}</Text>
               <TextInput
                 style={[styles.input, styles.smallInput]}
-                value={draft[kind].gain}
-                onChangeText={(gain) => setSound(kind, { gain })}
+                value={draft.settleMs}
+                onChangeText={(settleMs) => setDraft({ ...draft, settleMs })}
                 keyboardType="numeric"
-                accessibilityLabel={`${LABELS[kind].title} 소리 크기 퍼센트`}
+                accessibilityLabel={t.settleLabel}
               />
-              <Pressable
-                style={styles.button}
-                onPress={() => void play(kind)}
-                accessibilityRole="button"
-                accessibilityLabel={`${LABELS[kind].title} 소리 미리 듣기`}
-              >
-                <Text style={styles.buttonText}>미리 듣기</Text>
-              </Pressable>
+              <Text style={styles.text}>{t.thresholdsTitle}</Text>
+              <View style={styles.row}>
+                <TextInput
+                  style={[styles.input, styles.smallInput]}
+                  value={draft.warningPercent}
+                  onChangeText={(warningPercent) => setDraft({ ...draft, warningPercent })}
+                  keyboardType="numeric"
+                  accessibilityLabel={t.warningLabel}
+                />
+                <TextInput
+                  style={[styles.input, styles.smallInput]}
+                  value={draft.dangerPercent}
+                  onChangeText={(dangerPercent) => setDraft({ ...draft, dangerPercent })}
+                  keyboardType="numeric"
+                  accessibilityLabel={t.dangerLabel}
+                />
+              </View>
             </View>
-          </View>
-        ))}
 
-        <View style={styles.card}>
-          <Text style={styles.text}>끝남·질문 대기 (밀리초, 100~5000)</Text>
-          <Text style={styles.muted}>이 시간 안에 대화가 다시 움직이거나 질문에 답하면 울리지 않습니다</Text>
-          <TextInput
-            style={[styles.input, styles.smallInput]}
-            value={draft.settleMs}
-            onChangeText={(settleMs) => setDraft({ ...draft, settleMs })}
-            keyboardType="numeric"
-            accessibilityLabel="끝남과 질문 소리 대기 시간"
-          />
-          <Text style={styles.text}>경고 기준 · 위험 기준 (컨텍스트 %)</Text>
-          <View style={styles.row}>
-            <TextInput
-              style={[styles.input, styles.smallInput]}
-              value={draft.warningPercent}
-              onChangeText={(warningPercent) => setDraft({ ...draft, warningPercent })}
-              keyboardType="numeric"
-              accessibilityLabel="경고 기준 퍼센트"
-            />
-            <TextInput
-              style={[styles.input, styles.smallInput]}
-              value={draft.dangerPercent}
-              onChangeText={(dangerPercent) => setDraft({ ...draft, dangerPercent })}
-              keyboardType="numeric"
-              accessibilityLabel="위험 기준 퍼센트"
-            />
-          </View>
-        </View>
-
-        <View style={[styles.card, styles.switchRow]}>
-          <View style={styles.switchText}>
-            <Text style={styles.text}>따르릉 울리기</Text>
-            <Text style={styles.muted}>끄면 워크플로우·서브에이전트 묶음·백그라운드 작업·codex_rescue 실행이 끝나도 울리지 않습니다</Text>
-          </View>
-          <Switch
-            value={draft.workflowBeep}
-            onValueChange={(workflowBeep) => setDraft({ ...draft, workflowBeep })}
-            accessibilityLabel="따르릉 울리기"
-          />
-        </View>
+            <View style={[styles.card, styles.switchRow]}>
+              <View style={styles.switchText}>
+                <Text style={styles.text}>{t.workflowBeepTitle}</Text>
+                <Text style={styles.muted}>{t.workflowBeepHint}</Text>
+              </View>
+              <Switch
+                value={draft.workflowBeep}
+                onValueChange={(workflowBeep) => setDraft({ ...draft, workflowBeep })}
+                accessibilityLabel={t.workflowBeepTitle}
+              />
+            </View>
+          </>
+        ) : null}
 
         {message ? <Text style={styles.text}>{message}</Text> : null}
         <View style={styles.actions}>
           <Pressable style={styles.primary} onPress={() => void save()} accessibilityRole="button" disabled={state.saving}>
-            <Text style={styles.primaryText}>{state.saving ? "저장 중" : "저장"}</Text>
+            <Text style={styles.primaryText}>{state.saving ? t.saving : t.save}</Text>
           </Pressable>
           <Pressable style={styles.button} onPress={() => void reset()} accessibilityRole="button">
-            <Text style={styles.buttonText}>기본값으로</Text>
+            <Text style={styles.buttonText}>{t.resetDefaults}</Text>
           </Pressable>
         </View>
       </>,

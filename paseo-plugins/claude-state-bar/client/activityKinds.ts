@@ -10,3 +10,11 @@ export const KINDS = [
 
 export type KindKey = (typeof KINDS)[number]["key"];
 export const isKindKey = (v: unknown): v is KindKey => KINDS.some((k) => k.key === v);
+
+// 다섯째 탭 "통계"(리규형님 10-08 결정 — 확장 Claude Status 패널의 통계 탭을 작업 현황으로). 돌고 있는 수가 없는 탭이라
+// KINDS(머리줄 단추·탭 숫자가 세는 네 갈래)와 따로 두고, 탭 줄만 TABS 로 다섯을 그린다. 자리는 맨 끝.
+export const STATS_TAB = { key: "stats", tab: "통계", icon: "ChartColumn" } as const;
+export const TABS = [...KINDS, STATS_TAB] as const;
+
+export type TabKey = (typeof TABS)[number]["key"];
+export const isTabKey = (v: unknown): v is TabKey => TABS.some((k) => k.key === v);

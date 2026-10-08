@@ -15,13 +15,16 @@ import { createSelectionPills } from "./client/selectionRead";
 import { createComposerMarkdown } from "./client/composerMarkdown";
 import { createSettingsScreen, SETTINGS_TITLE } from "./client/settingsScreen";
 import { chainButtons, createSettingsButtons, SETTINGS_SCREEN_ID } from "./client/settingsButton";
+import { startScreenRole } from "./client/screenRole";
 import { startSettingsSync } from "./client/settingsSync";
 import { startLayoutAutoPull, startLayoutSave, syncMenuItem } from "./client/layoutSync";
+import { startPaneMaxWatch } from "./client/paneMaxWatch";
 import { layoutLoad } from "./shared/layoutSync";
 import { registerThinking } from "./client/thinking";
+import { hideSubagentsPill } from "./client/hideSubagentsPill";
 import { createUsageButtons } from "./client/usageButton";
 import { UsageFooter } from "./client/usageFooter";
-import { currentSettings, registerProvider, soundProvider } from "./client/sounds";
+import { currentSettings, emitSharedSignal, registerProvider, soundProvider } from "./client/sounds";
 import { startSoundProjects, registerSoundOrigin, soundOrigin } from "./client/soundScreen";
 import { reportSoundEvent, startSoundPlayback } from "./client/soundPlayback";
 import type { RoutedSoundEvent } from "./shared/soundClaim";
@@ -54,7 +57,7 @@ export default function contribute(client: PluginClientContext) {
     } catch (error) { log(kind + " " + agentId + ": skipped (source identity failed): " + String(error)); }
   };
 
-  // 작업 공간 옆 "작업 현황" 패널 하나(안에 탭 넷: 워크플로우 · 백그라운드 · Codex 진행 · Codex 채팅). 호스트마다 자기 데몬이
+  // 작업 공간 옆 "작업 현황" 패널 하나(안에 탭 다섯: 워크플로우 · 백그라운드 · Codex 진행 · Codex 채팅 · 통계(10-08)). 호스트마다 자기 데몬이
   // 그 폴더의 기록을 읽는다. 10-05 리규형님: 패널 넷이 따로라 불편 → 확장처럼 한 패널 안 탭으로
   cleanups.push(
     client.addWorkspacePanel({ id: ACTIVITY_PANEL_ID, title: "작업 현황", icon: "Activity", context: "workspace", Component: ActivityPanel }),
@@ -68,6 +71,8 @@ export default function contribute(client: PluginClientContext) {
 
   // 생각 상자: 영어 → 한국어(끝난 문장부터) + 맨 아래로 따라가기(10-06). 호스트마다 그 호스트 대화의 생각을 그린다
   cleanups.push(registerThinking(client));
+  // Paseo "하위 에이전트 N개" 알약 숨기기(10-09 리규형님 — 워크플로우·백그라운드는 우리 작업 현황 패널에서 본다)
+  cleanups.push(hideSubagentsPill());
 
   // 완료/질문 정착은 기존 화면 판정기로, 안정 번호·명령만인 차례는 발생 데몬 원본으로 확인한다.
   const judge = createJudge((kind, agentId, nativeId) => void report(kind, agentId, nativeId), log, currentSettings);
@@ -118,6 +123,8 @@ export default function contribute(client: PluginClientContext) {
         try {
           const result = await client.rpc(read, {});
           settings = result.status === "ready" ? settingsSchema.parse(result.values) : DEFAULT_SETTINGS;
+          // 번역·읽기 켜기가 바뀌었을 수 있다 — 모든 호스트의 생각 상자·선택 읽기 알약이 버튼을 다시 그린다(10-08)
+          emitSharedSignal("settings");
           return true;
         } catch (error) {
           log(`settings read failed: ${String(error)}`);
@@ -143,7 +150,12 @@ export default function contribute(client: PluginClientContext) {
         log("another host already provides sounds");
         return;
       }
-      cleanups.push(withdraw);
+      // 공급자가 생기거나 물러나면 모든 호스트 화면이 그 설정(번역·읽기 켜기 등)으로 다시 그린다(10-08)
+      emitSharedSignal("settings");
+      cleanups.push(() => {
+        withdraw();
+        emitSharedSignal("settings");
+      });
       const provider = soundProvider();
       if (provider) cleanups.push(startSoundProjects(client, log), startSoundPlayback(provider, log));
       cleanups.push(
@@ -164,11 +176,15 @@ export default function contribute(client: PluginClientContext) {
       );
       // PC 앱·웹·폰 웹 감싸기 앱의 Paseo 설정을 이 PC 데몬의 정본에 맞춘다(10-07). 정본이 하나여야 해서 역시 이 PC 플러그인만.
       // 왼쪽 칸 기여 뒤에 둬서, 그게 없는 옛 판 화면(공식 웹 0.10.3)에서는 시작하지 않는다
+      // 기준 화면(10-08 대표 PC 웹) — 설정 맞추기·화면 구성 저장이 이 PC 데몬의 대표 정보를 본다. 그 둘보다 먼저 묻기 시작한다
+      cleanups.push(startScreenRole(client, log));
       cleanups.push(startSettingsSync(client, log));
       // PC 앱의 작업 공간 순서·화면 구성을 바뀔 때마다 이 PC 데몬에 맡긴다 — 웹·폰이 열 때와 톱니 메뉴 "PC 에서 가져오기"로 가져간다(10-07)
       cleanups.push(startLayoutSave(client, log));
       // 웹·폰 화면은 열 때마다 PC 저장본을 가져온다(10-07). 설정을 못 읽었으면 꺼 둔 항목을 몰라 가져오지 않는다
       cleanups.push(startLayoutAutoPull(client, log, info, settingsRead ? () => settings : null));
+      // 칸 최대화가 저절로 풀리는 원인 기록(10-09 "원인부터 기록") — 호스트마다 돌면 같은 줄이 여러 번 남아 이 PC 플러그인만
+      cleanups.push(startPaneMaxWatch(log));
       log(`providing sounds (${info.platform})`);
       const fonts = readAppFontSizes();
       log(`app font sizes: ui=${fonts.ui ?? "unread"} content=${fonts.content ?? "unread"}`);

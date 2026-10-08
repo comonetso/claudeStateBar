@@ -29,8 +29,14 @@ export interface SoundProvider {
   claimSound?(input: { screenId: string; key: string; eventProject: string | null; screenProject: string | null }): Promise<boolean>;
 }
 
+/** 호스트마다 따로 뜬 플러그인끼리 주고받는 알림(10-08 번역·읽기 켜기·키):
+ *  settings = 공급자가 설정을 새로 읽었다(켜기·끄기가 바뀌었을 수 있다) · googleKeys = 설정 화면에서 키를 저장하거나 확인했다 */
+export type SharedSignal = "settings" | "googleKeys";
+
 interface Shared {
   provider?: SoundProvider;
+  // 옛 판 플러그인이 만든 공유 칸에는 없을 수 있다(그때 처음 쓰는 쪽이 만든다)
+  signals?: Partial<Record<SharedSignal, Set<() => void>>>;
 }
 
 const SHARED_KEY = "__claudeStateBar_v2";
@@ -61,4 +67,31 @@ export function registerProvider(provider: SoundProvider): (() => void) | undefi
 
 export function currentSettings(): SoundSettings {
   return shared().provider?.settings() ?? DEFAULT_SETTINGS;
+}
+
+/** 번역·읽기 기능이 켜져 있는가(설정 화면 "번역·읽기" 칸, 10-08). 소리 담당(PC) 설정을 모든 호스트 화면이 같이 따른다.
+ *  칸이 없는 옛 공급자 설정이면 켬(처음 값과 같다) */
+export function featureSwitches(): { translate: boolean; tts: boolean } {
+  const s = currentSettings() as Partial<SoundSettings>;
+  return { translate: s.translateEnabled !== false, tts: s.ttsEnabled !== false };
+}
+
+export function onSharedSignal(name: SharedSignal, listener: () => void): () => void {
+  const s = shared();
+  const signals = (s.signals ??= {});
+  const set = (signals[name] ??= new Set());
+  set.add(listener);
+  return () => {
+    set.delete(listener);
+  };
+}
+
+export function emitSharedSignal(name: SharedSignal): void {
+  for (const listener of [...(shared().signals?.[name] ?? [])]) {
+    try {
+      listener();
+    } catch {
+      /* 한 호스트 화면의 오류가 다른 호스트 알림을 막지 않게 */
+    }
+  }
 }

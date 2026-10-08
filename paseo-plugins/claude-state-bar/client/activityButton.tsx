@@ -9,6 +9,7 @@ import { useEffect } from "react";
 import type { ActivityCounts } from "../shared/activity";
 import { ACTIVITY_PANEL_ID, KINDS } from "./activityKinds";
 import { mergeActivitySplit, openActivitySplit } from "./activitySplit";
+import { clearMaximizedPane, paintMaximizedPane } from "./paneMaximized";
 import { currentSettings } from "./sounds";
 import { currentWorkspaceFromUrl, isCompactWidth } from "./web";
 
@@ -58,6 +59,8 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     const counts = useCounts(workspaceId);
     const running = counts ? totalOf(counts) > 0 : false;
     useEffect(() => present(workspaceId, counts), [workspaceId, counts]);
+    // 칸 최대화 단추 주황(10-08) — 테마는 화면 부품만 받아서, 작업 공간 화면에 늘 있는 이 단추가 테마가 바뀔 때마다 칠한다
+    useEffect(() => paintMaximizedPane(theme), [theme]);
     return <Icon name={running ? "LoaderCircle" : "Activity"} size={size} color={running ? RUNNING_COLOR : color} />;
   }
 
@@ -155,5 +158,6 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     release?.();
     for (const id of [...registrations.keys()]) drop(id);
     leading?.dispose?.();
+    clearMaximizedPane();
   };
 }

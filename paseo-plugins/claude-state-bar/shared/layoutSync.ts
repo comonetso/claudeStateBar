@@ -17,11 +17,31 @@ export function isLayoutKey(key: string): boolean {
   return LAYOUT_ITEMS.some((item) => item.key === key);
 }
 
-/** PC 앱이 바뀐 값을 맡긴다 */
+// 대표 PC 웹(10-08 리규형님 결정: PC 앱은 평소 안 켜고 필요할 때만 → 화면 구성 저장·새 판 설정 칸 만들기를 설정 화면 버튼으로
+// 지정한 브라우저 하나가 맡는다). 대표가 없으면 예전처럼 PC 앱이 맡는다. 대표가 있으면 다른 화면(PC 앱 포함)의 저장은 데몬이 거절한다.
+// screen = 브라우저마다 만들어 그 브라우저 저장소에 둔 무작위 번호(client/screenRole.ts)
+const owner = z.object({ id: z.string(), label: z.string(), at: z.number() }).nullable();
+export type LayoutOwner = z.output<typeof owner>;
+
+/** 기준 화면(대표가 없으면 PC 앱)이 바뀐 값을 맡긴다. 대표가 따로 있는데 다른 화면이 보내면 refused 와 지금 대표를 돌려준다 */
 export const layoutSave = defineRpc({
   name: "layout-sync.save",
-  input: z.object({ slot: z.string(), key: z.string(), value: z.string() }),
-  output: z.object({ at: z.number() }),
+  input: z.object({ slot: z.string(), key: z.string(), value: z.string(), screen: z.string().optional() }),
+  output: z.object({ at: z.number(), refused: z.boolean().optional(), owner: owner.optional() }),
+});
+
+/** 지금 대표 화면(없으면 null) */
+export const layoutOwnerGet = defineRpc({
+  name: "layout-sync.owner",
+  input: z.object({}),
+  output: z.object({ owner }),
+});
+
+/** 대표 화면을 정한다. screen=null 이면 대표를 풀어 PC 앱이 다시 맡는다 */
+export const layoutOwnerSet = defineRpc({
+  name: "layout-sync.set-owner",
+  input: z.object({ screen: z.string().nullable(), label: z.string() }),
+  output: z.object({ owner }),
 });
 
 const snapshot = z.object({

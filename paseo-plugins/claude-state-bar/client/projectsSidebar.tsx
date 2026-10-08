@@ -1,16 +1,19 @@
 import type { PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import type { ProjectEntry } from "../shared/projects";
 import { scaled, useFontScale } from "./fontScale";
+import { healthCounts, useHealth } from "./health";
 import { liveOf, openProjectsFile, serverOf, useHostIndex, useLiveSessions, useProjectsData } from "./projectsData";
 import { ProjectsList } from "./projectsList";
 import { setProjectsMode, useProjectsMode } from "./projectsMode";
 import { PROJECTS_SCREEN_ID } from "./projectsScreen";
+import { settingsText } from "./settingsI18n";
 import { clearSyncNotice, useSyncNotice } from "./settingsSync";
-import { measureRoomAbove } from "./web";
+import { soundProvider } from "./sounds";
+import { measureRoomAbove, watchSizeOf } from "./web";
 
 // 왼쪽 목록 칸 맨 위(리규형님 10-06 결정): 프로젝트 목록을 바로 보이고, 보이는 동안 아래 워크스페이스 목록은 가린다(웹·데스크톱).
 // 칸 높이는 아래쪽 줄(사용량)까지 남은 높이로 맞춘다. 칸에는 대화로 바로 가는 기능이 주어지지 않아서(플러그인 도구에서
@@ -19,7 +22,7 @@ import { measureRoomAbove } from "./web";
 const ROOT_ID = "claude-state-bar-projects-pane";
 const FOOTER_TEST_ID = "sidebar-footer"; // Paseo 왼쪽 목록 아래쪽 줄(앱 0.11.0-beta.4)
 
-/** 남은 높이를 1초마다 다시 잰다 — 창 크기·위쪽 메뉴 줄이 바뀌어도 따라가게. 웹이 아니면 null */
+/** 남은 높이 — 아래쪽 줄 크기가 바뀌는 순간(사용량 올리기·내리기) 바로, 그 밖에는 1초마다 다시 잰다(창 크기·위쪽 메뉴 줄). 웹이 아니면 null */
 function useRoom(enabled: boolean): number | null {
   const [room, setRoom] = useState<number | null>(null);
   useEffect(() => {
@@ -28,9 +31,16 @@ function useRoom(enabled: boolean): number | null {
       const next = measureRoomAbove(ROOT_ID, FOOTER_TEST_ID);
       setRoom((prev) => (prev === next ? prev : next));
     };
+    const footer = watchSizeOf(FOOTER_TEST_ID, read);
     read();
-    const timer = setInterval(read, 1000);
-    return () => clearInterval(timer);
+    const timer = setInterval(() => {
+      footer.attach();
+      read();
+    }, 1000);
+    return () => {
+      clearInterval(timer);
+      footer.stop();
+    };
   }, [enabled]);
   return room;
 }
@@ -46,13 +56,45 @@ function useSyncNoticeToast(): void {
   }, [notice, toast]);
 }
 
+/**
+ * 업데이트 확인 한 줄(10-08 리규형님 결정: "문제 있을 때만 왼쪽 칸 맨 위 한 줄"). 기능 상태(client/health.ts)에 제한·중단이
+ * 있을 때만 보이고, 누르면 설정 화면(맨 위 "이 화면의 Paseo 판" 칸에 기능별 이유)을 연다. 확인 중·해당 없음은 세지 않는다
+ */
+function HealthLine({ theme }: { theme: PluginSidebarItemProps["theme"] }) {
+  const health = useHealth();
+  const scale = useFontScale();
+  const t = useMemo(() => settingsText(), []);
+  const { stopped, limited } = healthCounts(health);
+  if (!stopped && !limited) return null;
+  const color = stopped ? theme.colors.statusDanger : theme.colors.statusWarning;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={() => soundProvider()?.openSettings?.()}
+      style={{ marginHorizontal: 8, marginTop: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, borderLeftWidth: 3, borderLeftColor: color, backgroundColor: theme.colors.surface1 }}
+    >
+      <Text style={{ color, fontSize: scaled(12, scale) }}>{t.healthSummary(stopped, limited)}</Text>
+    </Pressable>
+  );
+}
+
 export function ProjectsSidebarItem({ theme, openScreen }: PluginSidebarItemProps) {
   const mode = useProjectsMode();
   useSyncNoticeToast();
   if (mode === "workspaces") {
-    return <SidebarRow icon="FolderTree" label="프로젝트" active={false} onPress={() => setProjectsMode("projects")} />;
+    return (
+      <>
+        <HealthLine theme={theme} />
+        <SidebarRow icon="FolderTree" label="프로젝트" active={false} onPress={() => setProjectsMode("projects")} />
+      </>
+    );
   }
-  return <ProjectsPane theme={theme} openScreen={openScreen} />;
+  return (
+    <>
+      <HealthLine theme={theme} />
+      <ProjectsPane theme={theme} openScreen={openScreen} />
+    </>
+  );
 }
 
 function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme" | "openScreen">) {

@@ -8,12 +8,14 @@ import {
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect } from "react";
 import { View } from "react-native";
-import { availableProviders, clampPct, shortName, shownWindows, UsageFooter, useUsage, type Usage } from "./usageFooter";
-import { setStyleSheet } from "./web";
+import { availableProviders, clampPct, shortName, shownWindows, summaryLabel, UsageTable, useUsage, type Usage } from "./usageFooter";
+import { hideButtonTooltip, setStyleSheet } from "./web";
 
 // 작업 공간 머리줄 "사용량" 단추(리규형님 10-06 결정): 작업 현황 단추 왼쪽에 "Claude 1·31 │ Codex 13"(계정마다 Paseo 가
 // 요약으로 표시한 창 순서 — Claude 5시간·주간, Codex 주간), 누르면 왼쪽 아래 사용량 표와 같은 것을 작은 창으로 띄운다.
 // 왼쪽 아래 표도 그대로 둔다(결정). 마우스를 올리면 뜨는 창은 Paseo 가 지원하지 않아 누르는 창으로 한다.
+// 마우스를 올리면 Paseo 가 단추 설명(title)을 도움말로 띄우는데, 리규형님 10-09 "별 필요 없어 — 없애" → 감춘다(web.ts hideButtonTooltip).
+// 설명 글은 접근성 이름으로 남는다(아래 너비 풀기가 이 이름으로 단추를 고른다)
 // 숫자 읽기는 단추 그림(아이콘)이 맡는다 — 앱이 보이는 작업 공간의 단추만 그리므로 안 보이는 작업 공간은 읽지 않는다.
 
 // 작은 창 폭 — 막대가 늘어날 자리를 주는 값으로 왼쪽 목록 칸과 비슷하게 잡았다
@@ -30,12 +32,11 @@ const WIDTH_CSS = `[aria-label^="${TITLE_PREFIX}"]{max-width:none !important}`;
 function presentation(usage: Usage | null): Pick<PluginButton, "label" | "title"> {
   const providers = availableProviders(usage);
   if (!providers.length) return { label: "사용량", title: `${TITLE_PREFIX}읽는 중` };
-  // 숫자마다 % 를 붙인다(리규형님 10-07: 숫자만으로는 직관적이지 않다) — "Claude 3%·31% │ Codex 13%"
   const pct = (n: number | null | undefined) => {
     const v = clampPct(n);
     return v === null ? "—" : `${Math.round(v)}%`;
   };
-  const label = providers.map((p) => `${shortName(p)} ${shownWindows(p).map((w) => pct(w.usedPct)).join("·")}`).join(" │ ");
+  const label = summaryLabel(providers);
   const detail = providers.map((p) => `${shortName(p)} ${shownWindows(p).map((w) => `${w.shortLabel || w.label} ${pct(w.usedPct)}`).join(" · ")}`).join(" │ ");
   return { label, title: `${TITLE_PREFIX}${detail}` };
 }
@@ -46,6 +47,7 @@ export function createUsageButtons(client: PluginClientContext): HeaderButtonSet
   const registrations = new Map<string, PluginButtonRegistration>();
   const shown = new Map<string, string>();
   setStyleSheet(WIDTH_STYLE_ID, WIDTH_CSS);
+  const stopTip = hideButtonTooltip(TITLE_PREFIX);
 
   function UsageIcon({ workspaceId, size, color }: PluginButtonIconProps) {
     const { usage } = useUsage();
@@ -62,7 +64,7 @@ export function createUsageButtons(client: PluginClientContext): HeaderButtonSet
   function UsagePopover({ theme }: PluginButtonContentProps) {
     return (
       <View style={{ width: POPOVER_WIDTH }}>
-        <UsageFooter theme={theme} />
+        <UsageTable theme={theme} />
       </View>
     );
   }
@@ -86,6 +88,7 @@ export function createUsageButtons(client: PluginClientContext): HeaderButtonSet
     },
     dispose() {
       setStyleSheet(WIDTH_STYLE_ID, null);
+      stopTip();
     },
   };
 }

@@ -3,37 +3,40 @@ import { RUNNING_COLOR } from "./format";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { KINDS, isKindKey, type KindKey } from "./activityKinds";
+import { TABS, isKindKey, isTabKey, type TabKey } from "./activityKinds";
 import { BackgroundPanel } from "./bgPanel";
 import { CodexChatPanel } from "./chatPanel";
 import { CodexRunsPanel } from "./codexPanel";
 import { fontStep, scaled, useFontScale } from "./fontScale";
 import { onTabRequest, takeRequestedTab, useCounts } from "./useCounts";
+import { StatsPanel } from "./statsPanel";
 import { listenCtrlTab } from "./web";
 import { WorkflowsPanel } from "./workflowPanel";
 
 // 작업 현황 패널 하나에 탭 넷(확장 activityPanel.ts 와 같은 모양 — 리규형님 10-05: 패널이 넷으로 따로 있으면 불편하다).
 // 탭 순서·이름은 확장 그대로. 탭 옆 숫자 = 돌고 있는 수(확장 activityCounts). 고른 탭만 그려 그 탭만 읽는다
 // (확장 09-30 결정 "보이는 탭만 읽기"). 처음 여는 탭: 머리줄 단추에서 고른 탭 → 이 작업 공간에서 마지막으로 본 탭 → 첫 탭.
+// 10-08 리규형님: 다섯째 탭 "통계"(확장 Claude Status 통계 탭) — 돌고 있는 수가 없어 탭 옆 숫자가 없다(activityKinds STATS_TAB).
 
-const PANES: Record<KindKey, ComponentType<PluginWorkspacePanelProps>> = {
+const PANES: Record<TabKey, ComponentType<PluginWorkspacePanelProps>> = {
   workflows: WorkflowsPanel,
   background: BackgroundPanel,
   codexRuns: CodexRunsPanel,
   codexChats: CodexChatPanel,
+  stats: StatsPanel,
 };
 
-const lastTab = new Map<string, KindKey>();
+const lastTab = new Map<string, TabKey>();
 
-function initialTab(workspaceId: string): KindKey {
+function initialTab(workspaceId: string): TabKey {
   const want = takeRequestedTab(workspaceId);
-  if (isKindKey(want)) return want;
-  return lastTab.get(workspaceId) ?? KINDS[0].key;
+  if (isTabKey(want)) return want;
+  return lastTab.get(workspaceId) ?? TABS[0].key;
 }
 
 export function ActivityPanel(props: PluginWorkspacePanelProps) {
   const { workspaceId, theme } = props;
-  const [tab, setTab] = useState<KindKey>(() => initialTab(workspaceId));
+  const [tab, setTab] = useState<TabKey>(() => initialTab(workspaceId));
   const counts = useCounts(workspaceId);
   const scale = useFontScale();
 
@@ -42,7 +45,7 @@ export function ActivityPanel(props: PluginWorkspacePanelProps) {
     () =>
       onTabRequest(() => {
         const want = takeRequestedTab(workspaceId);
-        if (isKindKey(want)) setTab(want);
+        if (isTabKey(want)) setTab(want);
       }),
     [workspaceId],
   );
@@ -56,8 +59,8 @@ export function ActivityPanel(props: PluginWorkspacePanelProps) {
     () =>
       listenCtrlTab(rootId, (backward) =>
         setTab((cur) => {
-          const i = KINDS.findIndex((k) => k.key === cur);
-          return KINDS[(i + (backward ? KINDS.length - 1 : 1)) % KINDS.length].key;
+          const i = TABS.findIndex((k) => k.key === cur);
+          return TABS[(i + (backward ? TABS.length - 1 : 1)) % TABS.length].key;
         }),
       ),
     [rootId],
@@ -84,9 +87,10 @@ export function ActivityPanel(props: PluginWorkspacePanelProps) {
   return (
     <View nativeID={rootId} style={{ flex: 1, backgroundColor: c.surface0 }}>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={[s.bar, { flexGrow: 1, alignItems: "center" }]}>
-        {KINDS.map((k) => {
+        {TABS.map((k) => {
           const on = k.key === tab;
-          const n = counts ? counts[k.key] : 0;
+          // 통계 탭은 세는 것이 없다
+          const n = counts && isKindKey(k.key) ? counts[k.key] : 0;
           return (
             <Pressable
               key={k.key}

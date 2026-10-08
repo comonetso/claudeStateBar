@@ -29,6 +29,11 @@ export const settingsSchema = z.object({
   // 작업 현황 단추로 화면을 나눌 때 왼쪽 작업 현황 칸이 차지할 몫 — 탐색기를 뺀 남은 폭의 %(리규형님 10-07 결정: 기본 40, 설정으로).
   // 10~90 은 칸이 아예 안 보이게 되는 것만 막으려고 Claude 가 정한 범위(근거 없음 — 바꿔도 된다)
   activitySplitPercent: z.number().int().min(10).max(90).default(40),
+  // 번역·읽기 켜기(리규형님 10-08 결정: 설정 화면 "번역·읽기" 칸). 끄면 그 기능 버튼을 모두 숨긴다 — 번역 = 생각 상자 [번역]·[번역읽기],
+  // 읽기 = 생각 상자 [읽기]·[번역읽기]·입력창 위 "선택 읽기" 알약. 처음 값은 둘 다 켬(지금 쓰는 동작이 그대로 이어지게).
+  // 키 자체는 여기 두지 않는다 — 이 PC 데몬의 google.env 에만(server/googleKeys)
+  translateEnabled: z.boolean().default(true),
+  ttsEnabled: z.boolean().default(true),
 });
 
 export type SoundSettings = z.output<typeof settingsSchema>;

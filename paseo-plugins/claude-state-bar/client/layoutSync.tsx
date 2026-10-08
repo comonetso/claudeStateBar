@@ -4,6 +4,7 @@ import { Platform, Pressable, Text, View } from "react-native";
 import { isLayoutKey, layoutLoad, layoutSave, LAYOUT_ITEMS, type LayoutItemId, type LayoutSnapshot } from "../shared/layoutSync";
 import type { SoundSettings } from "../shared/settings";
 import { fmtStamp } from "./format";
+import { isPublisher, noteOwner, onOwnerChange, ownerState, refreshOwner, screenKey } from "./screenRole";
 import { currentSettings, soundProvider } from "./sounds";
 import { appBundleId, applyPaseoLayoutCopy, isDesktopApp, readLocal, readSession, watchLocalWrites, workspaceInteractionVersion, writeLocal, writeLocalAndReload, writeSession } from "./web";
 
@@ -22,25 +23,37 @@ export function itemEnabled(settings: SoundSettings, id: LayoutItemId): boolean 
   return settings[ENABLED[id]] !== false;
 }
 
-/** PC 앱 화면에서만 — 두 열쇠를 시작할 때 한 번, 그다음은 바뀔 때마다 맡긴다. 보내는 중에 또 바뀌면 끝난 뒤 마지막 값만 보낸다 */
+/**
+ * 기준 화면에서만 — 두 열쇠를 기준이 될 때 한 번, 그다음은 바뀔 때마다 맡긴다. 보내는 중에 또 바뀌면 끝난 뒤 마지막 값만 보낸다.
+ * 기준 화면 = 대표 PC 웹(10-08, client/screenRole — 설정 화면 버튼으로 지정), 대표가 없으면 예전 그대로 PC 앱.
+ * 데몬이 거절하면(다른 화면이 대표) 대표가 바뀔 때까지 보내지 않는다
+ */
 export function startLayoutSave(client: PluginClientContext, log: (message: string) => void): () => void {
   const slot = appBundleId();
-  if (!slot || !isDesktopApp()) {
-    log(`layout sync: not saving here (${!slot ? "app bundle unknown" : "not the PC app — this screen pulls on open and from the gear menu"})`);
+  if (!slot) {
+    log("layout sync: not saving here (app bundle unknown)");
     return () => {};
   }
   const sending = new Set<string>();
   const next = new Map<string, string>();
   let stopped = false;
+  let refused = false;
+  let saving: boolean | null = null;
   const send = (key: string, value: string) => {
-    if (stopped) return;
+    if (stopped || refused || isPublisher() !== true) return;
     if (sending.has(key)) {
       next.set(key, value);
       return;
     }
     sending.add(key);
     void client
-      .rpc(layoutSave, { slot, key, value })
+      .rpc(layoutSave, { slot, key, value, screen: screenKey() ?? undefined })
+      .then((r) => {
+        if (!r.refused) return;
+        refused = true;
+        log(`layout sync: not saving — the representative screen is ${r.owner?.label ?? "another screen"}`);
+        noteOwner(r.owner ?? null);
+      })
       .catch((error: unknown) => log(`layout sync: save ${key} failed ${String(error)}`))
       .finally(() => {
         sending.delete(key);
@@ -50,17 +63,35 @@ export function startLayoutSave(client: PluginClientContext, log: (message: stri
         send(key, more);
       });
   };
-  for (const item of LAYOUT_ITEMS) {
-    const value = readLocal(item.key);
-    if (value !== null) send(item.key, value);
-  }
+  // 기준이 되면(처음 역할을 알았을 때·이 브라우저를 대표로 정했을 때) 지금 값을 한 번 보낸다. 역할을 아직 모르면 기다린다
+  const sync = () => {
+    refused = false;
+    const { known, owner } = ownerState();
+    if (!known) return;
+    const publisher = isPublisher() === true;
+    if (publisher !== saving) {
+      saving = publisher;
+      log(
+        publisher
+          ? `layout sync: saving ${slot.slice(0, 12)} — this is the ${owner ? "representative screen" : "PC app"}`
+          : `layout sync: not saving here — ${owner ? `the representative screen is ${owner.label}` : "the PC app saves"}; this screen pulls on open and from the gear menu`,
+      );
+    }
+    if (!publisher) return;
+    for (const item of LAYOUT_ITEMS) {
+      const value = readLocal(item.key);
+      if (value !== null) send(item.key, value);
+    }
+  };
+  const stopRole = onOwnerChange(sync);
+  sync();
   const stopWatch = watchLocalWrites((key, value) => {
     if (value !== null && isLayoutKey(key)) send(key, value);
   });
-  log(`layout sync: saving ${slot.slice(0, 12)} from the PC app`);
   return () => {
     stopped = true;
     stopWatch();
+    stopRole();
   };
 }
 
@@ -114,12 +145,24 @@ export function startLayoutAutoPull(
   settings: (() => SoundSettings) | null,
 ): () => void {
   const slot = appBundleId();
-  if (Platform.OS !== "web" || isDesktopApp() || !slot) return () => {};
+  // 10-08: PC 앱도 대표 PC 웹이 정해져 있으면 가져가는 쪽이다(기준 화면 판정은 아래 비동기에서)
+  if (Platform.OS !== "web" || !slot) return () => {};
   if (readSession(PULLED_KEY)) {
     writeSession(PULLED_KEY, null);
     log("layout sync: opened after an automatic pull");
     return () => {};
   }
+  // "열 때 가져온다"(10-07 결정)는 페이지를 열 때다. 이미 열린 페이지에서 플러그인만 다시 읽힌 것(배포·다시 불러오기)은 열기가
+  // 아니다 — 그때 가져오면 쓰던 웹 배치가 PC 옛 저장본으로 돌아가고 최대화도 풀린다(10-08 하루 19번, 10-09 확인). 페이지 표식은
+  // globalThis 라 페이지를 새로 열면 사라진다. 이 표식이 없던 옛 판이 이미 돈 페이지는 옛 판이 아래 workspaceInteractionVersion()
+  // 으로 만든 표식(__claudeStateBar_workspaceAction_v1)으로 알아본다 — 새 페이지에선 여기 오기 전에 그것을 만드는 곳이 없다
+  // (만드는 곳은 이 함수와 작업 현황 나누기·프로젝트 목록의 사람 조작뿐, 사람 조작이면 어차피 가져오지 않는다)
+  const page = globalThis as { __claudeStateBar_layoutOpened_v1?: boolean; __claudeStateBar_workspaceAction_v1?: unknown };
+  if (page.__claudeStateBar_layoutOpened_v1 || page.__claudeStateBar_workspaceAction_v1 !== undefined) {
+    log("layout sync: plugin reloaded in an open page — not pulling");
+    return () => {};
+  }
+  page.__claudeStateBar_layoutOpened_v1 = true;
   let stopped = false;
   const interaction = workspaceInteractionVersion();
   if (interaction > 0) {
@@ -128,8 +171,16 @@ export function startLayoutAutoPull(
   }
   const before = new Map(LAYOUT_ITEMS.map((item) => [item.key, readLocal(item.key)]));
   void (async () => {
+    // 기준 화면은 가져오지 않는다(자기가 저장하는 쪽). 데몬에 못 물었으면 예전 규칙(PC 앱은 기준, 웹은 가져감)
+    if (!ownerState().known) await refreshOwner().catch(() => {});
+    if (stopped) return;
+    if (isPublisher() ?? isDesktopApp()) {
+      log(`layout sync: this screen is the ${ownerState().owner ? "representative screen" : "PC app"} — not pulling on open`);
+      return;
+    }
     const changes: Record<string, string> = {};
-    const registry = pcNameFix(host.serverId, host.hostname);
+    // 웹 연결 목록 이름 보정은 웹만(PC 앱은 연결 목록이 따로다)
+    const registry = isDesktopApp() ? null : pcNameFix(host.serverId, host.hostname);
     if (registry) changes[REGISTRY_KEY] = registry;
     if (settings) {
       try {
@@ -180,7 +231,7 @@ function SyncPopover({ theme }: PluginButtonContentProps) {
     const slot = appBundleId();
     const provider = soundProvider();
     if (!slot) {
-      setView({ kind: "error", text: "이 화면에서는 가져올 수 없습니다(화면 판을 알 수 없음)" });
+      setView({ kind: "error", text: "이 화면에서는 가져올 수 없습니다(Paseo 버전을 알 수 없음)" });
       return;
     }
     if (!provider?.loadLayout) {
@@ -189,7 +240,7 @@ function SyncPopover({ theme }: PluginButtonContentProps) {
     }
     provider.loadLayout(slot).then(
       (data) => alive && setView({ kind: "ready", slot, data }),
-      (error: unknown) => alive && setView({ kind: "error", text: `PC 저장본을 읽지 못했습니다: ${String(error)}` }),
+      (error: unknown) => alive && setView({ kind: "error", text: `저장된 배치를 읽지 못했습니다: ${String(error)}` }),
     );
     return () => {
       alive = false;
@@ -204,8 +255,8 @@ function SyncPopover({ theme }: PluginButtonContentProps) {
   if (view.kind !== "ready") {
     return (
       <View style={box}>
-        <Text style={text}>PC 에서 가져오기</Text>
-        <Text style={muted}>{view.kind === "loading" ? "PC 저장본을 읽는 중입니다" : view.text}</Text>
+        <Text style={text}>대표 배치 가져오기</Text>
+        <Text style={muted}>{view.kind === "loading" ? "저장된 배치를 읽는 중입니다" : view.text}</Text>
       </View>
     );
   }
@@ -216,12 +267,17 @@ function SyncPopover({ theme }: PluginButtonContentProps) {
     const saved = keys?.[item.key];
     return { item, on, saved };
   });
-  const ready = rows.filter((r) => r.on && r.saved);
+  const { owner } = ownerState();
+  // 기준 화면(10-08 대표 PC 웹, 없으면 PC 앱)
+  const source = owner ? `대표 디바이스(${owner.label})` : "PC 앱";
+  const ready = isPublisher() === true ? [] : rows.filter((r) => r.on && r.saved);
   let note: string | null = null;
-  if (!keys) {
+  if (isPublisher() === true) {
+    note = "이 브라우저가 대표 디바이스라 가져올 곳이 없습니다 — 이 브라우저의 배치가 저장되는 쪽입니다";
+  } else if (!keys) {
     note = view.data.slots.length
-      ? "PC 앱과 이 화면의 Paseo 판이 달라 가져올 수 없습니다. 웹 화면 판을 PC 앱과 같게 올리면 됩니다"
-      : "PC 앱이 아직 저장하지 않았습니다. PC 앱을 한 번 열어 두면 저장됩니다";
+      ? `${source} 쪽과 이 화면의 Paseo 버전이 달라 가져올 수 없습니다. 두 곳의 Paseo 버전을 같게 올리면 됩니다`
+      : `${source} 쪽이 아직 저장하지 않았습니다. ${owner ? "대표 디바이스에서" : "PC 앱에서"} Paseo 를 한 번 열어 두면 저장됩니다`;
   } else if (!rows.some((r) => r.on)) {
     note = "가져올 항목이 모두 꺼져 있습니다. Claude State Bar 설정 화면에서 켜 주세요";
   }
@@ -236,10 +292,10 @@ function SyncPopover({ theme }: PluginButtonContentProps) {
 
   return (
     <View style={box}>
-      <Text style={text}>PC 에서 가져오기</Text>
+      <Text style={text}>대표 배치 가져오기</Text>
       {rows.map(({ item, on, saved }) => (
         <Text key={item.id} style={on ? text : muted}>
-          {item.title} — {!on ? "설정에서 꺼 둠" : saved ? `PC 저장 ${fmtStamp(saved.at)}` : "PC 저장본 없음"}
+          {item.title} — {!on ? "설정에서 꺼 둠" : saved ? `저장 ${fmtStamp(saved.at)}` : "저장된 배치 없음"}
         </Text>
       ))}
       {note ? <Text style={muted}>{note}</Text> : <Text style={muted}>이 화면의 같은 항목을 덮어쓰고 화면을 새로 읽습니다</Text>}
@@ -250,7 +306,7 @@ function SyncPopover({ theme }: PluginButtonContentProps) {
         style={{ paddingVertical: 8, borderRadius: 8, backgroundColor: ready.length ? c.accent : c.surface2, opacity: busy ? 0.6 : 1 }}
       >
         <Text style={{ color: ready.length ? c.accentForeground : c.foregroundMuted, textAlign: "center", fontSize: 13 }}>
-          {busy ? "가져오는 중" : "PC 에서 가져오기"}
+          {busy ? "가져오는 중" : "대표 배치 가져오기"}
         </Text>
       </Pressable>
     </View>
@@ -264,5 +320,5 @@ function SyncPopover({ theme }: PluginButtonContentProps) {
  */
 export function syncMenuItem(): PluginButtonMenuEntry | null {
   if (Platform.OS !== "web" || isDesktopApp()) return null;
-  return { kind: "item", id: "layout-sync", title: "PC 에서 가져오기", icon: "MonitorDown", behavior: { kind: "popover", Content: SyncPopover } };
+  return { kind: "item", id: "layout-sync", title: "대표 배치 가져오기", icon: "MonitorDown", behavior: { kind: "popover", Content: SyncPopover } };
 }

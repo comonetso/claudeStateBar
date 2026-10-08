@@ -1,6 +1,7 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { APP_SETTINGS_KEY, isSyncKey, SHARED_APP_FIELDS, syncPut, syncWait, toShared } from "../shared/settingsSync";
+import { isPublisher, onOwnerChange, ownerState, screenKey } from "./screenRole";
 import { refreshSettingsCache } from "./settingsCache";
 import {
   appBundleId,
@@ -98,6 +99,30 @@ export function clearSyncNotice(): void {
   setNotice(null);
 }
 
+// 설정 화면 "이 화면의 Paseo 판" 칸이 읽는 판별 공통 설정 칸 상태(10-08 리규형님: 판이 안 맞아 꺼진 것을 화면에 알리기).
+// slot = 이 화면 번들 지문 · slots = 데몬에 있는 판별 칸과 마지막으로 바뀐 시각 · waiting = 이 판 칸이 아직 없음
+// error = 마지막 물음이 실패한 이유(성공하면 null) · firstSeen = 이 화면이 처음 받은 응답 때 칸마다 마지막으로 바뀐 시각 —
+// 상태 표시(client/health.ts)가 "이 화면을 연 뒤 다른 판 화면이 바꾼 것"과 그 전에 바뀐 옛 칸을 가른다(Codex 261008_150613:
+// 옛 칸 전부를 경고하면 오경보). 시각은 둘 다 데몬 시계라 화면 기기 시계가 달라도 비교가 맞다
+export type SyncSlotsView = { slot: string; slots: { slot: string; at: number }[]; waiting: boolean; error: string | null; firstSeen: Record<string, number> | null };
+let slotsView: SyncSlotsView | null = null;
+const slotsListeners = new Set<(v: SyncSlotsView | null) => void>();
+function setSlotsView(next: SyncSlotsView): void {
+  slotsView = next;
+  for (const l of slotsListeners) l(next);
+}
+export function useSyncSlots(): SyncSlotsView | null {
+  const [v, setV] = useState(slotsView);
+  useEffect(() => {
+    slotsListeners.add(setV);
+    setV(slotsView);
+    return () => {
+      slotsListeners.delete(setV);
+    };
+  }, []);
+  return v;
+}
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export function startSettingsSync(client: PluginClientContext, log: (message: string) => void): () => void {
@@ -107,6 +132,7 @@ export function startSettingsSync(client: PluginClientContext, log: (message: st
     return () => {};
   }
   const tag = slot.slice(0, 12);
+  let firstSeen: Record<string, number> | null = null;
   let stopped = false;
   /** 이 판 칸에서 마지막으로 받은 번호. -1 = 아직 안 물음, 0 = 칸이 없음 */
   let rev = -1;
@@ -202,9 +228,19 @@ export function startSettingsSync(client: PluginClientContext, log: (message: st
       const shared = toShared(key, readLocal(key));
       if (shared !== undefined) changes[key] = shared;
     }
-    const r = await client.rpc(syncPut, { slot, changes, seed: true });
+    const r = await client.rpc(syncPut, { slot, changes, seed: true, screen: screenKey() ?? undefined });
+    if (r.refused) {
+      // 대표 PC 웹이 따로 있다 — 대표가 바뀔 때까지 다시 만들려 하지 않는다
+      seedRefused = true;
+      log(`settings sync: seed ${tag} refused — another screen is the representative`);
+      return;
+    }
     log(`settings sync: seed ${tag} (${why}) applied=${r.applied} keys=${Object.keys(changes).join(",")}`);
   };
+  let seedRefused = false;
+  const stopRole = onOwnerChange(() => {
+    seedRefused = false;
+  });
 
   /** 다른 판 칸이 이 칸보다 나중에 바뀌었으면 한 번 알린다 */
   const checkOtherVersions = (slots: { slot: string; at: number }[]) => {
@@ -213,13 +249,14 @@ export function startSettingsSync(client: PluginClientContext, log: (message: st
     if (!slots.some((s) => s.slot !== slot && s.at > mine)) return;
     writeSession(WARNED_KEY, slot);
     log(`settings sync: another app version (not ${tag}) has newer settings — not applied here`);
-    setNotice({ text: "Paseo 판이 다른 화면에서 바꾼 설정이 있어 이 화면에는 맞추지 않았습니다. 두 화면의 판이 같아지면 다시 맞춰집니다", warn: true });
+    setNotice({ text: "Paseo 버전이 다른 곳에서 바꾼 설정이 있어 여기에는 맞추지 않았습니다. 두 곳의 Paseo 버전이 같아지면 다시 맞춰집니다", warn: true });
   };
 
   const loop = async () => {
     while (!stopped) {
       const res = await client.rpc(syncWait, { slot, rev }).catch((error: unknown) => {
         log(`settings sync: wait failed: ${String(error)}`);
+        setSlotsView({ ...(slotsView ?? { slot, slots: [], waiting: false, firstSeen }), error: String(error) });
         return null;
       });
       if (stopped) return;
@@ -227,14 +264,21 @@ export function startSettingsSync(client: PluginClientContext, log: (message: st
         await sleep(RETRY_MS);
         continue;
       }
+      firstSeen ??= Object.fromEntries(res.slots.map((s) => [s.slot, s.at]));
+      setSlotsView({ slot, slots: res.slots, waiting: res.keys === null, error: null, firstSeen });
 
       if (res.keys === null) {
         const empty = res.slots.length === 0;
-        if ((empty && isDesktopApp()) || (!empty && joined)) {
+        // 칸은 기준 화면이 만든다(10-08): 대표 PC 웹이 있으면 그 브라우저만(이미 맞추던 화면이라도 아니다 — Codex 지적),
+        // 없으면 예전 규칙(처음 = PC 앱, 새 판 = 이미 맞추던 화면). 데몬에 아직 못 물었으면 예전 규칙
+        const role = isPublisher();
+        const mayCreate = ownerState().owner ? role === true : empty ? (role ?? isDesktopApp()) : joined;
+        if (mayCreate && !seedRefused) {
           try {
             await seed(empty ? "first, desktop app" : "new app version");
           } catch (error) {
             log(`settings sync: seed failed: ${String(error)}`);
+            if (slotsView) setSlotsView({ ...slotsView, error: String(error) });
             await sleep(RETRY_MS);
           }
           continue; // 다음 물음에서 만든 칸을 받는다
@@ -286,6 +330,7 @@ export function startSettingsSync(client: PluginClientContext, log: (message: st
     stopped = true;
     stopWatch();
     stopInput();
+    stopRole();
     if (flushTimer) clearTimeout(flushTimer);
   };
 }

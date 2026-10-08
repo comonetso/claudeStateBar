@@ -1,6 +1,8 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
+import { FoldTitle, SectionTitle } from "./sectionTitle";
+import type { SettingsText } from "./settingsI18n";
 import { readLocal, reloadPage, writeLocal } from "./web";
 
 // 설정 화면 맨 위 "웹 로그인" 칸(리규형님 10-07 결정). 우리가 직접 올린 웹은 로그인 서버(web-gate)가 앞에 서 있고,
@@ -9,6 +11,7 @@ import { readLocal, reloadPage, writeLocal } from "./web";
 // 바꾸기는 지금 비밀번호 + OTP 를 확인하고(로그인과 같은 실패 횟수·잠금), 아이디·비밀번호가 바뀌면 다른 기기 로그인을
 // 모두 끊고, 유지 시간은 다음 로그인부터 — 규칙은 서버(web-gate lib/app.mjs handleAccountUpdate)가 지킨다.
 // 서버 링크(10-07 결정): 서버 3대 열쇠도 PC 링크처럼 로그인 서버에 잠가 두고 로그인 때 함께 붙인다 — 여기서 넣고 지운다.
+// 글자는 설정 화면 사전(client/settingsI18n — 10-08 한글·영어)에서 받는다. 로그인 서버가 보낸 message 는 그대로 보인다.
 
 const REGISTRY_KEY = "@paseo:daemon-registry";
 
@@ -34,15 +37,15 @@ async function call(path: string, body?: unknown): Promise<{ status: number; jso
   return { status: res.status, json };
 }
 
-function failText(status: number, json: Record<string, unknown>): string {
+function failText(status: number, json: Record<string, unknown>, t: SettingsText): string {
   if (status === 423) {
     const mins = Math.max(1, Math.ceil((Number(json.until) - Number(json.serverNow)) / 60000));
-    return `너무 많이 틀려 잠겼습니다. 약 ${mins}분 뒤에 다시 하세요.`;
+    return t.loginLocked(mins);
   }
-  if (status === 401 && json.error === "invalid") return `비밀번호나 OTP 가 맞지 않습니다. 남은 시도 ${String(json.remaining)}번.`;
-  if (status === 401) return "로그인이 끝났습니다. 화면을 새로 고쳐 다시 로그인하세요.";
+  if (status === 401 && json.error === "invalid") return t.loginInvalid(String(json.remaining));
+  if (status === 401) return t.loginExpired;
   if (typeof json.message === "string") return json.message;
-  return `처리하지 못했습니다(${status}).`;
+  return t.loginFailedStatus(status);
 }
 
 function clock(ms: number): string {
@@ -50,13 +53,11 @@ function clock(ms: number): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function left(ms: number): string {
+function left(ms: number, t: SettingsText): string {
   const mins = Math.max(0, Math.round(ms / 60000));
   const h = Math.floor(mins / 60);
-  return h ? `${h}시간 ${mins % 60}분` : `${mins}분`;
+  return h ? t.durationHM(h, mins % 60) : t.durationM(mins);
 }
-
-const FIELD_NAMES: Record<string, string> = { id: "아이디", password: "비밀번호", sessionHours: "유지 시간", link: "PC 링크", servers: "서버 링크" };
 
 /** 바꾼 링크를 이 브라우저의 연결 목록에도 반영한다(뺄 서버 번호를 빼고 새 항목을 넣는다). Paseo 는 다시 열어야 새 목록을 읽는다. */
 function updateRegistry(remove: (string | null)[], add: HostEntry[]): void {
@@ -71,11 +72,13 @@ function updateRegistry(remove: (string | null)[], add: HostEntry[]): void {
   writeLocal(REGISTRY_KEY, JSON.stringify(list));
 }
 
-export function WebLoginSection({ theme, compact }: { theme: PluginTheme; compact: boolean }) {
+export function WebLoginSection({ theme, compact, t }: { theme: PluginTheme; compact: boolean; t: SettingsText }) {
   const g = gate();
   const [account, setAccount] = useState<Account | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  // 칸 접기(10-09 리규형님 "항목이 2개 이상인 것은 접힌 상태로") — 위 open 은 계정 바꾸기 입력 칸이고 이것은 칸 전체
+  const [shown, setShown] = useState(false);
   const EMPTY = { id: "", newPassword: "", newPassword2: "", hours: "", link: "", serverLabel: "", serverLink: "", password: "", otp: "" };
   const [form, setForm] = useState(EMPTY);
   const [removeIds, setRemoveIds] = useState<string[]>([]);
@@ -117,24 +120,25 @@ export function WebLoginSection({ theme, compact }: { theme: PluginTheme; compac
       if (r.status === 200) {
         setAccount(r.json as unknown as Account);
         setLoadError(null);
-      } else setLoadError(failText(r.status, r.json));
+      } else setLoadError(failText(r.status, r.json, t));
     } catch (error) {
-      setLoadError(`계정 정보를 읽지 못했습니다: ${String(error)}`);
+      setLoadError(t.loginAccountFailed(String(error)));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (g) void load();
   }, [g, load]);
 
   if (!g) {
+    // 제목은 다른 칸처럼 박스 밖에(10-09 리규형님 — 박스 안에 있어 위 칸의 하위 항목처럼 보였다)
     return (
-      <View style={styles.card}>
-        <Text style={styles.heading}>웹 로그인</Text>
-        <Text style={styles.muted}>
-          로그인 서버가 앞에 선 웹 주소에 로그인한 브라우저에서만 보입니다. 거기서 로그아웃과 아이디·비밀번호·유지 시간·PC 링크·서버 링크 바꾸기를 합니다.
-        </Text>
-      </View>
+      <>
+        <SectionTitle icon="KeyRound" title={t.loginHeading} theme={theme} />
+        <View style={styles.card}>
+          <Text style={styles.muted}>{t.loginNoGate}</Text>
+        </View>
+      </>
     );
   }
 
@@ -146,7 +150,7 @@ export function WebLoginSection({ theme, compact }: { theme: PluginTheme; compac
     if (form.id.trim()) change.id = form.id.trim();
     if (form.newPassword || form.newPassword2) {
       if (form.newPassword !== form.newPassword2) {
-        setMessage({ text: "새 비밀번호 두 칸이 다릅니다.", bad: true });
+        setMessage({ text: t.loginPasswordMismatch, bad: true });
         return;
       }
       change.newPassword = form.newPassword;
@@ -156,7 +160,7 @@ export function WebLoginSection({ theme, compact }: { theme: PluginTheme; compac
     if (form.serverLink.trim()) change.addServer = { link: form.serverLink.trim(), label: form.serverLabel.trim() };
     if (removeIds.length) change.removeServers = removeIds;
     if (!Object.keys(change).length) {
-      setMessage({ text: "바꿀 칸을 하나 이상 채우세요.", bad: true });
+      setMessage({ text: t.loginNothingToChange, bad: true });
       return;
     }
     setBusy(true);
@@ -164,15 +168,15 @@ export function WebLoginSection({ theme, compact }: { theme: PluginTheme; compac
       const r = await call("/__gate/account", { password: form.password, otp: form.otp, change });
       setForm({ ...form, password: "", otp: "" });
       if (r.status !== 200) {
-        setMessage({ text: failText(r.status, r.json), bad: true });
+        setMessage({ text: failText(r.status, r.json, t), bad: true });
         return;
       }
-      const fields = (r.json.fields as string[]).map((f) => FIELD_NAMES[f] ?? f).join("·");
+      const fields = (r.json.fields as string[]).map((f) => t.loginFieldNames[f] ?? f).join(t.loginFieldJoin);
       const ended = Number(r.json.endedSessions);
-      const parts = [`바꿨습니다: ${fields}.`];
-      if (ended > 0) parts.push(`다른 기기 ${ended}곳은 로그아웃됐습니다.`);
-      if (change.sessionHours !== undefined) parts.push("유지 시간은 다음 로그인부터 적용됩니다.");
-      if (change.newPassword !== undefined && r.json.linkKept === false) parts.push("잠가 둔 PC 링크를 다시 잠그지 못해 지웠습니다 — 다음 로그인 때 다시 붙이세요.");
+      const parts = [t.loginChanged(fields)];
+      if (ended > 0) parts.push(t.loginOthersEnded(ended));
+      if (change.sessionHours !== undefined) parts.push(t.loginHoursNext);
+      if (change.newPassword !== undefined && r.json.linkKept === false) parts.push(t.loginLinkDropped);
       setForm(EMPTY);
       setRemoveIds([]);
       setMessage({ text: parts.join(" "), bad: false });
@@ -182,11 +186,11 @@ export function WebLoginSection({ theme, compact }: { theme: PluginTheme; compac
       if (host || added || removed.length) {
         updateRegistry([host ? account?.linkServerId ?? null : null, ...removed], [host, added].filter((h): h is HostEntry => !!h));
         setNeedReload(true);
-        setMessage({ text: `${parts.join(" ")} 바뀐 링크는 화면을 다시 열어야 붙고 떨어집니다.`, bad: false });
+        setMessage({ text: `${parts.join(" ")} ${t.loginLinksReopen}`, bad: false });
       }
       void load();
     } catch (error) {
-      setMessage({ text: `서버에 닿지 않습니다: ${String(error)}`, bad: true });
+      setMessage({ text: t.loginUnreachable(String(error)), bad: true });
     } finally {
       setBusy(false);
     }
@@ -210,24 +214,24 @@ export function WebLoginSection({ theme, compact }: { theme: PluginTheme; compac
   );
 
   return (
+    <>
+    <FoldTitle icon="KeyRound" title={t.loginHeading} theme={theme} open={shown} onToggle={() => setShown(!shown)} labels={t.fold} />
+    {shown ? (
     <View style={styles.card}>
-      <Text style={styles.heading}>웹 로그인</Text>
       {loadError ? <Text style={styles.error}>{loadError}</Text> : null}
       {account ? (
         <>
           <Text style={styles.text}>
-            {account.id} 로 로그인 · {clock(Date.now() + (account.expiresAt - account.serverNow))} 에 끝남 (남은 {left(account.expiresAt - account.serverNow)})
+            {t.loginAs(account.id, clock(Date.now() + (account.expiresAt - account.serverNow)), left(account.expiresAt - account.serverNow, t))}
           </Text>
-          <Text style={styles.muted}>
-            세션 유지 시간 {account.sessionHours}시간 · PC 링크 {account.linkServerId ? `저장됨(${account.linkServerId})` : "없음"}
-          </Text>
-          <Text style={styles.muted}>서버 링크 {account.servers?.length ? `${account.servers.length}개 — 로그인할 때 함께 붙습니다` : "없음 — 아래 바꾸기에서 넣으면 로그인할 때 서버도 붙습니다"}</Text>
+          <Text style={styles.muted}>{t.loginSessionLine(account.sessionHours, account.linkServerId)}</Text>
+          <Text style={styles.muted}>{t.loginServersLine(account.servers?.length ?? 0)}</Text>
           {(account.servers ?? []).map((sv) => {
             const marked = removeIds.includes(sv.serverId);
             return (
               <View key={sv.serverId} style={styles.actions}>
                 <Text style={[marked ? styles.error : styles.text, { flex: 1 }]}>
-                  {sv.label ?? sv.serverId} ({sv.serverId}){marked ? " — 바꾸기 누르면 지움" : ""}
+                  {sv.label ?? sv.serverId} ({sv.serverId}){marked ? t.loginServerMarked : ""}
                 </Text>
                 <Pressable
                   style={styles.button}
@@ -236,52 +240,49 @@ export function WebLoginSection({ theme, compact }: { theme: PluginTheme; compac
                     setRemoveIds(marked ? removeIds.filter((x) => x !== sv.serverId) : [...removeIds, sv.serverId]);
                   }}
                   accessibilityRole="button"
-                  accessibilityLabel={`${sv.label ?? sv.serverId} 서버 링크 지우기`}
+                  accessibilityLabel={t.loginServerRemoveLabel(sv.label ?? sv.serverId)}
                 >
-                  <Text style={styles.buttonText}>{marked ? "지우기 취소" : "지우기"}</Text>
+                  <Text style={styles.buttonText}>{marked ? t.loginServerRemoveCancel : t.loginServerRemove}</Text>
                 </Pressable>
               </View>
             );
           })}
         </>
       ) : !loadError ? (
-        <Text style={styles.muted}>읽는 중…</Text>
+        <Text style={styles.muted}>{t.loginReading}</Text>
       ) : null}
 
       <View style={styles.actions}>
-        <Pressable style={styles.button} onPress={() => g.logout()} accessibilityRole="button" accessibilityLabel="로그아웃">
-          <Text style={styles.buttonText}>로그아웃</Text>
+        <Pressable style={styles.button} onPress={() => g.logout()} accessibilityRole="button" accessibilityLabel={t.loginLogout}>
+          <Text style={styles.buttonText}>{t.loginLogout}</Text>
         </Pressable>
         <Pressable style={styles.button} onPress={() => setOpen(!open)} accessibilityRole="button">
-          <Text style={styles.buttonText}>{open ? "바꾸기 닫기" : "아이디·비밀번호·유지 시간·링크 바꾸기"}</Text>
+          <Text style={styles.buttonText}>{open ? t.loginCloseChange : t.loginOpenChange}</Text>
         </Pressable>
       </View>
 
       {open ? (
         <>
-          <Text style={styles.muted}>바꿀 칸만 채우세요. 비운 칸은 그대로 둡니다.</Text>
-          {input("id", "새 아이디")}
+          <Text style={styles.muted}>{t.loginChangeIntro}</Text>
+          {input("id", t.loginNewId)}
           <View style={styles.row}>
-            {input("newPassword", "새 비밀번호(8자 이상)", { secret: true })}
-            {input("newPassword2", "새 비밀번호 한 번 더", { secret: true })}
+            {input("newPassword", t.loginNewPassword, { secret: true })}
+            {input("newPassword2", t.loginNewPassword2, { secret: true })}
           </View>
-          {input("hours", "세션 유지 시간(시간, 다음 로그인부터)", { numeric: true })}
-          {input("link", "새 PC 연결 링크(PC Paseo 앱 → 호스트 설정 → 기기 페어링)", { multiline: true })}
+          {input("hours", t.loginHours, { numeric: true })}
+          {input("link", t.loginPcLink, { multiline: true })}
           <View style={styles.row}>
-            {input("serverLabel", "추가할 서버 이름(비우면 서버 번호)")}
-            {input("serverLink", "서버 연결 링크(그 서버 호스트 설정 → 기기 페어링, 또는 서버에서 paseo daemon pair)", { multiline: true })}
+            {input("serverLabel", t.loginServerLabel)}
+            {input("serverLink", t.loginServerLink, { multiline: true })}
           </View>
-          <Text style={styles.muted}>
-            확인 — 지금 비밀번호와 OTP 6자리. 방금 로그인에 쓴 숫자는 다시 못 쓰니 새 숫자가 뜨면 넣으세요. 아이디·비밀번호를 바꾸면 다른
-            기기 로그인은 모두 끊깁니다.
-          </Text>
+          <Text style={styles.muted}>{t.loginConfirmHint}</Text>
           <View style={styles.row}>
-            {input("password", "지금 비밀번호", { secret: true })}
-            {input("otp", "OTP 6자리", { numeric: true })}
+            {input("password", t.loginCurrentPassword, { secret: true })}
+            {input("otp", t.loginOtp, { numeric: true })}
           </View>
           <View style={styles.actions}>
             <Pressable style={styles.primary} onPress={() => void submit()} disabled={busy} accessibilityRole="button">
-              <Text style={styles.primaryText}>{busy ? "확인 중" : "바꾸기"}</Text>
+              <Text style={styles.primaryText}>{busy ? t.loginChecking : t.loginSubmit}</Text>
             </Pressable>
           </View>
         </>
@@ -290,10 +291,12 @@ export function WebLoginSection({ theme, compact }: { theme: PluginTheme; compac
       {needReload ? (
         <View style={styles.actions}>
           <Pressable style={styles.primary} onPress={reloadPage} accessibilityRole="button">
-            <Text style={styles.primaryText}>화면 다시 열기</Text>
+            <Text style={styles.primaryText}>{t.loginReopen}</Text>
           </Pressable>
         </View>
       ) : null}
     </View>
+    ) : null}
+    </>
   );
 }

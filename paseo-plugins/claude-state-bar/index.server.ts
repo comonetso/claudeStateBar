@@ -7,6 +7,7 @@ import { isTerminal, listRuns, readDoc, runItems } from "./server/codex/runs";
 import { emptyTrash, listTrash, purgeTrashed, restoreTrashed, trashRun } from "./server/codex/trash";
 import { emptyChatTrash, listChatTrash, purgeChat, restoreChat, trashChat } from "./server/codex/chatTrash";
 import { readUsage } from "./server/codex/usage";
+import { cleanCheck, cleanStart, cleanWait } from "./server/codex/clean";
 import { listProjects, waitProjectsChange } from "./server/projects";
 import { startProjectLabels } from "./server/projectLabels";
 import { applyHeaderTitle, waitHeaderTitles } from "./server/headerTitles";
@@ -18,6 +19,8 @@ import { soundOriginObserve, soundOriginPrepare, soundOriginValidate, soundOrigi
 import { startRcSync } from "./server/rcSync";
 import { translateTexts } from "./server/translate";
 import { getGoogleStatus } from "./server/googleKeys";
+import { checkGoogleKeys, googleKeysState as readGoogleKeysState, saveGoogleKeys } from "./server/googleCheck";
+import { googleKeysCheck, googleKeysSave, googleKeysState } from "./shared/googleKeys";
 import { synthesizeText } from "./server/tts";
 import { translateKo } from "./shared/translate";
 import { googleStatus, ttsSynthesize } from "./shared/tts";
@@ -41,16 +44,23 @@ import {
   codexTrashRun,
   codexUsage,
 } from "./shared/codex";
+import { codexCleanCheck, codexCleanStart, codexCleanWait } from "./shared/codexClean";
 import { clientLog } from "./shared/log";
+import { thinkingBoundary } from "./shared/thinkingBoundary";
+import { thinkingCut } from "./server/thinkingBoundary";
 import { projectsManager, projectsWait, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsResetOrder } from "./shared/projects";
 import { clearProjectOrders, projectOrders, setProjectOrder } from "./server/projectsOrder";
 import { clearProjectPins, projectPins, setProjectPin, setProjectPinOrder } from "./server/projectsPins";
 import { DEFAULT_SETTINGS, soundSettings } from "./shared/settings";
 import { syncPut, syncWait } from "./shared/settingsSync";
-import { layoutLoad, layoutSave } from "./shared/layoutSync";
+import { layoutLoad, layoutOwnerGet, layoutOwnerSet, layoutSave } from "./shared/layoutSync";
 import { putSettings, waitSettings } from "./server/settingsSync";
-import { hostIdentity, loadLayout, saveLayout } from "./server/layoutSync";
+import { hostIdentity, layoutOwner, loadLayout, saveLayout, setLayoutOwner } from "./server/layoutSync";
 import { hostInfo, soundData, soundDataV2 } from "./shared/sound";
+import { importExtSettings } from "./server/extSettings";
+import { extSettingsImport } from "./shared/extSettings";
+import { collectClaudeStats } from "./server/stats/claudeStats";
+import { claudeStats } from "./shared/stats";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(soundSettings);
@@ -79,6 +89,10 @@ export default function contribute(server: PluginServerContext) {
     const r = await readUsage(cwd);
     return r.state === "ok" ? { ok: true, computedAt: r.computedAt, items: r.items } : { ok: false };
   });
+  // 용량 줄 옆 [정리](리규형님 10-08 "확장과 같게") — 이 기기의 codex_rescue 정리 스크립트를 띄우고, 출력은 기다림 요청으로 준다
+  server.handle(codexCleanCheck, async ({ cwd }) => cleanCheck(cwd));
+  server.handle(codexCleanStart, async ({ cwd, items, yes }) => cleanStart(cwd, items, yes));
+  server.handle(codexCleanWait, async ({ jobId, seen }) => cleanWait(jobId, seen));
   // 휴지통: 넣을 때는 문서까지 통째로(확장 onDelete 와 같이 includeDocs=true)
   server.handle(codexTrashRun, async ({ cwd, stamp, slug, subject, mode }) => {
     const moved = await trashRun(cwd, stamp, slug, true, subject, mode, Date.now());
@@ -135,6 +149,8 @@ export default function contribute(server: PluginServerContext) {
     const [running, runs, codexChats] = await Promise.all([countRunning(cwd), listRuns(cwd), countLiveChats(cwd)]);
     return { ...running, codexRuns: runs.runs.filter((r) => !isTerminal(r.phase)).length, codexChats };
   });
+  // 작업 현황 "통계" 탭(10-08) — 이 기기 ~/.claude 전체(stats-cache.json + 오늘 대화 기록)로 확장 Claude Status 통계 탭과 같은 값
+  server.handle(claudeStats, async ({ force }) => collectClaudeStats(force === true));
   // 프로젝트 매니저 목록(VS Code 가 있는 이 PC 데몬에서만 뜻이 있다 — 화면도 PC 플러그인만 붙인다)
   server.handle(projectsManager, async () => listProjects());
   server.handle(projectsWait, async ({ mtimeMs }) => waitProjectsChange(mtimeMs));
@@ -147,6 +163,8 @@ export default function contribute(server: PluginServerContext) {
     await Promise.all([clearProjectOrders(), clearProjectPins()]);
     return { ok: true };
   });
+  // VS Code 확장 설정 가져오기(10-08) — 설정 화면 소리 칸 단추. 이 기기 VS Code 사용자 설정을 읽기만 한다(설정 화면은 PC 플러그인만 붙인다)
+  server.handle(extSettingsImport, async () => importExtSettings());
   // 소리는 화면 하나에서만(10-08) — 화면들의 "울려도 되나"를 모아 하나만 고른다(화면은 이 PC 플러그인에만 묻는다)
   server.handle(soundScreenUsed, async ({ screenId }) => markScreenUsed(screenId));
   server.handle(soundClaim, async (input) => claimSound(input));
@@ -172,19 +190,29 @@ export default function contribute(server: PluginServerContext) {
   // 위쪽 제목 "카테고리 - 이름"(10-08) — 이 기기 이름표의 제목을 주고, 원래 이름 기록·프로젝트 이름 바꾸기
   server.handle(headerTitlesWait, async ({ sig }) => waitHeaderTitles(sig));
   server.handle(headerTitleApply, async (input) => applyHeaderTitle(input));
+  // 생각 상자에서 Claude 의 말을 꺼낼 자리(10-09) — 이 기기의 Claude 원본 기록에서 생각 칸 경계를 찾는다
+  server.handle(thinkingBoundary, async ({ agentId, text, wait }, { paseo }) => ({ cut: await thinkingCut(paseo, agentId, text, wait === true).catch(() => null) }));
   server.handle(clientLog, async ({ message }) => {
     console.log(`[client] ${message}`);
     return { ok: true };
   });
   // 생각 상자 번역·읽기 — 이 기기 키 파일로 구글 API를 호출한다
-  server.handle(translateKo, async ({ texts }) => translateTexts(texts));
-  server.handle(ttsSynthesize, async ({ text }) => synthesizeText(text));
+  // 10-08: 번역 대상·음성 언어(lang)는 화면이 Paseo 언어 설정으로 정해 보낸다. 없으면(옛 화면) 한국어
+  server.handle(translateKo, async ({ texts, lang }) => translateTexts(texts, lang ?? "ko"));
+  server.handle(ttsSynthesize, async ({ text, lang }) => synthesizeText(text, lang ?? "ko"));
   server.handle(googleStatus, async () => getGoogleStatus());
+  // 설정 화면 "번역·읽기" 칸(10-08) — 키 저장·확인. 🔴 키 값은 돌려보내지 않는다(있음/없음·마지막 확인 결과만)
+  server.handle(googleKeysState, async () => readGoogleKeysState());
+  server.handle(googleKeysSave, async (input) => saveGoogleKeys(input));
+  server.handle(googleKeysCheck, async ({ lang }) => checkGoogleKeys(lang ?? "ko"));
   // 기기 사이 Paseo 설정 맞추기의 정본(10-07) — 화면은 이 PC 플러그인만 묻는다
   server.handle(syncWait, async ({ slot, rev }) => waitSettings(slot, rev));
-  server.handle(syncPut, async ({ slot, changes, seed }) => putSettings(slot, changes, seed));
+  server.handle(syncPut, async ({ slot, changes, seed, screen }) => putSettings(slot, changes, seed, screen));
   // PC 에서 가져오기 — PC 앱이 맡기고 웹·폰이 가져간다(10-07)
-  server.handle(layoutSave, async ({ slot, key, value }) => saveLayout(slot, key, value));
+  server.handle(layoutSave, async ({ slot, key, value, screen }) => saveLayout(slot, key, value, screen));
+  // 대표 PC 웹(10-08) — 설정 화면 "기준 화면" 줄의 지정·풀기 버튼
+  server.handle(layoutOwnerGet, async () => ({ owner: await layoutOwner() }));
+  server.handle(layoutOwnerSet, async ({ screen, label }) => setLayoutOwner(screen, label));
   server.handle(layoutLoad, async ({ slot }) => loadLayout(slot));
   // 웹·폰 원격과 Paseo 보관 상태 맞추기 + 열린 대화의 Claude 를 띄워 원격에 붙이기(10-06)
   const stopRcSync = startRcSync();

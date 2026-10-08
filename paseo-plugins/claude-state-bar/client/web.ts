@@ -28,6 +28,7 @@ type RangeLike = {
   intersectsNode(node: NodeLike): boolean;
   setStart(node: NodeLike, offset: number): void;
   setEnd(node: NodeLike, offset: number): void;
+  toString(): string;
 };
 declare class Highlight {
   constructor(...ranges: RangeLike[]);
@@ -257,27 +258,10 @@ export function currentWorkspaceFromUrl(): { serverId: string; workspaceId: stri
 type LocationHub = { listeners: Set<() => void> };
 /**
  * 화면 주소가 바뀔 때마다 부른다(웹·데스크톱만). Paseo 는 주소를 history.pushState·replaceState 로 바꾸므로 그 둘을 한 번만
- * 감싸 알린다(원래 동작은 그대로 하고 뒤에 알리기만). 호스트마다 플러그인이 따로 실려도 감싸기는 한 벌 — globalThis 표식
+ * 감싸 알린다(원래 동작은 그대로 하고 뒤에 알리기만). 호스트마다 플러그인이 따로 실려도 감싸기는 한 벌 — globalThis 표식.
+ * (10-08: 옛 "주소 ?open= + 가짜 popstate" 파일 열기 함수 navigateInApp·base64Url 은 부르는 곳이 없어 지웠다 — 파일 열기는
+ * 아래 openWorkspaceFile 이 Paseo 내부 이동 함수를 쓴다)
  */
-/**
- * 앱 안에서 주소를 옮긴다(웹·데스크톱만 — 폰 앱은 false). Paseo 화면은 주소로 움직이므로 기록에 새 주소를 넣고 "뒤로 가기"와
- * 같은 알림(popstate)을 보내면 앱이 그 주소를 읽어 화면을 바꾼다. 플러그인 도구의 navigation 은 주소 뒤 ?open= 을 못 실어서 쓴다
- */
-export function navigateInApp(path: string): boolean {
-  if (!isWeb() || typeof history === "undefined") return false;
-  history.pushState(null, "", path);
-  window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
-  return true;
-}
-
-/** 글자를 base64url(끝 = 없이)로 — Paseo 가 주소에 파일 경로를 싣는 모양(utils/host-routes encodeFilePathForPathSegment) */
-export function base64Url(text: string): string {
-  const bytes = new TextEncoder().encode(text);
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 export function watchLocation(listener: () => void): () => void {
   if (!isWeb() || typeof history === "undefined") return () => {};
   const g = globalThis as { __claudeStateBar_locationHub_v1?: LocationHub };
@@ -459,22 +443,39 @@ type MemoryStore = {
   };
 };
 
-// 이 번호는 이 번들에서만 유효하다. 다른 판에서는 쓰지 않고 새로고침으로 대체하지 않는다.
-const WORKSPACE_BUNDLE = "f07439c15f40c0ca1689fb49e3dcc6c8";
-function paseoModule(id: number): MemoryState | null {
-  if (appBundleId() !== WORKSPACE_BUNDLE) return null;
+// Paseo 내부 모듈 번호는 화면 코드 파일(번들)마다 다르다 — 판마다 번들에서 직접 확인한 번호만 쓴다(업데이트 점검표 19·20).
+// 모르는 번들에서는 쓰지 않고 해당 기능을 끈다(번호를 짐작해 맞추지 않는다). 설정 화면의 "이 화면의 Paseo 판" 칸이 꺼진 것을 알린다.
+// 새 판을 넣을 때: 번들에서 export 이름(useWorkspaceLayoutStore·WorkspaceLayoutPersistedStateSchema·navigateToWorkspace·
+// useSidebarOrderStore·queryClient)이 있는 모듈 번호를 찾고 본문이 이전 판과 같은지 확인한 뒤 한 줄 더한다.
+export type PaseoModuleIds = { layout: number; schema: number; navigate: number; sidebarOrder: number; queryClient: number };
+export const PASEO_BUNDLES: Record<string, { version: string; ids: PaseoModuleIds }> = {
+  // PC 앱 0.11.0-beta.5 (= 10-07 에 올린 웹)
+  f07439c15f40c0ca1689fb49e3dcc6c8: { version: "0.11.0-beta.5", ids: { layout: 3801, schema: 3802, navigate: 3898, sidebarOrder: 4025, queryClient: 848 } },
+  // PC 앱 0.11.1 (10-08 업데이트) — 위 판과 모듈 본문이 같고 번호만 2씩 밀렸다(tmp/paseo_0111_probe/probe.cjs)
+  "3a92a6be2c6767623cc9fa2aa410618e": { version: "0.11.1", ids: { layout: 3803, schema: 3804, navigate: 3900, sidebarOrder: 4027, queryClient: 850 } },
+};
+
+/** 이 화면 번들에서 확인한 모듈 번호. 모르는 판이거나 웹이 아니면 null */
+export function paseoModuleIds(): PaseoModuleIds | null {
+  const id = appBundleId();
+  return id ? PASEO_BUNDLES[id]?.ids ?? null : null;
+}
+
+function paseoModule(which: keyof PaseoModuleIds): MemoryState | null {
+  const ids = paseoModuleIds();
+  if (!ids) return null;
   const require = (globalThis as { __r?: (id: number) => unknown }).__r;
   if (typeof require !== "function") return null;
   try {
-    const value = require(id);
+    const value = require(ids[which]);
     return value && typeof value === "object" ? value as MemoryState : null;
   } catch {
     return null;
   }
 }
 
-function paseoMemoryStore(id: number, exported: string, key: string): MemoryStore | null {
-  const store = paseoModule(id)?.[exported] as MemoryStore | undefined;
+function paseoMemoryStore(which: keyof PaseoModuleIds, exported: string, key: string): MemoryStore | null {
+  const store = paseoModule(which)?.[exported] as MemoryStore | undefined;
   if (typeof store?.getState !== "function" || typeof store.setState !== "function" ||
       typeof store.persist?.hasHydrated !== "function" || typeof store.persist.getOptions !== "function") return null;
   const options = store.persist.getOptions();
@@ -482,17 +483,75 @@ function paseoMemoryStore(id: number, exported: string, key: string): MemoryStor
     typeof options.merge === "function" ? store : null;
 }
 
+// ── 업데이트 대비 상태 표시(10-08 리규형님 결정 — Codex 261008_150613 작업 1~3) ──
+// 위 연결은 실패하면 null/false 만 돌려줘 왜 꺼졌는지가 사라진다(0.11.1 업데이트 때 "어떤 게 안 되는지조차 모름").
+// 같은 연결을 읽기만 해서 막힌 이유를 돌려준다. 값을 쓰거나 화면 배치를 바꾸지 않는다(client/health.ts 가 기능별로 판정).
+export type InternalsReason = "not-web" | "unknown-bundle" | "no-require" | "load-failed" | "no-export" | "shape-mismatch" | "not-hydrated";
+export type PaseoInternals = { layout: InternalsReason | null; schema: InternalsReason | null; navigate: InternalsReason | null; sidebarOrder: InternalsReason | null };
+
+function probeModule(which: keyof PaseoModuleIds): MemoryState | InternalsReason {
+  if (!isWeb()) return "not-web";
+  const ids = paseoModuleIds();
+  if (!ids) return "unknown-bundle";
+  const require = (globalThis as { __r?: (id: number) => unknown }).__r;
+  if (typeof require !== "function") return "no-require";
+  try {
+    const value = require(ids[which]);
+    return value && typeof value === "object" ? (value as MemoryState) : "no-export";
+  } catch {
+    return "load-failed";
+  }
+}
+
+/** paseoMemoryStore 와 같은 조건을 하나씩 보고 처음 걸린 것을 돌려준다. null = 갖춰짐 */
+function probeStore(which: keyof PaseoModuleIds, exported: string, key: string): InternalsReason | null {
+  const mod = probeModule(which);
+  if (typeof mod === "string") return mod;
+  const store = mod[exported] as MemoryStore | undefined;
+  if (typeof store?.getState !== "function" || typeof store.setState !== "function" ||
+      typeof store.persist?.hasHydrated !== "function" || typeof store.persist.getOptions !== "function") return "no-export";
+  const options = store.persist.getOptions();
+  if (options.name !== key || typeof options.partialize !== "function" || typeof options.merge !== "function") return "shape-mismatch";
+  return store.persist.hasHydrated() ? null : "not-hydrated";
+}
+
+export function probePaseoInternals(): PaseoInternals {
+  const schema = probeModule("schema");
+  const navigate = probeModule("navigate");
+  return {
+    layout: probeStore("layout", "useWorkspaceLayoutStore", "workspace-layout-state"),
+    schema: typeof schema === "string" ? schema : typeof (schema.WorkspaceLayoutPersistedStateSchema as { safeParse?: unknown } | undefined)?.safeParse === "function" ? null : "no-export",
+    navigate: typeof navigate === "string" ? navigate : typeof navigate.navigateToWorkspace === "function" ? null : "no-export",
+    sidebarOrder: probeStore("sidebarOrder", "useSidebarOrderStore", "sidebar-project-workspace-order"),
+  };
+}
+
+/** 배치·순서 저장소가 저장 파일을 다 읽으면 알린다(시작 직후엔 읽는 중 — 그 사이 판정은 "확인 중"). 끊기 함수 */
+export function onPaseoStoresHydrated(fn: () => void): () => void {
+  const stops: (() => void)[] = [];
+  for (const [which, exported] of [["layout", "useWorkspaceLayoutStore"], ["sidebarOrder", "useSidebarOrderStore"]] as const) {
+    const mod = probeModule(which);
+    if (typeof mod === "string") continue;
+    const persist = (mod[exported] as { persist?: { hasHydrated?(): boolean; onFinishHydration?(f: () => void): () => void } } | undefined)?.persist;
+    if (typeof persist?.onFinishHydration !== "function" || persist.hasHydrated?.()) continue;
+    stops.push(persist.onFinishHydration(fn));
+  }
+  return () => {
+    for (const stop of stops) stop();
+  };
+}
+
 function layoutSchema(): { safeParse(value: unknown): { success: boolean } } | null {
-  const schema = paseoModule(3802)?.WorkspaceLayoutPersistedStateSchema as ReturnType<typeof layoutSchema>;
+  const schema = paseoModule("schema")?.WorkspaceLayoutPersistedStateSchema as ReturnType<typeof layoutSchema>;
   return typeof schema?.safeParse === "function" ? schema : null;
 }
 
 /** 배치는 저장 파일 대신 화면이 구독하는 메모리에서 읽고, 엄격한 앱 스키마를 통과한 변경만 한 번에 알린다. */
 export function readPaseoLayout(): MemoryState | null {
-  return paseoMemoryStore(3801, "useWorkspaceLayoutStore", "workspace-layout-state")?.getState() ?? null;
+  return paseoMemoryStore("layout", "useWorkspaceLayoutStore", "workspace-layout-state")?.getState() ?? null;
 }
 export function updatePaseoLayout(patch: MemoryState): boolean {
-  const store = paseoMemoryStore(3801, "useWorkspaceLayoutStore", "workspace-layout-state");
+  const store = paseoMemoryStore("layout", "useWorkspaceLayoutStore", "workspace-layout-state");
   const schema = layoutSchema();
   if (!store || !schema) return false;
   if (!schema.safeParse(store.persist.getOptions().partialize({ ...store.getState(), ...patch })).success) return false;
@@ -513,20 +572,26 @@ export function markWorkspaceInteraction(): void {
 
 /** 공개 navigation에는 파일 target이 없어 같은 앱 내부 정상 이동 함수를 사용한다. 주소 지시·가짜 popstate는 쓰지 않는다. */
 export function canOpenWorkspaceFile(): boolean {
-  return readPaseoLayout() !== null && typeof paseoModule(3898)?.navigateToWorkspace === "function";
+  return readPaseoLayout() !== null && typeof paseoModule("navigate")?.navigateToWorkspace === "function";
 }
 export function openWorkspaceFile(serverId: string, workspaceId: string, path: string): boolean {
   if (!canOpenWorkspaceFile()) return false;
-  const navigate = paseoModule(3898)!.navigateToWorkspace as (input: MemoryState) => void;
+  const navigate = paseoModule("navigate")!.navigateToWorkspace as (input: MemoryState) => void;
   navigate({ serverId, workspaceId, target: { kind: "file", path } });
   return true;
+}
+
+let layoutAppliedAt = 0;
+/** 마지막으로 다른 화면 배치를 메모리에 덮은 시각(0 = 없음) — 칸 최대화가 풀린 원인 기록용(paneMaxWatch, 10-09) */
+export function lastLayoutAppliedAt(): number {
+  return layoutAppliedAt;
 }
 
 /** 시작 시 PC 복사도 메모리에 반영한다. 모르는 판·저장 형식은 변경하지 않는다. */
 export function applyPaseoLayoutCopy(key: string, value: string): boolean {
   const store = key === "workspace-layout-state"
-    ? paseoMemoryStore(3801, "useWorkspaceLayoutStore", key)
-    : key === "sidebar-project-workspace-order" ? paseoMemoryStore(4025, "useSidebarOrderStore", key) : null;
+    ? paseoMemoryStore("layout", "useWorkspaceLayoutStore", key)
+    : key === "sidebar-project-workspace-order" ? paseoMemoryStore("sidebarOrder", "useSidebarOrderStore", key) : null;
   if (!store) return false;
   try {
     const saved = JSON.parse(value) as { state?: MemoryState; version?: number };
@@ -535,7 +600,7 @@ export function applyPaseoLayoutCopy(key: string, value: string): boolean {
     if (key === "workspace-layout-state") {
       if (!layoutSchema()?.safeParse(saved.state).success) return false;
     } else {
-      // 4025의 비공개 엄격한 스키마 중 현행 저장 필드만 받아들인다.
+      // sidebarOrder 모듈의 비공개 엄격한 스키마 중 현행 저장 필드만 받아들인다.
       const stringList = (v: unknown) => Array.isArray(v) && v.every((s) => typeof s === "string");
       if (Object.keys(saved.state).some((k) => !["projectOrder", "pinnedWorkspaceOrder", "workspaceOrderByProject"].includes(k))) return false;
       if (!stringList(saved.state.projectOrder) || !stringList(saved.state.pinnedWorkspaceOrder)) return false;
@@ -545,6 +610,7 @@ export function applyPaseoLayoutCopy(key: string, value: string): boolean {
     const next = options.merge(saved.state, store.getState());
     if (key === "workspace-layout-state" && !layoutSchema()?.safeParse(options.partialize(next)).success) return false;
     store.setState(next);
+    if (key === "workspace-layout-state") layoutAppliedAt = Date.now();
     return true;
   } catch {
     return false;
@@ -689,6 +755,34 @@ export function selectionParagraphs(token: unknown): { texts: string[]; highligh
 }
 
 /**
+ * 선택(watchSelection 의 token)이 어느 문단에서 시작하는가(10-08 생각 상자 선택 읽기 — 리규형님 "선택해 두고 읽기를 누르면 그 위치부터").
+ * paragraphIds = 플러그인이 직접 그린 문단 요소의 nativeID(웹에서 id) 순서대로. 선택이 걸친 첫 문단의 번호와, 선택이 그 문단 안에서
+ * 시작했으면 그 문단 글 안의 글자 자리(문단 밖에서 시작했으면 0). 어느 문단에도 걸치지 않거나 웹이 아니면 null.
+ * 표준 Selection·Range 만 쓰고 Paseo 화면 요소 이름에 기대지 않는다
+ */
+export function selectionStartIn(token: unknown, paragraphIds: readonly string[]): { index: number; offset: number } | null {
+  if (!isWeb() || !token) return null;
+  const range = token as RangeLike;
+  for (let index = 0; index < paragraphIds.length; index++) {
+    const el = document.getElementById(paragraphIds[index]);
+    if (!el) continue;
+    const node = el as unknown as NodeLike;
+    try {
+      if (!range.intersectsNode(node)) continue;
+      if (!el.contains(range.startContainer)) return { index, offset: 0 };
+      // 문단 처음부터 선택 시작점까지의 글 길이 = 그 문단 글 안의 글자 자리(글자 노드 안이든 요소 경계든 같이 잰다)
+      const before = document.createRange();
+      before.setStart(node, 0);
+      before.setEnd(range.startContainer, range.startOffset);
+      return { index, offset: before.toString().length };
+    } catch {
+      return { index, offset: 0 };
+    }
+  }
+  return null;
+}
+
+/**
  * 왼쪽 목록에서 rootId 요소 윗변부터 아래쪽 줄(sidebar-footer) 바로 위까지의 높이 — 칸이 그만큼 늘어나 가린 워크스페이스 목록
  * 자리를 채운다. 아래쪽 줄은 창 바닥에 붙어 있으므로 "창 바닥(아래쪽 줄이 밀려 나갔으면 창 바닥) − 아래쪽 줄 높이"로 잰다 —
  * 칸이 이미 늘어난 뒤 창을 줄여도 줄어든 값이 나오게. 웹이 아니거나 아직 그려지지 않았으면 null.
@@ -702,6 +796,32 @@ export function measureRoomAbove(rootId: string, footerTestId: string): number |
   const bottom = Math.min(f.bottom, window.innerHeight);
   const room = bottom - f.height - root.getBoundingClientRect().top;
   return room > 0 ? Math.floor(room) : null;
+}
+
+declare class ResizeObserver {
+  constructor(callback: () => void);
+  observe(target: unknown): void;
+  unobserve(target: unknown): void;
+  disconnect(): void;
+}
+/**
+ * 이름표(testID) 요소의 크기가 바뀌는 순간 fn 을 부른다(웹·데스크톱만). 요소가 새로 그려져 바뀌었을 수 있어 attach() 로 대상을 다시
+ * 잡는다(부르는 쪽 주기 확인에서). 10-09: 사용량 칸을 올리면 프로젝트 목록이 1초 확인을 기다리느라 늦게 줄어 표가 화면 아래로
+ * 밀렸다 올라왔다(리규형님 "잠깐 멈췄다가 올라와")
+ */
+export function watchSizeOf(testId: string, fn: () => void): { attach(): void; stop(): void } {
+  if (!isWeb() || typeof ResizeObserver === "undefined") return { attach() {}, stop() {} };
+  const observer = new ResizeObserver(fn);
+  let target: unknown = null;
+  const attach = () => {
+    const el = document.querySelector(`[data-testid="${testId}"]`);
+    if (el === target) return;
+    if (target) observer.unobserve(target);
+    target = el;
+    if (el) observer.observe(el);
+  };
+  attach();
+  return { attach, stop: () => observer.disconnect() };
 }
 
 export function onWindowResize(fn: () => void): () => void {
@@ -961,7 +1081,7 @@ export function watchCompactWidth(onChange: (compact: boolean) => void): () => v
 // 글은 React 가 만든 글 조각의 값만 바꾼다 — 조각을 갈아 끼우면 React 가 다음에 옛 조각을 고쳐 화면에 안 나온다.
 // React 가 글을 다시 쓰면 감시가 다시 바꾼다. 폰 원본 앱(웹 화면이 아님)에는 해당 없음
 declare class MutationObserver {
-  constructor(callback: () => void);
+  constructor(callback: (records: { addedNodes: ArrayLike<unknown> }[]) => void);
   observe(target: unknown, options: { childList?: boolean; subtree?: boolean; characterData?: boolean }): void;
   disconnect(): void;
 }
@@ -1091,7 +1211,7 @@ export function watchScreenUse(onUse: () => void): () => void {
 const RAIL_CONTROL_LABELS = new Set(["이전 문단", "일시정지", "이어서 읽기", "읽기 중지", "다음 문단", "읽기 속도"]);
 const RAIL_ANCHOR = '[aria-label="목록 쓰기"]';
 // 10-08 폰 실화면: 줄바꿈만 먹고 순서 바꾸기·줄 바꿀 자리는 안 먹어 등록 순서대로 넘쳐 흘렀다(원인 미확정). 폰 브라우저가 다르게
-// 다룰 수 있는 :has() 를 빼고, 조절 단추가 떠 있는 묶음에만 표식을 붙였다 뗀다. 적용 결과는 log 로 남긴다(원인 확정 뒤 진단 로그는 뺀다)
+// 다룰 수 있는 :has() 를 빼고, 조절 단추가 떠 있는 묶음에만 표식을 붙였다 뗀다(원인은 아래 감싸개 contents — 진단 로그는 10-08 저녁 뺐다)
 // 스타일 이름도 판마다 새로 — 옛 판 장치가 정리되며 같은 이름의 스타일을 지워 버렸다(10-08 폰 진단 sheet:false)
 const RAIL_SHEET = "claude-state-bar-composer-rail-v2";
 const RAIL_CSS =
@@ -1110,10 +1230,10 @@ type RailEl = HeaderEl & {
 
 /** 이 장치 코드를 고치면 올린다 — 플러그인을 다시 읽어도 같은 페이지에는 처음 시작한 옛 판 장치가 남아 새 코드가 안 돌았다
  *  (10-08 폰 진단). 더 높은 판이 오면 옛 판 장치를 멈추고 넘겨받는다. 판이 섞인 호스트들은 높은 판 하나를 같이 쓴다 */
-const RAIL_VERSION = 4;
+const RAIL_VERSION = 5; // 5: 10-08 저녁 원인 확정 뒤 진단 로그(report)를 뺐다
 
 /** 화면에 한 벌만 돈다(기기마다 올라오는 플러그인이 같이 부르면 함께 쓰고, 다 끊으면 멈춘다). 끊기 함수 */
-export function startComposerRail(log?: (message: string) => void): () => void {
+export function startComposerRail(): () => void {
   if (!isWeb() || typeof MutationObserver === "undefined") return () => {};
   const g = globalThis as Record<string, unknown>;
   const hub = (g.__claudeStateBar_composerRail_v2 ??= { users: 0, stop: null }) as { users: number; stop: (() => void) | null; version?: number };
@@ -1126,40 +1246,11 @@ export function startComposerRail(log?: (message: string) => void): () => void {
   if (!hub.stop) {
     setStyleSheet(RAIL_SHEET, RAIL_CSS);
     let queued = false;
-    let lastReport = "";
-    // 폰에서 무엇이 실제로 먹었는지 — 상태가 바뀔 때만 한 줄
-    const report = (rails: Set<RailEl>, steps: number[]) => {
-      if (!log) return;
-      const rail = [...rails][0];
-      const ctl = rail ? (rail.querySelector("[data-csb-ctl]") as RailEl | null) : null;
-      const cs = rail ? window.getComputedStyle(rail) : null;
-      const after = rail ? window.getComputedStyle(rail, "::after") : null;
-      const info = {
-        width: window.innerWidth,
-        narrow: window.matchMedia?.("(max-width: 719px)").matches ?? null,
-        controls: steps.length,
-        steps: [...new Set(steps)],
-        rails: rails.size,
-        children: rail?.children?.length ?? null,
-        wrap: cs?.flexWrap ?? null,
-        dir: cs?.flexDirection ?? null,
-        ctlIsChild: ctl ? ctl.parentElement === rail : null,
-        ctlOrder: ctl ? (window.getComputedStyle(ctl).order ?? null) : null,
-        ctlDisplay: ctl ? window.getComputedStyle(ctl).display : null,
-        after: after ? `${after.content}|${after.flexBasis}|${after.order}` : null,
-        sheet: !!document.getElementById(RAIL_SHEET),
-      };
-      const line = JSON.stringify(info);
-      if (line === lastReport) return;
-      lastReport = line;
-      log(`composer rail: ${line}`);
-    };
     const apply = () => {
       queued = false;
       // 다른 장치가 지웠으면 다시 넣는다
       if (!document.getElementById(RAIL_SHEET)) setStyleSheet(RAIL_SHEET, RAIL_CSS);
       const rails = new Set<RailEl>();
-      const steps: number[] = [];
       const all = document.querySelectorAll("[aria-label]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < all.length; i++) {
         const el = all[i];
@@ -1170,7 +1261,6 @@ export function startComposerRail(log?: (message: string) => void): () => void {
           const parent = item.parentElement as RailEl | null;
           if (parent && parent.querySelector(RAIL_ANCHOR)) {
             rails.add(parent);
-            steps.push(n);
             if (parent.getAttribute("data-csb-rail") === null) parent.setAttribute("data-csb-rail", "");
             if (item.getAttribute("data-csb-ctl") === null) item.setAttribute("data-csb-ctl", "");
             if (el.getAttribute("data-csb-ctl") === null) el.setAttribute("data-csb-ctl", "");
@@ -1182,7 +1272,6 @@ export function startComposerRail(log?: (message: string) => void): () => void {
       // 조절 단추가 사라진 묶음은 표식을 뗀다 — 남으면 좁은 화면에서 빈 둘째 줄(줄 간격)이 생긴다
       const marked = document.querySelectorAll("[data-csb-rail]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < marked.length; i++) if (!rails.has(marked[i])) marked[i].removeAttribute("data-csb-rail");
-      report(rails, steps);
     };
     const observer = new MutationObserver(() => {
       if (queued) return;
@@ -1194,6 +1283,72 @@ export function startComposerRail(log?: (message: string) => void): () => void {
     hub.stop = () => {
       observer.disconnect();
       setStyleSheet(RAIL_SHEET, null);
+    };
+  }
+  return () => {
+    hub.users -= 1;
+    if (hub.users <= 0 && hub.stop) {
+      hub.stop();
+      hub.stop = null;
+      hub.users = 0;
+    }
+  };
+}
+
+// ── 머리줄 단추의 Paseo 도움말 숨기기(10-09 리규형님: 사용량 단추에 마우스를 올리면 뜨는 도움말 "별 필요 없어 — 없애") ──
+// Paseo 는 플러그인 단추 설명(title, 꼭 넣어야 함)을 마우스를 올리면 늘 도움말 상자로 띄우고 끌 방법이 없다(0.11.1 앱 번들의
+// 플러그인 단추: Tooltip 안 TooltipContent 에 title 글). 도움말 상자에는 이름표가 없어서, 마우스가 그 단추 위에 있는 동안만 화면에
+// 새로 붙는 요소를 보고 글이 단추 설명으로 시작하면 그 상자를 감춘다. 단추는 접근성 이름(= title)으로 고른다.
+// 감추지 못해도(Paseo 가 구조를 바꾸면) 도움말이 다시 보일 뿐 다른 고장은 없다
+type TipEl = { nodeType: number; textContent: string | null; setAttribute(name: string, value: string): void };
+type OverEvent = { target: { closest?(selector: string): unknown } | null };
+const TIP_SHEET = "claude-state-bar-hidden-tip";
+const TIP_ATTR = "data-csb-hidden-tip";
+const TIP_VERSION = 1;
+
+/** titlePrefix 로 시작하는 설명을 가진 단추의 도움말을 감춘다. 화면에 한 벌만 돈다. 끊기 함수 */
+export function hideButtonTooltip(titlePrefix: string): () => void {
+  if (!isWeb() || typeof MutationObserver === "undefined") return () => {};
+  const g = globalThis as Record<string, unknown>;
+  const hub = (g.__claudeStateBar_hiddenTip_v1 ??= { users: 0, stop: null }) as { users: number; stop: (() => void) | null; version?: number };
+  if ((hub.version ?? 0) < TIP_VERSION) {
+    hub.stop?.();
+    hub.stop = null;
+    hub.version = TIP_VERSION;
+  }
+  hub.users += 1;
+  if (!hub.stop) {
+    const trigger = `[aria-label^="${titlePrefix}"]`;
+    setStyleSheet(TIP_SHEET, `[${TIP_ATTR}]{display:none !important}`);
+    let observer: MutationObserver | null = null;
+    const hideTips = (records: { addedNodes: ArrayLike<unknown> }[]) => {
+      for (const record of records) {
+        for (let i = 0; i < record.addedNodes.length; i++) {
+          const node = record.addedNodes[i] as TipEl;
+          if (node.nodeType === 1 && (node.textContent ?? "").startsWith(titlePrefix)) node.setAttribute(TIP_ATTR, "");
+        }
+      }
+    };
+    // 앱(React)보다 먼저 받도록 문서 단계에서 가로챈다 — 도움말이 붙기 전에 지켜보기를 켠다
+    const onOver = (e: OverEvent) => {
+      const inside = !!e.target?.closest?.(trigger);
+      if (inside && !observer) {
+        observer = new MutationObserver(hideTips);
+        observer.observe(document.body, { childList: true, subtree: true });
+      } else if (!inside && observer) {
+        observer.disconnect();
+        observer = null;
+      }
+    };
+    const doc = document as unknown as { addEventListener(type: string, fn: (e: OverEvent) => void, capture: boolean): void; removeEventListener(type: string, fn: (e: OverEvent) => void, capture: boolean): void };
+    doc.addEventListener("pointerover", onOver, true);
+    doc.addEventListener("focusin", onOver, true);
+    hub.stop = () => {
+      doc.removeEventListener("pointerover", onOver, true);
+      doc.removeEventListener("focusin", onOver, true);
+      observer?.disconnect();
+      observer = null;
+      setStyleSheet(TIP_SHEET, null);
     };
   }
   return () => {

@@ -12,7 +12,8 @@ export const CLEAN_ITEMS = ["scratch", "log", "trash", "codex"] as const;
 export type CleanItem = (typeof CLEAN_ITEMS)[number];
 
 export type UsageRead =
-  | { state: "ok"; computedAt: number; items: { key: CleanItem; bytes: number; count: number }[] }
+  // clean = 정리 명령의 스크립트·폴더(플러그인이 적은 그대로). [정리]만 쓴다(server/codex/clean.ts) — 화면 용량 줄에는 보내지 않는다
+  | { state: "ok"; computedAt: number; items: { key: CleanItem; bytes: number; count: number }[]; clean: { script: string; dir: string } }
   | { state: "missing" }
   | { state: "broken"; why: string };
 
@@ -42,7 +43,7 @@ export function parseUsage(text: string): UsageRead {
   const dir = j.clean && typeof j.clean === "object" ? j.clean.dir : undefined;
   if (typeof script !== "string" || !ABSOLUTE.test(script)) return broken("clean.script");
   if (typeof dir !== "string" || !ABSOLUTE.test(dir)) return broken("clean.dir");
-  return { state: "ok", computedAt: at, items };
+  return { state: "ok", computedAt: at, items, clean: { script, dir } };
 }
 
 export async function readUsage(cwd: string): Promise<UsageRead> {
