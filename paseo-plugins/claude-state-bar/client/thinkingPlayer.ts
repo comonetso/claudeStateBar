@@ -73,7 +73,8 @@ type Run = {
   paused: boolean;
   status: "loading" | "waiting" | "playing";
   generation: number;
-  pumping?: number;
+  /** 지금 이 문단 소리를 준비·재생하는 작업의 표(pump) — 작업마다 새 객체라 끝난 작업이 다른 작업 표를 지우지 않는다 */
+  pumping?: { generation: number };
   loaded: boolean;
   currentText?: string;
   startedAt: number;
@@ -610,9 +611,12 @@ export class ThinkingController {
     if (text === undefined) { run.status = "waiting"; this.notify(); return; }
     if (run.loaded && run.currentText === text) { this.prefetch(run); return; }
     if (run.loaded) { this.seek(run.index); return; }
-    if (run.pumping === run.generation) return;
+    if (run.pumping?.generation === run.generation) return;
     const generation = run.generation;
-    run.pumping = generation;
+    // 이 작업만의 표(10-10) — 화면 글이 바뀌어 다시 시도로 넘긴 뒤 이 작업의 마무리가 새 작업의 표를 지우면, 다음 화면 갱신이
+    // 같은 문단을 한 번 더 틀어 재생 장치가 앞 재생을 일시정지로 끊었다("소리 읽기 실패: AbortError", 번역을 켠 채 읽을 때)
+    const mine = { generation };
+    run.pumping = mine;
     run.status = "loading";
     this.notify();
     const slot = this.slot(run, run.index, text);
@@ -639,7 +643,11 @@ export class ThinkingController {
       else this.prefetch(run);
     } catch (error) {
       if (this.run === run && run.generation === generation && slot.live) {
-        if (run.loaded && error && typeof error === "object" && "name" in error && error.name === "NotAllowedError") {
+        const name = error && typeof error === "object" && "name" in error ? error.name : "";
+        // 소리를 틀기 시작하는 찰나에 일시정지를 누르면 브라우저가 그 재생을 AbortError 로 끊는다 — 실패가 아니다(10-10).
+        // 일시정지로 두고, 이어서 읽기가 같은 소리를 다시 튼다
+        if (run.paused && name === "AbortError") return;
+        if (run.loaded && name === "NotAllowedError") {
           // 합성 뒤 play()는 브라우저에서 막힐 수 있다. 같은 소리를 남겨 두고 사용자 클릭으로 재개한다.
           run.paused = true;
           run.box.controls = true;
@@ -647,7 +655,7 @@ export class ThinkingController {
         } else this.stop(`소리 읽기 실패: ${String(error)}`);
       }
     } finally {
-      if (run.pumping === generation) run.pumping = undefined;
+      if (run.pumping === mine) run.pumping = undefined;
       this.notify();
     }
   }
