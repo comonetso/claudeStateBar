@@ -272,7 +272,8 @@ export function serverOf(e: ProjectEntry, index: HostIndex): string | undefined 
 // 살아 있는 세션 — 프로젝트 폴더(또는 그 아래)에서 보관 안 된 Paseo 대화. 열린 대화는 Claude 가 늘 떠 있다(rcSync, 10-06 결정)
 /** latest: 그 폴더(정확히 같은 경로)에서 가장 최근에 움직인 대화 — 누르면 데몬에 다시 묻지 않고 바로 연다(10-06 리규형님 결정) */
 /** bucket: 그 폴더 대화들 중 가장 급한 상태(Paseo 워크스페이스 목록과 같은 표시, statusIndicator) */
-export type Live = { open: number; running: number; bucket: StatusBucket; latest?: { agentId: string; at: string } };
+/** asking: 질문을 올려 답을 기다리는 대화 수(10-09) */
+export type Live = { open: number; running: number; asking: number; bucket: StatusBucket; latest?: { agentId: string; at: string } };
 
 // 처음엔 30초마다 목록을 다시 물어 초록 점이 최대 30초 늦었다(리규형님 10-07 "너무 늦게 바뀜"). 이제 호스트마다 대화 목록을
 // 구독해, 대화 상태가 바뀔 때마다 오는 알림(agent_update: 바뀐 대화 통째 또는 지운 대화 id)으로 바로 고친다.
@@ -287,11 +288,20 @@ type AgentLike = {
   requiresAttention?: boolean | null;
   attentionReason?: string | null;
 };
-type AgentState = { cwd: string; running: boolean; bucket: StatusBucket; updatedAt: string };
+type AgentState = { cwd: string; running: boolean; bucket: StatusBucket; updatedAt: string; asking: boolean };
+
+/**
+ * Claude 가 질문을 올려 답을 기다리는가(10-09 리규형님 "질문이 올라온 세션을 활성 줄에 질문 아이콘으로").
+ * Paseo 는 Claude 의 AskUserQuestion 을 권한 대기의 한 종류(kind "question", @getpaseo/protocol AgentPermissionRequestKind ·
+ * 데몬 providers/claude/agent.js)로 올린다 — 권한 승인 대기(tool 등)와 갈라 본다
+ */
+function isAsking(agent: AgentLike): boolean {
+  return (agent.pendingPermissions ?? []).some((p) => (p as { kind?: unknown } | null)?.kind === "question");
+}
 
 function putAgent(agents: Map<string, AgentState>, agent: AgentLike): void {
   if (agent.archivedAt || !agent.cwd) agents.delete(agent.id);
-  else agents.set(agent.id, { cwd: agent.cwd, running: agent.status === "running", bucket: agentBucket(agent), updatedAt: agent.updatedAt });
+  else agents.set(agent.id, { cwd: agent.cwd, running: agent.status === "running", bucket: agentBucket(agent), updatedAt: agent.updatedAt, asking: isAsking(agent) });
 }
 
 function liveFrom(byHost: Map<string, Map<string, AgentState>>): Map<string, Live> {
@@ -299,9 +309,10 @@ function liveFrom(byHost: Map<string, Map<string, AgentState>>): Map<string, Liv
   for (const [serverId, agents] of byHost) {
     for (const [agentId, agent] of agents) {
       const key = `${serverId}|${norm(agent.cwd)}`;
-      const cur: Live = next.get(key) ?? { open: 0, running: 0, bucket: "done" };
+      const cur: Live = next.get(key) ?? { open: 0, running: 0, asking: 0, bucket: "done" };
       cur.open += 1;
       if (agent.running) cur.running += 1;
+      if (agent.asking) cur.asking += 1;
       cur.bucket = mostUrgent(cur.bucket, agent.bucket);
       // openProjectOn 과 같은 기준(보관 안 된 것 중 updatedAt 가장 늦은 것). 이미 받은 목록이라 추가로 묻는 것은 없다
       if (!cur.latest || agent.updatedAt > cur.latest.at) cur.latest = { agentId, at: agent.updatedAt };
@@ -313,7 +324,7 @@ function liveFrom(byHost: Map<string, Map<string, AgentState>>): Map<string, Liv
 
 /** 화면에 보이는 것(점 색·대화 수·바로 열 대화)이 같으면 다시 그리지 않는다 — 대화가 도는 동안 알림이 잦다 */
 function liveSignature(live: Map<string, Live>): string {
-  return [...live].map(([k, v]) => `${k}:${v.open}:${v.running}:${v.bucket}:${v.latest?.agentId ?? ""}`).sort().join("\n");
+  return [...live].map(([k, v]) => `${k}:${v.open}:${v.running}:${v.asking}:${v.bucket}:${v.latest?.agentId ?? ""}`).sort().join("\n");
 }
 
 export function useLiveSessions(): Map<string, Live> {
@@ -440,17 +451,19 @@ export function liveOf(e: ProjectEntry, serverId: string | undefined, live: Map<
   const base = `${serverId}|${norm(e.path)}`;
   let open = 0;
   let running = 0;
+  let asking = 0;
   let bucket: StatusBucket = "done";
   for (const [key, v] of live) {
     if (key === base || key.startsWith(base + "/")) {
       open += v.open;
       running += v.running;
+      asking += v.asking;
       bucket = mostUrgent(bucket, v.bucket);
     }
   }
   // 바로 열 대화는 프로젝트 폴더 자체의 것만(데몬에 묻는 openProjectOn 도 그 폴더 작업 공간의 대화만 고른다)
   const latest = live.get(base)?.latest;
-  return open ? { open, running, bucket, ...(latest ? { latest } : {}) } : null;
+  return open ? { open, running, asking, bucket, ...(latest ? { latest } : {}) } : null;
 }
 
 type Navigation = {

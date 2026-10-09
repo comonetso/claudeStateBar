@@ -293,7 +293,7 @@ export function ProjectsList(props: {
                         setDraggableRow(node, key, g.name, c.accent, onDrop);
                       }}
                       accessibilityRole="button"
-                      accessibilityLabel={`${e.name}${mixed && e.category ? ` (${e.category})` : ""} 열기${alive ? ` (열린 대화 ${alive.open}개${alive.running ? `, 돌고 있음 ${alive.running}개` : ""})` : ""}`}
+                      accessibilityLabel={`${e.name}${mixed && e.category ? ` (${e.category})` : ""} 열기${alive ? ` (열린 대화 ${alive.open}개${alive.running ? `, 돌고 있음 ${alive.running}개` : ""}${alive.asking ? `, 질문 대기 ${alive.asking}개` : ""})` : ""}`}
                       disabled={!!busy || e.missing}
                       onPress={() => onOpen(e)}
                       style={({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) => [
@@ -322,7 +322,15 @@ export function ProjectsList(props: {
                           {/* 맨 위 고정 핀(10-06 리규형님): 고정된 것은 항상, 나머지는 마우스를 올릴 때만(폰은 마우스가 없어 항상).
                               자리는 늘 잡아 둬서 나타날 때 이름 줄이 흔들리지 않는다. 활성 묶음 줄에는 핀이 없다 — 고정은 원래 묶음에서,
                               풀기는 고정 묶음에서(10-07 리규형님 "활성에서만 고정 해제 버튼 제거") */}
-                          {g.name === ACTIVE_GROUP ? null : (
+                          {/* 활성 줄 오른쪽 빈자리(핀이 없는 자리): Claude 가 질문을 올려 답을 기다리면 물음표(10-09 리규형님 "질문이
+                              올라온 세션 표시, 활성 탭만"). 색은 Paseo "답을 기다림" 색(왼쪽 점 느낌표와 같은 주황) */}
+                          {g.name === ACTIVE_GROUP ? (
+                            alive && alive.asking > 0 ? (
+                              <View accessibilityLabel={`질문 대기 ${alive.asking}개`} style={{ flexShrink: 0 }}>
+                                <Icon name="MessageCircleQuestionMark" size={fs(13)} color={c.statusWarning} />
+                              </View>
+                            ) : null
+                          ) : (
                             <Pressable
                               accessibilityRole="button"
                               accessibilityLabel={pinned ? `${e.name} 고정 풀기` : `${e.name} 맨 위에 고정`}

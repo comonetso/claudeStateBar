@@ -1,7 +1,7 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { headerTitleApply, headerTitlesWait } from "../shared/headerTitles";
 import { norm } from "./projectsData";
-import { watchCompactHeader } from "./web";
+import { watchCompactHeader, watchTabTitle } from "./web";
 
 // 위쪽 제목 "카테고리 - 이름"(리규형님 10-08 결정 — 이미 붙은 작업 공간 제목도 전부 덮고, 새 작업 공간·목록 변경도 자동으로).
 // 화면 플러그인은 기기마다 하나씩 올라오고(client.paseo = 그 기기), 각자 자기 기기 작업 공간만 맞춘다. 경로별 제목은 그 기기
@@ -45,6 +45,14 @@ export function projectOfWorkspace(workspaceId: string | null | undefined): stri
   }
   return null;
 }
+/** 작업 공간 제목(머리줄 위 줄과 같은 글) — 브라우저 탭 제목(web.ts watchTabTitle)이 쓴다. 모르거나 비었으면 null */
+function titleOfWorkspace(workspaceId: string): string | null {
+  for (const workspaces of workspaceHub().values()) {
+    const ws = workspaces.get(workspaceId);
+    if (ws) return ws.name || null;
+  }
+  return null;
+}
 
 export function startHeaderTitles(client: PluginClientContext, log: (message: string) => void): () => void {
   const owner = {};
@@ -55,8 +63,9 @@ export function startHeaderTitles(client: PluginClientContext, log: (message: st
   const done = new Map<string, string>(); // "workspace:<id>" · "project:<id>" → 맞춘 제목
   const busy = new Set<string>();
   const releases: (() => void)[] = [];
+  const tabTitle = watchTabTitle(titleOfWorkspace);
 
-  const apply = (kind: "workspace" | "project", id: string, before: string, after: string) => {
+  const apply =(kind: "workspace" | "project", id: string, before: string, after: string) => {
     const key = `${kind}:${id}`;
     if (done.get(key) === after || busy.has(key)) return;
     busy.add(key);
@@ -123,6 +132,7 @@ export function startHeaderTitles(client: PluginClientContext, log: (message: st
         workspaces.clear();
         for (const ws of entries) put(ws);
         check();
+        tabTitle.refresh();
       };
       fill(list.entries);
       const stop = list.subscription.subscribe({
@@ -134,6 +144,7 @@ export function startHeaderTitles(client: PluginClientContext, log: (message: st
           else if (update.kind === "remove") workspaces.delete(update.id);
           else return;
           check();
+          tabTitle.refresh();
         },
       });
       releases.push(() => {
@@ -149,6 +160,7 @@ export function startHeaderTitles(client: PluginClientContext, log: (message: st
     stopped = true;
     for (const release of releases) release();
     workspaceHub().delete(owner);
+    tabTitle.stop();
     const hub = compactHub();
     hub.names.delete(owner);
     if (!hub.names.size) {

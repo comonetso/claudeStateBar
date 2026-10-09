@@ -11,11 +11,11 @@ import { startHeaderTitles } from "./client/headerTitles";
 import { startProjectsMode } from "./client/projectsMode";
 import { PROJECTS_SCREEN_ID, ProjectsScreen } from "./client/projectsScreen";
 import { ProjectsSidebarItem } from "./client/projectsSidebar";
-import { createSelectionPills } from "./client/selectionRead";
+import { createTurnReadButtons } from "./client/selectionRead";
 import { createComposerMarkdown } from "./client/composerMarkdown";
 import { createSettingsScreen, SETTINGS_TITLE } from "./client/settingsScreen";
 import { chainButtons, createSettingsButtons, SETTINGS_SCREEN_ID } from "./client/settingsButton";
-import { startScreenRole } from "./client/screenRole";
+import { browserLabel, startScreenRole } from "./client/screenRole";
 import { startSettingsSync } from "./client/settingsSync";
 import { startLayoutAutoPull, startLayoutSave, syncMenuItem } from "./client/layoutSync";
 import { startPaneMaxWatch } from "./client/paneMaxWatch";
@@ -123,7 +123,7 @@ export default function contribute(client: PluginClientContext) {
         try {
           const result = await client.rpc(read, {});
           settings = result.status === "ready" ? settingsSchema.parse(result.values) : DEFAULT_SETTINGS;
-          // 번역·읽기 켜기가 바뀌었을 수 있다 — 모든 호스트의 생각 상자·선택 읽기 알약이 버튼을 다시 그린다(10-08)
+          // 번역·읽기 켜기가 바뀌었을 수 있다 — 모든 호스트의 생각 상자·턴·말 읽기 단추가 다시 그려진다(10-08)
           emitSharedSignal("settings");
           return true;
         } catch (error) {
@@ -184,7 +184,7 @@ export default function contribute(client: PluginClientContext) {
       // 웹·폰 화면은 열 때마다 PC 저장본을 가져온다(10-07). 설정을 못 읽었으면 꺼 둔 항목을 몰라 가져오지 않는다
       cleanups.push(startLayoutAutoPull(client, log, info, settingsRead ? () => settings : null));
       // 칸 최대화가 저절로 풀리는 원인 기록(10-09 "원인부터 기록") — 호스트마다 돌면 같은 줄이 여러 번 남아 이 PC 플러그인만
-      cleanups.push(startPaneMaxWatch(log));
+      cleanups.push(startPaneMaxWatch(log, browserLabel));
       log(`providing sounds (${info.platform})`);
       const fonts = readAppFontSizes();
       log(`app font sizes: ui=${fonts.ui ?? "unread"} content=${fonts.content ?? "unread"}`);
@@ -198,8 +198,8 @@ export default function contribute(client: PluginClientContext) {
 
   // 대화마다 입력창 위 "컨텍스트 N%" 알약
   const pills = createContextPills(client, log);
-  // 대화마다 입력창 위 "선택 읽기" 알약 — 화면에서 선택한 글을 소리로 읽는다(웹·데스크톱, 10-06)
-  const selectionPills = createSelectionPills(client, log);
+  // 턴 복사 옆·진행 중 말 아래 읽기 단추(웹·데스크톱, 10-09)
+  cleanups.push(createTurnReadButtons(client, log));
   // 대화마다 입력창 위 "목록" 알약 + 입력창 목록 이어쓰기·들여쓰기·내어쓰기 키(웹·데스크톱, 10-07)
   const listPills = createComposerMarkdown(client, log);
   // 대화마다 입력창 위 오른쪽 "생각 상자 모두 접기·펼치기" 알약(10-08)
@@ -216,7 +216,6 @@ export default function contribute(client: PluginClientContext) {
         observeSound(entry.agent, true);
         watchChimes(entry.agent, true);
         pills.observe(entry.agent);
-        selectionPills.observe(entry.agent);
         listPills.observe(entry.agent);
         foldPills.observe(entry.agent);
       }
@@ -225,7 +224,6 @@ export default function contribute(client: PluginClientContext) {
           judge.remove(update.agentId);
           for (const [sessionId, agentId] of sessionToAgent) if (agentId === update.agentId) { chimeWatcher.remove(sessionId); sessionToAgent.delete(sessionId); }
           pills.remove(update.agentId);
-          selectionPills.remove(update.agentId);
           listPills.remove(update.agentId);
           foldPills.remove(update.agentId);
           return;
@@ -234,7 +232,6 @@ export default function contribute(client: PluginClientContext) {
         observeSound(update.agent, false);
         watchChimes(update.agent);
         pills.observe(update.agent);
-        selectionPills.observe(update.agent);
         listPills.observe(update.agent);
         foldPills.observe(update.agent);
       });
@@ -249,7 +246,6 @@ export default function contribute(client: PluginClientContext) {
             observeSound(entry.agent, true);
             watchChimes(entry.agent, true);
             pills.observe(entry.agent);
-            selectionPills.observe(entry.agent);
             listPills.observe(entry.agent);
             foldPills.observe(entry.agent);
           }
@@ -273,7 +269,6 @@ export default function contribute(client: PluginClientContext) {
     judge.dispose();
     chimeWatcher.dispose();
     pills.dispose();
-    selectionPills.dispose();
     listPills.dispose();
     foldPills.dispose();
     for (const cleanup of cleanups.reverse()) cleanup();

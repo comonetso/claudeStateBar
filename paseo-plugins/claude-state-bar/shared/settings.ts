@@ -34,6 +34,8 @@ export const settingsSchema = z.object({
   // 키 자체는 여기 두지 않는다 — 이 PC 데몬의 google.env 에만(server/googleKeys)
   translateEnabled: z.boolean().default(true),
   ttsEnabled: z.boolean().default(true),
+  thinkingAutoOpen: z.boolean().default(true),
+  ttsSpeedStep: z.union([z.literal(0.1), z.literal(0.25)]).default(0.25),
 });
 
 export type SoundSettings = z.output<typeof settingsSchema>;

@@ -16,6 +16,11 @@ export type ThinkingAudio = {
   stop(): void;
   setRate(rate: number): void;
 };
+/** 이 기기에 담아 둔 플러그인 번역(10-10, client/translationCache) — 원문 문단 그대로 찾는다. 없거나 못 쓰면 빈 결과 */
+export type TranslationCache = {
+  lookup(lang: Lang, texts: string[]): Promise<Map<string, string>>;
+  store(lang: Lang, entries: [string, string][]): void;
+};
 export type ThinkingBoxState = {
   key: string;
   hostId: string;
@@ -34,6 +39,11 @@ export type ThinkingBoxState = {
    */
   cut?: number | null;
   translate: boolean;
+  /**
+   * 원문 보기(10-10 리규형님 "번역본이면 원문으로, 원문이면 번역문으로") — 상자 화면이 원문을 따로 그린다(브라우저 번역 막음,
+   * thinking.tsx). 보던 글(플러그인 번역·브라우저 번역기 글)은 지우지 않고 숨겨 두어 끄면 그대로 다시 보인다
+   */
+  original?: boolean;
   suspended: boolean;
   controls: boolean;
   error: string;
@@ -45,6 +55,11 @@ export type ThinkingBoxState = {
   translatedLang?: Lang;
   busy?: object;
   rpc?: ThinkingRpc;
+  /**
+   * index 번째 문단의 지금 화면 글(10-09 리규형님 "보이는 것을 읽어야 — 자동 번역기로 번역한 것을 그대로"). 브라우저 번역기가
+   * 바꿔 놓았으면 바뀐 글이다. 없거나 null(폰·접힌 상자·아직 안 그려짐)이면 원문·플러그인 번역(shown)을 읽는다
+   */
+  screenText?: (index: number) => string | null;
   watch?: (update: (text: string, phase: Phase, stamp?: number) => void, error: (reason: string) => void) => () => void;
   unwatch?: () => void;
 };
@@ -101,6 +116,21 @@ export function needsTranslation(s: string, lang: Lang = "ko"): boolean {
   return (s.match(/[가-힣]/g) ?? []).length / letters < 0.2;
 }
 
+/** 1배에 단계량을 더한다. 느린 값은 단축키에서만 고르며 현재 값 하나만 임시 선택지로 보인다. */
+export type SpeedStep = 0.1 | 0.25;
+export function normalizeRate(value: number, step: SpeedStep): number {
+  const max = step === 0.1 ? 2 : 5;
+  const bounded = Math.max(0.5, Math.min(max, Number.isFinite(value) ? value : 1));
+  return Number(Math.max(0.5, Math.min(max, 1 + Math.round((bounded - 1) / step) * step)).toFixed(2));
+}
+export function rateOptions(step: SpeedStep, rate = 1): number[] {
+  const count = step === 0.1 ? 10 : 16;
+  const options = Array.from({ length: count + 1 }, (_, i) => Number((1 + i * step).toFixed(2)));
+  if (rate < 1) options.unshift(normalizeRate(rate, step));
+  return options;
+}
+
+// 옛 진단 시험용 변환 함수. 새 UI와 setSpeed는 실제 배속 값을 쓴다.
 export function sliderRate(value: number): number {
   const snapped = Math.max(-1, Math.min(1, Math.round(value / 0.05) * 0.05));
   return Number(Math.pow(3, snapped).toFixed(3));
@@ -159,6 +189,9 @@ export class ThinkingController {
   private run?: Run;
   private serial = 0;
   rate = 1;
+  speedStep: SpeedStep = 0.25;
+  /** 번역을 보내기 전에 먼저 보는 이 기기 보관(10-10). 없으면(폰·시험) 늘 번역을 보낸다 */
+  cache?: TranslationCache;
 
   /** lang = 지금 번역 대상·음성 언어를 그때그때 묻는 함수(10-08). 시험·옛 부르기는 한국어 */
   constructor(
@@ -216,6 +249,11 @@ export class ThinkingController {
     return box.translate && paragraph.done && typeof translated === "string" ? translated : paragraph.src;
   }
 
+  /** 읽을 글 — 화면에 보이는 글이 있으면 그것(브라우저 번역 반영, 원문 보기면 원문 칸), 없으면 shown(원문 보기면 원문) */
+  private spoken(box: ThinkingBoxState, index: number, paragraph: Paragraph): string {
+    return box.screenText?.(index) ?? (box.original ? paragraph.src : this.shown(box, paragraph));
+  }
+
   toggleOpen(box: ThinkingBoxState): void { box.open = !box.open; this.notify(); }
   /** 새 상자가 펼친 채로 시작하는가 — 입력창 위 "모두 접기·펼치기" 알약이 정한다(10-08, thinkingFold) */
   openByDefault = true;
@@ -226,6 +264,16 @@ export class ThinkingController {
     this.notify();
   }
   toggleMaximized(box: ThinkingBoxState): void { box.maximized = !box.maximized; this.notify(); }
+  /**
+   * 누르면 자동으로 펼치기(설정 thinkingAutoOpen) — 접혀 있으면 열고 높이 제한도 푼다(10-10 리규형님 "텍스트 에어리어가 확장돼서
+   * 펼쳐져야지 — 번역·읽기를 켜면 스크롤이 생겨 내용이 안 보인다"). 끝나도 원래 크기로 돌리지 않는다(접지 않는 것과 같게)
+   */
+  expand(box: ThinkingBoxState): void {
+    if (box.open && box.maximized) return;
+    box.open = true;
+    box.maximized = true;
+    this.notify();
+  }
   /** 데몬이 알려 준 꺼낼 자리(10-09). 한 번 찾은 자리는 글이 늘어도 그대로다(앞 칸은 이미 끝났다) */
   setCut(box: ThinkingBoxState, cut: number | null): void {
     if (cut === (box.cut ?? null) || (cut === null && box.cut != null)) return;
@@ -239,10 +287,19 @@ export class ThinkingController {
     box.translate = !box.translate;
     box.suspended = false;
     box.error = "";
-    if (!box.translate) this.cancelTranslation(box);
+    // 번역을 켜면 원문 보기는 푼다(번역을 보겠다는 뜻). 끌 때 이미 보낸 번역은 버리지 않고 받아 둔다 — 다시 켤 때 그 문단을 또
+    // 번역하지 않는다(10-10 리규형님 "번역된 것은 다시 번역해서 비용이 나가지 않게"). 아직 안 보낸 문단은 보내지 않는다
+    if (box.translate) box.original = false;
     if (this.run?.box === box) { this.run.strict = false; this.seek(this.run.index); }
     this.syncWatch(box);
     this.translateMore(box);
+    this.notify();
+  }
+
+  /** 원문 보기 켜기·끄기(10-10). 읽는 중이면 그 문단을 바뀐 화면 글로 다시 읽는다(번역 켜기·끄기와 같게) */
+  toggleOriginal(box: ThinkingBoxState): void {
+    box.original = !box.original;
+    if (this.run?.box === box) { this.run.strict = false; this.seek(this.run.index); }
     this.notify();
   }
 
@@ -268,21 +325,7 @@ export class ThinkingController {
     const busy = {};
     box.busy = busy;
     texts.forEach((text) => box.pending.add(text));
-    void box.rpc.translate({ texts, lang }).then((result) => {
-      if (box.epoch !== epoch) return;
-      texts.forEach((text, i) => {
-        const value = result.translations[i];
-        const translation = typeof value === "string" && value.trim() ? value : null;
-        box.translations.set(text, translation);
-        if (translation === null) box.failures.set(text, result.error || "문단을 번역하지 못했습니다");
-      });
-      if (result.error || texts.some((t) => box.translations.get(t) === null)) box.error = result.error || "일부 문단 번역 실패";
-    }, (error: unknown) => {
-      if (box.epoch !== epoch) return;
-      const reason = String(error);
-      box.error = reason;
-      texts.forEach((text) => { box.translations.set(text, null); box.failures.set(text, reason); });
-    }).finally(() => {
+    void this.fetchTranslations(box, box.rpc, texts, lang, epoch).finally(() => {
       if (box.epoch !== epoch || box.busy !== busy) return;
       box.busy = undefined;
       texts.forEach((text) => box.pending.delete(text));
@@ -291,6 +334,45 @@ export class ThinkingController {
       this.translateMore(box);
       this.notify();
     });
+  }
+
+  /**
+   * 이 기기에 담아 둔 번역(10-10, 7일)을 먼저 쓰고 없는 문단만 번역을 보낸다. 받은 번역은 번역을 껐거나 상자가 닫혀도 담아 둔다
+   * (이미 비용이 나간 글이다). 보관을 다 본 사이 번역을 껐으면 남은 문단은 보내지 않는다
+   */
+  private async fetchTranslations(box: ThinkingBoxState, rpc: ThinkingRpc, texts: string[], lang: Lang, epoch: number): Promise<void> {
+    const live = () => box.epoch === epoch;
+    let rest = texts;
+    if (this.cache) {
+      const cached = await this.cache.lookup(lang, texts).catch(() => new Map<string, string>());
+      if (!live()) return;
+      for (const [text, value] of cached) box.translations.set(text, value);
+      rest = texts.filter((text) => !cached.has(text));
+      if (!rest.length || !box.translate) return;
+    }
+    try {
+      const result = await rpc.translate({ texts: rest, lang });
+      const got: [string, string][] = [];
+      rest.forEach((text, i) => {
+        const value = result.translations[i];
+        if (typeof value === "string" && value.trim()) got.push([text, value]);
+      });
+      if (got.length) this.cache?.store(lang, got);
+      if (!live()) return;
+      rest.forEach((text, i) => {
+        const value = result.translations[i];
+        const translation = typeof value === "string" && value.trim() ? value : null;
+        box.translations.set(text, translation);
+        if (translation === null) box.failures.set(text, result.error || "문단을 번역하지 못했습니다");
+      });
+      // 끈 상자에는 실패 글을 띄우지 않는다(실패 문단은 기록돼 다시 켜면 그 문단 실패로 보인다)
+      if (box.translate && (result.error || rest.some((t) => box.translations.get(t) === null))) box.error = result.error || "일부 문단 번역 실패";
+    } catch (error) {
+      if (!live()) return;
+      const reason = String(error);
+      if (box.translate) box.error = reason;
+      rest.forEach((text) => { box.translations.set(text, null); box.failures.set(text, reason); });
+    }
   }
 
   private syncWatch(box: ThinkingBoxState): void {
@@ -316,8 +398,9 @@ export class ThinkingController {
     box.suspended = false;
     // 글자 자리는 누를 때 화면에 보이던 글 기준이다 — 번역읽기가 번역을 켜 화면 글이 바뀌기 전에 그 글을 잡아 둔다
     const target = at ? splitParagraphs(boxText(box), boxPhase(box))[at.index] : undefined;
-    const shownAtPress = target ? this.shown(box, target) : undefined;
-    if (strict) box.translate = true;
+    const shownAtPress = target && at ? this.spoken(box, at.index, target) : undefined;
+    // 번역읽기는 번역을 읽겠다는 뜻 — 원문 보기를 푼다(10-10). 그냥 읽기는 보이는 글(원문 보기면 원문)을 읽는다
+    if (strict) { box.translate = true; box.original = false; }
     const run: Run = { box, index: 0, strict, paused: false, status: "loading", generation: 0, loaded: false, startedAt: 0, slots: new Map() };
     if (at && target && shownAtPress !== undefined) {
       run.index = at.index;
@@ -436,8 +519,26 @@ export class ThinkingController {
     this.notify();
   }
 
+  speedOptions(): number[] { return rateOptions(this.speedStep, this.rate); }
+
+  applySpeedStep(step: SpeedStep, value = this.rate): void {
+    const changed = this.speedStep !== step;
+    this.speedStep = step;
+    const rate = normalizeRate(value, step);
+    if (rate !== this.rate || value !== rate) this.setSpeed(rate);
+    else if (changed) this.notify();
+  }
+
+  isReading(): boolean { return !!this.run && !this.run.paused; }
+
+  stepSpeed(direction: -1 | 1): boolean {
+    if (!this.isReading()) return false;
+    this.setSpeed(this.rate + direction * this.speedStep);
+    return true;
+  }
+
   setSpeed(value: number): void {
-    this.rate = sliderRate(value);
+    this.rate = normalizeRate(value, this.speedStep);
     this.audio.setRate(this.rate);
     this.saveRate(this.rate);
     this.notify();
@@ -451,7 +552,7 @@ export class ThinkingController {
     const paragraph = splitParagraphs(boxText(run.box), boxPhase(run.box))[index];
     if (!paragraph?.done) return;
     if (run.strict && needsTranslation(paragraph.src, this.lang()) && typeof run.box.translations.get(paragraph.src) !== "string") return;
-    const shown = this.shown(run.box, paragraph);
+    const shown = this.spoken(run.box, index, paragraph);
     // 선택한 글자부터(10-08) — 그 문단 화면 글이 누를 때 그대로일 때만
     const from = run.from;
     return from && from.index === index && from.text === shown ? shown.slice(from.at) : shown;
@@ -488,7 +589,7 @@ export class ThinkingController {
   }
 
   private awaitingTranslation(box: ThinkingBoxState, paragraph: Paragraph): boolean {
-    return box.translate && !box.suspended && paragraph.done && needsTranslation(paragraph.src, this.lang()) && !box.translations.has(paragraph.src);
+    return box.translate && !box.original && !box.suspended && paragraph.done && needsTranslation(paragraph.src, this.lang()) && !box.translations.has(paragraph.src);
   }
 
   private async pump(run: Run): Promise<void> {

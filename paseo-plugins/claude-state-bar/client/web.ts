@@ -11,7 +11,7 @@ declare const window: {
   innerHeight: number;
   innerWidth: number;
   getSelection(): { toString(): string; rangeCount: number; getRangeAt(index: number): RangeLike; removeAllRanges(): void } | null;
-  getComputedStyle(el: unknown, pseudo?: string): { display: string; flexWrap?: string; flexDirection?: string; order?: string; content?: string; flexBasis?: string; position?: string; backgroundColor?: string; paddingBottom?: string };
+  getComputedStyle(el: unknown, pseudo?: string): { display: string; visibility?: string; flexWrap?: string; flexDirection?: string; order?: string; content?: string; flexBasis?: string; position?: string; backgroundColor?: string; paddingBottom?: string };
   matchMedia?(query: string): { matches: boolean };
   /** PC 앱(Electron)이 화면에 심는 연결 고리 — 앱 화면 코드 getElectronHost 가 이것으로 PC 앱인지 가린다 */
   paseoDesktop?: unknown;
@@ -30,10 +30,6 @@ type RangeLike = {
   setEnd(node: NodeLike, offset: number): void;
   toString(): string;
 };
-declare class Highlight {
-  constructor(...ranges: RangeLike[]);
-}
-declare const CSS: { highlights?: { set(name: string, highlight: Highlight): void; delete(name: string): void } } | undefined;
 declare class Audio {
   constructor(src?: string);
   src: string;
@@ -238,6 +234,7 @@ type KeyEventLike = {
   target?: unknown;
   preventDefault(): void;
   stopPropagation(): void;
+  stopImmediatePropagation?(): void;
 };
 
 function isWeb(): boolean {
@@ -674,8 +671,8 @@ export function reloadPage(): void {
 
 /**
  * 화면에서 마우스로 선택한 글을 알린다(웹·데스크톱만 — 폰 앱은 아무것도 하지 않는다). 선택이 생기면 바로 알리고,
- * 풀린 것은 마우스·키를 뗀 다음 차례에 "" 로 알린다 — 입력창 위 "선택 읽기" 알약을 누르는 순간 선택이 풀려도
- * 누름이 먼저 처리돼 마지막 선택을 읽을 수 있게(리규형님 10-06 선택 읽기)
+ * 풀린 것은 마우스·키를 뗀 다음 차례에 "" 로 알린다 — 생각 상자의 읽기를 누르는 순간 선택이 풀려도
+ * 마지막 선택 자리부터 읽을 수 있게
  */
 export type SelectionSnapshot = { text: string; token: unknown };
 
@@ -703,13 +700,12 @@ export function watchSelection(fn: (snapshot: SelectionSnapshot | null) => void)
   };
 }
 
-/** 화면의 글 선택을 푼다 — 선택 읽기가 시작되면 선택 색 대신 형광펜만 보이게(리규형님 10-06) */
+/** 화면의 글 선택을 푼다 — 생각 상자 읽기의 형광펜을 선택 색이 덮지 않게 */
 export function clearSelection(): void {
   if (Platform.OS !== "web") return;
   window.getSelection()?.removeAllRanges();
 }
 
-const READING_HL = "claude-state-bar-reading";
 const BLOCK_DISPLAY = /^(block|flex|grid|list-item|table|table-row|table-cell|flow-root)$/;
 
 function blockOf(node: NodeLike): NodeLike | null {
@@ -720,50 +716,14 @@ function blockOf(node: NodeLike): NodeLike | null {
 }
 
 /**
- * 선택 범위를 화면 문단(가장 가까운 블록 요소)마다 나눈다 — 재생기가 문단 단위로 읽고 이전·다음이 먹게(리규형님 10-06).
- * highlight(i) 는 i 번째 문단에 노란 형광펜을 칠한다 — 크롬 확장 read-aloud-hrg 와 같은 방식(CSS 강조 기능·같은 색, js/events.js:374).
- * 선택 범위를 그대로 쓰므로 Paseo 화면 요소 이름에 기대지 않는다. 대화가 다시 그려지면 칠한 자리는 사라질 수 있다
+ * 플러그인이 직접 그린 요소(nativeID = 웹에서 id)의 지금 화면 글 — 브라우저 번역기(Chrome·DeepL)가 바꿔 놓았으면 바뀐 글이다
+ * (10-09 리규형님 "자동 번역기로 번역한 것을 그대로 읽어야"). 글자 자리를 selectionStartIn 과 같은 기준(textContent)으로 센다.
+ * 웹이 아니거나 그 요소가 없거나(접힌 상자 등) 글이 비었으면 null
  */
-export function selectionParagraphs(token: unknown): { texts: string[]; highlight(index: number | null): void } | null {
-  if (Platform.OS !== "web" || !token) return null;
-  const range = token as RangeLike;
-  const common = range.commonAncestorContainer;
-  const root = common.nodeType === 3 ? common.parentNode : common;
-  if (!root) return null;
-  const walker = document.createTreeWalker(root, 4); // 글자 노드만
-  const parts: { text: string; ranges: RangeLike[]; block: NodeLike | null }[] = [];
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-    if (!range.intersectsNode(n)) continue;
-    const value = n.nodeValue ?? "";
-    const start = n === range.startContainer ? range.startOffset : 0;
-    const end = n === range.endContainer ? range.endOffset : value.length;
-    if (end <= start) continue;
-    const block = blockOf(n);
-    let part = parts[parts.length - 1];
-    if (!part || part.block !== block) {
-      part = { text: "", ranges: [], block };
-      parts.push(part);
-    }
-    const piece = document.createRange();
-    piece.setStart(n, start);
-    piece.setEnd(n, end);
-    part.text += value.slice(start, end);
-    part.ranges.push(piece);
-  }
-  // 재생기는 빈 줄로 문단을 나눈다 — 문단 안 빈 줄은 한 줄로 줄이고 공백뿐인 문단은 뺀다(문단 번호를 화면과 맞춘다)
-  const list = parts.map((p) => ({ text: p.text.replace(/\n[\t ]*\n\s*/g, "\n").trim(), ranges: p.ranges })).filter((p) => p.text);
-  if (!list.length) return null;
-  return {
-    texts: list.map((p) => p.text),
-    highlight: (index) => {
-      const highlights = typeof CSS !== "undefined" ? CSS.highlights : undefined;
-      if (!highlights) return;
-      const target = index === null ? undefined : list[index];
-      if (!target) return highlights.delete(READING_HL);
-      setStyleSheet(`${READING_HL}-style`, `::highlight(${READING_HL}) { background-color: rgba(255, 226, 0, 0.3); }`);
-      highlights.set(READING_HL, new Highlight(...target.ranges));
-    },
-  };
+export function elementText(id: string): string | null {
+  if (!isWeb()) return null;
+  const text = document.getElementById(id)?.textContent ?? "";
+  return text.trim() ? text : null;
 }
 
 /**
@@ -1102,6 +1062,105 @@ export function watchCompactWidth(onChange: (compact: boolean) => void): () => v
   return () => window.removeEventListener("resize", onResize);
 }
 
+// ── 브라우저 탭 제목(10-10 리규형님: Paseo 웹 탭이 전부 "/start"라 구별이 안 됨 → 위쪽 머리줄과 같은 "카테고리 - 이름") ──
+// Paseo 웹은 탭 제목을 열린 대화 제목으로 쓴다(Expo Router NavigationContainer documentTitle → document.title). 리규형님은 대화를
+// 늘 /start 로 시작해서 탭이 전부 "/start"였다. 작업 공간 화면이면 그 작업 공간 제목(머리줄 위 줄과 같은 글 — 이름표가 있으면
+// "카테고리 - 이름")을 쓰고, 다른 화면이면 Paseo 제목을 그대로 둔다. PC 앱(Electron)은 창 제목도 따라 바뀐다.
+// Paseo 가 document.title 에 쓰는 값은 이 화면 실행 공간의 document 에 붙인 접근자로 받아 기억만 하고(읽으면 그 값을 돌려준다)
+// 실제 제목은 작업 공간 제목으로 쓴다. 번역기는 다른 실행 공간에서 제목을 바꿔 접근자를 안 거친다 — 그 값은 우리 제목이 바뀔
+// 때까지 그대로 둔다(되쓰기 싸움 없음). 번들의 알림 숫자 장치가 나중에 같은 자리에 접근자를 붙이면 그쪽에 양보한다(configurable).
+// 0.11.1 실측(10-10): 제목 "/start" · 10초 동안 다시 쓰기 0번 · 알림 숫자 장치의 접근자 없음
+type TabTitleHub = { sources: Map<object, (workspaceId: string) => string | null>; refresh: (() => void) | null; stop: (() => void) | null };
+type TitleAccessor = { get(this: unknown): string; set(this: unknown, value: string): void };
+
+function titleAccessor(): TitleAccessor | null {
+  for (let p = Object.getPrototypeOf(document) as object | null; p; p = Object.getPrototypeOf(p) as object | null) {
+    const d = Object.getOwnPropertyDescriptor(p, "title");
+    if (d?.get && d.set) return { get: d.get, set: d.set } as TitleAccessor;
+  }
+  return null;
+}
+
+function startTabTitle(hub: TabTitleHub): { refresh(): void; stop(): void } {
+  const accessor = titleAccessor();
+  if (!accessor) return { refresh() {}, stop() {} };
+  const read = () => accessor.get.call(document);
+  const write = (value: string) => {
+    if (read() !== value) accessor.set.call(document, value);
+  };
+  let paseo = read(); // Paseo 가 마지막에 쓴 제목
+  let ours: string | null = null; // 지금 쓰는 작업 공간 제목(작업 공간 화면이 아니면 null)
+  const want = () => {
+    const here = currentWorkspaceFromUrl();
+    if (!here) return null;
+    for (const titleOf of hub.sources.values()) {
+      const title = titleOf(here.workspaceId);
+      if (title) return title;
+    }
+    return null;
+  };
+  /** 우리 제목이 바뀔 때만 쓴다 — 번역기가 바꿔 둔 제목을 같은 값으로 되돌리지 않게 */
+  const refresh = () => {
+    const next = want();
+    if (next === ours) return;
+    ours = next;
+    write(ours ?? paseo);
+  };
+  const set = (value: unknown) => {
+    paseo = String(value);
+    ours = want();
+    write(ours ?? paseo);
+  };
+  try {
+    Object.defineProperty(document, "title", { configurable: true, get: () => paseo, set });
+  } catch {
+    return { refresh() {}, stop() {} };
+  }
+  const stopLocation = watchLocation(refresh);
+  refresh();
+  return {
+    refresh,
+    stop: () => {
+      stopLocation();
+      // 그 사이 다른 장치가 접근자를 덮었으면 그쪽을 깨지 않게 우리 것일 때만 떼고 Paseo 제목으로 돌린다
+      if (Object.getOwnPropertyDescriptor(document, "title")?.set === set) {
+        Reflect.deleteProperty(document as object, "title");
+        write(paseo);
+      }
+    },
+  };
+}
+
+/**
+ * 이 화면 탭 제목을 지금 작업 공간 제목으로(웹·PC 앱만). titleOf(작업 공간 번호) → 제목, 모르면 null. 기기마다 올라오는
+ * 플러그인이 같이 불러도 장치는 한 벌이다(다 끊으면 멈추고 Paseo 제목으로 돌린다). refresh = 작업 공간 이름이 바뀌었을 때
+ */
+export function watchTabTitle(titleOf: (workspaceId: string) => string | null): { refresh(): void; stop(): void } {
+  if (!isWeb()) return { refresh() {}, stop() {} };
+  const g = globalThis as { __claudeStateBar_tabTitle_v1?: TabTitleHub };
+  const hub = (g.__claudeStateBar_tabTitle_v1 ??= { sources: new Map(), refresh: null, stop: null });
+  const owner = {};
+  hub.sources.set(owner, titleOf);
+  if (!hub.stop) {
+    const started = startTabTitle(hub);
+    hub.stop = started.stop;
+    hub.refresh = started.refresh;
+  } else hub.refresh?.();
+  return {
+    refresh: () => hub.refresh?.(),
+    stop: () => {
+      hub.sources.delete(owner);
+      if (hub.sources.size) {
+        hub.refresh?.();
+        return;
+      }
+      hub.stop?.();
+      hub.stop = null;
+      hub.refresh = null;
+    },
+  };
+}
+
 // ── 폰(좁은 화면) 위쪽 제목(10-08 리규형님: 폰에선 위 줄 카테고리 빼고 이름만, 아래 줄은 기기 대신 카테고리) ──
 // Paseo 머리줄(0.11.0-beta.5 workspace-screen.tsx WorkspaceHeaderTitleBar): 위 줄 = workspace-header-title(작업 공간 제목),
 // 아래 줄 = workspace-header-subtitle(프로젝트 이름) + "·" + 기기 배지. 둘은 같은 작은 묶음(headerTitleTextGroup) 안에 있다.
@@ -1110,7 +1169,7 @@ export function watchCompactWidth(onChange: (compact: boolean) => void): () => v
 // React 가 글을 다시 쓰면 감시가 다시 바꾼다. 폰 원본 앱(웹 화면이 아님)에는 해당 없음
 declare class MutationObserver {
   constructor(callback: (records: { addedNodes: ArrayLike<unknown> }[]) => void);
-  observe(target: unknown, options: { childList?: boolean; subtree?: boolean; characterData?: boolean }): void;
+  observe(target: unknown, options: { childList?: boolean; subtree?: boolean; characterData?: boolean; attributes?: boolean; attributeFilter?: string[] }): void;
   disconnect(): void;
 }
 type HeaderEl = {
@@ -1213,44 +1272,46 @@ type VisibilityDoc = {
   addEventListener(type: string, fn: (event: UseEvent) => void): void;
   removeEventListener(type: string, fn: (event: UseEvent) => void): void;
 };
+/**
+ * 안드로이드 Paseo 껍데기 앱(F:/workspace/phonegapProject/Paseo)이 "지금 화면이 정말 앞에 있다"고 하는가.
+ * 껍데기는 뒤로 간 1초 뒤 웹이 멈추지 않게 "보이는 중" 신호를 보내 웹에 visible 이 찍힌다 — 그걸 "썼다"로 치면 폰을 뒤로
+ * 보낼 때마다 폰이 소리 담당을 가져갔다(10-09 껍데기 세션 요청 · 리규형님 방향 "앱이 진짜 앞인지 알려 주고 플러그인은 진짜로
+ * 다시 열었을 때만"). 껍데기 밖(일반 브라우저·옛 껍데기)이거나 부르다 실패하면 null — 지금 동작 그대로.
+ * 약속(요청서 docs/requests/2026-10-09_plugin_shell_foreground.md): window.PaseoShell.isForeground() 동기 boolean
+ */
+function shellForeground(): boolean | null {
+  try {
+    const shell = (globalThis as { PaseoShell?: { isForeground?: () => unknown } }).PaseoShell;
+    const value = typeof shell?.isForeground === "function" ? shell.isForeground() : null;
+    return typeof value === "boolean" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 포커스·다시 보임뿐 아니라 이미 열린 화면에서 실제 클릭·키 입력·제출도 사용이다. */
 export function watchScreenUse(onUse: () => void): () => void {
   if (!isWeb()) return () => {};
   const doc = document as unknown as VisibilityDoc;
-  const onVisible = () => { if (doc.visibilityState === "visible") onUse(); };
+  // 포커스·다시 보임·처음 열 때 포커스는 껍데기가 "뒤에 있다"고 하면 사용으로 치지 않는다(실제 입력은 그대로)
+  const onFront = () => { if (shellForeground() !== false) onUse(); };
+  const onVisible = () => { if (doc.visibilityState === "visible") onFront(); };
   const onInput = (event: UseEvent) => { if (event.isTrusted === true) onUse(); };
   const events = ["pointerdown", "keydown", "input", "submit"];
-  window.addEventListener("focus", onUse);
+  window.addEventListener("focus", onFront);
   doc.addEventListener("visibilitychange", onVisible);
   for (const name of events) doc.addEventListener(name, onInput);
-  if (doc.hasFocus?.()) onUse();
+  if (doc.hasFocus?.()) onFront();
   return () => {
-    window.removeEventListener("focus", onUse);
+    window.removeEventListener("focus", onFront);
     doc.removeEventListener("visibilitychange", onVisible);
     for (const name of events) doc.removeEventListener(name, onInput);
   };
 }
 
-// ── 좁은 화면 알약 줄 두 줄로(10-08 리규형님 "컨트롤러를 모바일에서 개행해서 아래 두던가") ──
-// Paseo 알약 줄(0.11.0-beta.5 composer/tracks.tsx ComposerTrackBar 의 track)은 줄바꿈 없는 한 줄 가로 묶음이다. 좁은 화면
-// (폭 720px 미만)에서 선택 읽기 조절 단추(이전·일시정지/이어서 읽기·중지·다음·속도 — selectionRead.tsx 단추 이름)가 떠 있을 때만
-// 그 묶음에 줄바꿈을 켜고 조절 단추를 둘째 줄로 보낸다. 묶음과 단추에는 우리 표식(data-csb-*)만 붙이고 모양은 스타일 한 벌로 —
-// React 는 자기가 안 붙인 data 속성을 지우지 않는다. 묶음 찾기: 조절 단추에서 올라가며 "목록 쓰기" 알약까지 품은 첫 조상
-const RAIL_CONTROL_LABELS = new Set(["이전 문단", "일시정지", "이어서 읽기", "읽기 중지", "다음 문단", "읽기 속도"]);
-const RAIL_ANCHOR = '[aria-label="목록 쓰기"]';
-// 10-08 폰 실화면: 줄바꿈만 먹고 순서 바꾸기·줄 바꿀 자리는 안 먹어 등록 순서대로 넘쳐 흘렀다(원인 미확정). 폰 브라우저가 다르게
-// 다룰 수 있는 :has() 를 빼고, 조절 단추가 떠 있는 묶음에만 표식을 붙였다 뗀다(원인은 아래 감싸개 contents — 진단 로그는 10-08 저녁 뺐다)
-// 스타일 이름도 판마다 새로 — 옛 판 장치가 정리되며 같은 이름의 스타일을 지워 버렸다(10-08 폰 진단 sheet:false)
+// ── 입력창 위 단추 줄: 불투명 띠·맨 아래로 단추 띄우기·아이콘 가운데 유지 ──
 const RAIL_SHEET = "claude-state-bar-composer-rail-v4";
 const RAIL_CSS =
-  "@media (max-width: 719px){" +
-  "[data-csb-rail]{flex-wrap:wrap}" +
-  "[data-csb-rail]::after{content:'';flex-basis:100%;height:0;order:9}" +
-  // 알약 감싸개가 박스 없는 감싸개라 감싸개의 order 가 무시됐다(10-08 폰 진단: 계산값 10 인데 순서 그대로) — 안쪽 단추에도 건다
-  "[data-csb-rail] [data-csb-ctl]{order:10}" +
-  // 둘째 줄로 내려간 읽기 조절 단추를 가운데로 — 첫 단추 왼쪽·끝 단추 오른쪽 여백을 나눠 갖게(10-09 리규형님 "TTS 컨트롤러를 가운데 정렬")
-  "[data-csb-rail] [data-csb-ctl-first]{margin-left:auto !important}" +
-  "[data-csb-rail] [data-csb-ctl-last]{margin-right:auto !important}}" +
   // 단추 안 아이콘·글을 가운데로(10-09 리규형님 "아이콘이 왼쪽으로 쏠렸어" — 폰에선 글 없이 아이콘만 남아 49px 단추 왼쪽에 붙었다)
   "[data-csb-track] [role=\"button\"]{justify-content:center !important}" +
   // 아이콘만 보이는 우리 단추(목록·생각 상자 접기)는 글자 자리에 폭 없는 공백(U+200B)을 둔다(Paseo 가 빈 글자를 거절) — 그 칸과
@@ -1269,9 +1330,9 @@ type RailEl = Omit<HeaderEl, "style" | "parentElement"> & {
 
 /** 이 장치 코드를 고치면 올린다 — 플러그인을 다시 읽어도 같은 페이지에는 처음 시작한 옛 판 장치가 남아 새 코드가 안 돌았다
  *  (10-08 폰 진단). 더 높은 판이 오면 옛 판 장치를 멈추고 넘겨받는다. 판이 섞인 호스트들은 높은 판 하나를 같이 쓴다 */
-const RAIL_VERSION = 8; // 5: 10-08 저녁 원인 확정 뒤 진단 로그(report)를 뺐다 · 6: 10-09 단추 줄 바탕 칠하기 · 7: 10-09 폰 — 맨 아래로 단추 띄우기·띠 위 여백·읽기 조절 가운데 · 8: 10-09 아이콘만 단추의 빈 글자 칸 숨기기
+const RAIL_VERSION = 9; // 10-09 선택 읽기 조절 알약 전용 줄바꿈·가운데 표식 제거
 
-// 입력창 위 단추 줄(컨텍스트·목록·접기·읽기 조절)을 대화 화면 바탕색 띠로 칠한다(10-09 리규형님 "아이콘 뒷배경이 투명이라 거슬려 — 글자가
+// 입력창 위 단추 줄(컨텍스트·목록·접기)을 대화 화면 바탕색 띠로 칠한다(10-09 리규형님 "아이콘 뒷배경이 투명이라 거슬려 — 글자가
 // 안 보여야 해, 헷갈리고 잘 안 보여" · "웹도 동일한 경험으로, 폰 분기 하지 말고"). 단추는 Paseo 가 불투명하게 칠하지만(composerPillStyles
 // surface1) 단추를 담은 줄(0.11.1: 절대 위치 상자)이 투명해 단추 사이·둘레로 대화 글이 비쳤다(실측: PC·폰 폭 모두 줄 rgba(0,0,0,0)).
 // 줄 찾기: 늘 떠 있는 우리 단추(목록·컨텍스트)에서 올라가며 첫 절대 위치 조상. 색은 그 위로 처음 칠해진 조상의 바탕색(테마 따라감)
@@ -1296,52 +1357,16 @@ export function startComposerRail(): () => void {
   }
   hub.users += 1;
   if (!hub.stop) {
+    const legacy = document.querySelectorAll("[data-csb-rail],[data-csb-ctl],[data-csb-ctl-first],[data-csb-ctl-last]") as unknown as ArrayLike<RailEl>;
+    for (let i = 0; i < legacy.length; i++) for (const name of ["data-csb-rail", "data-csb-ctl", "data-csb-ctl-first", "data-csb-ctl-last"]) legacy[i].removeAttribute(name);
     setStyleSheet(RAIL_SHEET, RAIL_CSS);
     let queued = false;
+    let live = true;
     const apply = () => {
       queued = false;
+      if (!live) return;
       // 다른 장치가 지웠으면 다시 넣는다
       if (!document.getElementById(RAIL_SHEET)) setStyleSheet(RAIL_SHEET, RAIL_CSS);
-      const rails = new Set<RailEl>();
-      const ctlByRail = new Map<RailEl, RailEl[]>();
-      const all = document.querySelectorAll("[aria-label]") as unknown as ArrayLike<RailEl>;
-      for (let i = 0; i < all.length; i++) {
-        const el = all[i];
-        if (!RAIL_CONTROL_LABELS.has(el.getAttribute("aria-label") ?? "")) continue;
-        // 알약 하나 = 묶음의 바로 아래 자식. 그 자식의 부모(묶음)가 "목록 쓰기" 알약을 품는 첫 곳을 찾는다
-        let item: RailEl | null = el;
-        for (let n = 0; item && n < 6; n++) {
-          const parent = item.parentElement as RailEl | null;
-          if (parent && parent.querySelector(RAIL_ANCHOR)) {
-            rails.add(parent);
-            if (parent.getAttribute("data-csb-rail") === null) parent.setAttribute("data-csb-rail", "");
-            if (item.getAttribute("data-csb-ctl") === null) item.setAttribute("data-csb-ctl", "");
-            if (el.getAttribute("data-csb-ctl") === null) el.setAttribute("data-csb-ctl", "");
-            const list = ctlByRail.get(parent) ?? [];
-            list.push(el);
-            ctlByRail.set(parent, list);
-            break;
-          }
-          item = parent;
-        }
-      }
-      // 조절 단추가 사라진 묶음은 표식을 뗀다 — 남으면 좁은 화면에서 빈 둘째 줄(줄 간격)이 생긴다
-      const marked = document.querySelectorAll("[data-csb-rail]") as unknown as ArrayLike<RailEl>;
-      for (let i = 0; i < marked.length; i++) if (!rails.has(marked[i])) marked[i].removeAttribute("data-csb-rail");
-      // 묶음마다 조절 단추 첫·끝 표식(문서 순서 = 화면 순서) — 가운데 정렬용
-      const firsts = new Set<RailEl>();
-      const lasts = new Set<RailEl>();
-      for (const list of ctlByRail.values()) {
-        firsts.add(list[0]);
-        lasts.add(list[list.length - 1]);
-      }
-      const edgeMarks = document.querySelectorAll("[data-csb-ctl-first],[data-csb-ctl-last]") as unknown as ArrayLike<RailEl>;
-      for (let i = 0; i < edgeMarks.length; i++) {
-        if (!firsts.has(edgeMarks[i])) edgeMarks[i].removeAttribute("data-csb-ctl-first");
-        if (!lasts.has(edgeMarks[i])) edgeMarks[i].removeAttribute("data-csb-ctl-last");
-      }
-      for (const el of firsts) if (el.getAttribute("data-csb-ctl-first") === null) el.setAttribute("data-csb-ctl-first", "");
-      for (const el of lasts) if (el.getAttribute("data-csb-ctl-last") === null) el.setAttribute("data-csb-ctl-last", "");
       // 단추 줄 띠 칠하기 — 칠한 색이 같으면 다시 쓰지 않는다(감시가 제 변경으로 다시 돌지 않게)
       const tracks = new Set<RailEl>();
       const anchors = document.querySelectorAll(TRACK_ANCHORS) as unknown as ArrayLike<RailEl>;
@@ -1419,9 +1444,12 @@ export function startComposerRail(): () => void {
       void Promise.resolve().then(apply);
     }, 1000);
     hub.stop = () => {
+      live = false;
       observer.disconnect();
       clearInterval(tick);
       setStyleSheet(RAIL_SHEET, null);
+      const empty = document.querySelectorAll("[data-csb-empty]") as unknown as ArrayLike<RailEl>;
+      for (let i = 0; i < empty.length; i++) empty[i].removeAttribute("data-csb-empty");
       const painted = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < painted.length; i++) {
         painted[i].removeAttribute("data-csb-track");
@@ -1434,11 +1462,7 @@ export function startComposerRail(): () => void {
         lifted[i].removeAttribute("data-csb-lift");
         lifted[i].style.translate = "";
       }
-      const edges = document.querySelectorAll("[data-csb-ctl-first],[data-csb-ctl-last]") as unknown as ArrayLike<RailEl>;
-      for (let i = 0; i < edges.length; i++) {
-        edges[i].removeAttribute("data-csb-ctl-first");
-        edges[i].removeAttribute("data-csb-ctl-last");
-      }
+
     };
   }
   return () => {
@@ -1514,5 +1538,544 @@ export function hideButtonTooltip(titlePrefix: string): () => void {
       hub.stop = null;
       hub.users = 0;
     }
+  };
+}
+
+// ── 대화의 턴·말 읽기(10-09) — Paseo 본문은 그대로 두고 웹 단추만 덧붙인다 ──
+type SpeedKeyBinding = { active: boolean; adjust(direction: -1 | 1): void };
+type SpeedKeyHub = { version: number; users: Map<object, () => SpeedKeyBinding>; stop: (() => void) | null };
+const SPEED_KEYS_VERSION = 1;
+/** 같은 페이지의 호스트·옛 판이 남아도 키 듣기는 하나. 가장 나중에 등록한 읽기 중 재생기 하나만 조절한다. */
+export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
+  if (!isWeb()) return () => {};
+  const g = globalThis as Record<string, unknown>;
+  const hub = (g.__claudeStateBar_speedKeys_v1 ??= { version: SPEED_KEYS_VERSION, users: new Map(), stop: null }) as SpeedKeyHub;
+  if (hub.version < SPEED_KEYS_VERSION) { hub.stop?.(); hub.stop = null; hub.users.clear(); hub.version = SPEED_KEYS_VERSION; }
+  const token = {};
+  hub.users.set(token, binding);
+  if (!hub.stop) {
+    const onKey = (event: KeyEventLike) => {
+      if (!event.ctrlKey || event.altKey || event.metaKey || (event.key !== "<" && event.key !== ">")) return;
+      const active = [...hub.users.values()].reverse().map((get) => get()).find((b) => b.active);
+      if (!active) return;
+      active.adjust(event.key === "<" ? -1 : 1);
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    };
+    document.addEventListener("keydown", onKey, true);
+    hub.stop = () => document.removeEventListener("keydown", onKey, true);
+  }
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    hub.users.delete(token);
+    if (!hub.users.size) { hub.stop?.(); hub.stop = null; }
+  };
+}
+
+type ReadSpeedState = { rate: number; options: number[]; color: string; background: string; border: string; px: number };
+function speedLabel(rate: number): string { return (rate === 1 ? "1.0" : String(rate)) + "x"; }
+function fillReadSpeedSelect(select: ReadEl, options: number[], rate: number): void {
+  const key = options.join(",");
+  if (select.getAttribute("data-csb-rates") !== key) {
+    select.setAttribute("data-csb-rates", key);
+    select.innerHTML = "";
+    for (const value of options) {
+      const option = document.createElement("option") as unknown as ReadEl;
+      option.value = String(value);
+      option.textContent = speedLabel(value);
+      select.appendChild(option);
+    }
+  }
+  if (select.value !== String(rate)) select.value = String(rate);
+  const label = speedLabel(rate);
+  if (select.getAttribute("aria-valuetext") !== label) select.setAttribute("aria-valuetext", label);
+}
+/** react-native-web View의 빈 내부만 소유한다. react-dom이나 HTML JSX를 플러그인에 추가하지 않는다. */
+export function mountReadSpeedSelect(node: unknown, change: (rate: number) => void): { update(state: ReadSpeedState): void; dispose(): void } {
+  const noop = { update: (_state: ReadSpeedState) => {}, dispose: () => {} };
+  const parent = node as { appendChild?: (el: unknown) => void } | null;
+  if (!isWeb() || !parent?.appendChild) return noop;
+  const select = document.createElement("select") as unknown as ReadEl;
+  select.setAttribute("aria-label", "TTS 속도");
+  select.setAttribute("title", "TTS 속도");
+  select.setAttribute("data-csb-read-speed", "select");
+  select.addEventListener("change", (event) => { event.stopPropagation(); change(Number(select.value)); });
+  parent.appendChild(select);
+  let styleKey = "";
+  return {
+    update: (state) => {
+      fillReadSpeedSelect(select, state.options, state.rate);
+      const key = JSON.stringify([state.color, state.background, state.border, state.px]);
+      if (styleKey !== key) {
+        styleKey = key;
+        select.style.cssText = "width:100%;height:28px;border:1px solid " + state.border + ";border-radius:5px;padding:0 4px;color:" + state.color + ";background:" + state.background + ";font-size:" + state.px + "px;cursor:pointer";
+      }
+    },
+    dispose: () => select.remove(),
+  };
+}
+
+export type TurnReadBinding = {
+  hostId: string | null;
+  enabled: boolean;
+  speedOptions?: number[];
+  /** index: 재생기가 지금 읽는 문단 번호(형광펜 자리, 10-09) */
+  playing: { target: unknown; paused: boolean; rate: number; error: string; index?: number } | null;
+  read(target: unknown, text: string): void;
+  previous(): void;
+  toggle(): void;
+  stop(): void;
+  next(): void;
+  speed(value: number): void;
+};
+type ReadEl = NodeLike & {
+  tagName: string;
+  parentElement: ReadEl | null;
+  nextSibling: ReadEl | null;
+  previousElementSibling: ReadEl | null;
+  nextElementSibling: ReadEl | null;
+  firstElementChild: ReadEl | null;
+  lastElementChild: ReadEl | null;
+  isConnected: boolean;
+  textContent: string | null;
+  innerHTML: string;
+  style: { cssText: string; display: string; setProperty(name: string, value: string): void; getPropertyValue(name: string): string };
+  value: string;
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+  querySelector(selector: string): ReadEl | null;
+  querySelectorAll(selector: string): ArrayLike<ReadEl>;
+  appendChild(node: ReadEl): void;
+  insertBefore(node: ReadEl, before: ReadEl | null): void;
+  compareDocumentPosition(node: ReadEl): number;
+  addEventListener(type: string, fn: (e: KeyEventLike) => void): void;
+  remove(): void;
+};
+type ReadFiber = {
+  return?: ReadFiber | null;
+  alternate?: ReadFiber | null;
+  memoizedProps?: Record<string, unknown>;
+  stateNode?: { current?: ReadFiber };
+};
+// 0.11.1 모듈 4880 Qe 의 copyTurn. copyMessage(사용자 글)·코드 복사와는 다르다.
+const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turno", "Copier l’échange", "ターンをコピー", "턴 복사", "Скопировать ответ", "复制回合"]);
+const READ_MARK = "data-csb-turn-read";
+const READ_SHEET = "claude-state-bar-turn-read-v5";
+const TURN_READ_VERSION = 5;
+const READ_ICONS: Record<string, string> = {
+  Volume2: '<path d="m11 5-6 4H2v6h3l6 4V5Z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.08M19.07 4.93a10 10 0 0 1 0 14.14"/>',
+  SkipBack: '<path d="m19 20-9-8 9-8v16Z"/><path d="M5 19V5"/>',
+  Pause: '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>',
+  Play: '<path d="m6 3 14 9-14 9V3Z"/>',
+  Square: '<rect x="3" y="3" width="18" height="18" rx="2"/>',
+  SkipForward: '<path d="m5 4 9 8-9 8V4Z"/><path d="M19 5v14"/>',
+};
+function readFiber(el: ReadEl): ReadFiber | null {
+  const key = Object.keys(el).find((k) => k.startsWith("__reactFiber$"));
+  if (!key) return null;
+  const fiber = (el as unknown as Record<string, unknown>)[key] as ReadFiber;
+  // DOM 의 fiber 는 이전 커밋 쪽일 수도 있다. root.current 로 현재 쪽을 고른다.
+  let root = fiber;
+  const seen = new Set<ReadFiber>();
+  while (root.return && !seen.has(root)) { seen.add(root); root = root.return; }
+  return root.stateNode?.current && root.stateNode.current !== root ? fiber.alternate ?? null : fiber;
+}
+function readProps(el: ReadEl, match: (props: Record<string, unknown>) => boolean): Record<string, unknown> | null {
+  const seen = new Set<ReadFiber>();
+  for (let f = readFiber(el); f && !seen.has(f); f = f.return ?? null) {
+    seen.add(f);
+    if (f.memoizedProps && match(f.memoizedProps)) return f.memoizedProps;
+  }
+  return null;
+}
+function messageProps(el: ReadEl): Record<string, unknown> | null {
+  return readProps(el, (p) => typeof p.message === "string" && typeof p.serverId === "string");
+}
+function footerProps(el: ReadEl): Record<string, unknown> | null {
+  return readProps(el, (p) => typeof p.getContent === "function" && ("completedAt" in p || "durationMs" in p));
+}
+function streamProps(el: ReadEl): Record<string, unknown> | null {
+  return readProps(el, (p) => typeof p.agentId === "string" && (typeof p.serverId === "string" || typeof (p.context as { serverId?: unknown } | undefined)?.serverId === "string"));
+}
+function footerHost(el: ReadEl): string | null {
+  const props = readProps(el, (p) => typeof p.serverId === "string" || typeof (p.context as { serverId?: unknown } | undefined)?.serverId === "string");
+  return (props?.serverId ?? (props?.context as { serverId?: string } | undefined)?.serverId) as string ?? null;
+}
+function readNode(tag: string, kind: string): ReadEl {
+  const el = document.createElement(tag) as unknown as ReadEl;
+  el.setAttribute(READ_MARK, kind);
+  el.setAttribute("translate", "no");
+  return el;
+}
+function labelRead(el: ReadEl, name: string): void {
+  if (el.getAttribute("aria-label") !== name) el.setAttribute("aria-label", name);
+}
+function readIcon(el: ReadEl, icon: string, size: string): void {
+  if (el.getAttribute("data-csb-read-icon") === icon && el.querySelector("svg")?.getAttribute("width") === size) return;
+  el.setAttribute("data-csb-read-icon", icon);
+  el.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${READ_ICONS[icon]}</svg>`;
+}
+/** 화면 문단마다 글과 그 문단 요소(형광펜 자리, 10-09). 글은 문단 안 빈 줄을 없애 재생기 splitParagraphs 와 번호가 하나씩 맞는다 */
+function screenParts(root: ReadEl): { block: ReadEl | null; text: string }[] {
+  const walker = document.createTreeWalker(root, 5); // 요소 + 글자: br 도 문단 안 줄바꿈으로 읽는다.
+  const parts: { block: NodeLike | null; text: string }[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const el = node as ReadEl;
+    if (node.nodeType !== 3 && el.tagName !== "BR") continue;
+    let hidden = false;
+    for (let p = node.nodeType === 3 ? el.parentElement : el; p; p = p.parentElement) {
+      const style = window.getComputedStyle(p);
+      if (p.getAttribute(READ_MARK) !== null || p.getAttribute("aria-hidden") === "true" || p.getAttribute("hidden") !== null ||
+          p.getAttribute("role") === "button" || /^(BUTTON|SVG|SCRIPT|STYLE)$/.test(p.tagName) || style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" ||
+          p.getAttribute("data-testid") === "assistant-message-capped-notice") { hidden = true; break; }
+      if (p === root) break;
+    }
+    if (hidden) continue;
+    const block = blockOf(node);
+    let part = parts[parts.length - 1];
+    if (!part || part.block !== block) { part = { block, text: "" }; parts.push(part); }
+    part.text += node.nodeType === 3 ? node.nodeValue ?? "" : "\n";
+  }
+  return parts.map((p) => ({ block: p.block as ReadEl | null, text: p.text.replace(/\n[\t ]*\n\s*/g, "\n").trim() })).filter((p) => p.text);
+}
+/** 읽는 문단 형광펜 — 생각 상자 READING_HIGHLIGHT 와 같은 색. 브라우저 글 강조(CSS Highlight)로 칠해 Paseo 글 요소를 바꾸지 않는다
+ *  (요소를 감싸거나 스타일을 바꾸면 번역기가 글을 되돌리거나 Paseo 가 다시 그리며 지운다). 글줄마다 칠해지는 것도 생각 상자와 같다 */
+const READ_HIGHLIGHT = "csb-read-paragraph";
+let litBlock: { block: ReadEl; text: string } | null = null;
+function paintReading(block: ReadEl | null): void {
+  const reg = (globalThis as { CSS?: { highlights?: { set(name: string, value: unknown): void; delete(name: string): void } } }).CSS?.highlights;
+  const Make = (globalThis as { Highlight?: new (...ranges: unknown[]) => unknown }).Highlight;
+  if (!reg || !Make) return;
+  if (!block || !block.isConnected) {
+    if (litBlock) { reg.delete(READ_HIGHLIGHT); litBlock = null; }
+    return;
+  }
+  // 같은 문단이어도 번역기가 글을 바꿨으면 범위를 다시 잡는다(글자 노드가 바뀌면 옛 범위가 접힌다)
+  const text = block.textContent ?? "";
+  if (litBlock?.block === block && litBlock.text === text) return;
+  const range = (document as unknown as { createRange(): { selectNodeContents(node: unknown): void } }).createRange();
+  range.selectNodeContents(block);
+  reg.set(READ_HIGHLIGHT, new Make(range));
+  litBlock = { block, text };
+}
+type SpeechGroup = { first: ReadEl; last: ReadEl; messages: ReadEl[] };
+/**
+ * 대화 칸 식별 값(에이전트 번호 + 호스트 번호). fiber props 객체로 비교하면 안 된다 — Paseo 가 다시 그릴 때 요소마다 새 fiber·옛
+ * fiber(alternate)가 섞여 같은 칸도 다른 객체로 나온다. 그래서 같은 말 여섯 블록이 프레임마다 한 묶음↔여섯 조각으로 번갈아
+ * 판정돼 스피커를 지웠다 붙였다 했고 글이 떨렸다(10-09 리규형님 "졸라 떨린다", 실측 4초에 판정 60번 바뀜)
+ */
+function streamKey(el: ReadEl): string | null {
+  const p = streamProps(el);
+  if (!p) return null;
+  const serverId = typeof p.serverId === "string" ? p.serverId : (p.context as { serverId?: string } | undefined)?.serverId;
+  return `${p.agentId as string}|${serverId ?? ""}`;
+}
+/** 4873 de → We: 각 타임라인 항목은 itemId·gapBelow를 가진 자기 행이다. */
+function timelineRow(el: ReadEl): { root: ReadEl; stream: string; kind: string } | null {
+  const rowProps = readProps(el, (p) => typeof p.itemId === "string" && "gapBelow" in p);
+  const layout = readProps(el, (p) => !!(p.layoutItem as { item?: unknown } | undefined)?.item);
+  const item = (layout?.layoutItem as { item?: { id?: string; kind?: string } } | undefined)?.item;
+  const stream = streamKey(el);
+  if (!rowProps || !stream || typeof item?.kind !== "string" || item.id !== rowProps.itemId) return null;
+  let root = el;
+  // 같은 행인지도 객체가 아니라 항목 번호로 본다(위 streamKey 와 같은 까닭)
+  while (root.parentElement && readProps(root.parentElement, (p) => p.itemId === rowProps.itemId && "gapBelow" in p)) root = root.parentElement;
+  return { root, stream, kind: item.kind };
+}
+function speechRow(el: ReadEl) {
+  const row = timelineRow(el);
+  return row?.kind === "assistant_message" ? row : null;
+}
+function speechRowMessages(root: ReadEl, stream: string): ReadEl[] {
+  const nodes = root.getAttribute("data-testid") === "assistant-message" ? [root] : Array.from(root.querySelectorAll('[data-testid="assistant-message"]'));
+  // 다른 항목/다른 칸/모르는 감싸개를 넘어서 묶지 않는다.
+  return nodes.length && nodes.every((el) => speechRow(el)?.root === root && streamKey(el) === stream) ? nodes : [];
+}
+/** 항목이 아닌 바깥 감싸개는 투명하게 지나가고 실제 첫/끝 타임라인 행에서 판정한다. */
+function timelineEdge(root: ReadEl, direction: "previousElementSibling" | "nextElementSibling"): ReadEl | null {
+  if (root.getAttribute(READ_MARK) !== null) return null;
+  const row = timelineRow(root);
+  if (row) return row.root;
+  if (footerProps(root)) return root;
+  for (let child = direction === "previousElementSibling" ? root.lastElementChild : root.firstElementChild; child; child = child[direction]) {
+    const edge = timelineEdge(child, direction);
+    if (edge) return edge;
+  }
+  // 표식/글이 있는 모르는 행은 경계로 둔다. 빈 배치용 감싸개만 건너뛴다.
+  return root.getAttribute("data-testid") !== null || root.textContent?.trim() ? root : null;
+}
+function adjacentTimeline(row: ReadEl, direction: "previousElementSibling" | "nextElementSibling", stream: string): ReadEl | null {
+  for (let edge: ReadEl | null = row; edge && streamKey(edge) === stream; edge = edge.parentElement) {
+    for (let sibling = edge[direction]; sibling; sibling = sibling[direction]) {
+      const found = timelineEdge(sibling, direction);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+function adjacentSpeech(row: ReadEl, direction: "previousElementSibling" | "nextElementSibling", stream: string): ReadEl[] {
+  let sibling = adjacentTimeline(row, direction, stream);
+  if (!sibling) return [];
+  return speechRowMessages(sibling, stream);
+}
+/** 같은 대화 칸에서 이어진 Claude 말 행만 한 묶음. 도구·플러그인·사용자·압축·꼬리 줄에서 끊긴다. */
+function speechGroup(el: ReadEl): SpeechGroup | null {
+  const row = speechRow(el);
+  if (!row) return null;
+  const messages = speechRowMessages(row.root, row.stream);
+  if (!messages.includes(el)) return null;
+  let edge = row.root;
+  for (;;) {
+    const previous = adjacentSpeech(edge, "previousElementSibling", row.stream);
+    if (!previous.length) break;
+    messages.unshift(...previous);
+    edge = speechRow(previous[0])!.root;
+  }
+  edge = row.root;
+  for (;;) {
+    const next = adjacentSpeech(edge, "nextElementSibling", row.stream);
+    if (!next.length) break;
+    messages.push(...next);
+    edge = speechRow(next[next.length - 1])!.root;
+  }
+  return { first: messages[0], last: messages[messages.length - 1], messages };
+}
+/** 꼬리 줄 바로 앞의 말만. 복사 글이나 앞쪽 말로 대체하지 않는다. */
+function lastSpeech(copy: ReadEl): SpeechGroup | null {
+  const stream = streamKey(copy);
+  if (!stream) return null;
+  const messages = copy.parentElement ? adjacentSpeech(copy.parentElement, "previousElementSibling", stream) : [];
+  return messages.length ? speechGroup(messages[messages.length - 1]) : null;
+}
+type ReadPalette = { accent: string; border: string; muted: string; background: string };
+function readPalette(el: ReadEl): ReadPalette {
+  type ColorStyle = { color: string; getPropertyValue(name: string): string };
+  const local = window.getComputedStyle(el) as unknown as ColorStyle;
+  const root = window.getComputedStyle(document.documentElement) as unknown as ColorStyle;
+  // Unistyles 128 addTheme가 만든 --colors-* (4837도 같은 변수로 스크롤바를 칠한다).
+  const color = (name: string) => local.getPropertyValue(name).trim() || root.getPropertyValue(name).trim();
+  const stroke = el.querySelector("svg")?.getAttribute("stroke");
+  const muted = color("--colors-foreground-muted") || (stroke && stroke !== "currentColor" ? stroke : local.color) || "currentColor";
+  return { muted, accent: color("--colors-accent") || muted, border: color("--colors-border") || muted, background: color("--colors-surface2") || color("--colors-surface1") || window.getComputedStyle(el).backgroundColor || "Canvas" };
+}
+
+type ReadRecord = {
+  anchor: ReadEl;
+  hostId: string;
+  kind: "turn" | "message";
+  row: ReadEl;
+  button: ReadEl;
+  group: ReadEl | null;
+  controls: ReadEl | null;
+  toggle: ReadEl | null;
+  select: ReadEl | null;
+  look?: string;
+  palette?: string;
+  muted?: string;
+  /** 읽기 시작 때 넘긴 문단마다의 화면 문단 요소 — 재생기 문단 번호로 형광펜을 칠한다 */
+  blocks?: (ReadEl | null)[];
+};
+type ReadHub = { version: number; users: Map<object, (() => TurnReadBinding) & { csbVersion?: number }>; stop: (() => void) | null; refresh: (() => void) | null };
+/** 한 페이지·한 장치. 호스트 번호가 맞고 읽기가 켜진 연결만 자기 데몬의 TTS 를 쓴다. */
+export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(): void; dispose(): void } {
+  const noop = { refresh: () => {}, dispose: () => {} };
+  if (!isWeb() || typeof MutationObserver === "undefined") return noop;
+  const g = globalThis as Record<string, unknown>;
+  const hub = (g.__claudeStateBar_turnRead_v1 ??= { version: TURN_READ_VERSION, users: new Map(), stop: null, refresh: null }) as ReadHub;
+  if (hub.version < TURN_READ_VERSION) { hub.stop?.(); hub.stop = null; hub.refresh = null; hub.users.clear(); hub.version = TURN_READ_VERSION; }
+  const token = {};
+  hub.users.set(token, Object.assign(binding, { csbVersion: TURN_READ_VERSION }));
+  if (!hub.stop) {
+    const records = new Map<ReadEl, ReadRecord>();
+    let live = true;
+    let queued = false;
+    const owner = (hostId: string) => [...hub.users.values()].filter((get) => get.csbVersion === TURN_READ_VERSION).map((get) => get()).find((b) => b.hostId === hostId && b.enabled);
+    // 옛 판 정리가 늦었던 요소도 전용 표식으로만 걷는다.
+    const orphaned = document.querySelectorAll(`[${READ_MARK}]`) as unknown as ArrayLike<ReadEl>;
+    for (let i = 0; i < orphaned.length; i++) orphaned[i].remove();
+    setStyleSheet(READ_SHEET,
+      `[${READ_MARK}="button"]{display:flex;align-items:center;justify-content:center;background:transparent;border:0;cursor:pointer;color:inherit;font:inherit;padding:4px;border-radius:5px}` +
+      `[${READ_MARK}="button"]:focus-visible{outline:2px solid currentColor;outline-offset:2px}` +
+      `[${READ_MARK}="message-row"],[${READ_MARK}="controls"]{display:flex;align-items:center;gap:6px;flex-wrap:wrap;max-width:100%;min-width:0}` +
+      `[${READ_MARK}="controls"]{flex-shrink:1}` +
+       `[${READ_MARK}="speed"]{height:28px;border:1px solid var(--csb-read-border);border-radius:5px;padding:0 4px;margin:0;color:inherit;background:var(--csb-read-background);font:inherit;font-size:12px;cursor:pointer}` +
+       `[${READ_MARK}="speed"] option{color:inherit;background:var(--csb-read-background)}` +
+      `::highlight(${READ_HIGHLIGHT}){background-color:rgba(255, 226, 0, 0.3)}`);
+    const button = (name: string, icon: string, action: () => void, size = String((readAppFontSizes().content ?? 15) - 1)) => {
+      const el = readNode("button", "button");
+      el.setAttribute("type", "button");
+      labelRead(el, name);
+      readIcon(el, icon, size);
+      el.addEventListener("click", (event) => { event.stopPropagation(); try { action(); } catch { /* 구조가 바뀌면 조용히 생략한다 */ } });
+      return el;
+    };
+    const remove = (r: ReadRecord) => {
+      const b = owner(r.hostId);
+      if (b?.playing?.target === r.anchor) b.stop();
+      r.controls?.remove();
+      r.button.remove();
+      r.group?.remove();
+      records.delete(r.anchor);
+    };
+    const start = (r: ReadRecord) => {
+      const b = owner(r.hostId);
+      if (!b) return;
+      const group = r.kind === "turn" ? lastSpeech(r.anchor) : speechGroup(r.anchor);
+      if (!group) return;
+      // 덜 그려졌으면 현재 그려진 부분만 읽는다. getContent·원문으로 범위를 늘리지 않는다.
+      const parts = group.messages.flatMap(screenParts);
+      const text = parts.map((p) => p.text).join("\n\n").trim();
+      if (!text) return;
+      r.blocks = parts.map((p) => p.block);
+      b.read(r.anchor, text);
+    };
+    const paintTurn = (r: ReadRecord) => {
+      // Qe 의 계산된 여백·크기와 실제 아이콘 색을 따른다. 원래 DOM 은 움직이지 않는다.
+      const style = window.getComputedStyle(r.anchor) as unknown as Record<string, string>;
+      const keys = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "marginTop", "marginRight", "marginBottom", "marginLeft", "borderRadius", "alignSelf", "height", "width"];
+      const color = r.anchor.querySelector("svg")?.getAttribute("stroke") ?? style.color ?? "inherit";
+      const look = keys.filter((key) => style[key]).map((key) => `${key.replace(/[A-Z]/g, (s) => `-${s.toLowerCase()}`)}:${style[key]}`).join(";") + `;color:${color}`;
+      if (r.look !== look) { r.look = look; r.button.style.cssText = look; }
+      const size = r.anchor.querySelector("svg")?.getAttribute("width") ?? "14";
+      readIcon(r.button, "Volume2", size);
+    };
+    const make = (anchor: ReadEl, hostId: string, kind: ReadRecord["kind"], row: ReadEl) => {
+      const size = kind === "turn" ? anchor.querySelector("svg")?.getAttribute("width") ?? "14" : String((readAppFontSizes().content ?? 15) - 1);
+      const r: ReadRecord = { anchor, hostId, kind, row, button: null as unknown as ReadEl, group: null, controls: null, toggle: null, select: null };
+      r.button = button(kind === "turn" ? "턴 읽기" : "이 말 읽기", "Volume2", () => start(r), size);
+      if (kind === "turn") {
+        paintTurn(r);
+        row.insertBefore(r.button, anchor.nextSibling);
+      } else {
+        r.group = readNode("div", "message-row");
+        r.group.appendChild(r.button);
+        row.appendChild(r.group);
+      }
+      records.set(anchor, r);
+      return r;
+    };
+    const controls = (r: ReadRecord, b: TurnReadBinding) => {
+      const playing = b.playing?.target === r.anchor ? b.playing : null;
+      if (!playing) { r.controls?.remove(); r.controls = r.toggle = r.select = null; r.palette = undefined; return; }
+      if (!r.controls) {
+        r.controls = readNode("div", "controls");
+        const action = (fn: (current: TurnReadBinding) => void) => () => { const current = owner(r.hostId); if (current?.playing?.target === r.anchor) fn(current); };
+        r.controls.appendChild(button("이전 문단", "SkipBack", action((v) => v.previous())));
+        r.toggle = button("일시정지", "Pause", action((v) => v.toggle()));
+        r.controls.appendChild(r.toggle);
+        r.controls.appendChild(button("읽기 중지", "Square", action((v) => v.stop())));
+        r.controls.appendChild(button("다음 문단", "SkipForward", action((v) => v.next())));
+         r.select = readNode("select", "speed");
+         labelRead(r.select, "TTS 속도");
+         r.select.style.cssText = "width:" + (isCompactWidth() ? 72 : 82) + "px;max-width:100%";
+         r.select.addEventListener("change", action((v) => v.speed(Number(r.select?.value))));
+         r.controls.appendChild(r.select);
+        (r.group ?? r.row).appendChild(r.controls); // Ue 의 마지막 자식 = 작업 시간 오른쪽
+      }
+      const palette = readPalette(r.kind === "turn" ? r.anchor : r.row);
+      const look = JSON.stringify(palette);
+      if (r.palette !== look) {
+        r.palette = look;
+        r.controls!.style.cssText = `color:${palette.muted};--csb-read-accent:${palette.accent};--csb-read-border:${palette.border};--csb-read-background:${palette.background}`;
+        r.select!.style.setProperty("font-size", String((readAppFontSizes().content ?? 15) - 3) + "px");
+      }
+      labelRead(r.toggle!, playing.paused ? "이어서 읽기" : "일시정지");
+      readIcon(r.toggle!, playing.paused ? "Play" : "Pause", String((readAppFontSizes().content ?? 15) - 1));
+       fillReadSpeedSelect(r.select!, b.speedOptions ?? [playing.rate], playing.rate);
+      labelRead(r.controls!, playing.error || "읽기 조절");
+    };
+    const apply = () => {
+      queued = false;
+      if (!live) return;
+      try {
+        const wanted = new Set<ReadEl>();
+        const lastWithFooter = new Set<ReadEl>();
+        const copies = new Set(Array.from(document.querySelectorAll('[role="button"][aria-label]') as unknown as ArrayLike<ReadEl>).filter((el) => TURN_COPY_LABELS.has(el.getAttribute("aria-label") ?? "")));
+        // 복사 직후 '복사됨' 이름표여도 기존 꼬리 줄 단추는 유지한다.
+        for (const r of records.values()) if (r.kind === "turn" && r.anchor.isConnected) copies.add(r.anchor);
+        for (const copy of copies) {
+          const row = copy.parentElement;
+          const hostId = footerHost(copy);
+          if (!row || !hostId || !footerProps(copy) || window.getComputedStyle(row).flexDirection !== "row") continue;
+          const b = owner(hostId);
+          if (!b) continue;
+          const last = lastSpeech(copy);
+          if (last) lastWithFooter.add(last.first);
+          wanted.add(copy);
+          let r = records.get(copy);
+          if (r && (r.hostId !== hostId || r.row !== row || !r.button.isConnected)) { remove(r); r = undefined; }
+          r ??= make(copy, hostId, "turn", row);
+          paintTurn(r);
+          controls(r, b);
+        }
+        const messages = document.querySelectorAll('[data-testid="assistant-message"]') as unknown as ArrayLike<ReadEl>;
+        const visited = new Set<ReadEl>();
+        for (let i = 0; i < messages.length; i++) {
+          if (visited.has(messages[i])) continue;
+          const speech = speechGroup(messages[i]);
+          if (!speech) continue;
+          for (const el of speech.messages) visited.add(el);
+          const el = speech.first;
+          const hostId = messageProps(el)?.serverId as string | undefined;
+          const b = hostId ? owner(hostId) : undefined;
+          if (!b) continue;
+          let r = records.get(el);
+          const active = b.playing?.target === el;
+          if (lastWithFooter.has(el) && !active) continue;
+          wanted.add(el);
+          if (r && (r.hostId !== hostId || !r.group?.isConnected)) { remove(r); r = undefined; }
+          r ??= make(el, hostId!, "message", speech.last);
+          // 같은 말에 블록이 늘어나면,재생은 유지하고 자기 조절만 마지막으로 옮긴다.
+          if (r.row !== speech.last) { r.row = speech.last; r.row.appendChild(r.group!); }
+          const muted = readPalette(r.row).muted;
+          if (r.muted !== muted) { r.muted = muted; r.group!.style.setProperty("color", muted); }
+          const display = lastWithFooter.has(el) ? "none" : "";
+          if (r.button.style.display !== display) r.button.style.display = display;
+          controls(r, b);
+        }
+        for (const r of records.values()) if (!wanted.has(r.anchor)) remove(r);
+        // 읽는 문단 형광펜: 재생 중인 기록의 문단 번호 자리 하나만. 읽기가 끝나거나 다른 것을 읽으면 옮기거나 지운다
+        let lit: ReadEl | null = null;
+        for (const r of records.values()) {
+          const playing = owner(r.hostId)?.playing;
+          if (playing?.target === r.anchor && typeof playing.index === "number") lit = r.blocks?.[playing.index] ?? null;
+        }
+        paintReading(lit);
+      } catch { /* 모르는 DOM·fiber 는 단추만 생략한다. Paseo 본문은 건드리지 않는다. */ }
+    };
+    // 대화 화면은 스트리밍 중 글자마다 바뀐다 — 바뀔 때마다 단추 붙이기(전체 찾기·fiber 오르기)를 돌리지 않고 화면을 한 번
+    // 그릴 때 한 번만 돈다(Claude 10-09 검토: 처음엔 매 변경 직후 마이크로태스크였다). 화면 그리기 맞춤 함수가 없으면 예전대로
+    const frame = (globalThis as { requestAnimationFrame?: (fn: () => void) => number }).requestAnimationFrame;
+    const refresh = () => {
+      if (!live || queued) return;
+      queued = true;
+      if (frame) frame(() => apply());
+      else void Promise.resolve().then(apply);
+    };
+    const observer = new MutationObserver(refresh);
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["aria-label", "class", "style", "stroke", "width", "height"] });
+    hub.refresh = refresh;
+    hub.stop = () => {
+      live = false;
+      observer.disconnect();
+      for (const r of records.values()) remove(r);
+      paintReading(null);
+      setStyleSheet(READ_SHEET, null);
+    };
+    apply();
+  } else hub.refresh?.();
+  let disposed = false;
+  return {
+    refresh: () => hub.refresh?.(),
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      hub.users.delete(token);
+      if (hub.version === TURN_READ_VERSION && ![...hub.users.values()].some((get) => get.csbVersion === TURN_READ_VERSION)) { hub.stop?.(); hub.stop = null; hub.refresh = null; }
+      else hub.refresh?.();
+    },
   };
 }

@@ -76,6 +76,12 @@ export function featureSwitches(): { translate: boolean; tts: boolean } {
   return { translate: s.translateEnabled !== false, tts: s.ttsEnabled !== false };
 }
 
+/** 옛 공급자에도 새 읽기 설정의 기본값을 적용한다. 속도 값 자체는 기기 저장소에만 둔다. */
+export function speechOptions(): { autoOpen: boolean; speedStep: 0.1 | 0.25; ready: boolean } {
+  const s = currentSettings() as Partial<SoundSettings>;
+  return { autoOpen: s.thinkingAutoOpen !== false, speedStep: s.ttsSpeedStep === 0.1 ? 0.1 : 0.25, ready: !!shared().provider };
+}
+
 export function onSharedSignal(name: SharedSignal, listener: () => void): () => void {
   const s = shared();
   const signals = (s.signals ??= {});

@@ -2,11 +2,12 @@ import type { TargetLang } from "../shared/translate";
 import { readGoogleKeys } from "./googleKeys";
 
 const SYNTHESIZE_URL = "https://texttospeech.googleapis.com/v1/text:synthesize";
-// 언어별 음성(10-08 — 음성 언어 = 번역 대상 언어 = Paseo 언어 설정). 영어는 한국어와 같은 Chirp 3 HD 의 같은 이름 음성
+// 언어별 음성(10-08 — 음성 언어 = 번역 대상 언어 = Paseo 언어 설정). 영어는 한국어와 같은 Chirp 3 HD 의 같은 이름 음성.
+// 10-09 리규형님 "음성 모델 Chirp3-HD Korean (Zephyr) 여성"으로 Callirrhoe → Zephyr
 // (Claude 가 고름 — 실제 호출로 확인하지 않았다)
 const VOICES: Record<TargetLang, { languageCode: string; name: string }> = {
-  ko: { languageCode: "ko-KR", name: "ko-KR-Chirp3-HD-Callirrhoe" },
-  en: { languageCode: "en-US", name: "en-US-Chirp3-HD-Callirrhoe" },
+  ko: { languageCode: "ko-KR", name: "ko-KR-Chirp3-HD-Zephyr" },
+  en: { languageCode: "en-US", name: "en-US-Chirp3-HD-Zephyr" },
 };
 // 원본 readaloud_text.py:482-485 SPOKEN_SIGNS 의 ko·en 과 같은 이름(백슬래시는 원본에 없어 추가)
 const SPOKEN_SIGNS: Record<TargetLang, Record<string, string>> = {

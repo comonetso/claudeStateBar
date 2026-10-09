@@ -10,6 +10,7 @@ import type { ActivityCounts } from "../shared/activity";
 import { ACTIVITY_PANEL_ID, KINDS } from "./activityKinds";
 import { mergeActivitySplit, openActivitySplit } from "./activitySplit";
 import { clearMaximizedPane, paintMaximizedPane } from "./paneMaximized";
+import { releaseMaximizedPane } from "./paneMaxWatch";
 import { currentSettings } from "./sounds";
 import { currentWorkspaceFromUrl, isCompactWidth } from "./web";
 
@@ -72,6 +73,9 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     if (running) requestTab(workspaceId, running.key);
     const here = currentWorkspaceFromUrl();
     if (here?.workspaceId === workspaceId) {
+      // 칸 하나를 최대화해 두면 작업 현황 칸이 가려져, 이미 열려 있으면 눌러도 아무 변화가 없었다(10-09 리규형님 "이미 나와 있더라도
+      // 전체 화면이면 전체 화면을 풀고 원복") → 최대화부터 푼다. 칸 구조는 그대로라 아래 나누기·열기는 예전과 같다
+      releaseMaximizedPane();
       const target = { serverId: here.serverId, workspaceId, pluginId: PLUGIN_ID, panelId: ACTIVITY_PANEL_ID };
       // 좁은 화면(폰 모양)은 칸 하나만 보여 주고 탭 전환도 그 칸 탭만 보여 줘서, 나누면 대화 탭이 사라진다(10-08 리규형님
       // "탭 전환에서 채팅 목록이 아예 안 나타남") → 나누지 않고 같은 칸의 탭으로 연다. 이미 나뉘어 있으면 합친다

@@ -127,7 +127,8 @@ export function RunItemsView({
         <View style={{ width: 8, height: 8, borderRadius: 4, marginTop: 5, backgroundColor: dotColor(it.status) }} />
         <Text style={[styles.muted, { minWidth: 30, color: steer ? STEER_COLOR : c.foregroundMuted }]}>{KIND_LABEL[it.kind] ?? it.kind}</Text>
         <Text style={[styles.small, { flex: 1 }, it.status === "failed" ? { color: c.statusDanger } : {}]} numberOfLines={isOpen ? undefined : 2}>
-          {it.label}
+          {/* 펼쳐서 아래에 전문이 나오면 잘린 이름표는 숨긴다 — 같은 말이 두 번 나왔다(확장 details.row.hasfull[open] .lbl 숨김과 같음, 리규형님 10-09) */}
+          {hasFull && isOpen ? "" : it.label}
           {dur ? <Text style={styles.muted}>{`  · ${dur}`}</Text> : null}
         </Text>
       </View>

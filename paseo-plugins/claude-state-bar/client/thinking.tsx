@@ -8,11 +8,12 @@ import { z } from "zod";
 import { translateKo } from "../shared/translate";
 import { googleStatus, ttsSynthesize } from "../shared/tts";
 import { uiLanguage } from "./appLanguage";
-import { featureSwitches, onSharedSignal } from "./sounds";
+import { featureSwitches, onSharedSignal, speechOptions } from "./sounds";
 import { thinkingBoundary } from "../shared/thinkingBoundary";
-import { boxPhase, boxText, saidText, splitParagraphs, ThinkingController, watchThinking, type ThinkingBoxState } from "./thinkingPlayer";
+import { boxPhase, boxText, normalizeRate, saidText, splitParagraphs, ThinkingController, watchThinking, type ThinkingBoxState } from "./thinkingPlayer";
 import { onThinkingAllOpen, thinkingAllOpen } from "./thinkingFold";
-import { clearSelection, createThinkingAudio, readAppFontSizes, readLocal, selectionStartIn, watchSelection, writeLocal, type SelectionSnapshot } from "./web";
+import { translationCache } from "./translationCache";
+import { clearSelection, createThinkingAudio, elementText, readAppFontSizes, readLocal, listenTtsSpeedKeys, mountReadSpeedSelect, setHoverTitle, setNoTranslate, selectionStartIn, watchSelection, writeLocal, type SelectionSnapshot } from "./web";
 
 const KIND = "csb-thinking";
 const schema = z.object({ text: z.string(), phase: z.enum(["streaming", "complete"]) });
@@ -26,10 +27,22 @@ const RATE_KEY = "claude-state-bar:thinking-rate";
 // 컴포넌트 수명과 독립된 상태. 호스트 키 확인도 한 번만 한다.
 // 입력창 위 선택 읽기 알약(selectionRead.tsx)도 이 재생기를 같이 쓴다 — 그래서 한 번에 하나만 읽힌다.
 // 번역 대상·읽기 음성 언어는 Paseo 언어 설정(10-08 — 한국어면 한국어로, 그 밖은 영어로). 부를 때마다 다시 읽는다
-export const thinkingController = new ThinkingController(createThinkingAudio(), (rate) => writeLocal(RATE_KEY, String(rate)), Date.now, uiLanguage);
+let pendingSavedRate: number | undefined;
+export const thinkingController = new ThinkingController(createThinkingAudio(), (rate) => { pendingSavedRate = undefined; writeLocal(RATE_KEY, String(rate)); }, Date.now, uiLanguage);
 const controller = thinkingController;
+// 받은 번역을 이 기기에 7일 담아 두고 번역 전에 먼저 본다(10-10 리규형님 "번역된 것은 다시 번역해서 비용이 나가지 않게")
+controller.cache = translationCache;
 const savedRate = Number(readLocal(RATE_KEY));
-if (Number.isFinite(savedRate) && savedRate >= 0.333 && savedRate <= 3) controller.rate = savedRate;
+controller.speedStep = speechOptions().speedStep;
+controller.rate = normalizeRate(savedRate > 0 ? savedRate : 1, controller.speedStep);
+pendingSavedRate = savedRate > 0 ? savedRate : undefined;
+function applyReadingSettings(): void {
+  const options = speechOptions();
+  const value = options.ready && pendingSavedRate !== undefined ? pendingSavedRate : controller.rate;
+  if (options.ready) pendingSavedRate = undefined;
+  controller.applySpeedStep(options.speedStep, value);
+}
+applyReadingSettings();
 const statuses = new Map<string, Promise<{ translate: boolean; tts: boolean }>>();
 // 설정 화면에서 키를 저장·확인하면(10-08) 위 키 확인 기억을 비우고 떠 있는 상자들이 다시 묻게 한다
 const keyListeners = new Set<() => void>();
@@ -37,36 +50,22 @@ const keyListeners = new Set<() => void>();
 // (selectionRead 와 같은 방식, web.ts watchSelection)
 let selected: SelectionSnapshot | null = null;
 let domSerial = 0;
+/** 상자에서 꺼낸 말 읽기(10-09) — 지금 읽는 말의 재생 상자와 그 말이 딸린 생각 상자 키. 재생기가 하나라 화면 전체에 하나 */
+const saidReader: { box?: ThinkingBoxState; owner?: string; serial: number } = { serial: 0 };
 // 문단 요소 이름 머리 — 호스트마다 이 파일이 따로 올라와 번호가 겹치지 않게 올라올 때마다 다른 글자를 붙인다
 const DOM_PREFIX = `csb-think-${Math.random().toString(36).slice(2, 8)}-`;
 
-/** 읽기 속도 슬라이더(BluemingReadAloud 하단 바 규칙: −1~1, 0.05 눈금, 3^v). 생각 상자 컨트롤러와 입력창 위 속도 알약이 같이 쓴다 */
-export function SpeedSlider({ colors: c, compact, px }: { colors: PluginTheme["colors"]; compact: boolean; px: number }) {
-  const [, bump] = useState(0);
-  const [width, setWidth] = useState(140);
-  useEffect(() => controller.subscribe(() => bump((n) => n + 1)), []);
-  const value = Math.max(-1, Math.min(1, Math.log(controller.rate) / Math.log(3)));
-  const move = (x: number) => controller.setSpeed((x / width) * 2 - 1);
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-      <View
-        accessibilityRole="adjustable" accessibilityLabel="TTS 속도" accessibilityValue={{ min: 0.333, max: 3, now: controller.rate, text: `${controller.rate.toFixed(2)}x` }}
-        accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
-        onAccessibilityAction={(e) => controller.setSpeed(value + (e.nativeEvent.actionName === "increment" ? 0.05 : -0.05))}
-        style={{ width: compact ? 110 : 140, height: 28, justifyContent: "center" }}
-        onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
-        onStartShouldSetResponder={() => true} onMoveShouldSetResponder={() => true}
-        onResponderTerminationRequest={() => false}
-        onResponderGrant={(e) => move(e.nativeEvent.locationX)}
-        onResponderMove={(e) => move(e.nativeEvent.locationX)}
-      >
-        <View pointerEvents="none" style={{ height: 4, borderRadius: 2, backgroundColor: c.border }} />
-        <View pointerEvents="none" style={{ position: "absolute", height: 4, borderRadius: 2, width: `${(value + 1) * 50}%`, backgroundColor: c.accent }} />
-        <View pointerEvents="none" style={{ position: "absolute", width: 12, height: 12, borderRadius: 6, left: `${(value + 1) * 50}%`, marginLeft: -6, backgroundColor: c.accent }} />
-      </View>
-      <Text style={{ color: c.foregroundMuted, fontSize: px - 3 }}>{controller.rate.toFixed(2)}x</Text>
-    </View>
-  );
+/** React가 소유한 빈 View 안에 표준 웹 선택 상자를 단다. DOM 처리는 web.ts에만 둔다. */
+export function SpeedSelect({ colors: c, compact, px }: { colors: PluginTheme["colors"]; compact: boolean; px: number }) {
+  const node = useRef<View>(null);
+  useEffect(() => {
+    const select = mountReadSpeedSelect(node.current, (rate) => controller.setSpeed(rate));
+    const update = () => select.update({ rate: controller.rate, options: controller.speedOptions(), color: c.foreground, background: c.surface2, border: c.border, px: px - 3 });
+    update();
+    const unsubscribe = controller.subscribe(update);
+    return () => { unsubscribe(); select.dispose(); };
+  }, [c, px]);
+  return <View ref={node} style={{ minWidth: compact ? 72 : 82, height: 28 }} />;
 }
 
 function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, owned }: PluginTimelineItemProps<Data> & {
@@ -116,13 +115,16 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
 
   useEffect(() => {
     box.rpc = rpc;
+    // 읽기는 화면에 보이는 문단 글을 읽는다(10-09 — 브라우저 번역기가 바꾼 글 그대로). 상자가 접혀 있거나 폰이면 null → 원문·플러그인 번역
+    // 원문 보기면 원문 칸 글(10-10)
+    box.screenText = web ? (index) => elementText(box.original ? `${domId}-o-${index}` : `${domId}-${index}`) : undefined;
     // SDK의 기존 연결을 관찰한다. 화면 밖에서도 새 문단·생각 완료를 받는다.
     box.watch = (update, error) => watchThinking(
       (handler) => client.paseo.agents.ref(agentId).timeline.subscribe(handler),
       () => box.text, update, error,
     );
     controller.update(box, text, phase);
-  }, [box, rpc, text, phase, agentId, client]);
+  }, [box, rpc, text, phase, agentId, client, domId, web]);
 
   // 상자에 섞인 Claude 의 말(마지막 생각 칸)이 어디서 시작하는지 데몬에 묻는다(10-09, shared/thinkingBoundary.ts).
   // 한 번에 하나만 묻고, 답을 기다리는 사이 글이 늘었으면 답이 온 뒤 최신 글로 다시 묻는다(정해 둔 시간 간격 없음).
@@ -161,13 +163,18 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   const paragraphs = splitParagraphs(boxText(box), boxPhase(box));
   const said = saidText(box);
   const playback = controller.state(box);
-  const translated = box.translate ? paragraphs.filter((p) => p.done && typeof box.translations.get(p.src) === "string").length : 0;
-  const title = `${box.phase === "streaming" ? "Thinking…" : "Thinking"}${translated ? ` · 번역 ${translated}문단` : ""}${box.pending.size ? " · 번역 중" : ""}`;
+  // 원문 보기(10-10)는 웹·PC 앱만 — 브라우저 번역기를 막은 원문 칸을 따로 그린다. 폰은 번역 아이콘 끄기가 곧 원문이다
+  const original = web && !!box.original;
+  const translated = box.translate && !original ? paragraphs.filter((p) => p.done && typeof box.translations.get(p.src) === "string").length : 0;
+  const title = box.phase === "streaming" ? "Thinking…" : "Thinking";
   const buttonStyle = (active: boolean) => ({ borderRadius: 5, paddingHorizontal: layout.compact ? 5 : 7, paddingVertical: 4, backgroundColor: active ? c.accent : c.surface2 });
   const labelStyle = (active: boolean) => ({ color: active ? c.accentForeground : c.foregroundMuted, fontSize: px - 3 });
-  const button = (label: string, active: boolean, onPress: () => void) => (
-    <Pressable key={label} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={onPress} style={buttonStyle(active)}>
-      <Text style={labelStyle(active)}>{label}</Text>
+  const button = (label: string, icons: string[], active: boolean, onPress: () => void) => (
+    <Pressable key={label} ref={(node) => setHoverTitle(node, label)} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={() => {
+      if (speechOptions().autoOpen) controller.expand(box);
+      onPress();
+    }} style={[buttonStyle(active), { flexDirection: "row", alignItems: "center", gap: 2 }]}>
+      {icons.map((name) => <Icon key={name} name={name} size={px - 1} color={active ? c.accentForeground : c.foregroundMuted} />)}
     </Pressable>
   );
 
@@ -178,7 +185,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   // 상자 안에서 글을 선택해 두고(한 글자라도) 누르면 그 문단, 그 글자부터 읽는다 — 선택이 없거나 이 상자 밖이면 처음부터(10-08).
   // 선택을 썼으면 푼다: 선택 색이 형광펜을 덮지 않게, 입력창 위 "선택 읽기" 알약도 숨게(selectionRead 와 같이)
   const startReading = (strict: boolean) => {
-    const at = web && box.open ? selectionStartIn(selected?.token, paragraphs.map((_, i) => `${domId}-${i}`)) : null;
+    const at = web && box.open ? selectionStartIn(selected?.token, paragraphs.map((_, i) => (original ? `${domId}-o-${i}` : `${domId}-${i}`))) : null;
     if (at) {
       selected = null;
       clearSelection();
@@ -189,9 +196,12 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   // 번역·읽기·번역읽기·최대화 — 위 머리줄과 아래 줄이 같이 쓴다(리규형님 10-07: 긴 생각을 펼치면 위로 한참 올라가야 해서 아래에도)
   const actionButtons = () => (
     <>
-      {canTranslate ? button("번역", box.translate, () => controller.toggleTranslation(box)) : null}
-      {canRead ? button("읽기", playback.active && !playback.strict, () => startReading(false)) : null}
-      {canRead && canTranslate ? button("번역읽기", playback.active && playback.strict, () => startReading(true)) : null}
+      {canTranslate ? button("번역", ["Languages"], box.translate, () => controller.toggleTranslation(box)) : null}
+      {/* 원문 보기(10-10 리규형님 "번역본이면 원문으로, 원문이면 번역문으로") — 플러그인 번역이든 브라우저 번역이든. 번역 키가 없어도
+          브라우저 번역기 글을 원문으로 돌릴 수 있게 웹이면 늘 보인다 */}
+      {web ? button("원문 보기", ["FileText"], original, () => controller.toggleOriginal(box)) : null}
+      {canRead ? button("읽기", ["Volume2"], playback.active && !playback.strict, () => startReading(false)) : null}
+      {canRead && canTranslate ? button("번역읽기", ["Languages", "Volume2"], playback.active && playback.strict, () => startReading(true)) : null}
       {box.open ? (
         <Pressable
           accessibilityRole="button"
@@ -204,6 +214,15 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
       ) : null}
     </>
   );
+  // 상태 글은 버튼 뒤 별도 영역. 제목 폭과 버튼 자리는 번역 진행에 따라 바뀌지 않는다.
+  const actionStatus = () => (
+    <View style={{ marginLeft: "auto", flexShrink: 1, flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: 6 }}>
+      {box.error ? <Text accessibilityLiveRegion="polite" numberOfLines={1} style={{ color: c.statusDanger, fontSize: px - 3, flexShrink: 1 }}>{box.error.slice(0, 100)}</Text> : null}
+      {web && playback.active ? <Text style={labelStyle(false)}>{playback.paused ? "일시정지" : playback.status === "waiting" ? "다음 문단 대기" : playback.status === "loading" ? "소리 준비" : "읽는 중"}</Text> : null}
+      {translated ? <Text style={labelStyle(false)}>{"번역 " + translated + "문단"}</Text> : null}
+      {box.translate && box.pending.size ? <Text accessibilityLiveRegion="polite" style={labelStyle(false)}>번역 중</Text> : null}
+    </View>
+  );
   // 읽기 조절은 입력창 위 읽기 조절 알약(selectionRead.tsx)과 같은 아이콘으로(10-09 리규형님 "생각 상자 컨트롤러도 생각 밖 TTS 컨트롤러처럼
   // 아이콘으로, 통일되게"). 이름(접근성)도 같은 글 — 이전 문단·일시정지/이어서 읽기·읽기 중지·다음 문단
   const iconButton = (icon: string, label: string, onPress: () => void) => (
@@ -211,6 +230,29 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
       <Icon name={icon} size={px - 1} color={c.foregroundMuted} />
     </Pressable>
   );
+  // 꺼낸 말 읽기 단추·조절 — 배경 없는 아이콘(Paseo 복사 단추·web.ts "이 말 읽기"와 같은 모양: 여백 4, 모서리 5)
+  const plainIcon = (icon: string, label: string, onPress: () => void) => (
+    <Pressable key={label} accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={{ padding: 4, borderRadius: 5, alignItems: "center", justifyContent: "center" }}>
+      <Icon name={icon} size={px - 1} color={c.foregroundMuted} />
+    </Pressable>
+  );
+  const saidId = `${domId}-said`;
+  const saidState = saidReader.owner === box.key && saidReader.box ? controller.state(saidReader.box) : undefined;
+  const saidActive = web && !!saidState?.active;
+  // 꺼낸 말 문단 — 생각 상자 본문처럼 문단마다 따로 그려 읽는 문단에 형광펜을 칠한다(10-09 리규형님 "단락별로 형광펜")
+  const saidParagraphs = said ? splitParagraphs(said, "complete") : [];
+  // 문단마다 그 문단을 읽을 때의 화면 글(브라우저 번역기가 바꾼 글) — 생각 상자 본문과 같은 방식(box.screenText). 재생기 문단 번호가
+  // 화면 문단과 하나씩 맞아 형광펜 자리가 된다. 못 읽으면 그 문단 원문
+  const readSaid = () => {
+    if (!said.trim()) return;
+    if (saidReader.box) controller.dispose(new Set([saidReader.box]));
+    const next = controller.box(host.id, `said-${++saidReader.serial}`, Date.now(), said, "complete");
+    next.screenText = web ? (index) => elementText(`${saidId}-${index}`) : undefined;
+    next.rpc = rpc;
+    saidReader.box = next;
+    saidReader.owner = box.key;
+    controller.start(next, false);
+  };
   // 읽는 동안 늘 보이고 중지·다 읽음이면 사라진다 — 설정 아이콘 없이(리규형님 10-06). 상자 아래와 위 오른쪽(10-07) 두 곳
   const readControls = (top: boolean) =>
     web && playback.active ? (
@@ -219,7 +261,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
         {iconButton(playback.paused ? "Play" : "Pause", playback.paused ? "이어서 읽기" : "일시정지", () => playback.paused ? controller.resume() : controller.pause())}
         {iconButton("Square", "읽기 중지", () => controller.stop())}
         {iconButton("SkipForward", "다음 문단", () => controller.next())}
-        <SpeedSlider colors={c} compact={layout.compact} px={px} />
+        <SpeedSelect colors={c} compact={layout.compact} px={px} />
       </View>
     ) : null;
 
@@ -233,8 +275,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
             <Text style={{ color: c.foregroundMuted, fontSize: px - 2, flexShrink: 1 }}>{title}</Text>
           </Pressable>
           {actionButtons()}
-          {box.error ? <Text accessibilityLiveRegion="polite" numberOfLines={1} style={{ color: c.statusDanger, fontSize: px - 3, flexShrink: 1 }}>{box.error.slice(0, 100)}</Text> : null}
-          {web && playback.active ? <Text style={{ color: c.foregroundMuted, fontSize: px - 3 }}>{playback.paused ? "일시정지" : playback.status === "waiting" ? "다음 문단 대기" : playback.status === "loading" ? "소리 준비" : "읽는 중"}</Text> : null}
+          {actionStatus()}
         </View>
         {box.open ? (
           <ScrollView
@@ -256,19 +297,25 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
               const reading = web && playback.active && playback.index === i;
               // 선택한 글자부터 읽는 중이면 그 글자부터만 칠한다(10-08)
               const cut = reading ? controller.readingFrom(box, i, shown) : 0;
+              const cutSrc = reading && original ? controller.readingFrom(box, i, paragraph.src) : 0;
+              const textStyle = { color: c.foreground, fontSize: px - 1, lineHeight: Math.round((px - 1) * 1.45) };
               return (
                 <View key={i} style={{ marginBottom: i < paragraphs.length - 1 ? Math.round(px * 0.65) : 0 }}>
-                  <Text selectable nativeID={`${domId}-${i}`} style={{ color: c.foreground, fontSize: px - 1, lineHeight: Math.round((px - 1) * 1.45) }}>
-                    {/* 읽는 문단은 글줄마다 형광펜 — 안쪽 글 조각이라 줄 단위로 칠해진다(리규형님 10-06) */}
-                    {reading ? (
-                      <>
-                        {cut > 0 ? shown.slice(0, cut) : null}
-                        <Text style={{ backgroundColor: READING_HIGHLIGHT }}>{cut > 0 ? shown.slice(cut) : shown}</Text>
-                      </>
-                    ) : (
-                      shown
-                    )}
+                  {/* 원문 보기 중에는 숨기기만 한다(10-10) — 지우면 브라우저 번역기가 바꿔 둔 글이 사라져 원문 보기를 끌 때 다시 번역한다 */}
+                  <Text selectable nativeID={`${domId}-${i}`} style={original ? [textStyle, { display: "none" }] : textStyle}>
+                    {/* 읽는 문단은 글줄마다 형광펜 — 안쪽 글 조각이라 줄 단위로 칠해진다(리규형님 10-06).
+                        안쪽 조각은 늘 두고 색만 바꾼다(10-09) — 읽을 때 조각을 새로 만들면 브라우저 번역기가 바꿔 둔 글이 원문으로
+                        돌아갔다가 다시 번역돼, 화면 글을 읽는 재생기가 그 사이 원문을 읽거나 다시 합성한다 */}
+                    {cut > 0 ? shown.slice(0, cut) : null}
+                    <Text style={reading ? { backgroundColor: READING_HIGHLIGHT } : undefined}>{cut > 0 ? shown.slice(cut) : shown}</Text>
                   </Text>
+                  {original ? (
+                    // 원문 칸 — 브라우저 번역을 막는다(setNoTranslate, 붙는 순간 표시가 달려 번역기가 손대지 않는다). 읽기·형광펜도 이 칸
+                    <Text selectable ref={setNoTranslate} nativeID={`${domId}-o-${i}`} style={textStyle}>
+                      {cutSrc > 0 ? paragraph.src.slice(0, cutSrc) : null}
+                      <Text style={reading ? { backgroundColor: READING_HIGHLIGHT } : undefined}>{cutSrc > 0 ? paragraph.src.slice(cutSrc) : paragraph.src}</Text>
+                    </Text>
+                  ) : null}
                 </View>
               );
             })}
@@ -278,15 +325,38 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
         {box.open ? (
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6 }}>
             {actionButtons()}
+            {actionStatus()}
           </View>
         ) : null}
       </View>
       {readControls(false)}
       {/* 상자에서 꺼낸 Claude 의 말 — 상자를 접어도 보이게 상자 밖에 본문 글 크기·색으로(10-09) */}
       {said ? (
-        <Text selectable style={{ marginTop: 8, color: c.foreground, fontSize: px, lineHeight: Math.round(px * 1.5) }}>
-          {said}
-        </Text>
+        <View nativeID={saidId} style={{ marginTop: 8 }}>
+          {saidParagraphs.map((paragraph, i) => (
+            // 문단 사이는 예전 한 덩어리(빈 줄 하나)와 같은 높이. 안쪽 조각은 늘 두고 색만 바꾼다(번역기가 바꾼 글을 지키려고 — 위 본문과 같음)
+            <Text key={i} selectable nativeID={`${saidId}-${i}`} style={{ marginTop: i ? Math.round(px * 1.5) : 0, color: c.foreground, fontSize: px, lineHeight: Math.round(px * 1.5) }}>
+              <Text style={saidActive && saidState!.index === i ? { backgroundColor: READING_HIGHLIGHT } : undefined}>{paragraph.src}</Text>
+            </Text>
+          ))}
+        </View>
+      ) : null}
+      {/* 그 말 읽기(10-09 리규형님 "복사 버튼이 없는 경우도 TTS 버튼이 있어야" · 결정 "그 말 하나만") — Paseo 말 블록에 붙는
+          "이 말 읽기"(web.ts 턴·말 읽기 단추)와 같은 이름·모양. 읽는 동안은 같은 자리에 조절 */}
+      {said && canRead ? (
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 2 }}>
+          {saidActive ? (
+            <>
+              {plainIcon("SkipBack", "이전 문단", () => controller.previous())}
+              {plainIcon(saidState!.paused ? "Play" : "Pause", saidState!.paused ? "이어서 읽기" : "일시정지", () => saidState!.paused ? controller.resume() : controller.pause())}
+              {plainIcon("Square", "읽기 중지", () => controller.stop())}
+              {plainIcon("SkipForward", "다음 문단", () => controller.next())}
+              <SpeedSelect colors={c} compact={layout.compact} px={px} />
+            </>
+          ) : (
+            plainIcon("Volume2", "이 말 읽기", readSaid)
+          )}
+        </View>
       ) : null}
     </View>
   );
@@ -302,6 +372,8 @@ export function registerThinking(client: PluginClientContext): () => void {
   });
   const b = client.addTimelineRenderer({ kind: KIND, version: 1, schema, Component });
   // 입력창 위 "생각 상자 모두 접기·펼치기" 알약의 상태를 따른다(10-08, thinkingFold) — 기억된 상태로 시작하고 바뀌면 전부 따라간다
+  applyReadingSettings();
+  const stopSpeedKeys = listenTtsSpeedKeys(() => ({ active: controller.isReading(), adjust: (direction) => controller.stepSpeed(direction) }));
   controller.setAllOpen(thinkingAllOpen());
   const stopFold = onThinkingAllOpen((open) => controller.setAllOpen(open));
   // 상자 안 선택 자리부터 읽기(10-08) — 마지막 선택을 기억해 둔다(웹·데스크톱만, 폰은 아무것도 안 함)
@@ -311,6 +383,7 @@ export function registerThinking(client: PluginClientContext): () => void {
   // 설정 화면 "번역·읽기" 칸(10-08): 끄면 그 기능을 멈추고(버튼은 그릴 때 숨는다), 키를 저장·확인하면 호스트별 키 확인을 다시 한다
   const stopSettings = onSharedSignal("settings", () => {
     const features = featureSwitches();
+    applyReadingSettings();
     controller.applyFeatures(features.translate, features.tts);
   });
   const stopKeys = onSharedSignal("googleKeys", () => {
@@ -318,10 +391,14 @@ export function registerThinking(client: PluginClientContext): () => void {
     for (const listener of [...keyListeners]) listener();
   });
   return () => {
+    stopSpeedKeys();
     stopKeys();
     stopSettings();
     stopSelection();
     stopFold();
+    if (saidReader.box) controller.dispose(new Set([saidReader.box]));
+    saidReader.box = undefined;
+    saidReader.owner = undefined;
     controller.dispose(owned);
     for (const box of owned) statuses.delete(box.hostId);
     a();

@@ -1,4 +1,5 @@
 import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { SettingsSelect } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { extSettingsImport } from "../shared/extSettings";
@@ -35,6 +36,8 @@ type Draft = Record<SoundKind, { file: string; gain: string }> & {
   activitySplitPercent: string;
   translateEnabled: boolean;
   ttsEnabled: boolean;
+  thinkingAutoOpen: boolean;
+  ttsSpeedStep: 0.1 | 0.25;
 };
 
 function toDraft(values: SoundSettings): Draft {
@@ -52,6 +55,8 @@ function toDraft(values: SoundSettings): Draft {
     activitySplitPercent: String(values.activitySplitPercent),
     translateEnabled: values.translateEnabled,
     ttsEnabled: values.ttsEnabled,
+    thinkingAutoOpen: values.thinkingAutoOpen,
+    ttsSpeedStep: values.ttsSpeedStep,
   };
 }
 
@@ -70,6 +75,8 @@ function fromDraft(draft: Draft) {
     activitySplitPercent: Number(draft.activitySplitPercent),
     translateEnabled: draft.translateEnabled,
     ttsEnabled: draft.ttsEnabled,
+    thinkingAutoOpen: draft.thinkingAutoOpen,
+    ttsSpeedStep: draft.ttsSpeedStep,
   });
 }
 
@@ -278,7 +285,7 @@ export function createSettingsScreen(onSaved: () => void) {
       </View>
     );
 
-    const speechSwitch = (key: "translateEnabled" | "ttsEnabled", title: string, hint: string) => (
+    const speechSwitch = (key: "translateEnabled" | "ttsEnabled" | "thinkingAutoOpen", title: string, hint: string) => (
       <View style={[styles.card, styles.switchRow]}>
         <View style={styles.switchText}>
           <Text style={styles.text}>{title}</Text>
@@ -333,7 +340,7 @@ export function createSettingsScreen(onSaved: () => void) {
           setKeysStateError(null);
           setKeyInputs({ gemini: "", tts: "" });
           setKeysMessage({ text: t.keysSaved, bad: false });
-          // 생각 상자·선택 읽기 알약이 키 있음을 다시 묻게(thinking.tsx 호스트별 키 확인 기억 비우기)
+          // 생각 상자·턴·말 읽기 단추가 키 있음을 다시 묻게(thinking.tsx 호스트별 키 확인 기억 비우기)
           emitSharedSignal("googleKeys");
         } else {
           setKeysMessage({
@@ -425,6 +432,14 @@ export function createSettingsScreen(onSaved: () => void) {
         <Text style={styles.muted}>{t.speechIntro}</Text>
         {speechSwitch("translateEnabled", t.translateTitle, t.translateHint)}
         {speechSwitch("ttsEnabled", t.ttsTitle, t.ttsHint)}
+        {speechSwitch("thinkingAutoOpen", t.autoOpenTitle, t.autoOpenHint)}
+        <View style={styles.card}>
+          <SettingsSelect label={t.speedStepTitle} hint={t.speedStepHint} value={String(draft.ttsSpeedStep)}
+            options={[{ label: "0.1x", value: "0.1" }, { label: "0.25x", value: "0.25" }]}
+            onValueChange={(value) => setDraft({ ...draft, ttsSpeedStep: value === "0.1" ? 0.1 : 0.25 })} />
+          <Text style={styles.text}>{t.speedShortcuts}</Text>
+          <Text style={styles.muted}>{t.speedShortcutsHint}</Text>
+        </View>
         <View style={styles.card}>
           <Text style={styles.muted}>{t.speechKeysIntro}</Text>
           {keyField("gemini", t.geminiKeyName, keysState?.translate)}

@@ -77,7 +77,8 @@ function ActivityRows({ act, styles, colors }: { act: Activity; styles: PanelSty
         <View style={{ width: 8, height: 8, borderRadius: 4, marginTop: 5, backgroundColor: dot(it.status) }} />
         <Text style={[styles.muted, { minWidth: 30 }]}>{KIND_LABEL[it.kind] ?? it.kind}</Text>
         <Text style={[styles.small, { flex: 1 }, it.status === "failed" ? { color: colors.danger } : {}]} numberOfLines={isOpen ? undefined : 2}>
-          {it.label}
+          {/* 펼쳐서 아래에 전문이 나오면 잘린 이름표는 숨긴다 — Codex 카드와 같음(확장 hasfull[open] .lbl 숨김, 리규형님 10-09) */}
+          {hasFull && isOpen ? "" : it.label}
           {dur ? <Text style={styles.muted}>{`  · ${dur}`}</Text> : null}
         </Text>
       </View>
@@ -222,8 +223,9 @@ export function WorkflowsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
             {dur ? <Text style={styles.muted}>{running ? `경과 ${dur}` : dur}</Text> : null}
             <Text style={styles.muted}>{isOpen ? "접기" : "펼치기"}</Text>
           </View>
-          {a.summary ? (
-            <Text style={[styles.muted, { marginLeft: 14 }]} numberOfLines={isOpen ? undefined : 2}>
+          {/* 요약은 160자에서 잘린 한 줄 — 펼치면 숨기고 아래 활동·보고 전문만 보인다(확장 details.agent[open] .agent-sub 숨김과 같음, 리규형님 10-09) */}
+          {a.summary && !isOpen ? (
+            <Text style={[styles.muted, { marginLeft: 14 }]} numberOfLines={2}>
               {a.summary}
             </Text>
           ) : null}

@@ -388,7 +388,8 @@ export async function listRuns(cwd: string, limit = 20, nowMs = Date.now()): Pro
       ...(usage ? { totalTokens: usage.inputTokens + usage.outputTokens } : {}),
       turns,
       itemCount: events.items.length,
-      ...(latest ? { latest: latest.label, ...(latest.kind === "claude_steer" ? { latestSteer: true } : {}) } : {}),
+      // 이름표(label)는 200자에서 잘린 한 줄이라 말이 "…습니…"로 끊겼다 — 확장처럼 전문(body)을 보낸다(리규형님 10-09 "말은 모두 볼 수 있어야")
+      ...(latest ? { latest: latest.body || latest.label, ...(latest.kind === "claude_steer" ? { latestSteer: true } : {}) } : {}),
       ...(events.failureMessage ? { failureMessage: events.failureMessage } : {}),
       ...(events.todo?.length ? { todo: events.todo } : {}),
       ...(docSet.has(requestName) ? { requestPath: join(docsDir, requestName) } : {}),
