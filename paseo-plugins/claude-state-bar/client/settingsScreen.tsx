@@ -14,7 +14,7 @@ import { emitSharedSignal } from "./sounds";
 import { MainDeviceSection, VersionStatusSection } from "./versionStatus";
 import { FoldTitle, SectionTitle } from "./sectionTitle";
 import { playSoundUrl } from "./web";
-import { WebLoginSection } from "./webLoginSection";
+import { hasWebGate, WebLoginSection } from "./webLoginSection";
 
 /** Paseo 설정 안의 우리 항목 이름(10-07: "Claude 상태 소리" → 웹 로그인·소리를 칸으로 나눈 플러그인 설정 화면). */
 export const SETTINGS_TITLE = "Claude State Bar";
@@ -181,12 +181,15 @@ export function createSettingsScreen(onSaved: () => void) {
     );
 
     // 웹 로그인 칸은 소리 설정을 읽는 동안에도 보인다(로그아웃이 소리 설정에 묶이지 않게).
+    const webGate = hasWebGate();
     const shell = (body: ReactNode) => (
       <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
         <Text style={styles.title}>{SETTINGS_TITLE}</Text>
+        {/* 로그인·계정은 맨 위(10-09 리규형님) — 우리 로그인 서버를 거친 화면만. PC 앱처럼 안 거치면 "로그인 서버 없음" 안내라 원래 자리에 */}
+        {webGate ? <WebLoginSection theme={theme} compact={layout.compact} t={t} /> : null}
         <MainDeviceSection theme={theme} t={t} />
         <VersionStatusSection theme={theme} t={t} />
-        <WebLoginSection theme={theme} compact={layout.compact} t={t} />
+        {webGate ? null : <WebLoginSection theme={theme} compact={layout.compact} t={t} />}
         {body}
       </ScrollView>
     );

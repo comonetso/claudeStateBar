@@ -21,6 +21,10 @@ type ServerLink = { serverId: string; label: string | null };
 type Account = { id: string; sessionHours: number; linkServerId: string | null; servers?: ServerLink[]; expiresAt: number; serverNow: number };
 type HostEntry = { serverId: string };
 
+/** 우리 로그인 서버를 거쳐 열린 화면인가 — 설정 화면이 이 칸을 맨 위에 둘지 정한다(PC 앱은 거치지 않아 안내만 보인다) */
+export function hasWebGate(): boolean {
+  return gate() !== null;
+}
 function gate(): Gate | null {
   const g = (globalThis as { paseoGate?: Gate }).paseoGate;
   return g && typeof g.logout === "function" ? g : null;
@@ -215,15 +219,20 @@ export function WebLoginSection({ theme, compact, t }: { theme: PluginTheme; com
 
   return (
     <>
+    {/* 설정 화면 맨 위(10-09 리규형님 "로그인 및 계정 관련은 최상단으로"). 로그인 상태 한 줄과 로그아웃·바꾸기 단추는 접어 둬도 늘 보이고,
+        접기는 자세한 내용(세션 유지 시간·서버 링크 목록)에만 건다 — "항목이 2개 이상인 칸은 접힌 채로"(10-09)와 함께 */}
     <FoldTitle icon="KeyRound" title={t.loginHeading} theme={theme} open={shown} onToggle={() => setShown(!shown)} labels={t.fold} />
-    {shown ? (
     <View style={styles.card}>
       {loadError ? <Text style={styles.error}>{loadError}</Text> : null}
       {account ? (
+        <Text style={styles.text}>
+          {t.loginAs(account.id, clock(Date.now() + (account.expiresAt - account.serverNow)), left(account.expiresAt - account.serverNow, t))}
+        </Text>
+      ) : !loadError ? (
+        <Text style={styles.muted}>{t.loginReading}</Text>
+      ) : null}
+      {account && shown ? (
         <>
-          <Text style={styles.text}>
-            {t.loginAs(account.id, clock(Date.now() + (account.expiresAt - account.serverNow)), left(account.expiresAt - account.serverNow, t))}
-          </Text>
           <Text style={styles.muted}>{t.loginSessionLine(account.sessionHours, account.linkServerId)}</Text>
           <Text style={styles.muted}>{t.loginServersLine(account.servers?.length ?? 0)}</Text>
           {(account.servers ?? []).map((sv) => {
@@ -248,8 +257,6 @@ export function WebLoginSection({ theme, compact, t }: { theme: PluginTheme; com
             );
           })}
         </>
-      ) : !loadError ? (
-        <Text style={styles.muted}>{t.loginReading}</Text>
       ) : null}
 
       <View style={styles.actions}>
@@ -296,7 +303,6 @@ export function WebLoginSection({ theme, compact, t }: { theme: PluginTheme; com
         </View>
       ) : null}
     </View>
-    ) : null}
     </>
   );
 }

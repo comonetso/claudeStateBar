@@ -11,7 +11,7 @@ declare const window: {
   innerHeight: number;
   innerWidth: number;
   getSelection(): { toString(): string; rangeCount: number; getRangeAt(index: number): RangeLike; removeAllRanges(): void } | null;
-  getComputedStyle(el: unknown, pseudo?: string): { display: string; flexWrap?: string; flexDirection?: string; order?: string; content?: string; flexBasis?: string };
+  getComputedStyle(el: unknown, pseudo?: string): { display: string; flexWrap?: string; flexDirection?: string; order?: string; content?: string; flexBasis?: string; position?: string; backgroundColor?: string };
   matchMedia?(query: string): { matches: boolean };
   /** PC 앱(Electron)이 화면에 심는 연결 고리 — 앱 화면 코드 getElectronHost 가 이것으로 PC 앱인지 가린다 */
   paseoDesktop?: unknown;
@@ -1248,7 +1248,9 @@ const RAIL_CSS =
   "[data-csb-rail]::after{content:'';flex-basis:100%;height:0;order:9}" +
   // 알약 감싸개가 박스 없는 감싸개라 감싸개의 order 가 무시됐다(10-08 폰 진단: 계산값 10 인데 순서 그대로) — 안쪽 단추에도 건다
   "[data-csb-rail] [data-csb-ctl]{order:10}}";
-type RailEl = HeaderEl & {
+type RailEl = Omit<HeaderEl, "style" | "parentElement"> & {
+  parentElement: RailEl | null;
+  style: { display: string; backgroundColor: string };
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
@@ -1258,7 +1260,20 @@ type RailEl = HeaderEl & {
 
 /** 이 장치 코드를 고치면 올린다 — 플러그인을 다시 읽어도 같은 페이지에는 처음 시작한 옛 판 장치가 남아 새 코드가 안 돌았다
  *  (10-08 폰 진단). 더 높은 판이 오면 옛 판 장치를 멈추고 넘겨받는다. 판이 섞인 호스트들은 높은 판 하나를 같이 쓴다 */
-const RAIL_VERSION = 5; // 5: 10-08 저녁 원인 확정 뒤 진단 로그(report)를 뺐다
+const RAIL_VERSION = 6; // 5: 10-08 저녁 원인 확정 뒤 진단 로그(report)를 뺐다 · 6: 10-09 단추 줄 바탕 칠하기
+
+// 입력창 위 단추 줄(컨텍스트·목록·접기·읽기 조절)을 대화 화면 바탕색 띠로 칠한다(10-09 리규형님 "아이콘 뒷배경이 투명이라 거슬려 — 글자가
+// 안 보여야 해, 헷갈리고 잘 안 보여" · "웹도 동일한 경험으로, 폰 분기 하지 말고"). 단추는 Paseo 가 불투명하게 칠하지만(composerPillStyles
+// surface1) 단추를 담은 줄(0.11.1: 절대 위치 상자)이 투명해 단추 사이·둘레로 대화 글이 비쳤다(실측: PC·폰 폭 모두 줄 rgba(0,0,0,0)).
+// 줄 찾기: 늘 떠 있는 우리 단추(목록·컨텍스트)에서 올라가며 첫 절대 위치 조상. 색은 그 위로 처음 칠해진 조상의 바탕색(테마 따라감)
+const TRACK_ANCHORS = '[aria-label="목록 쓰기"],[aria-label^="컨텍스트 사용량"]';
+function solidBackgroundAbove(el: RailEl): string | null {
+  for (let p = el.parentElement, n = 0; p && n < 30; p = p.parentElement, n++) {
+    const bg = window.getComputedStyle(p).backgroundColor ?? "";
+    if (bg && bg !== "transparent" && !/^rgba\(.*,\s*0\)$/.test(bg)) return bg;
+  }
+  return null;
+}
 
 /** 화면에 한 벌만 돈다(기기마다 올라오는 플러그인이 같이 부르면 함께 쓰고, 다 끊으면 멈춘다). 끊기 함수 */
 export function startComposerRail(): () => void {
@@ -1300,6 +1315,28 @@ export function startComposerRail(): () => void {
       // 조절 단추가 사라진 묶음은 표식을 뗀다 — 남으면 좁은 화면에서 빈 둘째 줄(줄 간격)이 생긴다
       const marked = document.querySelectorAll("[data-csb-rail]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < marked.length; i++) if (!rails.has(marked[i])) marked[i].removeAttribute("data-csb-rail");
+      // 단추 줄 띠 칠하기 — 칠한 색이 같으면 다시 쓰지 않는다(감시가 제 변경으로 다시 돌지 않게)
+      const tracks = new Set<RailEl>();
+      const anchors = document.querySelectorAll(TRACK_ANCHORS) as unknown as ArrayLike<RailEl>;
+      for (let i = 0; i < anchors.length; i++) {
+        for (let t = anchors[i].parentElement, n = 0; t && n < 6; t = t.parentElement, n++) {
+          if (window.getComputedStyle(t).position === "absolute") {
+            tracks.add(t);
+            break;
+          }
+        }
+      }
+      for (const t of tracks) {
+        if (t.getAttribute("data-csb-track") === null) t.setAttribute("data-csb-track", "");
+        const bg = solidBackgroundAbove(t);
+        if (bg && t.style.backgroundColor !== bg) t.style.backgroundColor = bg;
+      }
+      const painted = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<RailEl>;
+      for (let i = 0; i < painted.length; i++) {
+        if (tracks.has(painted[i])) continue;
+        painted[i].removeAttribute("data-csb-track");
+        painted[i].style.backgroundColor = "";
+      }
     };
     const observer = new MutationObserver(() => {
       if (queued) return;
@@ -1311,6 +1348,11 @@ export function startComposerRail(): () => void {
     hub.stop = () => {
       observer.disconnect();
       setStyleSheet(RAIL_SHEET, null);
+      const painted = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<RailEl>;
+      for (let i = 0; i < painted.length; i++) {
+        painted[i].removeAttribute("data-csb-track");
+        painted[i].style.backgroundColor = "";
+      }
     };
   }
   return () => {
