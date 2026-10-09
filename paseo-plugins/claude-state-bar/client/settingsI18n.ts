@@ -56,7 +56,7 @@ const ko = {
   resetOrderFailed: (error: string) => `초기화하지 못했습니다: ${error}`,
 
   // ── 번역·읽기(10-08)
-  speechSection: "번역·읽기 설정",
+  speechSection: "번역·읽기·받아쓰기 설정",
   speechIntro:
     "생각 상자의 번역·읽기·번역읽기 버튼과 대화의 턴·말 읽기 단추를 켜고 끕니다. 끄면 그 버튼이 모두 숨습니다. Paseo 언어가 한국어면 한국어로 번역하고 한국어 목소리로 읽으며, 그 밖의 언어면 영어로 합니다.",
   speechKeysIntro:
@@ -96,6 +96,21 @@ const ko = {
   keysChecked: "확인했습니다",
   keysCheckNone: "저장된 키가 없어 확인할 것이 없습니다",
   keysCheckFailed: (error: string) => `확인하지 못했습니다: ${error}`,
+
+  // ── 받아쓰기 이름 힌트(10-10)
+  sttHintsTitle: "받아쓰기 이름 힌트",
+  sttHintsHint:
+    "Paseo 마이크 단추로 말한 것을 Gemini 가 받아쓰고 군말을 뺀 뒤 입력창에 넣습니다. 여기 적은 이름은 이 철자대로 적습니다(쉼표로 구분, 비우면 힌트 없이). 저장하면 서버에도 같은 목록을 보냅니다.",
+  sttHintsPlaceholder: "예: Paseo, Claude, Codex",
+  sttHintsReading: "이름 힌트를 읽는 중입니다",
+  sttHintsReadFailed: (error: string) => `이름 힌트를 읽지 못했습니다: ${error}`,
+  sttHintsUnsaved: "고친 이름은 [이름 저장]을 눌러야 저장됩니다.",
+  sttHintsSave: "이름 저장",
+  sttHintsSaving: "저장 중",
+  sttHintsSaved: (sent: number, total: number, failed: string) =>
+    total === 0 ? "저장했습니다" : failed ? `저장했습니다 · 서버 ${total}대 중 ${sent}대에 보냄(못 보낸 서버: ${failed})` : `저장했습니다 · 서버 ${total}대에 모두 보냄`,
+  sttHintsWriteFailed: "이름 힌트 파일을 쓰지 못했습니다",
+  sttHintsSaveFailed: (error: string) => `저장하지 못했습니다: ${error}`,
 
   // ── 소리
   soundSection: "소리",
@@ -317,7 +332,7 @@ const en: SettingsText = {
   resetOrderDone: "Order and pins were reset — the list follows the list file again",
   resetOrderFailed: (error) => `Couldn't reset: ${error}`,
 
-  speechSection: "Translate and read-aloud settings",
+  speechSection: "Translate, read-aloud and dictation settings",
   speechIntro:
     "Turns the Translate, Read and Translate and read buttons in thinking boxes, and the turn and message read buttons in conversations, on or off. When off, those buttons are hidden. If Paseo's language is Korean, text is translated into Korean and read in a Korean voice; for any other language, English is used.",
   speechKeysIntro:
@@ -357,6 +372,20 @@ const en: SettingsText = {
   keysChecked: "Checked",
   keysCheckNone: "No saved keys to check",
   keysCheckFailed: (error) => `Couldn't check: ${error}`,
+
+  sttHintsTitle: "Dictation name hints",
+  sttHintsHint:
+    "What you say with Paseo's microphone button is transcribed by Gemini, cleaned of filler words, and put in the input box. Names listed here are written with this spelling (comma-separated; leave empty for no hints). Saving also sends the same list to the servers.",
+  sttHintsPlaceholder: "e.g. Paseo, Claude, Codex",
+  sttHintsReading: "Reading name hints",
+  sttHintsReadFailed: (error) => `Couldn't read name hints: ${error}`,
+  sttHintsUnsaved: "Edited names are saved only when you press [Save names].",
+  sttHintsSave: "Save names",
+  sttHintsSaving: "Saving",
+  sttHintsSaved: (sent, total, failed) =>
+    total === 0 ? "Saved" : failed ? `Saved · sent to ${sent} of ${total} servers (not sent: ${failed})` : `Saved · sent to all ${total} servers`,
+  sttHintsWriteFailed: "Couldn't write the name hints file",
+  sttHintsSaveFailed: (error) => `Couldn't save: ${error}`,
 
   soundSection: "Sounds",
   soundFoldOpenLabel: "Expand sound settings",

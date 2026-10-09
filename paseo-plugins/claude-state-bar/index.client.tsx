@@ -29,6 +29,7 @@ import { startSoundProjects, registerSoundOrigin, soundOrigin } from "./client/s
 import { reportSoundEvent, startSoundPlayback } from "./client/soundPlayback";
 import type { RoutedSoundEvent } from "./shared/soundClaim";
 import { readAppFontSizes } from "./client/web";
+import { startDictationInsertOnly } from "./client/dictationInsertOnly";
 import { soundOriginObserve, soundOriginPrepare } from "./shared/soundEvents";
 
 import { clientLog } from "./shared/log";
@@ -185,6 +186,8 @@ export default function contribute(client: PluginClientContext) {
       cleanups.push(startLayoutAutoPull(client, log, info, settingsRead ? () => settings : null));
       // 칸 최대화가 저절로 풀리는 원인 기록(10-09 "원인부터 기록") — 호스트마다 돌면 같은 줄이 여러 번 남아 이 PC 플러그인만
       cleanups.push(startPaneMaxWatch(log, browserLabel));
+      // 받아쓰기는 늘 입력창에만 넣고 보내기는 직접(10-10) — 같은 화면 입력창 모듈 하나를 감싸므로 한 곳(이 PC 플러그인)만
+      cleanups.push(startDictationInsertOnly(log));
       log(`providing sounds (${info.platform})`);
       const fonts = readAppFontSizes();
       log(`app font sizes: ui=${fonts.ui ?? "unread"} content=${fonts.content ?? "unread"}`);

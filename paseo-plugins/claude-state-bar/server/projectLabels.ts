@@ -53,7 +53,7 @@ export function labelsText(labels: ProjectLabel[]): string {
 }
 
 /** SSH 별칭으로 쓸 수 있는 이름만 — 목록 글자가 ssh 옵션으로 읽히지 않게 */
-const SAFE_HOST = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+export const SAFE_HOST = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
 function sshExe(): string {
   if (process.platform === "win32") {
@@ -77,9 +77,14 @@ async function writeLocal(text: string): Promise<{ ok: boolean; out: string }> {
 
 // 내용은 base64 로 명령 인자에 싣는다 — 이 PC 의 ssh 는 파이프로 넣은 입력의 끝을 서버에 못 알려 멈춘다(09-14 실측). -n 으로 입력도 닫는다
 function sendRemote(host: string, text: string): Promise<{ ok: boolean; out: string }> {
+  return sendRemoteFile(host, "~/.claude", LABELS_NAME, text);
+}
+
+/** 서버 한 대의 dir/name 에 글을 통째로 쓴다. dir·name 은 코드 상수만 넘긴다(명령 글에 그대로 들어간다) — 받아쓰기 이름 힌트도 쓴다(10-10) */
+export function sendRemoteFile(host: string, dir: string, name: string, text: string): Promise<{ ok: boolean; out: string }> {
   const b64 = Buffer.from(text, "utf8").toString("base64");
-  const target = `~/.claude/${LABELS_NAME}`;
-  const command = `mkdir -p ~/.claude && printf %s '${b64}' | base64 -d > ${target}.tmp && mv -f ${target}.tmp ${target}`;
+  const target = `${dir}/${name}`;
+  const command = `mkdir -p ${dir} && printf %s '${b64}' | base64 -d > ${target}.tmp && mv -f ${target}.tmp ${target}`;
   return new Promise((resolve) => {
     // 접속 10초·전체 30초는 서버가 꺼져 있을 때 다음 차례를 막지 않게 하는 안전장치
     execFile(sshExe(), ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, command], { timeout: 30_000, windowsHide: true }, (err, stdout, stderr) =>

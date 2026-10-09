@@ -7,6 +7,7 @@ import { googleKeysCheck, googleKeysSave, googleKeysState, type GoogleKeysState 
 import { settingsSchema, soundSettings, type SoundSettings } from "../shared/settings";
 import { projectsResetOrder } from "../shared/projects";
 import { soundData, type SoundKind } from "../shared/sound";
+import { sttHintsGet, sttHintsSave } from "../shared/stt";
 import { uiLanguage } from "./appLanguage";
 import { applyExtImport, extImportReport } from "./extImport";
 import { announceOrders, announcePins } from "./projectsData";
@@ -128,6 +129,29 @@ export function createSettingsScreen(onSaved: () => void) {
         live = false;
       };
     }, [keysStateRpc, t]);
+    // 받아쓰기 이름 힌트(10-10) — 이 PC 데몬 파일에 저장하고 데몬이 서버들에도 보낸다. saved = 마지막으로 읽거나 저장한 내용
+    const hintsGetRpc = useRpc(sttHintsGet);
+    const hintsSaveRpc = useRpc(sttHintsSave);
+    const [hintsSaved, setHintsSaved] = useState<string | null>(null);
+    const [hintsDraft, setHintsDraft] = useState("");
+    const [hintsBusy, setHintsBusy] = useState(false);
+    const [hintsMessage, setHintsMessage] = useState<{ text: string; bad: boolean } | null>(null);
+    useEffect(() => {
+      let live = true;
+      hintsGetRpc({}).then(
+        ({ hints }) => {
+          if (!live) return;
+          setHintsSaved(hints);
+          setHintsDraft(hints);
+        },
+        (error: unknown) => {
+          if (live) setHintsMessage({ text: t.sttHintsReadFailed(String(error)), bad: true });
+        },
+      );
+      return () => {
+        live = false;
+      };
+    }, [hintsGetRpc, t]);
     const doReset = async () => {
       setConfirmReset(false);
       try {
@@ -371,6 +395,27 @@ export function createSettingsScreen(onSaved: () => void) {
       }
     };
 
+    const saveHints = async () => {
+      setHintsBusy(true);
+      setHintsMessage(null);
+      try {
+        const result = await hintsSaveRpc({ hints: hintsDraft });
+        if (result.ok) {
+          const saved = hintsDraft.replace(/\s+/g, " ").trim();
+          setHintsSaved(saved);
+          setHintsDraft(saved);
+          const failed = result.hosts.filter((h) => !h.ok).map((h) => h.host);
+          setHintsMessage({ text: t.sttHintsSaved(result.hosts.length - failed.length, result.hosts.length, failed.join(", ")), bad: failed.length > 0 });
+        } else {
+          setHintsMessage({ text: t.sttHintsWriteFailed, bad: true });
+        }
+      } catch (error) {
+        setHintsMessage({ text: t.sttHintsSaveFailed(String(error)), bad: true });
+      } finally {
+        setHintsBusy(false);
+      }
+    };
+
     return shell(
       <>
         <FoldTitle icon="RefreshCw" title={t.syncSection} theme={theme} open={syncOpen} onToggle={() => setSyncOpen(!syncOpen)} labels={t.fold} />
@@ -456,6 +501,30 @@ export function createSettingsScreen(onSaved: () => void) {
           </View>
           <Text style={styles.muted}>{t.keysCheckHint}</Text>
           {keysMessage ? <Text style={keysMessage.bad ? styles.error : styles.text}>{keysMessage.text}</Text> : null}
+        </View>
+        {/* 받아쓰기 이름 힌트(10-10) — [이름 저장]으로 이 PC 데몬에 저장하고 서버들에도 보낸다 */}
+        <View style={styles.card}>
+          <Text style={styles.text}>{t.sttHintsTitle}</Text>
+          <Text style={styles.muted}>{t.sttHintsHint}</Text>
+          <TextInput
+            style={styles.input}
+            value={hintsDraft}
+            onChangeText={setHintsDraft}
+            placeholder={t.sttHintsPlaceholder}
+            placeholderTextColor={theme.colors.foregroundMuted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={hintsSaved !== null}
+            accessibilityLabel={t.sttHintsTitle}
+          />
+          {hintsSaved === null && !hintsMessage ? <Text style={styles.muted}>{t.sttHintsReading}</Text> : null}
+          {hintsSaved !== null && hintsDraft.replace(/\s+/g, " ").trim() !== hintsSaved ? <Text style={styles.muted}>{t.sttHintsUnsaved}</Text> : null}
+          <View style={styles.actions}>
+            <Pressable style={styles.button} onPress={() => void saveHints()} disabled={hintsBusy || hintsSaved === null} accessibilityRole="button" accessibilityLabel={t.sttHintsSave}>
+              <Text style={styles.buttonText}>{hintsBusy ? t.sttHintsSaving : t.sttHintsSave}</Text>
+            </Pressable>
+          </View>
+          {hintsMessage ? <Text style={hintsMessage.bad ? styles.error : styles.text}>{hintsMessage.text}</Text> : null}
         </View>
         </>
         ) : null}

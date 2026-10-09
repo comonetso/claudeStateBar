@@ -24,6 +24,9 @@ import { googleKeysCheck, googleKeysSave, googleKeysState } from "./shared/googl
 import { synthesizeText } from "./server/tts";
 import { translateKo } from "./shared/translate";
 import { googleStatus, ttsSynthesize } from "./shared/tts";
+import { startSttServer } from "./server/sttServer";
+import { readSttHints, saveSttHints } from "./server/sttHints";
+import { sttHintsGet, sttHintsSave } from "./shared/stt";
 import { canPlayHere, createSoundReader, LEGACY_SILENT_WAV } from "./server/sound";
 import { activityCounts, activityList, agentActivity, bgClear, bgOutput } from "./shared/activity";
 import { chimeCheck, chimeCheckV2, chimeForget, lastTurnCheck } from "./shared/chime";
@@ -205,6 +208,9 @@ export default function contribute(server: PluginServerContext) {
   server.handle(googleKeysState, async () => readGoogleKeysState());
   server.handle(googleKeysSave, async (input) => saveGoogleKeys(input));
   server.handle(googleKeysCheck, async ({ lang }) => checkGoogleKeys(lang ?? "ko"));
+  // 폰 받아쓰기 이름 힌트(10-10) — 설정 화면 칸. 저장하면 PC 데몬이 서버들에도 보낸다
+  server.handle(sttHintsGet, async () => ({ hints: readSttHints() }));
+  server.handle(sttHintsSave, async ({ hints }) => saveSttHints(hints));
   // 기기 사이 Paseo 설정 맞추기의 정본(10-07) — 화면은 이 PC 플러그인만 묻는다
   server.handle(syncWait, async ({ slot, rev }) => waitSettings(slot, rev));
   server.handle(syncPut, async ({ slot, changes, seed, screen }) => putSettings(slot, changes, seed, screen));
@@ -218,9 +224,12 @@ export default function contribute(server: PluginServerContext) {
   const stopRcSync = startRcSync();
   // 폰·웹 세션 제목의 프로젝트 이름표 — 목록이 있는 PC 데몬만 실제로 보낸다(10-07)
   const stopProjectLabels = startProjectLabels();
+  // 폰 받아쓰기의 받는 곳(10-10) — 모든 기기 데몬에서 연다(리규형님 결정 "4대 모두". 데몬 설정의 받아쓰기 칸을 돌린 기기만 실제로 쓴다)
+  const stopSttServer = startSttServer();
   return () => {
     void routerPromise?.then((value) => value.dispose(), () => {});
     stopRcSync();
     stopProjectLabels();
+    stopSttServer();
   };
 }
