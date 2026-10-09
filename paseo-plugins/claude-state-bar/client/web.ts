@@ -11,7 +11,7 @@ declare const window: {
   innerHeight: number;
   innerWidth: number;
   getSelection(): { toString(): string; rangeCount: number; getRangeAt(index: number): RangeLike; removeAllRanges(): void } | null;
-  getComputedStyle(el: unknown, pseudo?: string): { display: string; flexWrap?: string; flexDirection?: string; order?: string; content?: string; flexBasis?: string; position?: string; backgroundColor?: string };
+  getComputedStyle(el: unknown, pseudo?: string): { display: string; flexWrap?: string; flexDirection?: string; order?: string; content?: string; flexBasis?: string; position?: string; backgroundColor?: string; paddingBottom?: string };
   matchMedia?(query: string): { matches: boolean };
   /** PC 앱(Electron)이 화면에 심는 연결 고리 — 앱 화면 코드 getElectronHost 가 이것으로 PC 앱인지 가린다 */
   paseoDesktop?: unknown;
@@ -1241,16 +1241,25 @@ const RAIL_ANCHOR = '[aria-label="목록 쓰기"]';
 // 10-08 폰 실화면: 줄바꿈만 먹고 순서 바꾸기·줄 바꿀 자리는 안 먹어 등록 순서대로 넘쳐 흘렀다(원인 미확정). 폰 브라우저가 다르게
 // 다룰 수 있는 :has() 를 빼고, 조절 단추가 떠 있는 묶음에만 표식을 붙였다 뗀다(원인은 아래 감싸개 contents — 진단 로그는 10-08 저녁 뺐다)
 // 스타일 이름도 판마다 새로 — 옛 판 장치가 정리되며 같은 이름의 스타일을 지워 버렸다(10-08 폰 진단 sheet:false)
-const RAIL_SHEET = "claude-state-bar-composer-rail-v2";
+const RAIL_SHEET = "claude-state-bar-composer-rail-v4";
 const RAIL_CSS =
   "@media (max-width: 719px){" +
   "[data-csb-rail]{flex-wrap:wrap}" +
   "[data-csb-rail]::after{content:'';flex-basis:100%;height:0;order:9}" +
   // 알약 감싸개가 박스 없는 감싸개라 감싸개의 order 가 무시됐다(10-08 폰 진단: 계산값 10 인데 순서 그대로) — 안쪽 단추에도 건다
-  "[data-csb-rail] [data-csb-ctl]{order:10}}";
+  "[data-csb-rail] [data-csb-ctl]{order:10}" +
+  // 둘째 줄로 내려간 읽기 조절 단추를 가운데로 — 첫 단추 왼쪽·끝 단추 오른쪽 여백을 나눠 갖게(10-09 리규형님 "TTS 컨트롤러를 가운데 정렬")
+  "[data-csb-rail] [data-csb-ctl-first]{margin-left:auto !important}" +
+  "[data-csb-rail] [data-csb-ctl-last]{margin-right:auto !important}}" +
+  // 단추 안 아이콘·글을 가운데로(10-09 리규형님 "아이콘이 왼쪽으로 쏠렸어" — 폰에선 글 없이 아이콘만 남아 49px 단추 왼쪽에 붙었다)
+  "[data-csb-track] [role=\"button\"]{justify-content:center !important}" +
+  // 아이콘만 보이는 우리 단추(목록·생각 상자 접기)는 글자 자리에 폭 없는 공백(U+200B)을 둔다(Paseo 가 빈 글자를 거절) — 그 칸과
+  // 아이콘 사이 간격(8px) 때문에 아이콘이 4px 왼쪽으로 밀렸다(10-09 실측). 그 칸만 숨긴다
+  "[data-csb-track] [data-csb-empty]{display:none !important}";
 type RailEl = Omit<HeaderEl, "style" | "parentElement"> & {
   parentElement: RailEl | null;
-  style: { display: string; backgroundColor: string };
+  style: { display: string; backgroundColor: string; boxShadow: string; translate: string };
+  getBoundingClientRect(): { top: number; bottom: number; left: number; right: number };
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
@@ -1260,7 +1269,7 @@ type RailEl = Omit<HeaderEl, "style" | "parentElement"> & {
 
 /** 이 장치 코드를 고치면 올린다 — 플러그인을 다시 읽어도 같은 페이지에는 처음 시작한 옛 판 장치가 남아 새 코드가 안 돌았다
  *  (10-08 폰 진단). 더 높은 판이 오면 옛 판 장치를 멈추고 넘겨받는다. 판이 섞인 호스트들은 높은 판 하나를 같이 쓴다 */
-const RAIL_VERSION = 6; // 5: 10-08 저녁 원인 확정 뒤 진단 로그(report)를 뺐다 · 6: 10-09 단추 줄 바탕 칠하기
+const RAIL_VERSION = 8; // 5: 10-08 저녁 원인 확정 뒤 진단 로그(report)를 뺐다 · 6: 10-09 단추 줄 바탕 칠하기 · 7: 10-09 폰 — 맨 아래로 단추 띄우기·띠 위 여백·읽기 조절 가운데 · 8: 10-09 아이콘만 단추의 빈 글자 칸 숨기기
 
 // 입력창 위 단추 줄(컨텍스트·목록·접기·읽기 조절)을 대화 화면 바탕색 띠로 칠한다(10-09 리규형님 "아이콘 뒷배경이 투명이라 거슬려 — 글자가
 // 안 보여야 해, 헷갈리고 잘 안 보여" · "웹도 동일한 경험으로, 폰 분기 하지 말고"). 단추는 Paseo 가 불투명하게 칠하지만(composerPillStyles
@@ -1294,6 +1303,7 @@ export function startComposerRail(): () => void {
       // 다른 장치가 지웠으면 다시 넣는다
       if (!document.getElementById(RAIL_SHEET)) setStyleSheet(RAIL_SHEET, RAIL_CSS);
       const rails = new Set<RailEl>();
+      const ctlByRail = new Map<RailEl, RailEl[]>();
       const all = document.querySelectorAll("[aria-label]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < all.length; i++) {
         const el = all[i];
@@ -1307,6 +1317,9 @@ export function startComposerRail(): () => void {
             if (parent.getAttribute("data-csb-rail") === null) parent.setAttribute("data-csb-rail", "");
             if (item.getAttribute("data-csb-ctl") === null) item.setAttribute("data-csb-ctl", "");
             if (el.getAttribute("data-csb-ctl") === null) el.setAttribute("data-csb-ctl", "");
+            const list = ctlByRail.get(parent) ?? [];
+            list.push(el);
+            ctlByRail.set(parent, list);
             break;
           }
           item = parent;
@@ -1315,6 +1328,20 @@ export function startComposerRail(): () => void {
       // 조절 단추가 사라진 묶음은 표식을 뗀다 — 남으면 좁은 화면에서 빈 둘째 줄(줄 간격)이 생긴다
       const marked = document.querySelectorAll("[data-csb-rail]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < marked.length; i++) if (!rails.has(marked[i])) marked[i].removeAttribute("data-csb-rail");
+      // 묶음마다 조절 단추 첫·끝 표식(문서 순서 = 화면 순서) — 가운데 정렬용
+      const firsts = new Set<RailEl>();
+      const lasts = new Set<RailEl>();
+      for (const list of ctlByRail.values()) {
+        firsts.add(list[0]);
+        lasts.add(list[list.length - 1]);
+      }
+      const edgeMarks = document.querySelectorAll("[data-csb-ctl-first],[data-csb-ctl-last]") as unknown as ArrayLike<RailEl>;
+      for (let i = 0; i < edgeMarks.length; i++) {
+        if (!firsts.has(edgeMarks[i])) edgeMarks[i].removeAttribute("data-csb-ctl-first");
+        if (!lasts.has(edgeMarks[i])) edgeMarks[i].removeAttribute("data-csb-ctl-last");
+      }
+      for (const el of firsts) if (el.getAttribute("data-csb-ctl-first") === null) el.setAttribute("data-csb-ctl-first", "");
+      for (const el of lasts) if (el.getAttribute("data-csb-ctl-last") === null) el.setAttribute("data-csb-ctl-last", "");
       // 단추 줄 띠 칠하기 — 칠한 색이 같으면 다시 쓰지 않는다(감시가 제 변경으로 다시 돌지 않게)
       const tracks = new Set<RailEl>();
       const anchors = document.querySelectorAll(TRACK_ANCHORS) as unknown as ArrayLike<RailEl>;
@@ -1326,16 +1353,56 @@ export function startComposerRail(): () => void {
           }
         }
       }
+      const extraTop = new Map<RailEl, number>();
       for (const t of tracks) {
         if (t.getAttribute("data-csb-track") === null) t.setAttribute("data-csb-track", "");
         const bg = solidBackgroundAbove(t);
         if (bg && t.style.backgroundColor !== bg) t.style.backgroundColor = bg;
+        // 띠 위 여백을 아래 여백만큼 — 배치는 그대로 두고 같은 색 그림자로 띠 위쪽만 넓힌다(10-09 리규형님 "아이콘 패널 상단 패딩을
+        // 하단과 동일하게, 상단으로 쏠렸어" — 실측 폰 위 0px·아래 8px). 그림자는 자리를 차지하지 않아 단추 줄이 움직이지 않는다
+        // 아이콘만 단추의 폭 없는 공백 글자 칸 표식(위 스타일이 숨긴다)
+        const texts = t.querySelectorAll('[role="button"] *') as unknown as ArrayLike<RailEl & { querySelector(selector: string): unknown }>;
+        for (let k = 0; k < texts.length; k++) {
+          const el = texts[k];
+          if (el.textContent === "\u200B" && !el.querySelector("svg") && el.getAttribute("data-csb-empty") === null) el.setAttribute("data-csb-empty", "");
+        }
+        const extra = Math.round(parseFloat(window.getComputedStyle(t).paddingBottom ?? "0") || 0);
+        extraTop.set(t, extra);
+        const shadow = bg && extra > 0 ? `0 -${extra}px 0 0 ${bg}` : "";
+        if (t.getAttribute("data-csb-shadow") !== shadow) {
+          t.style.boxShadow = shadow;
+          t.setAttribute("data-csb-shadow", shadow);
+        }
+      }
+      // Paseo "맨 아래로" 둥근 단추가 띠에 겹치면 겹친 만큼 위로 띄운다(10-09 리규형님 "모바일에서 하단으로 내리기가 짤리네").
+      // 단추와 띠는 대화 목록 전체 상자에서 갈라져 단추만 띠 위로 올릴 수 없다(대화 글까지 올라가 다시 비친다 — 실측). 위치는 transform 과
+      // 따로 노는 translate 로만 옮겨 Paseo 의 나타나기 움직임과 섞이지 않게
+      const scrollButtons = document.querySelectorAll('[data-testid="scroll-to-bottom-button"]') as unknown as ArrayLike<RailEl>;
+      for (let i = 0; i < scrollButtons.length; i++) {
+        const b = scrollButtons[i];
+        const prev = Number(b.getAttribute("data-csb-lift") ?? 0) || 0;
+        const r = b.getBoundingClientRect();
+        const bottom = r.bottom + prev;
+        let lift = 0;
+        for (const t of tracks) {
+          const tr = t.getBoundingClientRect();
+          if (r.right <= tr.left || r.left >= tr.right || r.top + prev >= tr.bottom) continue;
+          const over = Math.ceil(bottom - (tr.top - (extraTop.get(t) ?? 0) - 4));
+          if (over > lift) lift = over;
+        }
+        if (lift !== prev) {
+          b.style.translate = lift > 0 ? `0 -${lift}px` : "";
+          if (lift > 0) b.setAttribute("data-csb-lift", String(lift));
+          else b.removeAttribute("data-csb-lift");
+        }
       }
       const painted = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < painted.length; i++) {
         if (tracks.has(painted[i])) continue;
         painted[i].removeAttribute("data-csb-track");
+        painted[i].removeAttribute("data-csb-shadow");
         painted[i].style.backgroundColor = "";
+        painted[i].style.boxShadow = "";
       }
     };
     const observer = new MutationObserver(() => {
@@ -1345,13 +1412,32 @@ export function startComposerRail(): () => void {
     });
     observer.observe(document.body, { childList: true, subtree: true });
     apply();
+    // 입력창이 여러 줄로 커지면 글 조각이 안 바뀌어도 띠가 올라간다 — 1초마다 한 번 더 맞춘다(맨 아래로 단추 위치)
+    const tick = setInterval(() => {
+      if (queued) return;
+      queued = true;
+      void Promise.resolve().then(apply);
+    }, 1000);
     hub.stop = () => {
       observer.disconnect();
+      clearInterval(tick);
       setStyleSheet(RAIL_SHEET, null);
       const painted = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < painted.length; i++) {
         painted[i].removeAttribute("data-csb-track");
+        painted[i].removeAttribute("data-csb-shadow");
         painted[i].style.backgroundColor = "";
+        painted[i].style.boxShadow = "";
+      }
+      const lifted = document.querySelectorAll("[data-csb-lift]") as unknown as ArrayLike<RailEl>;
+      for (let i = 0; i < lifted.length; i++) {
+        lifted[i].removeAttribute("data-csb-lift");
+        lifted[i].style.translate = "";
+      }
+      const edges = document.querySelectorAll("[data-csb-ctl-first],[data-csb-ctl-last]") as unknown as ArrayLike<RailEl>;
+      for (let i = 0; i < edges.length; i++) {
+        edges[i].removeAttribute("data-csb-ctl-first");
+        edges[i].removeAttribute("data-csb-ctl-last");
       }
     };
   }

@@ -204,14 +204,21 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
       ) : null}
     </>
   );
+  // 읽기 조절은 입력창 위 읽기 조절 알약(selectionRead.tsx)과 같은 아이콘으로(10-09 리규형님 "생각 상자 컨트롤러도 생각 밖 TTS 컨트롤러처럼
+  // 아이콘으로, 통일되게"). 이름(접근성)도 같은 글 — 이전 문단·일시정지/이어서 읽기·읽기 중지·다음 문단
+  const iconButton = (icon: string, label: string, onPress: () => void) => (
+    <Pressable key={label} accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={[buttonStyle(false), { alignItems: "center", justifyContent: "center" }]}>
+      <Icon name={icon} size={px - 1} color={c.foregroundMuted} />
+    </Pressable>
+  );
   // 읽는 동안 늘 보이고 중지·다 읽음이면 사라진다 — 설정 아이콘 없이(리규형님 10-06). 상자 아래와 위 오른쪽(10-07) 두 곳
   const readControls = (top: boolean) =>
     web && playback.active ? (
       <View style={{ alignSelf: "flex-end", maxWidth: "100%", flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: 6, ...(top ? { marginBottom: 4 } : { marginTop: 4 }), padding: 6, borderRadius: 6, backgroundColor: c.surface1 }}>
-        {button("이전", false, () => controller.previous())}
-        {button(playback.paused ? "재생" : "일시정지", false, () => playback.paused ? controller.resume() : controller.pause())}
-        {button("중지", false, () => controller.stop())}
-        {button("다음", false, () => controller.next())}
+        {iconButton("SkipBack", "이전 문단", () => controller.previous())}
+        {iconButton(playback.paused ? "Play" : "Pause", playback.paused ? "이어서 읽기" : "일시정지", () => playback.paused ? controller.resume() : controller.pause())}
+        {iconButton("Square", "읽기 중지", () => controller.stop())}
+        {iconButton("SkipForward", "다음 문단", () => controller.next())}
         <SpeedSlider colors={c} compact={layout.compact} px={px} />
       </View>
     ) : null;
