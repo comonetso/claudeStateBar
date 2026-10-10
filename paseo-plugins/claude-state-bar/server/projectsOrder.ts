@@ -58,6 +58,22 @@ export function clearProjectOrders(): Promise<{ groups: Orders }> {
   return done;
 }
 
+/** 순서 파일을 통째로 고친다 — 프로젝트 관리 화면(10-10)이 카테고리 이름을 바꾸거나 지울 때, 프로젝트를 다른 묶음으로 옮길 때 */
+export function changeProjectOrders(change: (groups: Orders) => void): Promise<{ groups: Orders }> {
+  const run = async () => {
+    const groups = await readOrders();
+    change(groups);
+    await mkdir(dirname(FILE), { recursive: true });
+    const tmp = `${FILE}.${process.pid}.tmp`;
+    await writeFile(tmp, JSON.stringify({ groups }), "utf8");
+    await rename(tmp, FILE);
+    return { groups };
+  };
+  const done = writing.then(run, run);
+  writing = done.catch(() => {});
+  return done;
+}
+
 /** 한 묶음의 순서를 통째로 바꾼다(겹친 키는 처음 것만). 다른 묶음은 그대로 */
 export function setProjectOrder(group: string, keys: string[]): Promise<{ groups: Orders }> {
   const run = async () => {

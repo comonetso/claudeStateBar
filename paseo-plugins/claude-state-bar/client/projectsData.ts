@@ -269,7 +269,7 @@ export function serverOf(e: ProjectEntry, index: HostIndex): string | undefined 
   return (index.shared.has(key) ? undefined : index.byPath.get(key)) ?? index.byAlias.get(e.host);
 }
 
-// 살아 있는 세션 — 프로젝트 폴더(또는 그 아래)에서 보관 안 된 Paseo 대화. 열린 대화는 Claude 가 늘 떠 있다(rcSync, 10-06 결정)
+// 살아 있는 세션 — 프로젝트 폴더(또는 그 아래)에서 보관 안 된 Paseo 대화(Claude 가 지금 떠 있는지는 보지 않는다)
 /** latest: 그 폴더(정확히 같은 경로)에서 가장 최근에 움직인 대화 — 누르면 데몬에 다시 묻지 않고 바로 연다(10-06 리규형님 결정) */
 /** bucket: 그 폴더 대화들 중 가장 급한 상태(Paseo 워크스페이스 목록과 같은 표시, statusIndicator) */
 /** asking: 질문을 올려 답을 기다리는 대화 수(10-09) */

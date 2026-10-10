@@ -44,7 +44,12 @@ const resumeArg = argv.find((a) => a.startsWith("--resume"));
 const ephemeral = argv.includes("--no-session-persistence");
 log(`start real=${real} args=${argv.length}${resumeArg ? ` ${resumeArg.slice(0, 50)}` : ""}${ephemeral ? " ephemeral" : ""}`);
 
-// 웹·폰 원격과 Paseo 보관 상태 맞추기(리규형님 10-06 결정) — 플러그인 claude-state-bar 의 rcSync 가 읽는 상태 파일.
+// 10-10 리규형님 결정: Paseo 대화엔 리모트 컨트롤을 켜지 않는다(Paseo 로 폰·웹에서 다 보게 되어 필요 없어짐).
+// 이 중계는 아래 화면 중복 막기(fixAssistant)와 일회성 실행 구분 때문에 남겨 둔다. 다시 켜려면 true —
+// 그때는 함께 걷은 보관 동기화(플러그인 rcSync, plugins-next 기록에 있음)도 되살려야 상태 파일이 쓸모 있다.
+const REMOTE_CONTROL = false;
+
+// 웹·폰 원격과 Paseo 보관 상태 맞추기(리규형님 10-06 결정) — 플러그인 claude-state-bar 의 rcSync 가 읽던 상태 파일(10-10 rcSync 와 함께 끔).
 // ~/.paseo/claude-rc-state/<Claude 대화 번호>.json = { sessionId, relayPid, startedAt, cse?, remoteArchivedAt?, exitedAt? }
 // 대화 번호는 이어 띄울 때 --resume=<번호>, 새 대화면 Claude 가 내보내는 첫 session_id 에서 얻는다.
 const STATE_DIR = join(homedir(), ".paseo", "claude-rc-state");
@@ -56,7 +61,7 @@ const argValue = (name) => {
 let sessionId = argValue("--resume") ?? argValue("--session-id");
 let state = null;
 const saveState = (patch) => {
-  if (ephemeral || !sessionId) return;
+  if (!REMOTE_CONTROL || ephemeral || !sessionId) return;
   const file = join(STATE_DIR, `${sessionId}.json`);
   if (!state) {
     // 같은 대화를 다시 띄우면 원격 번호만 이어받는다(Remote Control 이 켜지면 어차피 다시 적힌다)
@@ -153,7 +158,10 @@ const handleLine = (line) => {
   }
   if (!sent && initId && line.includes('"control_response"') && line.includes(`"${initId}"`)) {
     // 리규형님 설정(remoteControlAtStartup)·조직 정책을 Claude 가 판정한 값을 그대로 따른다
-    if (ephemeral) {
+    if (!REMOTE_CONTROL) {
+      sent = true;
+      log("remote control off (10-10 decision) — not enabling");
+    } else if (ephemeral) {
       sent = true;
       log("ephemeral run — not enabling");
     } else if (/"remote_control_auto_enable":\s*true/.test(line)) setImmediate(() => enable("auto_enable"));

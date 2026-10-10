@@ -1,5 +1,6 @@
 import type { TargetLang } from "../shared/translate";
 import { readGoogleKeys } from "./googleKeys";
+import { makeSpokenText } from "./spokenText";
 
 const SYNTHESIZE_URL = "https://texttospeech.googleapis.com/v1/text:synthesize";
 // 언어별 음성(10-08 — 음성 언어 = 번역 대상 언어 = Paseo 언어 설정). 영어는 한국어와 같은 Chirp 3 HD 의 같은 이름 음성.
@@ -9,43 +10,12 @@ const VOICES: Record<TargetLang, { languageCode: string; name: string }> = {
   ko: { languageCode: "ko-KR", name: "ko-KR-Chirp3-HD-Zephyr" },
   en: { languageCode: "en-US", name: "en-US-Chirp3-HD-Zephyr" },
 };
-// 원본 readaloud_text.py:482-485 SPOKEN_SIGNS 의 ko·en 과 같은 이름(백슬래시는 원본에 없어 추가)
-const SPOKEN_SIGNS: Record<TargetLang, Record<string, string>> = {
-  ko: { ".": " 쩜 ", "_": " 언더바 ", "/": " 슬래시 ", "\\": " 백슬래시 ", "-": " 대시 " },
-  en: { ".": " dot ", "_": " underscore ", "/": " slash ", "\\": " backslash ", "-": " dash " },
-};
 const INPUT_MAX_BYTES = 5000;
 const INPUT_CHUNK_BYTES = 2000; // 4981바이트 실호출이 30초를 넘겨 더 작은 문장 묶음으로 요청한다(리규형님 확인 10-06)
 const REQUEST_TIMEOUT_MS = 90_000; // 여러 조각·markup 평문 재시도를 포함한 문단 전체 제한, 5000바이트 실측 51초(리규형님 확인 10-06)
-const REPEATED_CHARS_MAX = 3;
 
 type TtsResult = { ok: true; base64: string; mimeType: string } | { ok: false; error: string };
 type AudioResult = { audio: Buffer } | { error: string; status?: number };
-
-/** 화면 글은 바꾸지 않는다. 음성에만 필요한 마크다운·코드 이름 정리를 적용한다. */
-function makeSpokenText(text: string, lang: TargetLang): string {
-  let spoken = text
-    .replace(/^\s*(`{3,}|~{3,})[^\n]*$/gm, "")
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/https?:\/\/[^\s<>()]+/gi, "HTTP URL.")
-    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s*|[-+*]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)/gm, "")
-    .replace(/`+/g, "")
-    .replace(/\*\*|__|~~/g, "")
-    .replace(/(^|[\s(])[*_]([^*_\n]+)[*_](?=$|[\s).,!?:;])/g, "$1$2")
-    .replace(/^\s*[-*_]{3,}\s*$/gm, "")
-    .replace(/[|]/g, " ")
-    .replace(/→|⇒|->|=>/g, ".\u2003")
-    .replace(/([^\d\s])\1{3,}/gu, (_, char: string) => char.repeat(REPEATED_CHARS_MAX));
-  const signs = SPOKEN_SIGNS[lang];
-  spoken = spoken.replace(/[A-Za-z][A-Za-z0-9_]*(?:[./\\-][A-Za-z0-9_]+)*/g, (token) => {
-    const named = token.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z])([A-Z][a-z])/g, "$1 $2")
-      .replace(/[._/\\-]/g, (sign) => signs[sign] ?? sign);
-    // 대문자 두 글자 띄어 읽기는 한국어 음성만(원본 readaloud_text.py:571 — 영어 음성은 그대로 둔다)
-    return lang === "ko" ? named.replace(/\b[A-Z]{2}\b/g, (letters) => letters.split("").join(" ")) : named;
-  });
-  return spoken.replace(/[ \t\u00a0]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-}
 
 // readaloud_text.py:870–880 / tts-engines.js:542–550의 한국어 Chirp 3 HD 쉼 보정.
 function pausesMarkup(text: string, lang: TargetLang): string | null {

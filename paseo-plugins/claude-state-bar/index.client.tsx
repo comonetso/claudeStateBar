@@ -35,6 +35,7 @@ import { soundOriginObserve, soundOriginPrepare } from "./shared/soundEvents";
 import { clientLog } from "./shared/log";
 import { DEFAULT_SETTINGS, settingsSchema, soundSettings, type SoundSettings } from "./shared/settings";
 import { hostInfo, soundDataV2, type SoundKind } from "./shared/sound";
+import { setTeamMember } from "./client/teamMode";
 
 const TAG = "[claude-state-bar]";
 
@@ -113,7 +114,9 @@ export default function contribute(client: PluginClientContext) {
       const info = await client.rpc(hostInfo, {});
       if (disposed) return;
       if (info.serverId) cleanups.push(registerSoundOrigin(info.serverId, client));
-      if (!info.canPlay || info.platform !== "win32" || !info.serverId) {
+      // 직원용 Paseo(10-11)는 그 화면의 유일한 호스트라 PC 처럼 설정·사용량·프로젝트 목록을 붙인다(관리 탭은 projectsScreen 이 숨김)
+      setTeamMember(info.team === true);
+      if (!info.serverId || (info.team !== true && (!info.canPlay || info.platform !== "win32"))) {
         log(`host ${info.platform}: sounds come from the providing host`);
         return;
       }
@@ -169,7 +172,7 @@ export default function contribute(client: PluginClientContext) {
         // 왼쪽 목록 칸 맨 아래 사용량 — 호스트가 여럿이어도 한 줄만 보이게 소리 담당 호스트(이 PC)만 붙인다
         client.addSidebarFooterItem({ id: "usage", title: "Claude·Codex 사용량", Component: UsageFooter }),
         // 프로젝트 매니저 묶음 화면 — 목록 파일이 있는 이 PC 데몬이 읽으므로 역시 이 PC 플러그인만 붙인다
-        client.addScreen({ id: PROJECTS_SCREEN_ID, title: "프로젝트", Component: ProjectsScreen }),
+        client.addScreen({ id: PROJECTS_SCREEN_ID, title: "프로젝트 관리", Component: ProjectsScreen }),
         // 왼쪽 목록 칸 맨 위 프로젝트 목록 + 워크스페이스 목록 가리기 + Ctrl+Alt+Shift+B 전환(10-06). 호스트마다 플러그인이 따로
         // 올라오므로 단축키도 한 곳(이 PC)에서만 단다 — 여러 곳에서 달면 한 번 누를 때 여러 번 넘어가 제자리가 된다
         client.addSidebarHeaderItem({ id: "projects", title: "프로젝트", Component: ProjectsSidebarItem }),

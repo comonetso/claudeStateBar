@@ -392,6 +392,12 @@ export class ThinkingController {
     return { active: !!run, index: run?.index ?? -1, paused: run?.paused ?? false, status: run?.status ?? "", strict: run?.strict ?? false };
   }
 
+  /** 지금 읽는 것 — 입력창 위 읽기 컨트롤러 하나가 무엇을 읽든(턴·말·생각 상자·꺼낸 말) 이것을 본다(10-11 리규형님 "컨트롤러를 여기로 통일") */
+  current(): { box: ThinkingBoxState; paused: boolean; status: string } | null {
+    const run = this.run;
+    return run ? { box: run.box, paused: run.paused, status: run.status } : null;
+  }
+
   /** 읽기 시작. at 이 있으면 그 문단(가능하면 그 글자)부터 — 없으면 처음 문단부터(10-08 생각 상자 선택 읽기) */
   start(box: ThinkingBoxState, strict: boolean, at?: StartAt): void {
     if (this.run) this.stop();

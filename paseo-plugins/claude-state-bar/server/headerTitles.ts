@@ -5,7 +5,7 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { LABELS_FILE } from "./projectLabels";
-import { findCli } from "./rcSync";
+import { findCli } from "./paseoCli";
 
 // 위쪽 제목 "카테고리 - 이름"(shared/headerTitles) — 기기마다 돈다. 이 기기 이름표(~/.claude/project-labels.json, PC 가 보낸 것)의
 // 경로별 제목을 화면에 주고, 화면이 바꾸자고 하면 원래 이름을 기록한 뒤 프로젝트 이름을 이 기기의 paseo 명령으로 바꾼다

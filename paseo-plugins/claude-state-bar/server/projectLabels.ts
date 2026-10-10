@@ -55,7 +55,7 @@ export function labelsText(labels: ProjectLabel[]): string {
 /** SSH 별칭으로 쓸 수 있는 이름만 — 목록 글자가 ssh 옵션으로 읽히지 않게 */
 export const SAFE_HOST = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
-function sshExe(): string {
+export function sshExe(): string {
   if (process.platform === "win32") {
     const builtIn = join(process.env.SystemRoot || "C:\\Windows", "System32", "OpenSSH", "ssh.exe");
     if (existsSync(builtIn)) return builtIn;

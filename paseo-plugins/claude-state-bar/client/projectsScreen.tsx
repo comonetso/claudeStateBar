@@ -1,10 +1,23 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useEffect, useRef, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import type { ProjectEntry } from "../shared/projects";
+import { scaled, useFontScale } from "./fontScale";
 import { openProjectOn, openProjectsFile, serverOf, useHostIndex, useLiveSessions, useProjectsData } from "./projectsData";
 import { ProjectsList } from "./projectsList";
-import { goBack } from "./web";
+import { ProjectsManage } from "./projectsManage";
+import { TeamManage } from "./teamManage";
+import { setHoverTitle, setNoTranslate } from "./web";
+import { isTeamMember } from "./teamMode";
+
+// 화면 안 탭(10-11 리규형님: 목록 → 관리로 가면 돌아올 길이 없었다 — 세 칸을 탭으로 토글).
+// "목록 파일 직접 편집"은 프로젝트 목록 탭에서만 보인다
+type Tab = "list" | "manage" | "team";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "list", label: "프로젝트 목록" },
+  { id: "manage", label: "프로젝트 관리" },
+  { id: "team", label: "팀원 관리" },
+];
 
 // 프로젝트 화면 — VS Code 프로젝트 매니저 묶음 화면(리규형님 10-05 결정: Paseo 기본 목록 등록 + 이 묶음 화면 둘 다).
 // 10-06부터 목록은 왼쪽 목록 칸 맨 위에도 있다(projectsSidebar). 칸에는 대화로 가는 기능이 없어서, 칸에서 누르면 이 화면이
@@ -19,6 +32,12 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const handled = useRef<string | null>(null);
+  // 탭(10-11) — 왼쪽 칸의 프로젝트 관리 단추는 params.manage 로 "프로젝트 관리" 탭을 연다
+  const [tab, setTab] = useState<Tab>("list");
+  useEffect(() => {
+    if (params?.manage && !isTeamMember()) setTab("manage");
+  }, [params?.manage]);
+  const scale = useFontScale();
 
   const openOn = async (serverId: string, path: string) => {
     if (!navigation) {
@@ -78,20 +97,69 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
       </View>
     );
   }
+  const c = theme.colors;
+  const fs = (px: number) => scaled(px + 3, scale);
+  const editFile = () => {
+    void openProjectsFile(index.byAlias.get("PC"), data?.source ?? null).then((problem) => problem && setNotice(problem));
+  };
+  const tabBar = (
+    <View ref={setNoTranslate} style={{ flexDirection: "row", alignItems: "flex-end", flexWrap: "wrap", gap: 2, marginBottom: 14, borderBottomWidth: 1, borderColor: c.border }}>
+      {/* 직원 화면(10-11 리규형님)은 프로젝트 목록 탭만 — 프로젝트 관리·팀원 관리는 관리자 것 */}
+      {(isTeamMember() ? TABS.filter((t) => t.id === "list") : TABS).map((t) => {
+        const on = tab === t.id;
+        return (
+          <Pressable
+            key={t.id}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: on }}
+            onPress={() => setTab(t.id)}
+            style={({ hovered }: { hovered?: boolean; pressed: boolean }) => ({
+              paddingHorizontal: 14,
+              paddingVertical: 8,
+              marginBottom: -1,
+              borderBottomWidth: 2,
+              borderColor: on ? c.accent : "transparent",
+              borderTopLeftRadius: 6,
+              borderTopRightRadius: 6,
+              backgroundColor: hovered && !on ? c.surface2 : "transparent",
+            })}
+          >
+            <Text style={{ fontSize: fs(13), fontWeight: on ? "600" : "400", color: on ? c.foreground : c.foregroundMuted }}>{t.label}</Text>
+          </Pressable>
+        );
+      })}
+      <View style={{ flex: 1 }} />
+      {tab === "list" ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="목록 파일 직접 편집"
+          ref={(node: unknown) => setHoverTitle(node, data?.source ? `목록 파일 편집: ${data.source}` : "목록 파일 편집")}
+          onPress={editFile}
+          style={({ hovered }: { hovered?: boolean; pressed: boolean }) => ({
+            marginBottom: 6,
+            paddingHorizontal: 8,
+            paddingVertical: 4,
+            borderRadius: 6,
+            borderWidth: 1,
+            borderColor: c.border,
+            backgroundColor: hovered ? c.surface2 : "transparent",
+          })}
+        >
+          <Text style={{ fontSize: fs(11), color: c.foreground }}>목록 파일 직접 편집</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: theme.colors.surface0 }} contentContainerStyle={{ padding: pad }}>
-      <ProjectsList
-        theme={theme}
-        variant="screen"
-        data={data}
-        index={index}
-        live={live}
-        busy={busy}
-        notice={notice}
-        onOpen={open}
-        onEditList={openProjectsFile}
-        onReload={() => void load()}
-      />
+    <ScrollView style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ padding: pad }}>
+      {tabBar}
+      {tab === "list" ? (
+        <ProjectsList theme={theme} variant="screen" data={data} index={index} live={live} busy={busy} notice={notice} onOpen={open} onReload={() => void load()} />
+      ) : tab === "manage" ? (
+        <ProjectsManage theme={theme} data={data} onChanged={() => void load()} />
+      ) : (
+        <TeamManage theme={theme} data={data} index={index} />
+      )}
     </ScrollView>
   );
 }

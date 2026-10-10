@@ -73,7 +73,7 @@ function ensureProjectsFile(): Promise<void> {
   return preparing;
 }
 
-function hostOf(rootPath: string): string {
+export function hostOf(rootPath: string): string {
   if (!rootPath.startsWith("vscode-remote://")) return "PC";
   const authority = rootPath.slice("vscode-remote://".length).split("/")[0].replace(/^ssh-remote\+/, "");
   try {
@@ -85,7 +85,7 @@ function hostOf(rootPath: string): string {
   return decodeURIComponent(authority);
 }
 
-function pathOf(rootPath: string): string {
+export function pathOf(rootPath: string): string {
   if (!rootPath.startsWith("vscode-remote://")) return rootPath;
   const rest = rootPath.slice("vscode-remote://".length);
   const slash = rest.indexOf("/");

@@ -6,7 +6,7 @@ import { Platform, Pressable, ScrollView, Text, useWindowDimensions, View } from
 import type { ProjectEntry } from "../shared/projects";
 import { scaled, useFontScale } from "./fontScale";
 import { healthCounts, useHealth } from "./health";
-import { liveOf, openProjectsFile, serverOf, useHostIndex, useLiveSessions, useProjectsData } from "./projectsData";
+import { liveOf, serverOf, useHostIndex, useLiveSessions, useProjectsData } from "./projectsData";
 import { ProjectsList, TOOLBAR_ID } from "./projectsList";
 import { setProjectsMode, useProjectsMode } from "./projectsMode";
 import { PROJECTS_SCREEN_ID } from "./projectsScreen";
@@ -147,8 +147,8 @@ function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme
     openScreen({ screenId: PROJECTS_SCREEN_ID, params: { openPath: e.path, serverId, n: String(Date.now()), ...(latest ? { agentId: latest.agentId } : {}) } });
   };
 
-  // 목록 JSON은 중간 플러그인 화면 없이 Paseo 편집기 탭으로 바로 간다.
-  const editList = openProjectsFile;
+  // 프로젝트 관리(10-10) — 프로젝트 화면을 관리 모드로 연다(manage: 같은 단추를 다시 눌러도 새 요청으로 알아보게)
+  const manage = () => openScreen({ screenId: PROJECTS_SCREEN_ID, params: { manage: String(Date.now()) } });
 
   const toWorkspaces = (
     <Pressable
@@ -179,7 +179,7 @@ function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme
           busy={null}
           notice={notice}
           onOpen={open}
-          onEditList={editList}
+          onManage={manage}
           onReload={() => void load()}
           toolbarStart={toWorkspaces}
           toolbarInset={closeInset}

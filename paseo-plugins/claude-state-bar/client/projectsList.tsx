@@ -2,7 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMemo, useState, type ReactNode } from "react";
 import { Platform, Pressable, Text, TextInput, View } from "react-native";
-import { ACTIVE_ORDER_KEY, CATEGORY_ORDER_KEY, type ProjectEntry } from "../shared/projects";
+import { ACTIVE_ORDER_KEY, CATEGORY_ORDER_KEY, UNTAGGED_GROUP, type ProjectEntry } from "../shared/projects";
 import { fontStep, scaled, useFontScale } from "./fontScale";
 import {
   currentProjectKey,
@@ -28,7 +28,6 @@ const PINNED_GROUP = "고정";
 export const TOOLBAR_ID = "claude-state-bar-projects-toolbar";
 const ACTIVE_GROUP = "활성";
 const DISABLED_GROUP = "꺼 둠";
-const UNTAGGED_GROUP = "카테고리 없음";
 // 카테고리 묶음 머리끼리 끌어 옮길 때 쓰는 끌기 묶음 이름(프로젝트 줄 묶음 이름과 겹치지 않게)
 const CATEGORY_DRAG = ":category-headers";
 
@@ -44,17 +43,15 @@ export function ProjectsList(props: {
   busy: string | null;
   notice: string | null;
   onOpen: (e: ProjectEntry) => void;
-  /** 목록 파일 열기(10-08) — 공식 이동을 가진 쪽에 맡긴다. 이유 글을 돌려주면 목록 위에 띄운다 */
-  onEditList: (serverId: string | undefined, source: string | null) => Promise<string | null>;
+  /** 프로젝트 관리 화면 열기(10-10 — 예전 "목록 파일 편집" 단추 자리). 없으면 단추를 숨긴다 — 큰 화면은 위 탭으로 오간다(10-11) */
+  onManage?: () => void;
   onReload: () => void;
   /** 칸 위쪽 도구 줄 왼쪽에 끼울 것(워크스페이스 목록으로 넘기는 단추) */
   toolbarStart?: ReactNode;
   /** 왼쪽 칸 머리줄 오른쪽에 비울 폭 — 폰 웹에서 Paseo 닫기 단추가 덮는 만큼(projectsSidebar 가 잰다) */
   toolbarInset?: number;
 }) {
-  const { theme, variant, data, index, live, busy, notice, onOpen, onEditList, onReload, toolbarStart, toolbarInset } = props;
-  // 목록 파일 편집 = Paseo 편집기 탭(10-07 — 별도 편집 화면을 없앴다). 못 열면 이유를 목록 위에 보인다
-  const [editNotice, setEditNotice] = useState<string | null>(null);
+  const { theme, variant, data, index, live, busy, notice, onOpen, onManage, onReload, toolbarStart, toolbarInset } = props;
   const [filter, setFilter] = useState("");
   const [, bump] = useState(0);
   const scale = useFontScale();
@@ -155,20 +152,18 @@ export function ProjectsList(props: {
       style={{ flex: 1, minWidth: 0, color: c.foreground, fontSize: fs(13), paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1 }}
     />
   );
-  const editList = (
+  // 프로젝트 관리(10-10 리규형님: "사용자들이 json 을 건드는 건 좀 그래서") — 이름·카테고리·추가·삭제·켜고 끄기를 화면에서
+  const editList = onManage ? (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="목록 파일 편집"
-      ref={(node: unknown) => setHoverTitle(node, data?.source ? `목록 파일 편집: ${data.source}` : "목록 파일 편집")}
-      onPress={() => {
-        setEditNotice(null);
-        void onEditList(index.byAlias.get("PC"), data?.source ?? null).then(setEditNotice);
-      }}
+      accessibilityLabel="프로젝트 관리"
+      ref={(node: unknown) => setHoverTitle(node, "프로젝트 관리 — 이름·카테고리 바꾸기, 추가·삭제, 켜고 끄기")}
+      onPress={onManage}
       style={btn}
     >
-      <Icon name="FileJson" size={fs(13)} color={c.foreground} />
+      <Icon name="Folder" size={fs(13)} color={c.foreground} />
     </Pressable>
-  );
+  ) : null;
   // 전체 접기·펼치기(10-07 리규형님 결정: 목록 파일 편집 아이콘 왼쪽, 아이콘 하나로 번갈아). 고정·활성은 빼고 그대로 둔다
   // (같은 날 정정 — 처음엔 고정·활성까지 전부였다). 나머지가 다 접혀 있으면 모두 펼치고(꺼 둠 포함), 하나라도 펼쳐져 있으면 모두 접는다
   const foldable = groups.filter((g) => g.name !== PINNED_GROUP && g.name !== ACTIVE_GROUP);
@@ -230,7 +225,6 @@ export function ProjectsList(props: {
         </View>
       )}
       {notice ? <Text style={{ color: c.statusWarning, fontSize: fs(12) }}>{notice}</Text> : null}
-      {editNotice ? <Text style={{ color: c.statusWarning, fontSize: fs(12) }}>{editNotice}</Text> : null}
       {data?.error ? <Text style={{ color: c.statusDanger, fontSize: fs(12) }}>{data.error}</Text> : null}
       {data && !data.source ? <Text style={{ color: c.foregroundMuted, fontSize: fs(12) }}>프로젝트 목록 파일을 찾지 못했습니다.</Text> : null}
       {groups.map((g) => {

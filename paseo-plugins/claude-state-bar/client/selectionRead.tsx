@@ -6,7 +6,7 @@ import { googleStatus, ttsSynthesize } from "../shared/tts";
 import { featureSwitches, onSharedSignal } from "./sounds";
 import { thinkingController as controller } from "./thinking";
 import type { ThinkingBoxState } from "./thinkingPlayer";
-import { startComposerRail, startTurnReadButtons, type TurnReadBinding } from "./web";
+import { startComposerRail, startReadDock, startTurnReadButtons, type TurnReadBinding } from "./web";
 
 // 입력창 위 선택 읽기를 대신한다. 웹 DOM 은 web.ts 에만 두고 생각 상자의 재생기 하나를 같이 쓴다.
 export function createTurnReadButtons(client: PluginClientContext, log: (message: string) => void): () => void {
@@ -30,12 +30,13 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
       target = undefined;
     }
     dom.refresh();
+    dock.refresh();
   };
   const dom = startTurnReadButtons((): TurnReadBinding => ({
     hostId,
     enabled: live && canSpeak && featureSwitches().tts,
     speedOptions: controller.speedOptions(),
-    playing: box && playing()?.active ? { target, paused: playing()!.paused, rate: controller.rate, error: box.error, index: playing()!.index } : null,
+    playing: box && playing()?.active ? { target, paused: playing()!.paused, rate: controller.rate, error: box.error, index: playing()!.index, status: playing()!.status } : null,
     read: (nextTarget, text) => {
       if (!live || !hostId || !canSpeak || !featureSwitches().tts) return;
       controller.dispose(made);
@@ -52,6 +53,19 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     next: () => controller.next(),
     speed: (value) => controller.setSpeed(value),
   }));
+  // 입력창 위 읽기 컨트롤러 하나(10-11) — 턴·말·생각 상자·꺼낸 말 무엇을 읽든 이 재생기의 지금 읽는 것을 본다
+  const dock = startReadDock(() => {
+    const now = live && featureSwitches().tts ? controller.current() : null;
+    return {
+      playing: now ? { paused: now.paused, rate: controller.rate, error: now.box.error } : null,
+      speedOptions: controller.speedOptions(),
+      previous: () => controller.previous(),
+      toggle: () => controller.current()?.paused ? controller.resume() : controller.pause(),
+      stop: () => controller.stop(),
+      next: () => controller.next(),
+      speed: (value) => controller.setSpeed(value),
+    };
+  });
   // 호스트 번호가 없는 연결은 다른 서버의 키로 읽지 않는다. 화면 fiber 의 serverId 와 대조한다.
   void client.rpc(hostInfo, {}).then((info) => { if (live) { hostId = info.serverId ?? null; refresh(); } }, (error: unknown) => { if (live) log(`turn read: host check failed ${String(error)}`); });
   const checkKeys = () => {
@@ -87,6 +101,7 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     controller.dispose(made);
     made.clear();
     dom.dispose();
+    dock.dispose();
     stopRail();
   };
 }

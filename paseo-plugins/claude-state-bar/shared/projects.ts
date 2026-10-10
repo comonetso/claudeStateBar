@@ -41,6 +41,8 @@ export const projectsPinOrder = defineRpc({
 export const ACTIVE_ORDER_KEY = ":active";
 /** 카테고리 묶음끼리의 순서(10-07 리규형님: 카테고리도 끌어 옮긴다) — 값은 카테고리 이름 */
 export const CATEGORY_ORDER_KEY = ":categories";
+/** 카테고리가 빈 프로젝트의 묶음 이름 — 화면 묶음 이름이자 순서 파일의 묶음 열쇠(관리 화면이 옮길 때 데몬도 쓴다) */
+export const UNTAGGED_GROUP = "카테고리 없음";
 const groupOrders = z.object({ groups: z.record(z.string(), z.array(z.string())) });
 
 export const projectsOrder = defineRpc({
@@ -67,6 +69,35 @@ export const projectsWait = defineRpc({
   name: "projects.wait",
   input: z.object({ mtimeMs: z.number().nullable() }),
   output: z.object({ mtimeMs: z.number().nullable() }),
+});
+
+// 프로젝트 관리 화면(10-10 리규형님: "사용자들이 json 을 건드는 건 좀 그래서" — 목록 파일 직접 편집 대신 화면에서 고친다).
+// key 는 고정·순서와 같은 "<기기>|<경로>". 실제 폴더는 건드리지 않고 목록 파일만 고친다
+const editOp = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("rename"), key: z.string(), name: z.string() }),
+  /** 다른 카테고리로 — 그 묶음 맨 아래로 간다(10-10 결정). "" = 카테고리 없음 */
+  z.object({ op: z.literal("category"), key: z.string(), category: z.string() }),
+  z.object({ op: z.literal("enabled"), key: z.string(), enabled: z.boolean() }),
+  z.object({ op: z.literal("remove"), key: z.string() }),
+  /** host = "PC" 또는 ~/.ssh/config 의 Host 별칭. name 이 비면 폴더 이름 */
+  z.object({ op: z.literal("add"), host: z.string(), path: z.string(), name: z.string(), category: z.string() }),
+  z.object({ op: z.literal("renameCategory"), from: z.string(), to: z.string() }),
+  /** 카테고리만 지운다 — 안의 프로젝트는 "카테고리 없음"으로(10-10 결정) */
+  z.object({ op: z.literal("deleteCategory"), name: z.string() }),
+]);
+export type ProjectsEditOp = z.infer<typeof editOp>;
+
+export const projectsEdit = defineRpc({
+  name: "projects.edit",
+  input: editOp,
+  output: z.object({ ok: z.boolean(), error: z.string().optional() }),
+});
+
+// 새 프로젝트를 둘 기기 — "PC" + ~/.ssh/config 의 Host 별칭(와일드카드 줄은 뺀다, 10-10 결정)
+export const projectsHosts = defineRpc({
+  name: "projects.hosts",
+  input: z.object({}),
+  output: z.object({ hosts: z.array(z.string()) }),
 });
 
 export const projectsManager = defineRpc({

@@ -16,7 +16,6 @@ import { claimSound, markScreenUsed, createSoundRouter } from "./server/soundCla
 import { soundClaim, soundScreenUsed, soundPresence, soundReport, soundWait, soundTake, soundCancel, soundDropScreen, soundResult } from "./shared/soundClaim";
 import { createSoundOrigins } from "./server/soundEvents";
 import { soundOriginObserve, soundOriginPrepare, soundOriginValidate, soundOriginDrop } from "./shared/soundEvents";
-import { startRcSync } from "./server/rcSync";
 import { translateTexts } from "./server/translate";
 import { getGoogleStatus } from "./server/googleKeys";
 import { checkGoogleKeys, googleKeysState as readGoogleKeysState, saveGoogleKeys } from "./server/googleCheck";
@@ -51,7 +50,10 @@ import { codexCleanCheck, codexCleanStart, codexCleanWait } from "./shared/codex
 import { clientLog } from "./shared/log";
 import { thinkingBoundary } from "./shared/thinkingBoundary";
 import { thinkingCut } from "./server/thinkingBoundary";
-import { projectsManager, projectsWait, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsResetOrder } from "./shared/projects";
+import { projectsEdit, projectsHosts, projectsManager, projectsWait, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsResetOrder } from "./shared/projects";
+import { editProjects, projectHosts } from "./server/projectsEdit";
+import { teamServerSkills, teamSkills } from "./shared/team";
+import { listGlobalSkills, listServerSkills } from "./server/teamSkills";
 import { clearProjectOrders, projectOrders, setProjectOrder } from "./server/projectsOrder";
 import { clearProjectPins, projectPins, setProjectPin, setProjectPinOrder } from "./server/projectsPins";
 import { DEFAULT_SETTINGS, soundSettings } from "./shared/settings";
@@ -76,7 +78,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(soundDataV2, readSound);
   server.handle(soundData, async (input) => input.file !== undefined || input.gain !== undefined
     ? readSound(input) : { dataUrl: LEGACY_SILENT_WAV, path: "" });
-  server.handle(hostInfo, async () => ({ platform: process.platform, canPlay: canPlayHere(), ...(await hostIdentity()) }));
+  // team = 서버 울타리 안 직원 데몬(10-11, paseo-team@ 유닛이 TEAM_UID·PASEO_HOME=/team/paseo 를 준다)
+  server.handle(hostInfo, async () => ({ platform: process.platform, canPlay: canPlayHere(), team: !!process.env.TEAM_UID || process.env.PASEO_HOME === "/team/paseo", ...(await hostIdentity()) }));
   server.handle(chimeCheck, async ({ clientId, sessionId, cwd }) => checkSession(clientId, sessionId, cwd));
   server.handle(chimeCheckV2, async ({ clientId, sessionId, cwd, baseline }) => checkSessionV2(clientId, sessionId, cwd, baseline));
   server.handle(lastTurnCheck, async ({ sessionId }) => ({ commandOnly: await lastTurnCommandOnly(sessionId) }));
@@ -166,6 +169,12 @@ export default function contribute(server: PluginServerContext) {
     await Promise.all([clearProjectOrders(), clearProjectPins()]);
     return { ok: true };
   });
+  // 프로젝트 관리 화면(10-10) — 목록 파일을 화면에서 고친다(이름·카테고리·켜고 끄기·추가·삭제·카테고리 이름 바꾸기·지우기)
+  server.handle(projectsEdit, async (op) => editProjects(op));
+  server.handle(projectsHosts, async () => projectHosts());
+  // 팀원 관리 시험판(10-11) — 고를 스킬·명령어 목록(PC 것은 비교용, 고르는 것은 서버 것 — SSH 로 읽는다)
+  server.handle(teamSkills, async () => listGlobalSkills());
+  server.handle(teamServerSkills, async ({ host }) => listServerSkills(host));
   // VS Code 확장 설정 가져오기(10-08) — 설정 화면 소리 칸 단추. 이 기기 VS Code 사용자 설정을 읽기만 한다(설정 화면은 PC 플러그인만 붙인다)
   server.handle(extSettingsImport, async () => importExtSettings());
   // 소리는 화면 하나에서만(10-08) — 화면들의 "울려도 되나"를 모아 하나만 고른다(화면은 이 PC 플러그인에만 묻는다)
@@ -220,15 +229,13 @@ export default function contribute(server: PluginServerContext) {
   server.handle(layoutOwnerGet, async () => ({ owner: await layoutOwner() }));
   server.handle(layoutOwnerSet, async ({ screen, label }) => setLayoutOwner(screen, label));
   server.handle(layoutLoad, async ({ slot }) => loadLayout(slot));
-  // 웹·폰 원격과 Paseo 보관 상태 맞추기 + 열린 대화의 Claude 를 띄워 원격에 붙이기(10-06)
-  const stopRcSync = startRcSync();
+  // 웹·폰 원격과 Paseo 보관 상태 맞추기(rcSync, 10-06)는 10-10 리규형님 결정으로 걷었다 — Paseo 대화엔 리모트 컨트롤을 안 켠다
   // 폰·웹 세션 제목의 프로젝트 이름표 — 목록이 있는 PC 데몬만 실제로 보낸다(10-07)
   const stopProjectLabels = startProjectLabels();
   // 폰 받아쓰기의 받는 곳(10-10) — 모든 기기 데몬에서 연다(리규형님 결정 "4대 모두". 데몬 설정의 받아쓰기 칸을 돌린 기기만 실제로 쓴다)
   const stopSttServer = startSttServer();
   return () => {
     void routerPromise?.then((value) => value.dispose(), () => {});
-    stopRcSync();
     stopProjectLabels();
     stopSttServer();
   };

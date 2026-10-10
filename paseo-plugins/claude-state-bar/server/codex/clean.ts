@@ -16,7 +16,7 @@ import { CLEAN_ITEMS, parseUsage } from "./usage";
 //     "터미널이 다르게 읽는 문자(큰따옴표·$·백틱·%·!) 든 경로는 거절"(unquotablePath)은 옮기지 않았다. 셸이 없으니 그 문자가
 //     다르게 읽힐 곳이 없다.
 //   · node 는 PATH 에서 찾지 않고 이 데몬을 돌리는 실행 파일(process.execPath)을 노드 모드로 쓴다. PC 는 Paseo.exe(Electron),
-//     서버는 node 다. 서버 데몬은 PATH 가 짧을 수 있고(콜어드민은 데몬 PATH 에 paseo 도 없었다 — rcSync findCli), Electron 은
+//     서버는 node 다. 서버 데몬은 PATH 가 짧을 수 있고(콜어드민은 데몬 PATH 에 paseo 도 없었다 — server/paseoCli.ts findCli), Electron 은
 //     ELECTRON_RUN_AS_NODE=1 이면 노드로 돈다(플러그인 프로세스 자신이 그렇게 돈다. 10-08 Paseo.exe 노드 모드 실행 확인).
 //   · 출력은 터미널 대신 화면에 보인다(사람이 읽는 글이라 그대로). 지우기는 몇 분 걸릴 수 있어(Codex 대화 한 건 1~6초,
 //     한 건 최대 2분) 띄우고 바로 돌아오고, 화면은 codex.clean_wait 로 출력을 받아 간다.

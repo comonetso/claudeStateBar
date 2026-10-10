@@ -1622,8 +1622,8 @@ export type TurnReadBinding = {
   hostId: string | null;
   enabled: boolean;
   speedOptions?: number[];
-  /** index: 재생기가 지금 읽는 문단 번호(형광펜 자리, 10-09) */
-  playing: { target: unknown; paused: boolean; rate: number; error: string; index?: number } | null;
+  /** index: 재생기가 지금 읽는 문단 번호(형광펜 자리, 10-09) · status "loading" = 소리 만드는 중(스피커 옆 빙글빙글, 10-11) */
+  playing: { target: unknown; paused: boolean; rate: number; error: string; index?: number; status?: string } | null;
   read(target: unknown, text: string): void;
   previous(): void;
   toggle(): void;
@@ -1646,6 +1646,7 @@ type ReadEl = NodeLike & {
   value: string;
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
   querySelector(selector: string): ReadEl | null;
   querySelectorAll(selector: string): ArrayLike<ReadEl>;
   appendChild(node: ReadEl): void;
@@ -1663,8 +1664,11 @@ type ReadFiber = {
 // 0.11.1 모듈 4880 Qe 의 copyTurn. copyMessage(사용자 글)·코드 복사와는 다르다.
 const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turno", "Copier l’échange", "ターンをコピー", "턴 복사", "Скопировать ответ", "复制回合"]);
 const READ_MARK = "data-csb-turn-read";
-const READ_SHEET = "claude-state-bar-turn-read-v5";
-const TURN_READ_VERSION = 5;
+// v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
+const READ_SHEET = "claude-state-bar-turn-read-v6";
+const TURN_READ_VERSION = 6;
+/** 읽는 중 스피커·컨트롤러 재생 단추 색 — Paseo 테마의 밝은 녹색(상태 점 색) */
+const READ_GREEN = "var(--colors-status-dot-success, #35c264)";
 const READ_ICONS: Record<string, string> = {
   Volume2: '<path d="m11 5-6 4H2v6h3l6 4V5Z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.08M19.07 4.93a10 10 0 0 1 0 14.14"/>',
   SkipBack: '<path d="m19 20-9-8 9-8v16Z"/><path d="M5 19V5"/>',
@@ -1869,11 +1873,9 @@ type ReadRecord = {
   row: ReadEl;
   button: ReadEl;
   group: ReadEl | null;
-  controls: ReadEl | null;
-  toggle: ReadEl | null;
-  select: ReadEl | null;
+  /** 소리 만드는 중 스피커 옆 빙글빙글(10-11) */
+  spin: ReadEl | null;
   look?: string;
-  palette?: string;
   muted?: string;
   /** 읽기 시작 때 넘긴 문단마다의 화면 문단 요소 — 재생기 문단 번호로 형광펜을 칠한다 */
   blocks?: (ReadEl | null)[];
@@ -1899,10 +1901,11 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
     setStyleSheet(READ_SHEET,
       `[${READ_MARK}="button"]{display:flex;align-items:center;justify-content:center;background:transparent;border:0;cursor:pointer;color:inherit;font:inherit;padding:4px;border-radius:5px}` +
       `[${READ_MARK}="button"]:focus-visible{outline:2px solid currentColor;outline-offset:2px}` +
-      `[${READ_MARK}="message-row"],[${READ_MARK}="controls"]{display:flex;align-items:center;gap:6px;flex-wrap:wrap;max-width:100%;min-width:0}` +
-      `[${READ_MARK}="controls"]{flex-shrink:1}` +
-       `[${READ_MARK}="speed"]{height:28px;border:1px solid var(--csb-read-border);border-radius:5px;padding:0 4px;margin:0;color:inherit;background:var(--csb-read-background);font:inherit;font-size:12px;cursor:pointer}` +
-       `[${READ_MARK}="speed"] option{color:inherit;background:var(--csb-read-background)}` +
+      `[${READ_MARK}="message-row"]{display:flex;align-items:center;gap:6px;flex-wrap:wrap;max-width:100%;min-width:0}` +
+      // 읽는 중이면 녹색 — 턴 단추는 복사 단추 색을 cssText 로 받으므로 !important 로 덮는다(10-11)
+      `[${READ_MARK}="button"][data-csb-read-on]{color:${READ_GREEN}!important}` +
+      `[${READ_MARK}="spin"]{display:inline-block;flex-shrink:0;align-self:center;width:12px;height:12px;margin:0 2px;box-sizing:border-box;border:2px solid ${READ_GREEN};border-right-color:transparent;border-radius:50%;animation:csb-read-spin .8s linear infinite}` +
+      `@keyframes csb-read-spin{to{transform:rotate(360deg)}}` +
       `::highlight(${READ_HIGHLIGHT}){background-color:rgba(255, 226, 0, 0.3)}`);
     const button = (name: string, icon: string, action: () => void, size = String((readAppFontSizes().content ?? 15) - 1)) => {
       const el = readNode("button", "button");
@@ -1915,7 +1918,7 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
     const remove = (r: ReadRecord) => {
       const b = owner(r.hostId);
       if (b?.playing?.target === r.anchor) b.stop();
-      r.controls?.remove();
+      r.spin?.remove();
       r.button.remove();
       r.group?.remove();
       records.delete(r.anchor);
@@ -1944,11 +1947,12 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
     };
     const make = (anchor: ReadEl, hostId: string, kind: ReadRecord["kind"], row: ReadEl) => {
       const size = kind === "turn" ? anchor.querySelector("svg")?.getAttribute("width") ?? "14" : String((readAppFontSizes().content ?? 15) - 1);
-      const r: ReadRecord = { anchor, hostId, kind, row, button: null as unknown as ReadEl, group: null, controls: null, toggle: null, select: null };
+      const r: ReadRecord = { anchor, hostId, kind, row, button: null as unknown as ReadEl, group: null, spin: null };
       r.button = button(kind === "turn" ? "턴 읽기" : "이 말 읽기", "Volume2", () => start(r), size);
       if (kind === "turn") {
         paintTurn(r);
-        row.insertBefore(r.button, anchor.nextSibling);
+        // 단추 줄 맨 오른쪽(작업 시간 뒤) — 10-11 리규형님. 예전엔 복사 단추 바로 뒤
+        row.appendChild(r.button);
       } else {
         r.group = readNode("div", "message-row");
         r.group.appendChild(r.button);
@@ -1957,35 +1961,23 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       records.set(anchor, r);
       return r;
     };
-    const controls = (r: ReadRecord, b: TurnReadBinding) => {
+    // 스피커 상태만 — 읽는 중 녹색, 소리 만드는 중 옆에 빙글빙글(10-11). 이전·일시정지·중지·다음·속도는 입력창 위 한 곳(startReadDock)
+    const speaker = (r: ReadRecord, b: TurnReadBinding) => {
       const playing = b.playing?.target === r.anchor ? b.playing : null;
-      if (!playing) { r.controls?.remove(); r.controls = r.toggle = r.select = null; r.palette = undefined; return; }
-      if (!r.controls) {
-        r.controls = readNode("div", "controls");
-        const action = (fn: (current: TurnReadBinding) => void) => () => { const current = owner(r.hostId); if (current?.playing?.target === r.anchor) fn(current); };
-        r.controls.appendChild(button("이전 문단", "SkipBack", action((v) => v.previous())));
-        r.toggle = button("일시정지", "Pause", action((v) => v.toggle()));
-        r.controls.appendChild(r.toggle);
-        r.controls.appendChild(button("읽기 중지", "Square", action((v) => v.stop())));
-        r.controls.appendChild(button("다음 문단", "SkipForward", action((v) => v.next())));
-         r.select = readNode("select", "speed");
-         labelRead(r.select, "TTS 속도");
-         r.select.style.cssText = "width:" + (isCompactWidth() ? 72 : 82) + "px;max-width:100%";
-         r.select.addEventListener("change", action((v) => v.speed(Number(r.select?.value))));
-         r.controls.appendChild(r.select);
-        (r.group ?? r.row).appendChild(r.controls); // Ue 의 마지막 자식 = 작업 시간 오른쪽
+      const on = playing ? "" : null;
+      if (r.button.getAttribute("data-csb-read-on") !== on) {
+        if (on === null) r.button.removeAttribute("data-csb-read-on");
+        else r.button.setAttribute("data-csb-read-on", on);
       }
-      const palette = readPalette(r.kind === "turn" ? r.anchor : r.row);
-      const look = JSON.stringify(palette);
-      if (r.palette !== look) {
-        r.palette = look;
-        r.controls!.style.cssText = `color:${palette.muted};--csb-read-accent:${palette.accent};--csb-read-border:${palette.border};--csb-read-background:${palette.background}`;
-        r.select!.style.setProperty("font-size", String((readAppFontSizes().content ?? 15) - 3) + "px");
+      const name = r.kind === "turn" ? "턴 읽기" : "이 말 읽기";
+      labelRead(r.button, playing?.error ? `${name} — ${playing.error}` : playing ? `${name}(읽는 중)` : name);
+      const loading = !!playing && playing.status === "loading";
+      if (loading && !r.spin) {
+        r.spin = readNode("span", "spin");
+        r.spin.setAttribute("aria-hidden", "true");
       }
-      labelRead(r.toggle!, playing.paused ? "이어서 읽기" : "일시정지");
-      readIcon(r.toggle!, playing.paused ? "Play" : "Pause", String((readAppFontSizes().content ?? 15) - 1));
-       fillReadSpeedSelect(r.select!, b.speedOptions ?? [playing.rate], playing.rate);
-      labelRead(r.controls!, playing.error || "읽기 조절");
+      if (loading && r.spin && (r.spin.parentElement !== r.button.parentElement || r.button.nextSibling !== r.spin)) r.button.parentElement?.insertBefore(r.spin, r.button.nextSibling);
+      if (!loading && r.spin) { r.spin.remove(); r.spin = null; }
     };
     const apply = () => {
       queued = false;
@@ -2009,7 +2001,9 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           if (r && (r.hostId !== hostId || r.row !== row || !r.button.isConnected)) { remove(r); r = undefined; }
           r ??= make(copy, hostId, "turn", row);
           paintTurn(r);
-          controls(r, b);
+          // 작업 시간 글자 등이 뒤늦게 붙으면 다시 맨 오른쪽으로(10-11)
+          if (row.lastElementChild !== r.button && row.lastElementChild !== r.spin) row.appendChild(r.button);
+          speaker(r, b);
         }
         const messages = document.querySelectorAll('[data-testid="assistant-message"]') as unknown as ArrayLike<ReadEl>;
         const visited = new Set<ReadEl>();
@@ -2034,7 +2028,7 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           if (r.muted !== muted) { r.muted = muted; r.group!.style.setProperty("color", muted); }
           const display = lastWithFooter.has(el) ? "none" : "";
           if (r.button.style.display !== display) r.button.style.display = display;
-          controls(r, b);
+          speaker(r, b);
         }
         for (const r of records.values()) if (!wanted.has(r.anchor)) remove(r);
         // 읽는 문단 형광펜: 재생 중인 기록의 문단 번호 자리 하나만. 읽기가 끝나거나 다른 것을 읽으면 옮기거나 지운다
@@ -2078,4 +2072,193 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       else hub.refresh?.();
     },
   };
+}
+
+/**
+ * 입력창 위 읽기 컨트롤러 — 화면에 하나(10-11 리규형님 "컨트롤러를 여기로 통일 · 찾아 다니는 일도 일").
+ * 턴·말·생각 상자·꺼낸 말 무엇을 읽든 같은 자리: 넓은 화면은 입력창 위 알약 줄 맨 오른쪽, 좁은 화면(폰)은 그 줄 아래 새 줄.
+ * 읽기는 한 번에 하나라 컨트롤러도 하나다. 칸이 나뉘어 있으면 읽기를 누른 칸의 입력창 위. 읽는 동안에만 보인다.
+ * 색(리규형님 "컨트롤러에 색상"): 일시정지·이어서 = 녹색, 중지 = 빨강, 이전·다음 = 흐린 글자색, 속도 = 밝은 강조색 — 모두 Paseo 테마 변수.
+ * 알약 줄 찾기는 startComposerRail 이 붙이는 data-csb-track(입력창 위 띠) 표식을 쓴다.
+ */
+export type ReadDockState = {
+  /** 지금 읽는 것이 없으면 null — 컨트롤러가 사라진다 */
+  playing: { paused: boolean; rate: number; error: string } | null;
+  speedOptions: number[];
+  previous(): void;
+  toggle(): void;
+  stop(): void;
+  next(): void;
+  speed(value: number): void;
+};
+const DOCK_MARK = "data-csb-read-dock";
+const DOCK_SHEET = "claude-state-bar-read-dock-v1";
+const DOCK_VERSION = 1;
+type DockHub = { version: number; users: Map<object, (() => ReadDockState) & { csbVersion?: number }>; stop: (() => void) | null; refresh: (() => void) | null };
+export function startReadDock(state: () => ReadDockState): { refresh(): void; dispose(): void } {
+  const noop = { refresh: () => {}, dispose: () => {} };
+  if (!isWeb() || typeof MutationObserver === "undefined") return noop;
+  const g = globalThis as Record<string, unknown>;
+  const hub = (g.__claudeStateBar_readDock_v1 ??= { version: DOCK_VERSION, users: new Map(), stop: null, refresh: null }) as DockHub;
+  if (hub.version < DOCK_VERSION) { hub.stop?.(); hub.stop = null; hub.refresh = null; hub.users.clear(); hub.version = DOCK_VERSION; }
+  const token = {};
+  hub.users.set(token, Object.assign(state, { csbVersion: DOCK_VERSION }));
+  if (!hub.stop) {
+    let live = true;
+    let queued = false;
+    let dock: ReadEl | null = null;
+    let toggle: ReadEl | null = null;
+    let select: ReadEl | null = null;
+    /** 마지막으로 누른 화면 요소 — 읽기를 시작한 칸을 찾는다 */
+    let pressed: ReadEl | null = null;
+    /** 이번 읽기의 자리(그 칸의 입력창 위 띠). 읽기가 끝나면 비운다 */
+    let home: ReadEl | null = null;
+    // 호스트(PC·서버)마다 플러그인이 따로 올라와 재생기도 따로다 — 지금 읽는 쪽 하나를 고른다
+    const current = () => {
+      for (const get of hub.users.values()) {
+        if (get.csbVersion !== DOCK_VERSION) continue;
+        const s = get();
+        if (s.playing) return s;
+      }
+      return null;
+    };
+    const press = (event: { target?: unknown }) => { pressed = (event.target as ReadEl | null) ?? null; };
+    document.addEventListener("pointerdown", press as unknown as (e: Event) => void, true);
+    const orphaned = document.querySelectorAll(`[${DOCK_MARK}]`) as unknown as ArrayLike<ReadEl>;
+    for (let i = 0; i < orphaned.length; i++) orphaned[i].remove();
+    setStyleSheet(DOCK_SHEET,
+      `[${DOCK_MARK}="dock"]{display:flex;align-items:center;gap:2px;flex-shrink:0;height:32px;box-sizing:border-box;padding:0 4px;border:1px solid var(--colors-border, rgba(127,127,127,.4));border-radius:999px;background:var(--colors-surface1, transparent)}` +
+      `[${DOCK_MARK}="dock"][data-place="row"]{margin-left:auto}` +
+      `[${DOCK_MARK}="dock"][data-place="after"]{margin-left:4px}` +
+      `[${DOCK_MARK}="dock"][data-place="below"]{align-self:flex-end;margin-top:4px}` +
+      `[${DOCK_MARK}="button"]{display:flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;margin:0;border:0;border-radius:999px;background:transparent;cursor:pointer;color:var(--colors-foreground-muted, currentColor)}` +
+      `[${DOCK_MARK}="button"]:hover{background:var(--colors-surface2, rgba(127,127,127,.15))}` +
+      `[${DOCK_MARK}="button"]:focus-visible{outline:2px solid currentColor;outline-offset:1px}` +
+      `[${DOCK_MARK}="button"][data-tone="go"]{color:${READ_GREEN}}` +
+      `[${DOCK_MARK}="button"][data-tone="stop"]{color:var(--colors-status-dot-danger, #f7796d)}` +
+      `[${DOCK_MARK}="speed"]{height:24px;margin:0 0 0 2px;border:1px solid var(--colors-accent-bright, currentColor);border-radius:999px;padding:0 6px;color:var(--colors-accent-bright, currentColor);background:var(--colors-surface1, transparent);font:inherit;font-size:12px;cursor:pointer}` +
+      `[${DOCK_MARK}="speed"] option{color:var(--colors-foreground, inherit);background:var(--colors-surface1, Canvas)}`);
+    const node = (tag: string, kind: string) => {
+      const el = document.createElement(tag) as unknown as ReadEl;
+      el.setAttribute(DOCK_MARK, kind);
+      el.setAttribute("translate", "no");
+      return el;
+    };
+    const size = () => String(readAppFontSizes().content ?? 15);
+    const name = (el: ReadEl, text: string) => {
+      labelRead(el, text);
+      if (el.getAttribute("title") !== text) el.setAttribute("title", text);
+    };
+    const button = (text: string, icon: string, tone: string, action: (s: ReadDockState) => void) => {
+      const el = node("button", "button");
+      el.setAttribute("type", "button");
+      el.setAttribute("data-tone", tone);
+      name(el, text);
+      readIcon(el, icon, size());
+      el.addEventListener("click", (event) => { event.stopPropagation(); const s = current(); if (!s) return; try { action(s); } catch { /* 구조가 바뀌면 조용히 생략한다 */ } });
+      return el;
+    };
+    const build = () => {
+      dock = node("div", "dock");
+      dock.appendChild(button("이전 문단", "SkipBack", "plain", (s) => s.previous()));
+      toggle = button("일시정지", "Pause", "go", (s) => s.toggle());
+      dock.appendChild(toggle);
+      dock.appendChild(button("읽기 중지", "Square", "stop", (s) => s.stop()));
+      dock.appendChild(button("다음 문단", "SkipForward", "plain", (s) => s.next()));
+      select = node("select", "speed");
+      name(select, "TTS 속도");
+      select.addEventListener("change", (event) => { event.stopPropagation(); const s = current(); if (s && select) s.speed(Number(select.value)); });
+      dock.appendChild(select);
+    };
+    // 그 요소에서 위로 올라가며 처음 만나는 입력창 위 띠 — 칸이 나뉘어 있으면 그 칸의 것
+    const trackNear = (from: ReadEl | null): ReadEl | null => {
+      for (let el = from; el; el = el.parentElement) {
+        const found = el.querySelector?.("[data-csb-track]") ?? null;
+        if (found) return found;
+      }
+      return null;
+    };
+    const firstVisibleTrack = (): ReadEl | null => {
+      const all = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<ReadEl & { getBoundingClientRect(): { width: number } }>;
+      for (let i = 0; i < all.length; i++) if (all[i].getBoundingClientRect().width > 0) return all[i];
+      return null;
+    };
+    const place = (track: ReadEl) => {
+      const row = track.firstElementChild;
+      if (!isCompactWidth() && row) {
+        // 오른쪽 끝에 이미 Paseo "변경사항" 알약이 붙어 있으면(그 알약이 남는 칸을 차지) 그 뒤에 바로 붙인다
+        const where = row.querySelector('[data-testid="composer-diff-stat-pill"]') ? "after" : "row";
+        if (dock!.getAttribute("data-place") !== where) dock!.setAttribute("data-place", where);
+        if (dock!.parentElement !== row || row.lastElementChild !== dock) row.appendChild(dock!);
+      } else {
+        if (dock!.getAttribute("data-place") !== "below") dock!.setAttribute("data-place", "below");
+        if (dock!.parentElement !== track || track.lastElementChild !== dock) track.appendChild(dock!);
+      }
+    };
+    const apply = () => {
+      queued = false;
+      if (!live) return;
+      try {
+        const s = current();
+        const playing = s?.playing;
+        if (!s || !playing) {
+          dock?.remove();
+          dock = toggle = select = null;
+          home = null;
+          return;
+        }
+        if (!home || !home.isConnected) home = trackNear(pressed) ?? firstVisibleTrack();
+        if (!home) return;
+        if (!dock) build();
+        place(home);
+        name(toggle!, playing.paused ? "이어서 읽기" : "일시정지");
+        readIcon(toggle!, playing.paused ? "Play" : "Pause", size());
+        fillReadSpeedSelect(select!, s.speedOptions.length ? s.speedOptions : [playing.rate], playing.rate);
+        labelRead(dock!, playing.error ? `읽기 조절 — ${playing.error}` : "읽기 조절");
+      } catch { /* 모르는 DOM 은 컨트롤러만 생략한다 */ }
+    };
+    const frame = (globalThis as { requestAnimationFrame?: (fn: () => void) => number }).requestAnimationFrame;
+    const refresh = () => {
+      if (!live || queued) return;
+      queued = true;
+      if (frame) frame(() => apply());
+      else void Promise.resolve().then(apply);
+    };
+    // 입력창 위 띠가 다시 그려지거나(칸 바꾸기·화면 폭) 알약이 늘고 줄 때 자리를 다시 잡는다
+    const observer = new MutationObserver(refresh);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    const stopWidth = watchCompactWidth(refresh);
+    hub.refresh = refresh;
+    hub.stop = () => {
+      live = false;
+      observer.disconnect();
+      stopWidth();
+      document.removeEventListener("pointerdown", press as unknown as (e: Event) => void, true);
+      dock?.remove();
+      setStyleSheet(DOCK_SHEET, null);
+    };
+    apply();
+  } else hub.refresh?.();
+  let disposed = false;
+  return {
+    refresh: () => hub.refresh?.(),
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      hub.users.delete(token);
+      if (hub.version === DOCK_VERSION && ![...hub.users.values()].some((get) => get.csbVersion === DOCK_VERSION)) { hub.stop?.(); hub.stop = null; hub.refresh = null; }
+      else hub.refresh?.();
+    },
+  };
+}
+
+/** 화면 테마 색 변수 값(웹) — 플러그인 테마 값에 없는 색(밝은 녹색 등)을 생각 상자(react-native)에서도 같은 색으로 쓰려고(10-11) */
+export function themeVar(name: string, fallback: string): string {
+  if (!isWeb()) return fallback;
+  try {
+    const style = window.getComputedStyle(document.documentElement) as unknown as { getPropertyValue(name: string): string };
+    return style.getPropertyValue(name).trim() || fallback;
+  } catch {
+    return fallback;
+  }
 }

@@ -3,7 +3,7 @@ import type { PluginClientContext, PluginTimelineItemProps } from "@getpaseo/plu
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { z } from "zod";
 import { translateKo } from "../shared/translate";
 import { googleStatus, ttsSynthesize } from "../shared/tts";
@@ -13,7 +13,7 @@ import { thinkingBoundary } from "../shared/thinkingBoundary";
 import { boxPhase, boxText, normalizeRate, saidText, splitParagraphs, ThinkingController, watchThinking, type ThinkingBoxState } from "./thinkingPlayer";
 import { onThinkingAllOpen, thinkingAllOpen } from "./thinkingFold";
 import { translationCache } from "./translationCache";
-import { clearSelection, createThinkingAudio, elementText, readAppFontSizes, readLocal, listenTtsSpeedKeys, mountReadSpeedSelect, setHoverTitle, setNoTranslate, selectionStartIn, watchSelection, writeLocal, type SelectionSnapshot } from "./web";
+import { clearSelection, createThinkingAudio, elementText, readAppFontSizes, readLocal, listenTtsSpeedKeys, setHoverTitle, setNoTranslate, selectionStartIn, themeVar, watchSelection, writeLocal, type SelectionSnapshot } from "./web";
 
 const KIND = "csb-thinking";
 const schema = z.object({ text: z.string(), phase: z.enum(["streaming", "complete"]) });
@@ -54,19 +54,6 @@ let domSerial = 0;
 const saidReader: { box?: ThinkingBoxState; owner?: string; serial: number } = { serial: 0 };
 // 문단 요소 이름 머리 — 호스트마다 이 파일이 따로 올라와 번호가 겹치지 않게 올라올 때마다 다른 글자를 붙인다
 const DOM_PREFIX = `csb-think-${Math.random().toString(36).slice(2, 8)}-`;
-
-/** React가 소유한 빈 View 안에 표준 웹 선택 상자를 단다. DOM 처리는 web.ts에만 둔다. */
-export function SpeedSelect({ colors: c, compact, px }: { colors: PluginTheme["colors"]; compact: boolean; px: number }) {
-  const node = useRef<View>(null);
-  useEffect(() => {
-    const select = mountReadSpeedSelect(node.current, (rate) => controller.setSpeed(rate));
-    const update = () => select.update({ rate: controller.rate, options: controller.speedOptions(), color: c.foreground, background: c.surface2, border: c.border, px: px - 3 });
-    update();
-    const unsubscribe = controller.subscribe(update);
-    return () => { unsubscribe(); select.dispose(); };
-  }, [c, px]);
-  return <View ref={node} style={{ minWidth: compact ? 72 : 82, height: 28 }} />;
-}
 
 function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, owned }: PluginTimelineItemProps<Data> & {
   client: PluginClientContext;
@@ -168,13 +155,17 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   const translated = box.translate && !original ? paragraphs.filter((p) => p.done && typeof box.translations.get(p.src) === "string").length : 0;
   const title = box.phase === "streaming" ? "Thinking…" : "Thinking";
   const buttonStyle = (active: boolean) => ({ borderRadius: 5, paddingHorizontal: layout.compact ? 5 : 7, paddingVertical: 4, backgroundColor: active ? c.accent : c.surface2 });
+  // 읽는 중 녹색·소리 만드는 중 빙글빙글(10-11) — 답 아래 스피커(web.ts)와 같은 밝은 녹색
+  const green = web ? themeVar("--colors-status-dot-success", c.statusSuccess) : c.statusSuccess;
+  const spinner = (key: string) => <ActivityIndicator key={key} size={px - 3} color={green} accessibilityLabel="소리 만드는 중" />;
   const labelStyle = (active: boolean) => ({ color: active ? c.accentForeground : c.foregroundMuted, fontSize: px - 3 });
-  const button = (label: string, icons: string[], active: boolean, onPress: () => void) => (
+  // reading = 이 단추로 지금 읽는 중 — 강조색 대신 녹색 아이콘·테두리(10-11 리규형님 "TTS 가 시작되면 녹색")
+  const button = (label: string, icons: string[], active: boolean, onPress: () => void, reading = false) => (
     <Pressable key={label} ref={(node) => setHoverTitle(node, label)} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={() => {
       if (speechOptions().autoOpen) controller.expand(box);
       onPress();
-    }} style={[buttonStyle(active), { flexDirection: "row", alignItems: "center", gap: 2 }]}>
-      {icons.map((name) => <Icon key={name} name={name} size={px - 1} color={active ? c.accentForeground : c.foregroundMuted} />)}
+    }} style={[buttonStyle(active && !reading), { flexDirection: "row", alignItems: "center", gap: 2, borderWidth: 1, borderColor: reading ? green : "transparent" }]}>
+      {icons.map((name) => <Icon key={name} name={name} size={px - 1} color={reading ? green : active ? c.accentForeground : c.foregroundMuted} />)}
     </Pressable>
   );
 
@@ -200,8 +191,10 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
       {/* 원문 보기(10-10 리규형님 "번역본이면 원문으로, 원문이면 번역문으로") — 플러그인 번역이든 브라우저 번역이든. 번역 키가 없어도
           브라우저 번역기 글을 원문으로 돌릴 수 있게 웹이면 늘 보인다 */}
       {web ? button("원문 보기", ["FileText"], original, () => controller.toggleOriginal(box)) : null}
-      {canRead ? button("읽기", ["Volume2"], playback.active && !playback.strict, () => startReading(false)) : null}
-      {canRead && canTranslate ? button("번역읽기", ["Languages", "Volume2"], playback.active && playback.strict, () => startReading(true)) : null}
+      {canRead ? button("읽기", ["Volume2"], playback.active && !playback.strict, () => startReading(false), playback.active && !playback.strict) : null}
+      {canRead && playback.active && !playback.strict && playback.status === "loading" ? spinner("spin-read") : null}
+      {canRead && canTranslate ? button("번역읽기", ["Languages", "Volume2"], playback.active && playback.strict, () => startReading(true), playback.active && playback.strict) : null}
+      {canRead && canTranslate && playback.active && playback.strict && playback.status === "loading" ? spinner("spin-strict") : null}
       {box.open ? (
         <Pressable
           accessibilityRole="button"
@@ -223,17 +216,10 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
       {box.translate && box.pending.size ? <Text accessibilityLiveRegion="polite" style={labelStyle(false)}>번역 중</Text> : null}
     </View>
   );
-  // 읽기 조절은 입력창 위 읽기 조절 알약(selectionRead.tsx)과 같은 아이콘으로(10-09 리규형님 "생각 상자 컨트롤러도 생각 밖 TTS 컨트롤러처럼
-  // 아이콘으로, 통일되게"). 이름(접근성)도 같은 글 — 이전 문단·일시정지/이어서 읽기·읽기 중지·다음 문단
-  const iconButton = (icon: string, label: string, onPress: () => void) => (
-    <Pressable key={label} accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={[buttonStyle(false), { alignItems: "center", justifyContent: "center" }]}>
-      <Icon name={icon} size={px - 1} color={c.foregroundMuted} />
-    </Pressable>
-  );
   // 꺼낸 말 읽기 단추·조절 — 배경 없는 아이콘(Paseo 복사 단추·web.ts "이 말 읽기"와 같은 모양: 여백 4, 모서리 5)
-  const plainIcon = (icon: string, label: string, onPress: () => void) => (
+  const plainIcon = (icon: string, label: string, onPress: () => void, reading = false) => (
     <Pressable key={label} accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={{ padding: 4, borderRadius: 5, alignItems: "center", justifyContent: "center" }}>
-      <Icon name={icon} size={px - 1} color={c.foregroundMuted} />
+      <Icon name={icon} size={px - 1} color={reading ? green : c.foregroundMuted} />
     </Pressable>
   );
   const saidId = `${domId}-said`;
@@ -253,21 +239,11 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
     saidReader.owner = box.key;
     controller.start(next, false);
   };
-  // 읽는 동안 늘 보이고 중지·다 읽음이면 사라진다 — 설정 아이콘 없이(리규형님 10-06). 상자 아래와 위 오른쪽(10-07) 두 곳
-  const readControls = (top: boolean) =>
-    web && playback.active ? (
-      <View style={{ alignSelf: "flex-end", maxWidth: "100%", flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: 6, ...(top ? { marginBottom: 4 } : { marginTop: 4 }), padding: 6, borderRadius: 6, backgroundColor: c.surface1 }}>
-        {iconButton("SkipBack", "이전 문단", () => controller.previous())}
-        {iconButton(playback.paused ? "Play" : "Pause", playback.paused ? "이어서 읽기" : "일시정지", () => playback.paused ? controller.resume() : controller.pause())}
-        {iconButton("Square", "읽기 중지", () => controller.stop())}
-        {iconButton("SkipForward", "다음 문단", () => controller.next())}
-        <SpeedSelect colors={c} compact={layout.compact} px={px} />
-      </View>
-    ) : null;
+  // 읽기 조절(이전·일시정지·중지·다음·속도)은 입력창 위 한 곳(web.ts startReadDock) — 10-11 리규형님 "컨트롤러를 여기로 통일".
+  // 예전엔 상자 위·아래 두 곳과 꺼낸 말 밑에 따로 있었다
 
   return (
     <View style={{ marginVertical: 4 }}>
-      {readControls(true)}
       <View style={{ borderRadius: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, overflow: "hidden" }}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6 }}>
           <Pressable accessibilityRole="button" accessibilityState={{ expanded: box.open }} onPress={() => controller.toggleOpen(box)} style={{ flexDirection: "row", alignItems: "center", flexShrink: 1, gap: 6 }}>
@@ -329,7 +305,6 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
           </View>
         ) : null}
       </View>
-      {readControls(false)}
       {/* 상자에서 꺼낸 Claude 의 말 — 상자를 접어도 보이게 상자 밖에 본문 글 크기·색으로(10-09) */}
       {said ? (
         <View nativeID={saidId} style={{ marginTop: 8 }}>
@@ -342,20 +317,11 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
         </View>
       ) : null}
       {/* 그 말 읽기(10-09 리규형님 "복사 버튼이 없는 경우도 TTS 버튼이 있어야" · 결정 "그 말 하나만") — Paseo 말 블록에 붙는
-          "이 말 읽기"(web.ts 턴·말 읽기 단추)와 같은 이름·모양. 읽는 동안은 같은 자리에 조절 */}
+          "이 말 읽기"(web.ts 턴·말 읽기 단추)와 같은 이름·모양. 읽는 중 녹색·소리 만드는 중 빙글빙글(10-11), 조절은 입력창 위 */}
       {said && canRead ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 2 }}>
-          {saidActive ? (
-            <>
-              {plainIcon("SkipBack", "이전 문단", () => controller.previous())}
-              {plainIcon(saidState!.paused ? "Play" : "Pause", saidState!.paused ? "이어서 읽기" : "일시정지", () => saidState!.paused ? controller.resume() : controller.pause())}
-              {plainIcon("Square", "읽기 중지", () => controller.stop())}
-              {plainIcon("SkipForward", "다음 문단", () => controller.next())}
-              <SpeedSelect colors={c} compact={layout.compact} px={px} />
-            </>
-          ) : (
-            plainIcon("Volume2", "이 말 읽기", readSaid)
-          )}
+          {plainIcon("Volume2", saidActive ? "이 말 읽기(읽는 중)" : "이 말 읽기", readSaid, saidActive)}
+          {saidActive && saidState!.status === "loading" ? spinner("spin-said") : null}
         </View>
       ) : null}
     </View>
