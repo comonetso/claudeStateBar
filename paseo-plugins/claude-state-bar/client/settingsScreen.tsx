@@ -2,21 +2,17 @@ import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/c
 import { SettingsSelect } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Switch, Text, View } from "react-native";
-import { buttonStyle, UiInput } from "./ui";
-import { extSettingsImport } from "../shared/extSettings";
-import { googleKeysCheck, googleKeysSave, googleKeysState, type GoogleKeysState } from "../shared/googleKeys";
+import { buttonStyle, HelpTip, UiInput, UiSelect } from "./ui";
+import { SpeechProviders } from "./speechProviders";
 import { settingsSchema, soundSettings, type SoundSettings } from "../shared/settings";
 import { projectsResetOrder } from "../shared/projects";
-import { soundData, type SoundKind } from "../shared/sound";
+import { SOUND_UPLOAD_MAX, soundData, soundList, soundUpload, type SoundKind } from "../shared/sound";
 import { sttHintsGet, sttHintsSave } from "../shared/stt";
-import { uiLanguage } from "./appLanguage";
-import { applyExtImport, extImportReport } from "./extImport";
 import { announceOrders, announcePins } from "./projectsData";
 import { settingsText } from "./settingsI18n";
-import { emitSharedSignal } from "./sounds";
 import { MainDeviceSection, VersionStatusSection } from "./versionStatus";
 import { FoldTitle, SectionTitle } from "./sectionTitle";
-import { playSoundUrl } from "./web";
+import { playSoundUrl, readLocal, writeLocal } from "./web";
 import { hasWebGate, WebLoginSection } from "./webLoginSection";
 
 /** Paseo 설정 안의 우리 항목 이름(10-07: "Claude 상태 소리" → 웹 로그인·소리를 칸으로 나눈 플러그인 설정 화면). */
@@ -83,12 +79,62 @@ function fromDraft(draft: Draft) {
 }
 
 /** 설정이 저장되거나 기본값으로 돌아가면 onSaved 를 부른다(공급자가 설정을 다시 읽게). */
+const CUSTOM_SOUND = "__custom__";
+const UPLOAD_SOUND = "__upload__";
+
+/** 내 파일 고르기(10-12) — 브라우저 파일 선택 창. 고르지 않으면 null. 웹이 아니면(파일 창 없음) null */
+function pickAudioFile(): Promise<{ name: string; size: number; base64: string } | null> {
+  type FileLike = { name: string; size: number };
+  type InputLike = { type: string; accept: string; files: FileLike[] | null; onchange: (() => void) | null; click: () => void };
+  type ReaderLike = { result: unknown; onload: (() => void) | null; onerror: (() => void) | null; readAsDataURL: (file: FileLike) => void };
+  const g = globalThis as unknown as { document?: { createElement: (tag: string) => InputLike }; FileReader?: new () => ReaderLike };
+  const doc = g.document;
+  const FileReader = g.FileReader;
+  if (!doc || !FileReader) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const input = doc.createElement("input");
+    input.type = "file";
+    input.accept = ".wav,.mp3,.ogg,audio/wav,audio/mpeg,audio/ogg";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return resolve(null);
+      const reader = new FileReader();
+      reader.onload = () => resolve({ name: file.name, size: file.size, base64: String(reader.result).replace(/^data:[^,]*,/, "") });
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  });
+}
+
+/** 고른 내 파일은 데몬의 sounds 폴더에 <종류>--<이름>.<확장자> 로 저장된다 — 그 이름을 선택 상자에 보인다 */
+function uploadedName(path: string): string | null {
+  const m = /[\\/]claude-state-bar[\\/]sounds[\\/][a-z]+--([^\\/]+)$/.exec(path);
+  return m ? m[1] : null;
+}
+
 export function createSettingsScreen(onSaved: () => void) {
   return function SoundSettingsScreen({ theme, layout }: PluginSurfaceProps) {
     // 열릴 때 한 번 — 이 화면이 떠 있는 동안 언어는 바뀌지 않는다
     const t = useMemo(() => settingsText(), []);
     const state = useSettings(soundSettings);
     const preview = useRpc(soundData);
+    // 소리 파일은 선택 상자로 고른다(10-12 리규형님 — 경로를 직접 쓰는 칸은 바꾸는 법을 알 수 없었다): 기본 소리 · 이 기기
+    // 시스템 소리 · 직접 경로 입력. 목록에 없는 경로가 저장돼 있으면 "직접 경로 입력"으로 보이고 칸이 열린다
+    const listSounds = useRpc(soundList);
+    const uploadSound = useRpc(soundUpload);
+    const [systemSounds, setSystemSounds] = useState<{ path: string; name: string }[]>([]);
+    const [customKinds, setCustomKinds] = useState<ReadonlySet<SoundKind>>(() => new Set());
+    useEffect(() => {
+      let alive = true;
+      listSounds({}).then(
+        ({ files }) => alive && setSystemSounds(files),
+        () => undefined,
+      );
+      return () => {
+        alive = false;
+      };
+    }, [listSounds]);
     const [draft, setDraft] = useState<Draft | null>(null);
     const [message, setMessage] = useState<string | null>(null);
     // 프로젝트 목록 순서·고정 초기화(10-07 리규형님 결정: 설정 화면 안, 확인 한 번 더) — 누르면 확인 줄이 뜨고 거기서 한 번 더
@@ -100,36 +146,7 @@ export function createSettingsScreen(onSaved: () => void) {
     // "펼친 상태 기억"(10-08 결정)도 이 지시로 바꿨다 — 기억하지 않는다
     const [soundOpen, setSoundOpen] = useState(false);
     const [syncOpen, setSyncOpen] = useState(false);
-    const [speechOpen, setSpeechOpen] = useState(false);
-    // VS Code 확장 설정 가져오기(10-08) — 데몬(PC)이 VS Code 사용자 설정을 읽어 주면 입력 칸만 채운다
-    const importExt = useRpc(extSettingsImport);
-    const [importing, setImporting] = useState(false);
-    const [importReport, setImportReport] = useState<{ text: string; bad: boolean; details: string[] } | null>(null);
-    // 번역·읽기 키(10-08) — 이 PC 데몬의 키 파일에만 저장. 데몬은 키 값을 돌려주지 않는다(있음/없음·마지막 확인 결과만).
-    // 입력 칸 글은 저장하면 바로 비운다
-    const lang = useMemo(() => uiLanguage(), []);
-    const keysStateRpc = useRpc(googleKeysState);
-    const keysSaveRpc = useRpc(googleKeysSave);
-    const keysCheckRpc = useRpc(googleKeysCheck);
-    const [keysState, setKeysState] = useState<GoogleKeysState | null>(null);
-    const [keysStateError, setKeysStateError] = useState<string | null>(null);
-    const [keyInputs, setKeyInputs] = useState({ gemini: "", tts: "" });
-    const [keysBusy, setKeysBusy] = useState<"save" | "check" | null>(null);
-    const [keysMessage, setKeysMessage] = useState<{ text: string; bad: boolean } | null>(null);
-    useEffect(() => {
-      let live = true;
-      keysStateRpc({}).then(
-        (next) => {
-          if (live) setKeysState(next);
-        },
-        (error: unknown) => {
-          if (live) setKeysStateError(t.keysStateFailed(String(error)));
-        },
-      );
-      return () => {
-        live = false;
-      };
-    }, [keysStateRpc, t]);
+    const [speechOpen, setSpeechOpen] = useState(() => readLocal("claude-state-bar:speech-providers-open") === "1");
     // 받아쓰기 이름 힌트(10-10) — 이 PC 데몬 파일에 저장하고 데몬이 서버들에도 보낸다. saved = 마지막으로 읽거나 저장한 내용
     const hintsGetRpc = useRpc(sttHintsGet);
     const hintsSaveRpc = useRpc(sttHintsSave);
@@ -256,8 +273,6 @@ export function createSettingsScreen(onSaved: () => void) {
       const ok = await state.save(parsed.data, state.revision);
       setMessage(ok ? t.saved : t.saveFailed(state.saveError ?? ""));
       if (ok) {
-        // 가져온 값을 저장했으면 "[저장]을 눌러야" 안내는 더 맞지 않는다
-        setImportReport(null);
         onSaved();
       }
     };
@@ -266,28 +281,12 @@ export function createSettingsScreen(onSaved: () => void) {
       const ok = await state.reset();
       setMessage(ok ? t.resetDone : t.resetFailed(state.saveError ?? ""));
       if (ok) {
-        setImportReport(null);
         onSaved();
       }
     };
 
     const toggleSound = () => {
       setSoundOpen(!soundOpen);
-    };
-
-    const runImport = async () => {
-      setImportReport(null);
-      setImporting(true);
-      try {
-        const result = await importExt({});
-        // 입력 칸만 채운다 — 저장은 사용자가 [저장]을 눌러야 된다(10-08 결정). 그사이 바뀐 칸을 덮지 않게 지금 칸 위에 얹는다
-        if (result.status === "ok") setDraft((current) => (current ? applyExtImport(current, result.values) : current));
-        setImportReport(extImportReport(t, result));
-      } catch (error) {
-        setImportReport({ text: t.importFailed(String(error)), bad: true, details: [] });
-      } finally {
-        setImporting(false);
-      }
     };
 
     const syncSwitch = (key: "syncWorkspaceOrder" | "syncLayout", title: string, hint: string) => (
@@ -300,93 +299,20 @@ export function createSettingsScreen(onSaved: () => void) {
       </View>
     );
 
+    // 제목 + "?" 도움말 한 줄(10-12 리규형님 — 설명 글을 늘어놓지 않고 "?"를 눌러 패널로 본다)
+    const titled = (title: string, hint: string) => (
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, zIndex: 10 }}>
+        <Text style={[styles.text, { flexShrink: 1 }]}>{title}</Text>
+        <HelpTip theme={theme} text={hint} fontSize={13} />
+      </View>
+    );
+
     const speechSwitch = (key: "translateEnabled" | "ttsEnabled" | "thinkingAutoOpen", title: string, hint: string) => (
       <View style={[styles.card, styles.switchRow]}>
-        <View style={styles.switchText}>
-          <Text style={styles.text}>{title}</Text>
-          <Text style={styles.muted}>{hint}</Text>
-        </View>
+        <View style={styles.switchText}>{titled(title, hint)}</View>
         <Switch value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={title} />
       </View>
     );
-
-    // 마지막 확인 시각은 시:분만(데몬이 다시 읽히면 확인 결과를 잊으므로 대개 오늘 것이다)
-    const clock = (at: number) => {
-      const d = new Date(at);
-      return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
-    };
-    const keyField = (field: "gemini" | "tts", name: string, state: GoogleKeysState["translate"] | undefined) => (
-      <View style={{ gap: 6 }}>
-        {state ? (
-          <Text style={state.check && !state.check.ok ? styles.error : styles.text}>
-            {t.keyLine(name, state.saved, state.check ? (state.check.ok ? t.keyCheckOk(clock(state.check.at)) : t.keyCheckFailed(clock(state.check.at))) : t.keyCheckNever)}
-          </Text>
-        ) : (
-          <Text style={styles.text}>{name}</Text>
-        )}
-        <UiInput
-          theme={theme}
-          fontSize={14}
-          compact={false}
-          value={keyInputs[field]}
-          onChangeText={(value) => setKeyInputs((current) => ({ ...current, [field]: value }))}
-          placeholder={state?.saved ? t.keyPlaceholderSaved : t.keyPlaceholderMissing}
-          placeholderTextColor={theme.colors.foregroundMuted}
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="off"
-          accessibilityLabel={t.keyInputLabel(name)}
-        />
-      </View>
-    );
-
-    const saveKeys = async () => {
-      const gemini = keyInputs.gemini.trim();
-      const tts = keyInputs.tts.trim();
-      if (!gemini && !tts) {
-        setKeysMessage({ text: t.keysNothing, bad: true });
-        return;
-      }
-      setKeysBusy("save");
-      setKeysMessage(null);
-      try {
-        const result = await keysSaveRpc({ ...(gemini ? { gemini } : {}), ...(tts ? { tts } : {}) });
-        if (result.ok) {
-          setKeysState(result.state);
-          setKeysStateError(null);
-          setKeyInputs({ gemini: "", tts: "" });
-          setKeysMessage({ text: t.keysSaved, bad: false });
-          // 생각 상자·턴·말 읽기 단추가 키 있음을 다시 묻게(thinking.tsx 호스트별 키 확인 기억 비우기)
-          emitSharedSignal("googleKeys");
-        } else {
-          setKeysMessage({
-            text: result.reason === "invalid" ? t.keysInvalid(result.field === "tts" ? t.ttsKeyName : t.geminiKeyName) : t.keysWriteFailed,
-            bad: true,
-          });
-        }
-      } catch (error) {
-        setKeysMessage({ text: t.keysSaveFailed(String(error)), bad: true });
-      } finally {
-        setKeysBusy(null);
-      }
-    };
-
-    const checkKeys = async () => {
-      setKeysBusy("check");
-      setKeysMessage(null);
-      try {
-        const next = await keysCheckRpc({ lang });
-        setKeysState(next);
-        setKeysStateError(null);
-        setKeysMessage({ text: next.translate.saved || next.tts.saved ? t.keysChecked : t.keysCheckNone, bad: false });
-        emitSharedSignal("googleKeys");
-      } catch (error) {
-        setKeysMessage({ text: t.keysCheckFailed(String(error)), bad: true });
-      } finally {
-        setKeysBusy(null);
-      }
-    };
 
     const saveHints = async () => {
       setHintsBusy(true);
@@ -422,8 +348,7 @@ export function createSettingsScreen(onSaved: () => void) {
 
         <SectionTitle icon="Activity" title={t.activitySection} theme={theme} />
         <View style={styles.card}>
-          <Text style={styles.text}>{t.activitySplitTitle}</Text>
-          <Text style={styles.muted}>{t.activitySplitHint}</Text>
+          {titled(t.activitySplitTitle, t.activitySplitHint)}
           <UiInput
             theme={theme}
             fontSize={14}
@@ -438,8 +363,7 @@ export function createSettingsScreen(onSaved: () => void) {
 
         <SectionTitle icon="Folder" title={t.projectsSection} theme={theme} />
         <View style={styles.card}>
-          <Text style={styles.text}>{t.resetOrderTitle}</Text>
-          <Text style={styles.muted}>{t.resetOrderHint}</Text>
+          {titled(t.resetOrderTitle, t.resetOrderHint)}
           {confirmReset ? (
             <View style={styles.row}>
               <Text style={styles.error}>{t.resetOrderConfirm}</Text>
@@ -467,10 +391,14 @@ export function createSettingsScreen(onSaved: () => void) {
         </View>
 
         {/* 번역·읽기(10-08) — 켜기·끄기는 아래 [저장]으로 플러그인 설정에, 키는 [키 저장]으로 이 PC 키 파일에 */}
-        <FoldTitle icon="Languages" title={t.speechSection} theme={theme} open={speechOpen} onToggle={() => setSpeechOpen(!speechOpen)} labels={t.fold} />
+        <FoldTitle icon="Languages" title={t.speechSection} theme={theme} open={speechOpen} onToggle={() => {
+          const open = !speechOpen;
+          writeLocal("claude-state-bar:speech-providers-open", open ? "1" : "0");
+          setSpeechOpen(open);
+        }} labels={t.fold} help={t.speechIntro} />
+        <SpeechProviders theme={theme} t={t} visible={speechOpen} />
         {speechOpen ? (
         <>
-        <Text style={styles.muted}>{t.speechIntro}</Text>
         {speechSwitch("translateEnabled", t.translateTitle, t.translateHint)}
         {speechSwitch("ttsEnabled", t.ttsTitle, t.ttsHint)}
         {speechSwitch("thinkingAutoOpen", t.autoOpenTitle, t.autoOpenHint)}
@@ -478,30 +406,11 @@ export function createSettingsScreen(onSaved: () => void) {
           <SettingsSelect label={t.speedStepTitle} hint={t.speedStepHint} value={String(draft.ttsSpeedStep)}
             options={[{ label: "0.1x", value: "0.1" }, { label: "0.25x", value: "0.25" }]}
             onValueChange={(value) => setDraft({ ...draft, ttsSpeedStep: value === "0.1" ? 0.1 : 0.25 })} />
-          <Text style={styles.text}>{t.speedShortcuts}</Text>
-          <Text style={styles.muted}>{t.speedShortcutsHint}</Text>
-        </View>
-        <View style={styles.card}>
-          <Text style={styles.muted}>{t.speechKeysIntro}</Text>
-          {keyField("gemini", t.geminiKeyName, keysState?.translate)}
-          {keyField("tts", t.ttsKeyName, keysState?.tts)}
-          {!keysState ? <Text style={keysStateError ? styles.error : styles.muted}>{keysStateError ?? t.keysReading}</Text> : null}
-          {keyInputs.gemini.trim() || keyInputs.tts.trim() ? <Text style={styles.muted}>{t.keysUnsaved}</Text> : null}
-          <View style={styles.actions}>
-            <Pressable style={styles.button} onPress={() => void saveKeys()} disabled={keysBusy !== null} accessibilityRole="button" accessibilityLabel={t.keysSave}>
-              <Text style={styles.buttonText}>{keysBusy === "save" ? t.keysSaving : t.keysSave}</Text>
-            </Pressable>
-            <Pressable style={styles.button} onPress={() => void checkKeys()} disabled={keysBusy !== null} accessibilityRole="button" accessibilityLabel={t.keysCheck}>
-              <Text style={styles.buttonText}>{keysBusy === "check" ? t.keysChecking : t.keysCheck}</Text>
-            </Pressable>
-          </View>
-          <Text style={styles.muted}>{t.keysCheckHint}</Text>
-          {keysMessage ? <Text style={keysMessage.bad ? styles.error : styles.text}>{keysMessage.text}</Text> : null}
+          {titled(t.speedShortcuts, t.speedShortcutsHint)}
         </View>
         {/* 받아쓰기 이름 힌트(10-10) — [이름 저장]으로 이 PC 데몬에 저장하고 서버들에도 보낸다 */}
         <View style={styles.card}>
-          <Text style={styles.text}>{t.sttHintsTitle}</Text>
-          <Text style={styles.muted}>{t.sttHintsHint}</Text>
+          {titled(t.sttHintsTitle, t.sttHintsHint)}
           <UiInput
             theme={theme}
             fontSize={14}
@@ -536,49 +445,70 @@ export function createSettingsScreen(onSaved: () => void) {
           <>
             <Text style={styles.muted}>{t.soundIntro}</Text>
 
-            <View style={styles.card}>
-              <Text style={styles.text}>{t.importTitle}</Text>
-              <Text style={styles.muted}>{t.importHint}</Text>
-              <View style={styles.actions}>
-                <Pressable
-                  style={styles.button}
-                  onPress={() => void runImport()}
-                  disabled={importing}
-                  accessibilityRole="button"
-                  accessibilityLabel={t.importButton}
-                >
-                  <Text style={styles.buttonText}>{importing ? t.importing : t.importButton}</Text>
-                </Pressable>
-              </View>
-              {importReport ? (
-                <>
-                  <Text style={importReport.bad ? styles.error : styles.text}>{importReport.text}</Text>
-                  {importReport.details.length ? <Text style={styles.text}>{t.importSkippedHead}</Text> : null}
-                  {importReport.details.map((line) => (
-                    <Text key={line} style={styles.muted}>
-                      · {line}
-                    </Text>
-                  ))}
-                </>
-              ) : null}
-            </View>
-
             {ORDER.map((kind) => (
               <View key={kind} style={styles.card}>
                 <Text style={styles.text}>{t.sounds[kind].title}</Text>
                 <Text style={styles.muted}>{t.sounds[kind].hint}</Text>
                 <View style={styles.row}>
-                  <UiInput
-                    theme={theme}
-                    fontSize={14}
-                    compact={false}
-                    style={styles.fileInput}
-                    value={draft[kind].file}
-                    onChangeText={(file) => setSound(kind, { file })}
-                    placeholder={t.filePlaceholder}
-                    placeholderTextColor={theme.colors.foregroundMuted}
-                    accessibilityLabel={t.fileLabel(t.sounds[kind].title)}
-                  />
+                  {(() => {
+                    const file = draft[kind].file.trim();
+                    const known = systemSounds.some((x) => x.path.toLowerCase() === file.toLowerCase());
+                    const mine = uploadedName(file);
+                    const custom = customKinds.has(kind) || (file !== "" && !known && !mine);
+                    const value = custom ? CUSTOM_SOUND : file === "" ? "" : mine ? file : systemSounds.find((x) => x.path.toLowerCase() === file.toLowerCase())!.path;
+                    return (
+                      <UiSelect
+                        theme={theme}
+                        fontSize={14}
+                        value={value}
+                        options={[
+                          { value: "", label: t.soundDefault },
+                          ...(mine ? [{ value: file, label: t.soundMine(mine) }] : []),
+                          ...systemSounds.map((x) => ({ value: x.path, label: x.name })),
+                          { value: UPLOAD_SOUND, label: t.soundUpload },
+                          { value: CUSTOM_SOUND, label: t.soundCustom },
+                        ]}
+                        onChange={(v) => {
+                          if (v === UPLOAD_SOUND) {
+                            void (async () => {
+                              setMessage(null);
+                              const picked = await pickAudioFile();
+                              if (!picked) return;
+                              if (picked.size > SOUND_UPLOAD_MAX) return setMessage(t.soundUploadFailed("size"));
+                              const r = await uploadSound({ kind, name: picked.name, base64: picked.base64 }).catch(() => null);
+                              if (!r?.ok) return setMessage(t.soundUploadFailed(r && !r.ok ? r.reason : "write"));
+                              const next = new Set(customKinds);
+                              next.delete(kind);
+                              setCustomKinds(next);
+                              setSound(kind, { file: r.path });
+                              setMessage(t.soundUploaded(t.sounds[kind].title));
+                            })();
+                            return;
+                          }
+                          const next = new Set(customKinds);
+                          if (v === CUSTOM_SOUND) next.add(kind);
+                          else {
+                            next.delete(kind);
+                            setSound(kind, { file: v });
+                          }
+                          setCustomKinds(next);
+                        }}
+                      />
+                    );
+                  })()}
+                  {customKinds.has(kind) || (draft[kind].file.trim() !== "" && !uploadedName(draft[kind].file.trim()) && !systemSounds.some((x) => x.path.toLowerCase() === draft[kind].file.trim().toLowerCase())) ? (
+                    <UiInput
+                      theme={theme}
+                      fontSize={14}
+                      compact={false}
+                      style={styles.fileInput}
+                      value={draft[kind].file}
+                      onChangeText={(file) => setSound(kind, { file })}
+                      placeholder={t.filePlaceholder}
+                      placeholderTextColor={theme.colors.foregroundMuted}
+                      accessibilityLabel={t.fileLabel(t.sounds[kind].title)}
+                    />
+                  ) : null}
                   <UiInput
                     theme={theme}
                     fontSize={14}

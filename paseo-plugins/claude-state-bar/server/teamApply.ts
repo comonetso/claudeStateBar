@@ -198,7 +198,9 @@ export async function startTeamJob(memberId: string, action: TeamJobAction): Pro
             ? await skillsJob(job, m)
             : action === "invite"
               ? await inviteJob(job, m)
-              : await removeJob(job, m, action === "remove-purge" ? "purge" : "keep");
+              : action === "reset"
+                ? await resetJob(job, m)
+                : await removeJob(job, m, action === "remove-purge" ? "purge" : "keep");
     } catch (error) {
       say(job, `멈춤: ${(error as Error).message}`);
       job.ok = false;
@@ -251,6 +253,25 @@ async function inviteJob(job: Job, m: TeamMember): Promise<boolean> {
     say(job, "로그인 계정이 아직 없습니다 — 서버 반영이 끝나면 초대 키가 함께 나옵니다");
     return false;
   }
+  return issueInvite(job, m);
+}
+
+/**
+ * 등록 초기화(10-12 리규형님 — 인계·폰 바꿈): 로그인 서버에서 비밀번호·OTP 를 지우고 등록 대기로 되돌린 뒤(그 팀원 로그인은 끊긴다)
+ * 초대 키까지 한 번에 받는다. 서버 계정·프로젝트·기록은 건드리지 않는다
+ */
+async function resetJob(job: Job, m: TeamMember): Promise<boolean> {
+  if (!m.loginAdded) {
+    say(job, "로그인 계정이 아직 없습니다 — 초기화할 등록이 없습니다");
+    return false;
+  }
+  const r = await ssh(LOGIN_HOST, `${GATE} member-reset ${m.id} --json`);
+  const j = lastJson(r.out);
+  if (!j?.ok) {
+    say(job, `등록을 초기화하지 못했습니다 — ${failText(j, r)}`);
+    return false;
+  }
+  say(job, `${m.id} 의 비밀번호·인증 앱 등록을 지우고 등록 대기로 되돌렸습니다(지금 로그인은 끊겼습니다)`);
   return issueInvite(job, m);
 }
 

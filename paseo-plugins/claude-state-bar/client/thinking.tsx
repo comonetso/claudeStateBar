@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { z } from "zod";
 import { translateKo } from "../shared/translate";
+import { speechGet, type SpeechSettings } from "../shared/speech";
 import { googleStatus, ttsSynthesize } from "../shared/tts";
 import { uiLanguage } from "./appLanguage";
 import { featureSwitches, onSharedSignal, speechOptions } from "./sounds";
@@ -44,7 +45,7 @@ function applyReadingSettings(): void {
   controller.applySpeedStep(options.speedStep, value);
 }
 applyReadingSettings();
-const statuses = new Map<string, Promise<{ translate: boolean; tts: boolean }>>();
+const statuses = new Map<string, Promise<{ translate: boolean; tts: boolean; settings: SpeechSettings }>>();
 // 설정 화면에서 키를 저장·확인하면(10-08) 위 키 확인 기억을 비우고 떠 있는 상자들이 다시 묻게 한다
 const keyListeners = new Set<() => void>();
 // 화면에서 마지막으로 선택한 글(웹·데스크톱) — 상자의 읽기·번역읽기를 누르는 순간 선택이 풀려도 누름이 먼저 처리돼 이것을 쓴다
@@ -64,7 +65,8 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   const translate = useRpc(translateKo);
   const synthesize = useRpc(ttsSynthesize);
   const statusRpc = useRpc(googleStatus);
-  const rpc = useMemo(() => ({ translate, synthesize }), [translate, synthesize]);
+  const speechRpc = useRpc(speechGet);
+  const rpc = useMemo(() => ({ translate, synthesize, speech: async () => (await speechRpc({ lang: uiLanguage() })).settings }), [translate, synthesize, speechRpc]);
   const [, bump] = useState(0);
   const [keys, setKeys] = useState({ translate: false, tts: false });
   const [keysRev, setKeysRev] = useState(0);
@@ -92,14 +94,14 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
     let live = true;
     let status = statuses.get(host.id);
     if (!status) {
-      status = statusRpc({});
+      status = Promise.all([statusRpc({}), speechRpc({ lang: uiLanguage() })]).then(([keys, speech]) => ({ ...keys, settings: speech.settings }));
       statuses.set(host.id, status);
     }
-    void status.then((result) => { if (live) setKeys(result); }, (error: unknown) => {
+    void status.then((result) => { if (live) { controller.applySpeech(host.id, result.settings); setKeys(result); } }, (error: unknown) => {
       if (live) { box.error = `키 확인 실패: ${String(error)}`; bump((n) => n + 1); }
     });
     return () => { live = false; };
-  }, [host.id, statusRpc, box, keysRev]);
+  }, [host.id, statusRpc, speechRpc, box, keysRev]);
 
   useEffect(() => {
     box.rpc = rpc;

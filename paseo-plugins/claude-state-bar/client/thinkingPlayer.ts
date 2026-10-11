@@ -1,11 +1,13 @@
+import type { SpeechSettings, SpeechLang, TranslateProvider } from "../shared/speech";
 export type Phase = "streaming" | "complete";
 export type Paragraph = { src: string; done: boolean };
 export type AudioFile = { base64: string; mimeType: string };
-/** 번역 대상·읽기 음성 언어(10-08 — Paseo 언어 설정을 따른다, client/appLanguage uiLanguage) */
-export type Lang = "ko" | "en";
+/** 번역 대상·읽기 언어: 데몬 저장값 우선, 저장 전에는 Paseo 화면 언어. */
+export type Lang = SpeechLang;
 export type ThinkingRpc = {
-  translate(input: { texts: string[]; lang?: Lang }): Promise<{ translations: (string | null)[]; error?: string }>;
+  translate(input: { texts: string[]; lang?: Lang }): Promise<{ translations: (string | null)[]; error?: string; provider?: TranslateProvider; lang?: Lang }>;
   synthesize(input: { text: string; lang?: Lang }): Promise<({ ok: true } & AudioFile) | { ok: false; error: string }>;
+  speech?(): Promise<SpeechSettings>;
 };
 /** 읽기 시작 자리(10-08 생각 상자 선택 읽기) — index 번째 문단의, 화면에 보이던 글 안 offset 번째 글자부터 */
 export type StartAt = { index: number; offset: number };
@@ -18,8 +20,8 @@ export type ThinkingAudio = {
 };
 /** 이 기기에 담아 둔 플러그인 번역(10-10, client/translationCache) — 원문 문단 그대로 찾는다. 없거나 못 쓰면 빈 결과 */
 export type TranslationCache = {
-  lookup(lang: Lang, texts: string[]): Promise<Map<string, string>>;
-  store(lang: Lang, entries: [string, string][]): void;
+  lookup(lang: Lang, texts: string[], provider?: TranslateProvider): Promise<Map<string, string>>;
+  store(lang: Lang, entries: [string, string][], provider?: TranslateProvider): void;
 };
 export type ThinkingBoxState = {
   key: string;
@@ -53,6 +55,7 @@ export type ThinkingBoxState = {
   epoch: number;
   /** translations 를 어느 언어로 받았나 — Paseo 언어가 바뀌면 받은 번역을 버리고 새 언어로 다시 받는다(10-08) */
   translatedLang?: Lang;
+  translatedProvider?: TranslateProvider;
   busy?: object;
   rpc?: ThinkingRpc;
   /**
@@ -111,6 +114,7 @@ const NON_LATIN_LETTER = /[\u0370-\u03ff\u0400-\u052f\u0530-\u058f\u0590-\u05ff\
 /** 번역할 문단인가. 한국어 대상 = 기존 생각 상자의 영어·한글 비율 기준. 영어 대상(10-08) = 라틴 문자가 아닌 글자가 있으면
  *  (Claude 가 정한 규칙 — 데몬 server/translate 의 영어 문장 판정과 같은 뜻) */
 export function needsTranslation(s: string, lang: Lang = "ko"): boolean {
+  if (lang !== "ko" && lang !== "en") return /\p{L}/u.test(s);
   if (lang === "en") return NON_LATIN_LETTER.test(s);
   const letters = s.replace(/\s/g, "").length;
   if (!letters || !/[A-Za-z]{2,}/.test(s)) return false;
@@ -193,6 +197,21 @@ export class ThinkingController {
   speedStep: SpeedStep = 0.25;
   /** 번역을 보내기 전에 먼저 보는 이 기기 보관(10-10). 없으면(폰·시험) 늘 번역을 보낸다 */
   cache?: TranslationCache;
+  private speech = new Map<string, SpeechSettings>();
+  private language(box: ThinkingBoxState): Lang { return this.speech.get(box.hostId)?.lang ?? this.lang(); }
+  private provider(box: ThinkingBoxState): TranslateProvider { return this.speech.get(box.hostId)?.translate ?? "google"; }
+  /** 호스트별 설정을 반영한다. 공급자·언어가 달라지면 옛 문단을 지우고 새 보관 키로 다시 읽는다. */
+  applySpeech(hostId: string, settings: SpeechSettings): void {
+    const previous = this.speech.get(hostId);
+    if (JSON.stringify(previous) === JSON.stringify(settings)) return;
+    this.speech.set(hostId, settings);
+    if (this.run?.box.hostId === hostId) this.stop();
+    for (const box of this.boxes.values()) {
+      if (box.hostId !== hostId) continue;
+      this.translateMore(box);
+    }
+    this.notify();
+  }
 
   /** lang = 지금 번역 대상·음성 언어를 그때그때 묻는 함수(10-08). 시험·옛 부르기는 한국어 */
   constructor(
@@ -311,14 +330,16 @@ export class ThinkingController {
   }
 
   private translateMore(box: ThinkingBoxState): void {
-    const lang = this.lang();
+    const lang = this.language(box);
+    const provider = this.provider(box);
     // Paseo 언어가 바뀌었으면 옛 언어로 받은 번역을 버린다(10-08) — 다음 줄부터 새 언어로 다시 받는다
-    if (box.translatedLang !== undefined && box.translatedLang !== lang) {
+    if (box.translatedLang !== undefined && (box.translatedLang !== lang || box.translatedProvider !== provider)) {
       this.cancelTranslation(box);
       box.translations.clear();
       box.failures.clear();
     }
     box.translatedLang = lang;
+    box.translatedProvider = provider;
     if (!box.translate || box.suspended || box.busy || !box.rpc) return;
     const texts = [...new Set(splitParagraphs(boxText(box), boxPhase(box)).filter((p) => p.done && needsTranslation(p.src, lang) && !box.translations.has(p.src)).map((p) => p.src))].slice(0, 20);
     if (!texts.length) return;
@@ -343,9 +364,27 @@ export class ThinkingController {
    */
   private async fetchTranslations(box: ThinkingBoxState, rpc: ThinkingRpc, texts: string[], lang: Lang, epoch: number): Promise<void> {
     const live = () => box.epoch === epoch;
+    const provider = this.provider(box);
+    try {
+      // 보관을 보기 직전에 데몬의 실제 공급자·언어를 확인한다(다른 화면이나 서버에서 바꾼 설정도 구분).
+      if (rpc.speech) {
+        const settings = await rpc.speech();
+        if (!live()) return;
+        if (JSON.stringify(this.speech.get(box.hostId)) !== JSON.stringify(settings)) {
+          this.applySpeech(box.hostId, settings);
+          if (!live()) return;
+        }
+      }
+    } catch {
+      if (live()) {
+        box.error = "음성 공급자 설정을 읽지 못했습니다";
+        for (const text of texts) { box.translations.set(text, null); box.failures.set(text, box.error); }
+      }
+      return;
+    }
     let rest = texts;
     if (this.cache) {
-      const cached = await this.cache.lookup(lang, texts).catch(() => new Map<string, string>());
+      const cached = await this.cache.lookup(lang, texts, provider).catch(() => new Map<string, string>());
       if (!live()) return;
       for (const [text, value] of cached) box.translations.set(text, value);
       rest = texts.filter((text) => !cached.has(text));
@@ -358,8 +397,14 @@ export class ThinkingController {
         const value = result.translations[i];
         if (typeof value === "string" && value.trim()) got.push([text, value]);
       });
-      if (got.length) this.cache?.store(lang, got);
+      if (got.length) this.cache?.store(result.lang ?? lang, got, result.provider ?? provider);
       if (!live()) return;
+      if ((result.provider && result.provider !== provider) || (result.lang && result.lang !== lang)) {
+        box.error = "번역 중 공급자 또는 언어가 바뀌었습니다. 다시 번역해 주세요.";
+        box.suspended = true;
+        if (this.run?.box === box && this.run.strict) this.stop(box.error);
+        return;
+      }
       rest.forEach((text, i) => {
         const value = result.translations[i];
         const translation = typeof value === "string" && value.trim() ? value : null;
@@ -558,7 +603,7 @@ export class ThinkingController {
   private readable(run: Run, index: number): string | undefined {
     const paragraph = splitParagraphs(boxText(run.box), boxPhase(run.box))[index];
     if (!paragraph?.done) return;
-    if (run.strict && needsTranslation(paragraph.src, this.lang()) && typeof run.box.translations.get(paragraph.src) !== "string") return;
+    if (run.strict && needsTranslation(paragraph.src, this.language(run.box)) && typeof run.box.translations.get(paragraph.src) !== "string") return;
     const shown = this.spoken(run.box, index, paragraph);
     // 선택한 글자부터(10-08) — 그 문단 화면 글이 누를 때 그대로일 때만
     const from = run.from;
@@ -571,7 +616,7 @@ export class ThinkingController {
     if (old) old.live = false;
     const slot: Slot = { text, live: true, promise: Promise.resolve().then(async () => {
       if (!slot.live || this.run !== run || run.box.suspended) throw new Error("취소된 합성");
-      const result = await run.box.rpc!.synthesize({ text, lang: this.lang() });
+      const result = await run.box.rpc!.synthesize({ text, lang: this.language(run.box) });
       if (!result.ok) throw new Error(result.error);
       return { base64: result.base64, mimeType: result.mimeType };
     }) };
@@ -596,7 +641,7 @@ export class ThinkingController {
   }
 
   private awaitingTranslation(box: ThinkingBoxState, paragraph: Paragraph): boolean {
-    return box.translate && !box.original && !box.suspended && paragraph.done && needsTranslation(paragraph.src, this.lang()) && !box.translations.has(paragraph.src);
+    return box.translate && !box.original && !box.suspended && paragraph.done && needsTranslation(paragraph.src, this.language(box)) && !box.translations.has(paragraph.src);
   }
 
   private async pump(run: Run): Promise<void> {
@@ -609,7 +654,7 @@ export class ThinkingController {
       this.notify();
       return;
     }
-    if (run.strict && needsTranslation(paragraph.src, this.lang()) && run.box.translations.get(paragraph.src) === null) {
+    if (run.strict && needsTranslation(paragraph.src, this.language(run.box)) && run.box.translations.get(paragraph.src) === null) {
       this.stop(`번역 실패로 읽기 중지: ${run.box.failures.get(paragraph.src) || "문단 번역 실패"}`);
       return;
     }

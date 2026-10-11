@@ -1,14 +1,15 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { KEY_FIELDS, type KeyField } from "../shared/speech";
 
-type GoogleKeys = { gemini?: string; tts?: string };
+export type GoogleKeys = Partial<Record<KeyField, string>>;
 let cachedPath = "";
 let cachedVersion = "";
 let cachedKeys: GoogleKeys = {};
 
-const KEY_LINE = /^\s*(?:export\s+)?(GOOGLE_GEMINI_KEY|GOOGLE_TTS_KEY)\s*=\s*(.*?)\s*$/;
-const ENV_NAMES = { gemini: "GOOGLE_GEMINI_KEY", tts: "GOOGLE_TTS_KEY" } as const;
+const KEY_LINE = /^\s*(?:export\s+)?(GOOGLE_GEMINI_KEY|GOOGLE_TTS_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY)\s*=\s*(.*?)\s*$/;
+const ENV_NAMES = { gemini: "GOOGLE_GEMINI_KEY", tts: "GOOGLE_TTS_KEY", openai: "OPENAI_API_KEY", anthropic: "ANTHROPIC_API_KEY" } as const;
 
 /** 이 데몬의 키 파일 — ~/.paseo/claude-state-bar/google.env(PASEO_HOME 이 있으면 그 아래) */
 export function googleKeysFile(): string {
@@ -34,7 +35,8 @@ export function readGoogleKeys(): GoogleKeys {
       } else {
         value = value.replace(/\s+#.*$/, "").trim();
       }
-      keys[match[1] === "GOOGLE_GEMINI_KEY" ? "gemini" : "tts"] = value || undefined;
+      const field = KEY_FIELDS.find((field) => ENV_NAMES[field] === match[1])!;
+      keys[field] = value || undefined;
     }
     cachedPath = file;
     cachedVersion = version;
@@ -64,7 +66,7 @@ export function isWritableKey(value: string): boolean {
  * 임시 파일에 다 쓴 뒤 바꿔 넣는다(쓰다 끊겨도 반쯤 쓴 파일이 남지 않게). 유닉스에서는 주인만 읽게(600) 둔다.
  * 🔴 키 값은 어디에도 기록하지 않는다 — 부르는 쪽도 로그에 남기지 않는다.
  */
-export function writeGoogleKeys(patch: { gemini?: string; tts?: string }): void {
+export function writeGoogleKeys(patch: GoogleKeys): void {
   const file = googleKeysFile();
   let original = "";
   try {
@@ -79,7 +81,7 @@ export function writeGoogleKeys(patch: { gemini?: string; tts?: string }): void 
   // 끝 줄바꿈으로 생긴 마지막 빈 조각은 붙일 자리 계산에서 빼 두었다가 다시 붙인다
   const trailing = lines.length > 0 && lines[lines.length - 1] === "";
   if (trailing) lines.pop();
-  for (const field of ["gemini", "tts"] as const) {
+  for (const field of KEY_FIELDS) {
     const value = patch[field];
     if (value === undefined) continue;
     const name = ENV_NAMES[field];

@@ -2,7 +2,9 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { Platform } from "react-native";
 import { hostInfo } from "../shared/sound";
 import { translateKo } from "../shared/translate";
+import { speechGet, type SpeechSettings } from "../shared/speech";
 import { googleStatus, ttsSynthesize } from "../shared/tts";
+import { uiLanguage } from "./appLanguage";
 import { featureSwitches, onSharedSignal } from "./sounds";
 import { thinkingController as controller } from "./thinking";
 import type { ThinkingBoxState } from "./thinkingPlayer";
@@ -14,6 +16,7 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
   let live = true;
   let hostId: string | null = null;
   let canSpeak = false;
+  let speechSettings: SpeechSettings | undefined;
   let keyCheck = 0;
   let serial = 0;
   let target: unknown;
@@ -92,11 +95,13 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     };
   });
   // 호스트 번호가 없는 연결은 다른 서버의 키로 읽지 않는다. 화면 fiber 의 serverId 와 대조한다.
-  void client.rpc(hostInfo, {}).then((info) => { if (live) { hostId = info.serverId ?? null; log(`turn read: 호스트 ${hostId ? "확인" : "번호 없음"}`); refresh(); } }, (error: unknown) => { if (live) log(`turn read: host check failed ${String(error)}`); });
+  void client.rpc(hostInfo, {}).then((info) => { if (live) { hostId = info.serverId ?? null; if (hostId && speechSettings) controller.applySpeech(hostId, speechSettings); log(`turn read: 호스트 ${hostId ? "확인" : "번호 없음"}`); refresh(); } }, (error: unknown) => { if (live) log(`turn read: host check failed ${String(error)}`); });
   const checkKeys = () => {
     const mine = ++keyCheck;
-    void client.rpc(googleStatus, {}).then((status) => {
+    void Promise.all([client.rpc(googleStatus, {}), client.rpc(speechGet, { lang: uiLanguage() })]).then(([status, speech]) => {
       if (!live || mine !== keyCheck) return;
+      speechSettings = speech.settings;
+      if (hostId) controller.applySpeech(hostId, speech.settings);
       canSpeak = status.tts;
       log(`turn read: 음성 합성 키 ${canSpeak ? "있음" : "없음"}`);
       if (!canSpeak && box && playing()?.active) controller.stop();

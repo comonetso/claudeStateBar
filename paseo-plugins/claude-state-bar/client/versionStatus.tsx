@@ -73,7 +73,6 @@ function RoleBlock({ t, theme }: { t: SettingsText; theme: PluginTheme }) {
   return (
     <>
       <Text style={{ color: c.foreground, fontSize: 14 }}>{line}</Text>
-      <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>{t.roleHint}</Text>
       {canClaim ? (
         <Pressable accessibilityRole="button" disabled={busy} onPress={run(claimOwner)} style={button}>
           <Text style={{ color: c.foreground, fontSize: 13 }}>{busy ? t.roleBusy : t.roleClaim}</Text>
@@ -99,7 +98,7 @@ export function MainDeviceSection({ theme, t }: { theme: PluginTheme; t: Setting
   if (!appBundleId()) return null;
   return (
     <>
-      <SectionTitle icon="MonitorCheck" title={t.roleHead} theme={theme} />
+      <SectionTitle icon="MonitorCheck" title={t.roleHead} theme={theme} help={t.roleHint} />
       <View style={{ gap: 6, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1 }}>
         <RoleBlock t={t} theme={theme} />
       </View>

@@ -64,9 +64,10 @@ const memberSchema = z.object({
 export type TeamMember = z.infer<typeof memberSchema>;
 /**
  * remove-keep = 홈 디렉터리 유지 · remove-purge = 완전 삭제(10-11 리규형님: 삭제를 누를 때 둘 중 하나를 고른다) ·
- * invite = 초대 키 다시 발급(등록을 아직 안 마친 직원 — 잃어버렸거나 24시간이 지났을 때)
+ * invite = 초대 키 다시 발급(등록을 아직 안 마친 직원 — 잃어버렸거나 24시간이 지났을 때) ·
+ * reset = 등록 초기화(10-12 리규형님: 비밀번호·OTP 를 지우고 등록 대기로 되돌린 뒤 초대 키까지 한 번에 — 인계·폰 바꿈)
  */
-export const TEAM_JOB_ACTIONS = ["apply", "skills", "remove-keep", "remove-purge", "invite"] as const;
+export const TEAM_JOB_ACTIONS = ["apply", "skills", "remove-keep", "remove-purge", "invite", "reset"] as const;
 export type TeamJobAction = (typeof TEAM_JOB_ACTIONS)[number];
 
 const teamResult = z.object({ ok: z.boolean(), error: z.string().optional(), members: z.array(memberSchema) });

@@ -16,6 +16,26 @@ export const soundData = defineRpc({
   output: z.object({ dataUrl: z.string(), path: z.string() }),
 });
 
+// 이 호스트에 있는 시스템 소리 파일 목록(10-12 리규형님: 경로를 직접 쓰는 칸 대신 선택 상자로 고르기).
+// Windows = C:\Windows\Media 의 WAV, 맥 = /System/Library/Sounds. 그 밖(리눅스 서버)은 빈 목록
+export const soundList = defineRpc({
+  name: "sound.list",
+  input: z.object({}),
+  output: z.object({ files: z.array(z.object({ path: z.string(), name: z.string() })) }),
+});
+
+// 내 파일 고르기(10-12 리규형님: 컴퓨터에서 파일을 골라야) — 브라우저는 고른 파일의 경로를 주지 않으므로 내용을 이 데몬에 보내
+// 플러그인 폴더(sounds/)에 저장하고 그 경로를 돌려준다. 상한 2MB(리규형님 결정). 확장자 wav·mp3·ogg
+export const SOUND_UPLOAD_MAX = 2 * 1024 * 1024;
+export const soundUpload = defineRpc({
+  name: "sound.upload",
+  input: z.object({ kind: z.enum(soundKinds), name: z.string().max(200), base64: z.string() }),
+  output: z.discriminatedUnion("ok", [
+    z.object({ ok: z.literal(true), path: z.string() }),
+    z.object({ ok: z.literal(false), reason: z.enum(["type", "size", "write"]) }),
+  ]),
+});
+
 // 이 호스트에서 소리를 낼 수 있는지(윈도우·맥 데몬) 묻는다. 리눅스 서버는 소리 파일이 없다.
 export const hostInfo = defineRpc({
   name: "host.info",

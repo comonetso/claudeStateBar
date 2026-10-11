@@ -1,5 +1,6 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
+import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { projectsHosts } from "../shared/projects";
@@ -452,10 +453,20 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
 
   const [editing, setEditing] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmReset, setConfirmReset] = useState<string | null>(null);
   const [message, setMessage] = useState<{ text: string; bad: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   // 팀원 추가 칸 — 팀원이 없을 때만 펼쳐 두고, 저장하면 접는다(10-11 리규형님 "추가할 때도 마찬가지")
   const [formOpen, setFormOpen] = useState(members.length === 0);
+  // 팀원 줄은 평소 접어 두고 이름을 누르면 서버·권한·스킬 줄을 펼친다(10-12 리규형님: 팀원이 10명이면 다 펼쳐진 게 어지럽다).
+  // 단추 줄과 서버 작업 진행은 접혀 있어도 보인다
+  const [openMembers, setOpenMembers] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleMember = (mid: string) =>
+    setOpenMembers((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(mid)) next.add(mid);
+      return next;
+    });
 
   const [id, setId] = useState("");
   const [pickServers, setPickServers] = useState<Set<string>>(new Set());
@@ -777,11 +788,20 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
           const state = serverState(m);
           const running = !!jobs[m.id] && !jobs[m.id].done;
           const onServer = m.applied.length > 0 || m.loginAdded;
+          const open = openMembers.has(m.id);
           return (
           <View key={m.id} style={{ gap: 6, paddingVertical: 8, paddingLeft: 12, borderBottomWidth: 1, borderColor: c.border }}>
             <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-              <Text style={{ fontSize: fs(13), fontWeight: "600", color: c.foreground }}>{m.id}</Text>
-              <Text style={{ fontSize: fs(11), color: state.warn ? c.statusWarning : c.statusSuccess }}>{state.text}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${m.id} 자세히 ${open ? "접기" : "보기"}`}
+                onPress={() => toggleMember(m.id)}
+                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+              >
+                <Icon name={open ? "ChevronDown" : "ChevronRight"} size={fs(14)} color={c.foregroundMuted} />
+                <Text style={{ fontSize: fs(16), fontWeight: "700", color: c.foreground }}>{m.id}</Text>
+                <Text style={{ fontSize: fs(11), color: state.warn ? c.statusWarning : c.statusSuccess }}>{state.text}</Text>
+              </Pressable>
               <View style={{ flex: 1 }} />
               {!running && state.warn
                 ? button("다시 시도", () => runJob(m.id, "apply"), { tone: "accent", hint: "고른 서버에 이 팀원 Paseo 를 다시 만들거나 고칩니다(그 팀원 Paseo 가 잠깐 다시 시작)" })
@@ -792,6 +812,21 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
                     disabled: running,
                     hint: "등록을 아직 안 마친 팀원에게 새 초대 키를 냅니다(전 키는 못 쓰게 됩니다). 이미 등록을 마친 팀원이면 서버가 거절합니다",
                   })
+                : null}
+              {/* 등록 초기화(10-12 리규형님 — 인계·폰 바꿈): 삭제처럼 한 번 더 눌러 확인 */}
+              {m.loginAdded
+                ? confirmReset === m.id
+                  ? [
+                      button("정말 초기화", () => {
+                        setConfirmReset(null);
+                        runJob(m.id, "reset");
+                      }, { tone: "danger", hint: "비밀번호·인증 앱 등록을 지우고 새 초대 키를 냅니다. 지금 로그인은 끊깁니다" }),
+                      button("취소", () => setConfirmReset(null)),
+                    ]
+                  : button("등록 초기화", () => setConfirmReset(m.id), {
+                      disabled: running,
+                      hint: "이 팀원의 비밀번호·인증 앱 등록을 지우고 새 초대 키를 냅니다 — 팀원이 처음 등록처럼 다시 정합니다(서버 계정·프로젝트·기록은 그대로)",
+                    })
                 : null}
               {m.applied.length > 0 && m.skills.length > 0
                 ? button("스킬 다시 맞추기", () => runJob(m.id, "skills"), {
@@ -821,6 +856,8 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
                       : "이 팀원과 그 팀원 프로젝트 목록을 지웁니다(서버에는 아직 만들지 않았습니다)",
                   })}
             </View>
+            {open ? (
+            <>
             <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
               {muted("서버")}
               {m.servers.map((s) => chip(s, `s-${s}`))}
@@ -845,6 +882,8 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
               {muted(`스킬·명령어 ${m.skills.length}`)}
               {m.skills.map((s) => chip(itemLabel(s), `k-${s}`))}
             </View>
+            </>
+            ) : null}
             <JobLog theme={theme} job={jobs[m.id]} fontSize={fs(10)} />
           </View>
           );
@@ -853,10 +892,20 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
 
       {/* 팀원 추가 */}
       {!formOpen ? (
-        <View style={{ flexDirection: "row" }}>{button("팀원 추가", () => setFormOpen(true), { tone: "accent" })}</View>
+        <View style={{ flexDirection: "row" }}>
+          <UiButton theme={theme} label="팀원 추가" fontSize={fs(11)} tone="accent" disabled={busy} onPress={() => setFormOpen(true)}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Icon name="UserPlus" size={fs(12)} color={c.accent} />
+              <Text style={{ fontSize: fs(11), color: c.accent }}>팀원 추가</Text>
+            </View>
+          </UiButton>
+        </View>
       ) : (
       <View style={box}>
-        {title(editing ? `팀원 고치기 — ${editing}` : "팀원 추가")}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Icon name={editing ? "UserCog" : "UserPlus"} size={fs(14)} color={c.accent} />
+          {title(editing ? `팀원 고치기 — ${editing}` : "팀원 추가")}
+        </View>
         {field(
           "아이디",
           <UiInput

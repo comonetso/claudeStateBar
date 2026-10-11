@@ -17,16 +17,18 @@ import { soundClaim, soundScreenUsed, soundPresence, soundReport, soundWait, sou
 import { createSoundOrigins } from "./server/soundEvents";
 import { soundOriginObserve, soundOriginPrepare, soundOriginValidate, soundOriginDrop } from "./shared/soundEvents";
 import { translateTexts } from "./server/translate";
-import { getGoogleStatus } from "./server/googleKeys";
-import { checkGoogleKeys, googleKeysState as readGoogleKeysState, saveGoogleKeys } from "./server/googleCheck";
+import { checkGoogleKeys, googleKeysState as readGoogleKeysState, saveGoogleKeys, speechKeysState as readSpeechKeysState, saveSpeechKeys, checkSpeechKeys } from "./server/googleCheck";
 import { googleKeysCheck, googleKeysSave, googleKeysState } from "./shared/googleKeys";
-import { synthesizeText } from "./server/tts";
+import { synthesizeText, previewVoice } from "./server/tts";
+import { readSpeechSettings, saveSpeechSettings } from "./server/speech";
+import { speechGet, speechSave, speechPreview, speechKeysState, speechKeysSave, speechKeysCheck } from "./shared/speech";
+import { readGoogleKeys } from "./server/googleKeys";
 import { translateKo } from "./shared/translate";
 import { googleStatus, ttsSynthesize } from "./shared/tts";
 import { startSttServer } from "./server/sttServer";
 import { readSttHints, saveSttHints } from "./server/sttHints";
 import { sttHintsGet, sttHintsSave } from "./shared/stt";
-import { canPlayHere, canCoordinateSound, isTeamDaemon, createSoundReader, LEGACY_SILENT_WAV } from "./server/sound";
+import { canPlayHere, canCoordinateSound, isTeamDaemon, createSoundReader, LEGACY_SILENT_WAV, listSystemSounds, saveUploadedSound } from "./server/sound";
 import { activityCounts, activityList, agentActivity, bgClear, bgOutput } from "./shared/activity";
 import { chimeCheck, chimeCheckV2, chimeForget, lastTurnCheck } from "./shared/chime";
 import {
@@ -63,7 +65,7 @@ import { syncPut, syncWait } from "./shared/settingsSync";
 import { layoutLoad, layoutOwnerGet, layoutOwnerSet, layoutSave } from "./shared/layoutSync";
 import { putSettings, waitSettings } from "./server/settingsSync";
 import { hostIdentity, layoutOwner, loadLayout, saveLayout, setLayoutOwner } from "./server/layoutSync";
-import { hostInfo, soundData, soundDataV2 } from "./shared/sound";
+import { hostInfo, soundData, soundDataV2, soundList, soundUpload } from "./shared/sound";
 import { importExtSettings } from "./server/extSettings";
 import { extSettingsImport } from "./shared/extSettings";
 import { collectClaudeStats } from "./server/stats/claudeStats";
@@ -78,6 +80,8 @@ export default function contribute(server: PluginServerContext) {
 
   const readSound = createSoundReader(readSettings);
   server.handle(soundDataV2, readSound);
+  server.handle(soundList, async () => ({ files: await listSystemSounds() }));
+  server.handle(soundUpload, ({ kind, name, base64 }) => saveUploadedSound(kind, name, base64));
   server.handle(soundData, async (input) => input.file !== undefined || input.gain !== undefined
     ? readSound(input) : { dataUrl: LEGACY_SILENT_WAV, path: "" });
   // team = 서버 울타리 안 직원 데몬(10-11, paseo-team@ 유닛이 TEAM_UID·PASEO_HOME=/team/paseo 를 준다)
@@ -227,7 +231,18 @@ export default function contribute(server: PluginServerContext) {
   // 10-08: 번역 대상·음성 언어(lang)는 화면이 Paseo 언어 설정으로 정해 보낸다. 없으면(옛 화면) 한국어
   server.handle(translateKo, async ({ texts, lang }) => translateTexts(texts, lang ?? "ko"));
   server.handle(ttsSynthesize, async ({ text, lang }) => synthesizeText(text, lang ?? "ko"));
-  server.handle(googleStatus, async () => getGoogleStatus());
+  server.handle(googleStatus, async () => {
+    const settings = readSpeechSettings().settings;
+    const keys = readGoogleKeys();
+    return { translate: !!(settings.translate === "google" ? keys.gemini : keys[settings.translate]),
+      tts: !!(settings.tts === "google" ? keys.tts : keys.openai) };
+  });
+  server.handle(speechGet, async ({ lang }) => readSpeechSettings(lang));
+  server.handle(speechSave, async (settings) => saveSpeechSettings(settings));
+  server.handle(speechPreview, async (input) => previewVoice(input));
+  server.handle(speechKeysState, async () => readSpeechKeysState());
+  server.handle(speechKeysSave, async (input) => saveSpeechKeys(input));
+  server.handle(speechKeysCheck, async (settings) => checkSpeechKeys(settings));
   // 설정 화면 "번역·읽기" 칸(10-08) — 키 저장·확인. 🔴 키 값은 돌려보내지 않는다(있음/없음·마지막 확인 결과만)
   server.handle(googleKeysState, async () => readGoogleKeysState());
   server.handle(googleKeysSave, async (input) => saveGoogleKeys(input));

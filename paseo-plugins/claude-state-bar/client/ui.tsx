@@ -1,6 +1,6 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { createElement, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Platform, Pressable, Text, TextInput, View, type StyleProp, type TextInputProps, type TextStyle, type ViewStyle } from "react-native";
+import { Modal, Platform, Pressable, Text, TextInput, useWindowDimensions, View, type StyleProp, type TextInputProps, type TextStyle, type ViewStyle } from "react-native";
 import { scaled, useFontScale } from "./fontScale";
 import { setHoverTitle } from "./web";
 
@@ -157,30 +157,71 @@ export function UiSelect({ theme, value, options, onChange, fontSize, dim }: { t
  * 띄운다 — 아래로 띄우면 다음 줄(뒤에 그려지는 줄)이 풍선 위에 겹쳐 보였다. 바탕은 페이지 바탕색으로 채우고 밝은 테두리를 둘러
  * 뒤 글과 섞이지 않게 한다(10-11 리규형님 "배경이 투명이라 뒤에 것이 헷갈림")
  */
+// "?" 도움말 — 누르면 풍선 모양 도움말 패널이 열리고, 패널의 닫기·바깥을 누르면 닫힌다(10-12 리규형님: 마우스 올림 풍선 말고
+// 눌러서 여는 도움말 패널 — 설명 글을 화면에 늘어놓지 않으려고). 패널은 Modal(문서 맨 위 층)에 "?" 바로 아래 위치를 재서 그린다 —
+// 칸 안에 두면 칸마다 겹침 층이 따로 생겨 아래 칸이 패널을 덮었다(10-12 캡처). 글은 고르고 복사할 수 있다
+const HELP_WIDTH = 360;
 export function HelpTip({ theme, text, fontSize }: { theme: PluginTheme; text: string; fontSize: number }) {
   const c = theme.colors;
-  const [open, setOpen] = useState(false);
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const button = useRef<View>(null);
+  const win = useWindowDimensions();
+  const open = at !== null;
   const size = Math.round(fontSize * 1.35);
+  const toggle = () => {
+    if (open) return setAt(null);
+    button.current?.measureInWindow((x, y, _w, h) => setAt({ x, y: y + h }));
+  };
+  const left = at ? Math.max(8, Math.min(at.x - 10, win.width - HELP_WIDTH - 8)) : 0;
   return (
-    <View style={{ position: "relative", zIndex: open ? 50 : 0 }}>
+    <View>
       <Pressable
+        ref={button}
         accessibilityRole="button"
-        accessibilityLabel={text}
-        onHoverIn={() => setOpen(true)}
-        onHoverOut={() => setOpen(false)}
-        onPress={() => setOpen((v) => !v)}
-        style={{ width: size, height: size, borderRadius: size / 2, borderWidth: 1, borderColor: lineColor(theme), alignItems: "center", justifyContent: "center" }}
+        accessibilityLabel={open ? "도움말 닫기" : "도움말 보기"}
+        accessibilityState={{ expanded: open }}
+        onPress={toggle}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: 1,
+          borderColor: open ? c.accent : lineColor(theme),
+          alignItems: "center",
+          justifyContent: "center",
+        }}
       >
-        <Text style={{ fontSize: fontSize * 0.85, lineHeight: fontSize, fontWeight: "600", color: c.foregroundMuted }}>?</Text>
+        <Text style={{ fontSize: fontSize * 0.85, lineHeight: fontSize, fontWeight: "600", color: open ? c.accent : c.foregroundMuted }}>?</Text>
       </Pressable>
-      {open ? (
-        <View
-          pointerEvents="none"
-          style={{ position: "absolute", top: -4, left: size + 8, zIndex: 50, width: 340, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 6, borderWidth: 1, borderColor: lineColor(theme), backgroundColor: c.surface0 }}
-        >
-          <Text style={{ fontSize, color: c.foreground }}>{text}</Text>
+      <Modal transparent visible={open} onRequestClose={() => setAt(null)} animationType="none">
+        {/* 바깥을 누르면 닫힌다 */}
+        <Pressable accessibilityLabel="도움말 닫기" onPress={() => setAt(null)} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} />
+        {at ? (
+        <View style={{ position: "absolute", top: at.y + 8, left, width: Math.min(HELP_WIDTH, win.width - 16) }}>
+          {/* 풍선 꼬리 — "?" 쪽을 가리킨다 */}
+          <View
+            style={{
+              position: "absolute",
+              top: -6,
+              left: Math.max(8, at.x - left + size / 2 - 6),
+              width: 12,
+              height: 12,
+              transform: [{ rotate: "45deg" }],
+              borderLeftWidth: 1,
+              borderTopWidth: 1,
+              borderColor: c.accent,
+              backgroundColor: c.surface0,
+            }}
+          />
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: c.accent, backgroundColor: c.surface0 }}>
+            <Text selectable style={{ flex: 1, fontSize, lineHeight: fontSize * 1.5, color: c.foreground }}>{text}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="도움말 닫기" onPress={() => setAt(null)} hitSlop={6}>
+              <Text style={{ fontSize, lineHeight: fontSize * 1.5, color: c.foregroundMuted }}>✕</Text>
+            </Pressable>
+          </View>
         </View>
-      ) : null}
+        ) : null}
+      </Modal>
     </View>
   );
 }

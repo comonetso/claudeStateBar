@@ -158,9 +158,10 @@ export function ProjectsList(props: {
       <Icon name="Folder" size={fs(13)} color={c.foreground} />
     </Pressable>
   ) : null;
-  // 전체 접기·펼치기(10-07 리규형님 결정: 목록 파일 편집 아이콘 왼쪽, 아이콘 하나로 번갈아). 고정·활성은 빼고 그대로 둔다
-  // (같은 날 정정 — 처음엔 고정·활성까지 전부였다). 나머지가 다 접혀 있으면 모두 펼치고(숨김 포함), 하나라도 펼쳐져 있으면 모두 접는다
-  const foldable = groups.filter((g) => g.name !== PINNED_GROUP && g.name !== ACTIVE_GROUP);
+  // 전체 접기·펼치기(10-07 리규형님 결정: 목록 파일 편집 아이콘 왼쪽, 아이콘 하나로 번갈아). 활성만 빼고 그대로 둔다
+  // (10-07 처음엔 전부 → 같은 날 고정·활성 빼고 → 10-12 리규형님 "작업할 때 제일 중요한 건 활성" — 고정도 접는다).
+  // 나머지가 다 접혀 있으면 모두 펼치고(숨김 포함), 하나라도 펼쳐져 있으면 모두 접는다
+  const foldable = groups.filter((g) => g.name !== ACTIVE_GROUP);
   const allShut = foldable.length > 0 && foldable.every((g) => collapsed.has(g.name));
   const foldTitle = allShut ? "모두 펼치기" : "모두 접기";
   const foldAll = (

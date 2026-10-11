@@ -136,6 +136,19 @@ export function ProjectsEditor({ theme, scopes, edit, setCategoryOrder, intro, h
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [catRenaming, setCatRenaming] = useState<{ key: string; draft: string } | null>(null);
   const [confirmCatDelete, setConfirmCatDelete] = useState<string | null>(null);
+  // 디바이스·경로는 평소 접어 두고 이름을 누르면 펼친다(10-12 리규형님: "평소에는 안 보는 정보" — 마우스 오버 말고 클릭).
+  // 이름 바꾸기는 펼친 칸 안 단추로 옮겼다
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleExpanded = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  // 새 프로젝트 칸·팀원 묶음도 평소 접어 둔다(10-12 리규형님: 팀원이 10명이면 다 펼쳐진 게 어지럽다 — 두 탭 모두).
+  // 찾기 글이 있으면 팀원 묶음은 펼친 것으로 본다(접혀 있으면 찾은 것이 안 보이니까)
+  const [formOpen, setFormOpen] = useState(false);
+  const chevron = (open: boolean, size: number) => <Icon name={open ? "ChevronDown" : "ChevronRight"} size={size} color={c.foregroundMuted} />;
   const resetRow = () => {
     setRenaming(null);
     setMoving(null);
@@ -167,6 +180,7 @@ export function ProjectsEditor({ theme, scopes, edit, setCategoryOrder, intro, h
     const rowKey = `${s.id}|${key}`;
     const editingName = renaming?.key === rowKey;
     const movingHere = moving?.key === rowKey;
+    const open = expanded.has(rowKey);
     return (
       <View key={rowKey} style={{ gap: 6, paddingVertical: 6, paddingLeft: 12, borderBottomWidth: 1, borderColor: c.border }}>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -188,23 +202,30 @@ export function ProjectsEditor({ theme, scopes, edit, setCategoryOrder, intro, h
             ) : (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`${e.name} 이름 바꾸기`}
-                ref={(node: unknown) => setHoverTitle(node, "눌러서 이름 바꾸기 — Enter 저장, Esc 취소")}
-                onPress={() => {
-                  resetRow();
-                  setRenaming({ key: rowKey, draft: e.name });
-                }}
+                accessibilityLabel={`${e.name} 디바이스·경로 ${open ? "접기" : "보기"}`}
+                ref={(node: unknown) => setHoverTitle(node, open ? "눌러서 접기" : "눌러서 디바이스·경로 보기")}
+                onPress={() => toggleExpanded(rowKey)}
               >
                 <Text style={{ fontSize: fs(13), color: e.enabled ? c.foreground : c.foregroundMuted }} numberOfLines={1}>
                   {e.name}
                   {e.enabled ? "" : "  (숨김)"}
+                  {e.missing ? <Text style={{ fontSize: fs(10), color: c.foregroundMuted }}>{"  · 폴더 없음"}</Text> : null}
                 </Text>
               </Pressable>
             )}
-            <Text style={{ fontSize: fs(10), color: c.foregroundMuted }} numberOfLines={1}>
-              {e.host} · {e.path}
-              {e.missing ? " · 폴더 없음" : ""}
-            </Text>
+            {open ? (
+              <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+                <Text style={{ fontSize: fs(10), color: c.foregroundMuted }} numberOfLines={1}>
+                  {e.host} · {e.path}
+                </Text>
+                {editingName
+                  ? null
+                  : button("이름 바꾸기", () => {
+                      resetRow();
+                      setRenaming({ key: rowKey, draft: e.name });
+                    }, { hint: "Enter 저장, Esc 취소" })}
+              </View>
+            ) : null}
           </View>
           <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
             {button("옮기기", () => {
@@ -342,7 +363,18 @@ export function ProjectsEditor({ theme, scopes, edit, setCategoryOrder, intro, h
       {/* 새 프로젝트 */}
       {formScope || (scopeLabel && scopes.length > 0) ? (
         <View style={{ gap: 8, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1 }}>
-          <Text style={{ fontSize: fs(13), fontWeight: "600", color: c.foreground }}>새 프로젝트</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={formOpen ? "새 프로젝트 칸 접기" : "새 프로젝트 칸 열기"}
+            onPress={() => setFormOpen((v) => !v)}
+            style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+          >
+            {chevron(formOpen, fs(13))}
+            <Icon name="FolderPlus" size={fs(14)} color={c.accent} />
+            <Text style={{ fontSize: fs(13), fontWeight: "600", color: c.foreground }}>새 프로젝트</Text>
+          </Pressable>
+          {formOpen ? (
+          <>
           {scopeLabel
             ? field(
                 scopeLabel,
@@ -398,42 +430,69 @@ export function ProjectsEditor({ theme, scopes, edit, setCategoryOrder, intro, h
             </>,
           )}
           <View style={{ flexDirection: "row" }}>{button("추가", () => void add(), { tone: "accent" })}</View>
+          </>
+          ) : null}
         </View>
       ) : null}
 
       <UiInput theme={theme} fontSize={fs(12)} value={filter} onChangeText={setFilter} placeholder="이름·경로·카테고리로 찾기" style={{ width: FIELD_WIDTH }} />
 
-      {scopes.map((s) =>
-        scopeLabel ? (
-          // 1단계 — 팀원
-          <View key={`scope-${s.id}`} style={{ gap: 6 }}>
+      {scopes.map((s) => {
+        if (!scopeLabel)
+          return (
+            <View key={`scope-${s.id}`} style={{ gap: 14 }}>
+              {categoryGroups(s)}
+            </View>
+          );
+        // 1단계 — 팀원. 머리를 누르면 펼친다(서버 반영 상태·진행 기록은 접혀 있어도 보인다)
+        const scopeKey = `scope-${s.id}`;
+        const open = expanded.has(scopeKey) || !!filter.trim();
+        return (
+          <View key={scopeKey} style={{ gap: 6 }}>
             <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, paddingVertical: 6, borderBottomWidth: 1, borderColor: c.border }}>
-              <Text style={{ fontSize: fs(14), fontWeight: "700", color: c.foreground }}>{s.title ?? s.id}</Text>
-              {muted(`서버 ${s.hosts.join(", ") || "없음"} · 프로젝트 ${s.entries.length}`)}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${s.title ?? s.id} 프로젝트 ${open ? "접기" : "펼치기"}`}
+                onPress={() => toggleExpanded(scopeKey)}
+                style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}
+              >
+                {chevron(open, fs(14))}
+                <Text style={{ fontSize: fs(14), fontWeight: "700", color: c.foreground }}>{s.title ?? s.id}</Text>
+                {muted(`서버 ${s.hosts.join(", ") || "없음"} · 프로젝트 ${s.entries.length}`)}
+              </Pressable>
               {s.extra ? <View style={{ flex: 1 }} /> : null}
               {s.extra}
             </View>
             {s.below}
+            {open ? (
             <View style={{ gap: 10, paddingLeft: 12 }}>
-              {(s.pinned ?? []).map((p) => (
+              {(s.pinned ?? []).map((p) => {
                 // 기본 프로젝트(팀원 홈) — 맨 위 고정, 고치기 단추 없음(10-11 리규형님 "삭제 불가, 항상 최상위")
-                <View key={`pin-${s.id}|${p.host}|${p.path}`} style={{ gap: 2, paddingVertical: 6, paddingLeft: 12, borderBottomWidth: 1, borderColor: c.border }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>{p.name}</Text>
-                    {muted("기본 프로젝트 · 지울 수 없음")}
+                const pinRow = `pin-${s.id}|${p.host}|${p.path}`;
+                const open = expanded.has(pinRow);
+                return (
+                  <View key={pinRow} style={{ gap: 2, paddingVertical: 6, paddingLeft: 12, borderBottomWidth: 1, borderColor: c.border }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`${p.name} 디바이스·경로 ${open ? "접기" : "보기"}`}
+                        ref={(node: unknown) => setHoverTitle(node, open ? "눌러서 접기" : "눌러서 디바이스·경로 보기")}
+                        onPress={() => toggleExpanded(pinRow)}
+                      >
+                        <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>{p.name}</Text>
+                      </Pressable>
+                      {muted("기본 프로젝트 · 지울 수 없음")}
+                    </View>
+                    {open ? muted(`${p.host} · ${p.path}`) : null}
                   </View>
-                  {muted(`${p.host} · ${p.path}`)}
-                </View>
-              ))}
+                );
+              })}
               {s.entries.length ? categoryGroups(s) : muted((s.pinned ?? []).length ? "그 밖의 프로젝트는 아직 없습니다" : "아직 프로젝트가 없습니다")}
             </View>
+            ) : null}
           </View>
-        ) : (
-          <View key={`scope-${s.id}`} style={{ gap: 14 }}>
-            {categoryGroups(s)}
-          </View>
-        ),
-      )}
+        );
+      })}
       {total === 0 && !error && !scopeLabel ? muted(emptyText, 12) : null}
     </View>
   );

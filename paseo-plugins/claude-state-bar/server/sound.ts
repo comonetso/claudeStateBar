@@ -1,7 +1,9 @@
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { RpcInput } from "@getpaseo/plugin";
 import type { SoundSettings } from "../shared/settings";
-import type { SoundKind, soundData } from "../shared/sound";
+import { SOUND_UPLOAD_MAX, type SoundKind, type soundData } from "../shared/sound";
 import { amplifyWav } from "./amplify";
 import { defaultChime } from "./defaultChime";
 
@@ -28,6 +30,38 @@ export function canCoordinateSound(): boolean {
 
 export function canPlayHere(): boolean {
   return process.platform === "win32" || process.platform === "darwin" || (process.platform === "linux" && isTeamDaemon());
+}
+
+/** 이 호스트의 시스템 소리 파일(설정 화면 선택 상자 — 10-12). 폴더를 못 읽으면 빈 목록 */
+export async function listSystemSounds(): Promise<{ path: string; name: string }[]> {
+  const dir = process.platform === "win32" ? "C:\\Windows\\Media" : process.platform === "darwin" ? "/System/Library/Sounds" : null;
+  if (!dir) return [];
+  const ext = process.platform === "win32" ? /\.wav$/i : /\.(aiff|wav|mp3)$/i;
+  try {
+    const names = (await readdir(dir)).filter((n) => ext.test(n));
+    names.sort((a, b) => a.localeCompare(b));
+    return names.map((n) => ({ path: join(dir, n), name: n.replace(ext, "") }));
+  } catch {
+    return [];
+  }
+}
+
+/** 고른 내 파일을 플러그인 폴더에 저장(10-12). 이름 = <종류>--<원래 이름>. 예전 파일은 지우지 않는다 — 저장 전 설정이 아직 가리킬 수 있다 */
+export async function saveUploadedSound(kind: SoundKind, name: string, base64: string): Promise<{ ok: true; path: string } | { ok: false; reason: "type" | "size" | "write" }> {
+  const ext = /\.(wav|mp3|ogg)$/i.exec(name)?.[1]?.toLowerCase();
+  if (!ext) return { ok: false, reason: "type" };
+  const bytes = Buffer.from(base64, "base64");
+  if (!bytes.length || bytes.length > SOUND_UPLOAD_MAX) return { ok: false, reason: "size" };
+  const safe = name.replace(/\.[^.]+$/, "").replace(/[^\p{L}\p{N} _.-]/gu, "_").trim().slice(0, 80) || "sound";
+  const dir = join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "claude-state-bar", "sounds");
+  const path = join(dir, `${kind}--${safe}.${ext}`);
+  try {
+    await mkdir(dir, { recursive: true });
+    await writeFile(path, bytes);
+    return { ok: true, path };
+  } catch {
+    return { ok: false, reason: "write" };
+  }
 }
 
 export function defaultSoundPath(kind: SoundKind): string {

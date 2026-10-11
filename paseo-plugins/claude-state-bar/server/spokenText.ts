@@ -1,7 +1,7 @@
 import type { TargetLang } from "../shared/translate";
 
 // 원본 readaloud_text.py:482-485 SPOKEN_SIGNS 의 ko·en 과 같은 이름(백슬래시는 원본에 없어 추가)
-const SPOKEN_SIGNS: Record<TargetLang, Record<string, string>> = {
+const SPOKEN_SIGNS: Partial<Record<TargetLang, Record<string, string>>> = {
   ko: { ".": " 쩜 ", "_": " 언더바 ", "/": " 슬래시 ", "\\": " 백슬래시 ", "-": " 대시 " },
   en: { ".": " dot ", "_": " underscore ", "/": " slash ", "\\": " backslash ", "-": " dash " },
 };
@@ -51,7 +51,8 @@ export function makeSpokenText(text: string, lang: TargetLang): string {
     .replace(/[|]/g, " ")
     .replace(/→|⇒|->|=>/g, ".\u2003")
     .replace(/([^\d\s])\1{3,}/gu, (_, char: string) => char.repeat(REPEATED_CHARS_MAX));
-  const signs = SPOKEN_SIGNS[lang];
+  // 새 언어는 임의의 기호 발음을 만들지 않고 기호를 그대로 합성기에 보낸다.
+  const signs = SPOKEN_SIGNS[lang] ?? {};
   spoken = spoken.replace(/[A-Za-z][A-Za-z0-9_]*(?:[./\\-][A-Za-z0-9_]+)*/g, (token) => {
     const named = token.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z])([A-Z][a-z])/g, "$1 $2")
       .replace(/[._/\\-]/g, (sign) => signs[sign] ?? sign);
