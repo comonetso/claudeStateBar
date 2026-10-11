@@ -108,6 +108,7 @@ export const projectsManager = defineRpc({
     /** 읽은 목록 파일 경로. 못 찾았으면 null */
     source: z.string().nullable(),
     entries: z.array(projectEntrySchema),
+    readOnly: z.boolean().optional(),
     error: z.string().optional(),
   }),
 });

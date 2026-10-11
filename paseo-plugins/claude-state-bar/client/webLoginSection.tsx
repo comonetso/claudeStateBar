@@ -77,7 +77,7 @@ function updateRegistry(remove: (string | null)[], add: HostEntry[]): void {
   writeLocal(REGISTRY_KEY, JSON.stringify(list));
 }
 
-export function WebLoginSection({ theme, compact, t }: { theme: PluginTheme; compact: boolean; t: SettingsText }) {
+export function WebLoginSection({ theme, compact, t, readOnly = false }: { theme: PluginTheme; compact: boolean; t: SettingsText; readOnly?: boolean }) {
   const g = gate();
   const [account, setAccount] = useState<Account | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -158,6 +158,7 @@ export function WebLoginSection({ theme, compact, t }: { theme: PluginTheme; com
   const set = (patch: Partial<typeof form>) => setForm({ ...form, ...patch });
 
   const submit = async () => {
+    if (readOnly) return;
     setMessage(null);
     const change: Record<string, unknown> = {};
     if (form.id.trim()) change.id = form.id.trim();
@@ -300,7 +301,7 @@ export function WebLoginSection({ theme, compact, t }: { theme: PluginTheme; com
             {input("otp", t.loginOtp, { numeric: true })}
           </View>
           <View style={styles.actions}>
-            <Pressable style={styles.primary} onPress={() => void submit()} disabled={busy} accessibilityRole="button">
+            <Pressable style={styles.primary} onPress={() => void submit()} disabled={readOnly || busy} accessibilityRole="button">
               <Text style={styles.primaryText}>{busy ? t.loginChecking : t.loginSubmit}</Text>
             </Pressable>
           </View>

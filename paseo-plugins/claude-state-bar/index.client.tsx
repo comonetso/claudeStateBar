@@ -1,3 +1,4 @@
+import { onUiRole, registerUiRole, startFallbackCandidate } from "./client/uiRole";
 import { settingsRpc } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { createActivityButtons } from "./client/activityButton";
@@ -116,7 +117,8 @@ export default function contribute(client: PluginClientContext) {
       if (info.serverId) cleanups.push(registerSoundOrigin(info.serverId, client));
       // 직원용 Paseo(10-11)는 그 화면의 유일한 호스트라 PC 처럼 설정·사용량·프로젝트 목록을 붙인다(관리 탭은 projectsScreen 이 숨김)
       setTeamMember(info.team === true, info.team === true && info.serverId && info.home ? { serverId: info.serverId, path: info.home } : null);
-      if (!info.serverId || (info.team !== true && (!info.canPlay || info.platform !== "win32"))) {
+      const primary = info.team === true || (info.canPlay && info.platform === "win32");
+      if (!info.serverId) {
         log(`host ${info.platform}: sounds come from the providing host`);
         return;
       }
@@ -137,6 +139,36 @@ export default function contribute(client: PluginClientContext) {
       };
       const settingsRead = await refreshSettings();
       if (disposed) return;
+      const attachFour = (readOnly: boolean) => {
+        const attached: (() => void)[] = [];
+        const stop = () => { for (const off of attached.reverse()) off(); };
+        try {
+          attached.push(client.addSettingsScreen({
+            id: SETTINGS_SCREEN_ID,
+            title: SETTINGS_TITLE,
+            icon: "Settings",
+            Component: createSettingsScreen(() => void refreshSettings(), readOnly),
+          }));
+          // 왼쪽 목록 칸 맨 아래 사용량 — 호스트가 여럿이어도 한 줄만 보이게 선택된 PC/대체 서버 역할만 붙인다
+          attached.push(client.addSidebarFooterItem({ id: "usage", title: "Claude·Codex 사용량", Component: UsageFooter }));
+          // 프로젝트 매니저 묶음 화면 — 선택된 역할의 정본 또는 읽기 전용 사본을 읽는다
+          attached.push(client.addScreen({ id: PROJECTS_SCREEN_ID, title: "프로젝트 관리", Component: ProjectsScreen }));
+          // 왼쪽 목록 칸 맨 위 프로젝트 목록 + 워크스페이스 목록 가리기 + Ctrl+Alt+Shift+B 전환(10-06). 호스트마다 플러그인이 따로
+          // 올라오므로 단축키도 한 곳(이 PC)에서만 단다 — 여러 곳에서 달면 한 번 누를 때 여러 번 넘어가 제자리가 된다
+          attached.push(client.addSidebarHeaderItem({ id: "projects", title: "프로젝트", Component: ProjectsSidebarItem }));
+          attached.push(startProjectsMode());
+          attached.push(startDictationInsertOnly(log));
+
+          emitSharedSignal("settings");
+          return stop;
+        } catch (error) { stop(); throw error; }
+      };
+      const ui = { settings: () => settings, usage: () => client.paseo.providers.listUsage(), openSettings: () => client.openSettings(SETTINGS_SCREEN_ID) };
+      cleanups.push(onUiRole(() => emitSharedSignal("settings")));
+      if (!primary) {
+        cleanups.push(startFallbackCandidate(client, { kind: "fallback", provider: ui, start: () => attachFour(true) }));
+        return; // 소리·설정 맞추기·배치·대표 기기·최대화 기록은 서버가 대신하지 않는다.
+      }
       const withdraw = registerProvider({
         hostLabel: info.platform,
         // 직원 데몬도 자기 화면의 소리 대기열을 연다. 서버 기본음은 파일 없이 만든다.
@@ -163,22 +195,8 @@ export default function contribute(client: PluginClientContext) {
       });
       const provider = soundProvider();
       if (provider) cleanups.push(startSoundProjects(client, log), startSoundPlayback(provider, log));
-      cleanups.push(
-        client.addSettingsScreen({
-          id: SETTINGS_SCREEN_ID,
-          title: SETTINGS_TITLE,
-          icon: "Settings",
-          Component: createSettingsScreen(() => void refreshSettings()),
-        }),
-        // 왼쪽 목록 칸 맨 아래 사용량 — 호스트가 여럿이어도 한 줄만 보이게 소리 담당 호스트(이 PC)만 붙인다
-        client.addSidebarFooterItem({ id: "usage", title: "Claude·Codex 사용량", Component: UsageFooter }),
-        // 프로젝트 매니저 묶음 화면 — 목록 파일이 있는 이 PC 데몬이 읽으므로 역시 이 PC 플러그인만 붙인다
-        client.addScreen({ id: PROJECTS_SCREEN_ID, title: "프로젝트 관리", Component: ProjectsScreen }),
-        // 왼쪽 목록 칸 맨 위 프로젝트 목록 + 워크스페이스 목록 가리기 + Ctrl+Alt+Shift+B 전환(10-06). 호스트마다 플러그인이 따로
-        // 올라오므로 단축키도 한 곳(이 PC)에서만 단다 — 여러 곳에서 달면 한 번 누를 때 여러 번 넘어가 제자리가 된다
-        client.addSidebarHeaderItem({ id: "projects", title: "프로젝트", Component: ProjectsSidebarItem }),
-        startProjectsMode(),
-      );
+      if (info.team === true) cleanups.push(attachFour(false));
+      else cleanups.push(registerUiRole({ kind: "pc", provider: ui, start: () => attachFour(false) }));
       // PC 앱·웹·폰 웹 감싸기 앱의 Paseo 설정을 이 PC 데몬의 정본에 맞춘다(10-07). 정본이 하나여야 해서 역시 이 PC 플러그인만.
       // 왼쪽 칸 기여 뒤에 둬서, 그게 없는 옛 판 화면(공식 웹 0.10.3)에서는 시작하지 않는다
       // 기준 화면(10-08 대표 PC 웹) — 설정 맞추기·화면 구성 저장이 이 PC 데몬의 대표 정보를 본다. 그 둘보다 먼저 묻기 시작한다
@@ -191,7 +209,7 @@ export default function contribute(client: PluginClientContext) {
       // 칸 최대화가 저절로 풀리는 원인 기록(10-09 "원인부터 기록") — 호스트마다 돌면 같은 줄이 여러 번 남아 이 PC 플러그인만
       cleanups.push(startPaneMaxWatch(log, browserLabel));
       // 받아쓰기는 늘 입력창에만 넣고 보내기는 직접(10-10) — 같은 화면 입력창 모듈 하나를 감싸므로 한 곳(이 PC 플러그인)만
-      cleanups.push(startDictationInsertOnly(log));
+      // 받아쓰기 보호는 attachFour에서 UI 역할 하나가 맡는다.
       log(`providing sounds (${info.platform})`);
       const fonts = readAppFontSizes();
       log(`app font sizes: ui=${fonts.ui ?? "unread"} content=${fonts.content ?? "unread"}`);

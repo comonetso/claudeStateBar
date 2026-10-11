@@ -58,6 +58,8 @@ const runSchema = z.object({
   group: z.string().optional(),
   /** 묶음 이름 + 띄운 대화. 다른 대화가 같은 이름을 써도 따로 묶인다 */
   groupKey: z.string().optional(),
+  /** 대화 작업 폴더가 아닌 같은 저장소의 다른 작업 트리(git worktree)에서 돈 실행이면 그 트리 폴더(카드에 폴더 이름표) */
+  tree: z.string().optional(),
 });
 export type RunCard = z.infer<typeof runSchema>;
 
@@ -208,6 +210,8 @@ export const codexChats = defineRpc({
         threadId: z.string().optional(),
         lastAtMs: z.number().optional(),
         live: z.boolean(),
+        /** 같은 저장소 다른 작업 트리(worktree)의 대화면 그 트리 폴더(10-12) */
+        tree: z.string().optional(),
         /** 이번 세션 대화(진행 중이거나 열린 대화 중 가장 이른 시작 뒤에 바뀜). 아니면 "지난 대화"로 접힌다 */
         current: z.boolean(),
         entries: z.array(chatEntrySchema),

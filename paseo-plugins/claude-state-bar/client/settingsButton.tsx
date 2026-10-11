@@ -1,3 +1,4 @@
+import { uiProvider } from "./uiRole";
 import type { PluginButtonBehavior, PluginButtonMenuEntry, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { soundProvider } from "./sounds";
 import type { HeaderButtonSet } from "./usageButton";
@@ -14,7 +15,7 @@ export const SETTINGS_SCREEN_ID = "sounds";
 export function createSettingsButtons(client: PluginClientContext, extra?: PluginButtonMenuEntry | null): HeaderButtonSet {
   const registrations = new Map<string, PluginButtonRegistration>();
   const open = () => {
-    const provider = soundProvider();
+    const provider = uiProvider() ?? soundProvider();
     if (provider?.openSettings) provider.openSettings();
     else client.openSettings(SETTINGS_SCREEN_ID);
   };

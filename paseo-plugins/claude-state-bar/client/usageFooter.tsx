@@ -1,3 +1,4 @@
+import { onUiRole, uiProvider } from "./uiRole";
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { usePaseo } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
@@ -43,23 +44,27 @@ export function useUsage(): { usage: Usage | null; error: string | null } {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
+    let generation = 0;
     const load = async () => {
+      const mine = ++generation;
       try {
-        const fromProvider = soundProvider()?.usage;
+        const fromProvider = (uiProvider() ?? soundProvider())?.usage;
         const next = fromProvider ? await fromProvider() : await paseo.providers.listUsage();
-        if (alive) {
+        if (alive && mine === generation) {
           setUsage(next);
           setError(null);
         }
       } catch (e) {
-        if (alive) setError(String(e));
+        if (alive && mine === generation) setError(String(e));
       }
     };
     void load();
+    const off = onUiRole(() => { setUsage(null); setError(null); void load(); });
     const timer = setInterval(() => void load(), POLL_MS);
     return () => {
       alive = false;
       clearInterval(timer);
+      off();
     };
   }, [paseo]);
   return { usage, error };

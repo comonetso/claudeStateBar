@@ -23,3 +23,11 @@ Translation storage is separate for each provider and language. Existing entries
 Models: Gemini `gemini-3.5-flash-lite` (translation), `gemini-3.8-flash` (dictation); Anthropic `claude-haiku-5-5` (translation); OpenAI `gpt-4.1-mini` (translation/dictation cleanup), `gpt-4o-mini-tts` (speech), `gpt-transcribe` (dictation).
 
 Voice evidence: [Google Chirp 3 HD](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd), [OpenAI TTS](https://developers.openai.com/api/docs/guides/text-to-speech), [OpenAI CLI speech example](https://developers.openai.com/api/reference/cli/resources/audio/subresources/speech/methods/create).
+
+## When the PC is offline
+
+When the PC disconnects, Calladmin-Gabia provides the project list and manager, usage, settings screen and dictation input protection. The PC takes over again when it reconnects; each screen has one set of these contributions. Other servers do not take over, and employee daemons keep their existing behavior.
+
+The PC sends a separate project copy, including pins and category/project order, to the same servers as dictation name hints at daemon startup and whenever those files change. The copy is stored in `~/.paseo/claude-state-bar/pc-offline-projects.json`; it is separate from each server's own project file. Failed transfers are tried at the next change or daemon startup. The fallback server needs a successfully delivered copy.
+
+While Calladmin-Gabia is providing these screens, projects and settings are read-only. Selecting a PC project shows an offline notice; connected server projects open normally. Usage and displayed settings come from Calladmin-Gabia. Saving settings, providers, keys, names, uploading sounds, and resetting or editing project order are disabled. Automatic alert sounds, settings synchronization, layout save/load, representative-device selection and pane-maximize logging remain PC features. Dictation protection retains its existing supported-app-version limit.

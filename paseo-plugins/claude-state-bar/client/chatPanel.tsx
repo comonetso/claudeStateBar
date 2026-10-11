@@ -259,16 +259,21 @@ export function CodexChatPanel({ theme, layout, workspaceId }: PluginWorkspacePa
           <Text style={styles.title} numberOfLines={2}>
             {ch.subject || ch.slug}
           </Text>
-          <Text style={styles.muted}>{[`${turns}턴`, ch.origin ?? "", fmtClock(ch.lastAtMs)].filter(Boolean).join(" · ")}</Text>
+          <Text style={styles.muted}>
+            {[`${turns}턴`, ch.origin ?? "", fmtClock(ch.lastAtMs), ch.tree ? `⎇ ${ch.tree.split(/[\\/]/).filter(Boolean).pop()}` : ""].filter(Boolean).join(" · ")}
+          </Text>
           {ch.live ? (
             <StatusChip label="대화 중" color={c.accent} theme={theme} />
           ) : !ch.threadId ? (
             <StatusChip label="끊김" color={c.statusWarning} theme={theme} />
           ) : null}
           <View style={{ flex: 1 }} />
-          <Pressable style={styles.button} onPress={() => void toTrash(ch)} accessibilityRole="button" accessibilityLabel="휴지통으로">
-            <Text style={styles.buttonText}>🗑</Text>
-          </Pressable>
+          {/* 휴지통은 대화 작업 폴더의 것만 다룬다 — 다른 작업 트리(worktree) 대화엔 단추를 두지 않는다 */}
+          {ch.tree ? null : (
+            <Pressable style={styles.button} onPress={() => void toTrash(ch)} accessibilityRole="button" accessibilityLabel="휴지통으로">
+              <Text style={styles.buttonText}>🗑</Text>
+            </Pressable>
+          )}
         </Pressable>
         {isOpen ? (
           <View style={[styles.pane, { gap: 12 }]}>

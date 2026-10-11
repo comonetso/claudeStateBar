@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parseBackgroundTasks, type BgTask } from "./backgroundTasks";
 import { parseTaskNotices, type TaskNotices } from "./notices";
 
@@ -319,15 +319,99 @@ export async function findCodexDirs(cwd: string): Promise<{ docsDir: string; log
   }
 }
 
+/**
+ * 같은 저장소의 다른 작업 트리(git worktree)까지 포함한 codex_rescue 폴더들. 첫 칸이 findCodexDirs(cwd) 의 것이고
+ * 다른 트리 것에는 tree(그 트리 폴더)가 붙는다. 스킬은 자기가 돈 트리 아래에 기록을 써서, worktree 에서 돌린 실행이
+ * 원본 대화의 작업 현황에 안 보였다(리규형님 10-12 · 확장은 09-25 같은 문제로 repoRoots.ts codexRoots 를 만듦 —
+ * 규칙도 같다: 저장소 전체 트리를 본다). git 명령 대신 .git 파일을 읽는 것도 확장과 같다.
+ */
+export interface CodexDirs {
+  docsDir: string;
+  logDir: string;
+  tree?: string;
+}
+
+const treeCache = new Map<string, { key: string; trees: string[] }>();
+
+async function readTextOrNull(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function gitPath(raw: string, relativeTo: string): string {
+  const p = raw.trim();
+  return isAbsolute(p) ? p : join(relativeTo, p);
+}
+
+const sameDir = (a: string, b: string) => (process.platform === "win32" ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b));
+
+/** cwd 가 속한 저장소의 작업 트리 전부(원본 트리 포함). 저장소가 아니면 빈 배열 */
+async function repoTrees(cwd: string): Promise<string[]> {
+  let top = cwd;
+  for (;;) {
+    if (await exists(join(top, ".git"))) break;
+    const parent = join(top, "..");
+    if (parent === top) return [];
+    top = parent;
+  }
+  const dotGit = join(top, ".git");
+  const st = await statOrNull(dotGit);
+  if (!st) return [];
+  let commonDir: string;
+  if (st.isDirectory()) {
+    commonDir = dotGit;
+  } else {
+    // worktree 의 .git 은 파일: gitdir: <원본>/.git/worktrees/<이름> → 그 안 commondir 이 원본 git 폴더
+    const m = /^gitdir:\s*(.+)$/m.exec((await readTextOrNull(dotGit)) ?? "");
+    if (!m) return [];
+    const own = gitPath(m[1], top);
+    const common = (await readTextOrNull(join(own, "commondir")))?.trim();
+    commonDir = common ? gitPath(common, own) : join(own, "..", "..");
+  }
+  const worktreesDir = join(commonDir, "worktrees");
+  const wst = await statOrNull(worktreesDir);
+  const cacheKey = `${st.mtimeMs}|${wst?.mtimeMs ?? 0}`;
+  const hit = treeCache.get(top);
+  if (hit && hit.key === cacheKey) return hit.trees;
+  const trees: string[] = [];
+  if (basename(commonDir) === ".git") trees.push(dirname(resolve(commonDir)));
+  if (wst) {
+    for (const name of await listDir(worktreesDir)) {
+      const gitdir = (await readTextOrNull(join(worktreesDir, name, "gitdir")))?.trim();
+      // gitdir 은 그 트리의 .git 파일 경로 — 트리는 그 파일이 든 폴더
+      if (gitdir) trees.push(dirname(gitPath(gitdir, join(worktreesDir, name))));
+    }
+  }
+  treeCache.set(top, { key: cacheKey, trees });
+  return trees;
+}
+
+export async function findAllCodexDirs(cwd: string): Promise<CodexDirs[]> {
+  const out: CodexDirs[] = [];
+  const own = await findCodexDirs(cwd);
+  if (own) out.push(own);
+  for (const tree of await repoTrees(cwd)) {
+    const docsDir = join(tree, "docs", "codex_rescue");
+    if (out.some((d) => sameDir(d.docsDir, docsDir))) continue;
+    if (!(await statOrNull(docsDir))?.isDirectory()) continue;
+    out.push({ docsDir, logDir: join(docsDir, ".log"), tree });
+  }
+  return out;
+}
+
 /** 문서 폴더가 있으면 그 아래 .log 경로(폴더는 없을 수 있다 — 판독은 없는 폴더를 빈 목록으로 읽는다) */
 export async function codexLogDir(cwd: string): Promise<string | null> {
   return (await findCodexDirs(cwd))?.logDir ?? null;
 }
 
-/** 실행 기록 폴더가 실제로 있을 때만(따르릉은 기록이 있어야 울릴 일이 있다) */
-export async function findCodexLogDir(cwd: string): Promise<string | null> {
-  const dirs = await findCodexDirs(cwd);
-  return dirs && (await exists(dirs.logDir)) ? dirs.logDir : null;
+/** 실행 기록 폴더가 실제로 있는 것만, 같은 저장소 모든 작업 트리(따르릉은 기록이 있어야 울릴 일이 있다) */
+export async function findAllCodexLogDirs(cwd: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const d of await findAllCodexDirs(cwd)) if (await exists(d.logDir)) out.push(d.logDir);
+  return out;
 }
 
 async function statOrNull(path: string) {

@@ -2,7 +2,7 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { RunCard, RunItem, RunPhase } from "../../shared/codex";
-import { codexLogDir } from "../chime/scan";
+import { findAllCodexDirs, type CodexDirs } from "../chime/scan";
 import { createRunState, feedExecLine, type CodexRunState } from "./execEvents";
 
 // codex_rescue 실행 기록을 카드로 읽는다. 규칙은 확장 src/providers/codexRescue/runDiscovery.ts 와 같게 옮겨 썼다.
@@ -234,10 +234,25 @@ function toItems(state: CodexRunState): RunItem[] {
   }));
 }
 
+/** 같은 저장소 모든 작업 트리의 실행을 합쳐 최신 것부터(트리마다 limit 개까지 읽고 합친 뒤 다시 자른다) */
 export async function listRuns(cwd: string, limit = 20, nowMs = Date.now()): Promise<{ logDir: string | null; runs: RunCard[]; older: number }> {
-  const logDir = await codexLogDir(cwd);
-  if (!logDir) return { logDir: null, runs: [], older: 0 };
-  const docsDir = dirname(logDir);
+  const all = await findAllCodexDirs(cwd);
+  if (!all.length) return { logDir: null, runs: [], older: 0 };
+  const parts = await Promise.all(all.map((d) => listRunsIn(d, limit, nowMs)));
+  // 같은 실행 번호가 두 트리에 있으면(worktree 기록을 원본으로 복사한 뒤 지우기 전) 대화 작업 폴더 쪽 하나만 — all 의 첫 칸이 그쪽이다
+  const seen = new Set<string>();
+  const merged = parts
+    .flatMap((p) => p.runs)
+    .filter((r) => !seen.has(r.stamp) && !!seen.add(r.stamp))
+    .sort((a, b) => (a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0));
+  const total = parts.reduce((n, p) => n + p.total, 0);
+  const runs = merged.slice(0, limit);
+  return { logDir: all[0].logDir, runs, older: Math.max(0, total - runs.length) };
+}
+
+async function listRunsIn(dirs: CodexDirs, limit: number, nowMs: number): Promise<{ runs: RunCard[]; total: number }> {
+  const { logDir, docsDir, tree } = dirs;
+  const treeTag = tree ? { tree } : {};
   const logNames = await listNames(logDir);
   const present = new Set(logNames);
   const docNames = await listNames(docsDir);
@@ -261,6 +276,7 @@ export async function listRuns(cwd: string, limit = 20, nowMs = Date.now()): Pro
       const resultName = [`${stamp}_response_${docSlug}.md`, `${stamp}_review_${docSlug}.md`].find((n) => docSet.has(n));
       const endedAt = resultName ? (await statOf(join(docsDir, resultName)))?.mtimeMs : undefined;
       runs.push({
+        ...treeTag,
         stamp,
         slug: docSlug,
         mode: "",
@@ -374,6 +390,7 @@ export async function listRuns(cwd: string, limit = 20, nowMs = Date.now()): Pro
     }
 
     runs.push({
+      ...treeTag,
       stamp,
       slug,
       ...(status?.subject?.trim() ? { subject: status.subject.trim() } : {}),
@@ -398,26 +415,25 @@ export async function listRuns(cwd: string, limit = 20, nowMs = Date.now()): Pro
       ...(status?.group?.trim() ? { group: status.group.trim(), groupKey: JSON.stringify([status.group_session || "", status.group.trim()]) } : {}),
     });
   }
-  return { logDir, runs, older: Math.max(0, all.length - stamps.length) };
+  return { runs, total: all.length };
 }
 
 export async function runItems(cwd: string, stamp: string): Promise<RunItem[]> {
   if (!/^\d{6}_\d{6}$/.test(stamp)) return [];
-  const logDir = await codexLogDir(cwd);
-  if (!logDir) return [];
-  const eventsPath = join(logDir, `${stamp}_events.jsonl`);
-  const info = await statOf(eventsPath);
-  if (!info) return [];
-  return toItems(await tailEvents(eventsPath, info.size, Date.now()));
+  for (const { logDir } of await findAllCodexDirs(cwd)) {
+    const eventsPath = join(logDir, `${stamp}_events.jsonl`);
+    const info = await statOf(eventsPath);
+    if (info) return toItems(await tailEvents(eventsPath, info.size, Date.now()));
+  }
+  return [];
 }
 
 /** 그 저장소 codex_rescue 문서 폴더 안의 .md 만 읽어 준다 */
 export async function readDoc(cwd: string, path: string): Promise<string> {
-  const logDir = await codexLogDir(cwd);
-  if (!logDir) throw new Error("codex_rescue 기록 폴더가 없습니다");
-  const docsDir = resolve(dirname(logDir));
+  const all = await findAllCodexDirs(cwd);
+  if (!all.length) throw new Error("codex_rescue 기록 폴더가 없습니다");
   const target = resolve(path);
-  if (dirname(target) !== docsDir || !basename(target).endsWith(".md") || target.includes(`${sep}..${sep}`)) {
+  if (!all.some((d) => dirname(target) === resolve(d.docsDir)) ||!basename(target).endsWith(".md") || target.includes(`${sep}..${sep}`)) {
     throw new Error("읽을 수 없는 경로입니다");
   }
   return readFile(target, "utf8");

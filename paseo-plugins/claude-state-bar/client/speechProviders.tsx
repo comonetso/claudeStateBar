@@ -15,7 +15,7 @@ import { previewId, VoicePreviewPlayer, type PreviewState } from "./voicePreview
 const TRANSLATE_PROVIDERS = [{ value: "google", label: "Google (Gemini)" }, { value: "openai", label: "OpenAI (ChatGPT)" }, { value: "anthropic", label: "Anthropic (Claude)" }];
 const AUDIO_PROVIDERS = TRANSLATE_PROVIDERS.slice(0, 2);
 /** 접어도 컴포넌트는 살아 있어 같은 설정 화면의 미리 듣기 보관을 유지한다. */
-export function SpeechProviders({ theme, t, visible }: { theme: PluginTheme; t: SettingsText; visible: boolean }) {
+export function SpeechProviders({ theme, t, visible, readOnly = false }: { theme: PluginTheme; t: SettingsText; visible: boolean; readOnly?: boolean }) {
   const get = useRpc(speechGet);
   const save = useRpc(speechSave);
   const keysGet = useRpc(speechKeysState);
@@ -50,7 +50,7 @@ export function SpeechProviders({ theme, t, visible }: { theme: PluginTheme; t: 
   const fields = neededKeyFields(settings);
   const names: Record<KeyField, string> = { gemini: t.geminiKeyName, tts: t.ttsKeyName, openai: t.openaiKeyName, anthropic: t.anthropicKeyName };
   const change = (input: unknown) => {
-    if (busy) return;
+    if (busy || readOnly) return;
     const next = speechSchema.safeParse(input);
     if (!next.success) return;
     player.stop(); setMessage(null);
@@ -65,7 +65,7 @@ export function SpeechProviders({ theme, t, visible }: { theme: PluginTheme; t: 
     return String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
   };
   const saveSettings = async () => {
-    if (busy) return;
+    if (busy || readOnly) return;
     player.stop(); setBusy("save"); setMessage(null);
     try {
       const result = await save(settings);
@@ -78,7 +78,7 @@ export function SpeechProviders({ theme, t, visible }: { theme: PluginTheme; t: 
     finally { setBusy(null); }
   };
   const saveKeys = async () => {
-    if (busy) return;
+    if (busy || readOnly) return;
     const input = Object.fromEntries(fields.filter((f) => inputs[f].trim()).map((f) => [f, inputs[f].trim()]));
     if (!Object.keys(input).length) { setMessage({ text: t.keysNothing, bad: true }); return; }
     setBusy("keys"); setMessage(null);
@@ -91,7 +91,7 @@ export function SpeechProviders({ theme, t, visible }: { theme: PluginTheme; t: 
     finally { setBusy(null); }
   };
   const checkKeys = async () => {
-    if (busy) return;
+    if (busy || readOnly) return;
     setBusy("check"); setMessage(null);
     try {
       const next = await keysCheck(settings);
@@ -105,7 +105,7 @@ export function SpeechProviders({ theme, t, visible }: { theme: PluginTheme; t: 
   const select = (label: string, value: string, options: { value: string; label: string }[], onChange: (value: string) => void) => (
     <View style={{ gap: 4 }}>
       <Text style={textStyle}>{label}</Text>
-      <UiSelect theme={theme} value={value} options={options} onChange={onChange} fontSize={14} dim={busy !== null} />
+      <UiSelect theme={theme} value={value} options={options} onChange={onChange} fontSize={14} disabled={readOnly} dim={readOnly || busy !== null} />
     </View>
   );
   return <View style={{ gap: 10 }}>
@@ -115,16 +115,16 @@ export function SpeechProviders({ theme, t, visible }: { theme: PluginTheme; t: 
     <View style={{ gap: 6 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <UiButton theme={theme} label={t.speechVoice + ": " + selectedVoice + (voiceOpen ? " ▴" : " ▾")} fontSize={14}
-          onPress={() => { player.stop(); setVoiceOpen(!voiceOpen); }} disabled={busy !== null} />
+          onPress={() => { player.stop(); setVoiceOpen(!voiceOpen); }} disabled={readOnly || busy !== null} />
         <HelpTip theme={theme} text={t.speechVoiceHint} fontSize={14} />
       </View>
       {voiceOpen ? voiceOptions(settings.tts, selectedVoice).map((voice) => {
         const input = { provider: settings.tts, voice, lang: settings.lang };
         const active = preview.id === previewId(input);
         return <View key={voice} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <UiButton theme={theme} label={voice} fontSize={14} style={{ flex: 1 }} on={voice === selectedVoice} disabled={busy !== null}
+          <UiButton theme={theme} label={voice} fontSize={14} style={{ flex: 1 }} on={voice === selectedVoice} disabled={readOnly || busy !== null}
             onPress={() => { change({ ...settings, voice: { ...settings.voice, [settings.tts]: voice } }); setVoiceOpen(false); }} />
-          <UiButton theme={theme} fontSize={14} disabled={busy !== null}
+          <UiButton theme={theme} fontSize={14} disabled={readOnly || busy !== null}
             label={active ? preview.status === "loading" ? t.speechPreviewLoading : t.speechPreviewStop : t.speechPreview}
             onPress={() => { thinkingController.stop(); void player.toggle(input); }} />
         </View>;
@@ -133,7 +133,7 @@ export function SpeechProviders({ theme, t, visible }: { theme: PluginTheme; t: 
     </View>
     {select(t.speechSttProvider, settings.stt, AUDIO_PROVIDERS, (stt) => change({ ...settings, stt }))}
     {JSON.stringify(settings) !== JSON.stringify(saved) ? <Text style={muted}>{t.speechUnsaved}</Text> : null}
-    <UiButton theme={theme} fontSize={14} variant="filled" label={busy === "save" ? t.saving : t.speechSave} onPress={() => void saveSettings()} disabled={busy !== null} />
+    <UiButton theme={theme} fontSize={14} variant="filled" label={busy === "save" ? t.saving : t.speechSave} onPress={() => void saveSettings()} disabled={readOnly || busy !== null} />
     {fields.map((field) => {
       const state = keys?.[field];
       return <View key={field} style={{ gap: 5 }}>
@@ -141,14 +141,14 @@ export function SpeechProviders({ theme, t, visible }: { theme: PluginTheme; t: 
           {state ? t.keyLine(names[field], state.saved, state.check ? state.check.ok ? t.keyCheckOk(clock(state.check.at)) : t.keyCheckFailed(clock(state.check.at)) : t.keyCheckNever) : names[field]}
         </Text>
         <UiInput theme={theme} fontSize={14} compact={false} value={inputs[field]}
-          onChangeText={(value) => setInputs((current) => ({ ...current, [field]: value }))} editable={busy === null}
+          onChangeText={(value) => setInputs((current) => ({ ...current, [field]: value }))} editable={!readOnly && busy === null}
           placeholder={state?.saved ? t.keyPlaceholderSaved : t.keyPlaceholderMissing} secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete="off" accessibilityLabel={t.keyInputLabel(names[field])} />
       </View>;
     })}
     {fields.some((f) => inputs[f].trim()) ? <Text style={muted}>{t.keysUnsaved}</Text> : null}
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-      <UiButton theme={theme} fontSize={14} variant="filled" label={busy === "keys" ? t.keysSaving : t.keysSave} onPress={() => void saveKeys()} disabled={busy !== null} />
-      <UiButton theme={theme} fontSize={14} variant="filled" label={busy === "check" ? t.keysChecking : t.keysCheck} onPress={() => void checkKeys()} disabled={busy !== null} />
+      <UiButton theme={theme} fontSize={14} variant="filled" label={busy === "keys" ? t.keysSaving : t.keysSave} onPress={() => void saveKeys()} disabled={readOnly || busy !== null} />
+      <UiButton theme={theme} fontSize={14} variant="filled" label={busy === "check" ? t.keysChecking : t.keysCheck} onPress={() => void checkKeys()} disabled={readOnly || busy !== null} />
       <HelpTip theme={theme} text={`${t.speechKeysIntro}\n\n${t.keysCheckHint}`} fontSize={14} />
     </View>
     {message ? <Text style={message.bad ? errorStyle : textStyle}>{message.text}</Text> : null}

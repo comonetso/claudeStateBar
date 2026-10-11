@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { currentSessionSince } from "../activity/workflows";
-import { codexLogDir } from "../chime/scan";
+import { findAllCodexDirs, type CodexDirs } from "../chime/scan";
 import { fm, parseEntries, parseInflight, parseStamp, pendingFrom, type ChatEntry, type InflightMarker } from "./chatParse";
 
 // codex_rescue 채팅(핑퐁) 대화: <저장소>/docs/codex_rescue/<시각>_chat_<slug>.md 와 진행 중 표시 .log/.chat_<slug>.inflight.
@@ -18,6 +18,8 @@ export interface CodexChatCard {
   /** 이번 세션 대화(확장 markCurrentChats): 진행 중이거나 이번 세션 시작 뒤에 문서가 바뀐 것. 아니면 "지난 대화"로 접힌다 */
   current: boolean;
   entries: ChatEntry[];
+  /** 같은 저장소 다른 작업 트리(worktree)의 대화면 그 트리 폴더 */
+  tree?: string;
 }
 
 async function listNames(dir: string): Promise<string[]> {
@@ -44,10 +46,16 @@ async function mtimeOf(path: string): Promise<number | undefined> {
   }
 }
 
+/** 같은 저장소 모든 작업 트리(worktree)의 핑퐁 대화를 합친다(10-12, 확장 codexRoots 와 같은 범위) */
 export async function listChats(cwd: string, limit = 50): Promise<CodexChatCard[]> {
-  const logDir = await codexLogDir(cwd);
-  if (!logDir) return [];
-  const docs = dirname(logDir);
+  const out = (await Promise.all((await findAllCodexDirs(cwd)).map((d) => listChatsIn(d, limit)))).flat();
+  // 채팅 문서는 어느 Claude 대화가 썼는지 적지 않아, 열린 대화(확장 상태바 기준) 중 가장 이른 시작을 이번 세션 시작으로 본다
+  const since = await currentSessionSince(cwd);
+  for (const c of out) c.current = c.live || (since !== null && (c.lastAtMs ?? 0) >= since);
+  return out.sort((a, b) => (b.lastAtMs ?? 0) - (a.lastAtMs ?? 0));
+}
+
+async function listChatsIn({ logDir, docsDir: docs, tree }: CodexDirs, limit: number): Promise<CodexChatCard[]> {
   const found: { stamp: string; slug: string; name: string }[] = [];
   for (const n of await listNames(docs)) {
     const m = /^(\d{6}_\d{6})_chat_(.+)\.md$/.exec(n);
@@ -76,6 +84,7 @@ export async function listChats(cwd: string, limit = 50): Promise<CodexChatCard[
       entries.push(pendingFrom(mk, entries));
     }
     out.push({
+      ...(tree ? { tree } : {}),
       stamp: f.stamp,
       slug: fm(text, "slug") || f.slug,
       ...(fm(text, "subject") ? { subject: fm(text, "subject") } : {}),
@@ -91,6 +100,7 @@ export async function listChats(cwd: string, limit = 50): Promise<CodexChatCard[
   for (const [slug, mk] of markers) {
     if (claimed.has(slug) || !mk.stamp) continue;
     out.push({
+      ...(tree ? { tree } : {}),
       stamp: mk.stamp,
       slug,
       ...(mk.subject ? { subject: mk.subject } : {}),
@@ -100,10 +110,7 @@ export async function listChats(cwd: string, limit = 50): Promise<CodexChatCard[
       entries: [pendingFrom(mk, [])],
     });
   }
-  // 채팅 문서는 어느 Claude 대화가 썼는지 적지 않아, 열린 대화(확장 상태바 기준) 중 가장 이른 시작을 이번 세션 시작으로 본다
-  const since = await currentSessionSince(cwd);
-  for (const c of out) c.current = c.live || (since !== null && (c.lastAtMs ?? 0) >= since);
-  return out.sort((a, b) => (b.lastAtMs ?? 0) - (a.lastAtMs ?? 0));
+  return out;
 }
 
 /**
@@ -112,8 +119,12 @@ export async function listChats(cwd: string, limit = 50): Promise<CodexChatCard[
  * 최신 limit 개 안에 있을 때만 센다. 표시가 없으면 폴더 목록 한 번으로 끝난다.
  */
 export async function countLiveChats(cwd: string, limit = 50): Promise<number> {
-  const logDir = await codexLogDir(cwd);
-  if (!logDir) return 0;
+  let n = 0;
+  for (const d of await findAllCodexDirs(cwd)) n += await countLiveChatsIn(d.logDir, limit);
+  return n;
+}
+
+async function countLiveChatsIn(logDir: string, limit: number): Promise<number> {
   const slugs: string[] = [];
   for (const n of await listNames(logDir)) {
     const m = /^\.chat_(.+)\.inflight$/.exec(n);

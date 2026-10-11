@@ -226,9 +226,16 @@ export function CodexRunsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
               <Text style={styles.chipText}>문서만</Text>
             </View>
           ) : null}
+          {/* 다른 작업 트리(worktree)에서 돈 실행: 확장처럼 ⎇ 폴더 이름(10-12) */}
+          {run.tree ? (
+            <View style={styles.chip}>
+              <Text style={styles.chipText}>⎇ {run.tree.split(/[\\/]/).filter(Boolean).pop()}</Text>
+            </View>
+          ) : null}
           <View style={{ marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>
-            {/* 확장처럼 휴지통 다음 상태 칩. 끝난 실행만 삭제한다 — 쓰는 중에 지우면 send.sh 와 엇갈린다 */}
-            {over ? (
+            {/* 확장처럼 휴지통 다음 상태 칩. 끝난 실행만 삭제한다 — 쓰는 중에 지우면 send.sh 와 엇갈린다.
+                휴지통은 대화 작업 폴더의 것만 다뤄 다른 트리 카드엔 단추를 두지 않는다 */}
+            {over && !run.tree ? (
               <Pressable style={styles.button} onPress={() => void moveToTrash(run)} accessibilityRole="button" accessibilityLabel="휴지통으로">
                 <Text style={styles.buttonText}>🗑</Text>
               </Pressable>

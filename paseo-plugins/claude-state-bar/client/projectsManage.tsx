@@ -1,3 +1,5 @@
+import { isOfflineFallback } from "./uiRole";
+import { OFFLINE_NOTICE } from "../shared/offlineProjects";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
@@ -43,6 +45,7 @@ export type EditScope = {
 };
 
 type EditorProps = {
+  readOnly?: boolean;
   theme: PluginTheme;
   scopes: EditScope[];
   edit: (scope: string, op: ProjectsEditOp) => Promise<{ ok: boolean; error?: string }>;
@@ -60,14 +63,16 @@ type EditorProps = {
   pathHint: (host: string) => string;
 };
 
-export function ProjectsEditor({ theme, scopes, edit, setCategoryOrder, intro, headerAction, notice, error, emptyText, scopeLabel, pathHint }: EditorProps) {
+export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCategoryOrder, intro, headerAction, notice, error, emptyText, scopeLabel, pathHint }: EditorProps) {
   const c = theme.colors;
   const scale = useFontScale();
   const fs = (px: number) => scaled(px + 3, scale);
 
   const [message, setMessage] = useState<{ text: string; bad: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [saving, setBusy] = useState(false);
+  const busy = saving || readOnly;
   const run = async (scope: string, op: ProjectsEditOp, done: string): Promise<boolean> => {
+    if (readOnly) return false;
     setBusy(true);
     setMessage(null);
     try {
@@ -283,6 +288,7 @@ export function ProjectsEditor({ theme, scopes, edit, setCategoryOrder, intro, h
     const cats = catsOf.get(s.id) ?? [];
     // 카테고리 머리를 끌어 놓은 자리로(10-11 리규형님) — 번호가 이 순서대로 바뀐다. 카테고리 없음은 자리 고정
     const onDropCategory = (from: string, to: string, after: boolean) => {
+      if (readOnly) return;
       const next = moveCategory(cats, from, to, after);
       if (next) setCategoryOrder(s.id, next);
     };
@@ -311,7 +317,7 @@ export function ProjectsEditor({ theme, scopes, edit, setCategoryOrder, intro, h
             ) : (
               <View
                 ref={(node: unknown) => {
-                  if (untagged) return;
+                  if (untagged || readOnly) return;
                   setDraggableRow(node, g.name, `:manage-categories|${s.id}`, c.accent, onDropCategory);
                   setHoverTitle(node, "끌어서 카테고리 순서 바꾸기 — 번호가 이 순서대로 붙습니다");
                 }}
@@ -361,7 +367,7 @@ export function ProjectsEditor({ theme, scopes, edit, setCategoryOrder, intro, h
       {error ? <Text style={{ fontSize: fs(12), color: c.statusDanger }}>{error}</Text> : null}
 
       {/* 새 프로젝트 */}
-      {formScope || (scopeLabel && scopes.length > 0) ? (
+      {!readOnly && (formScope || (scopeLabel && scopes.length > 0)) ? (
         <View style={{ gap: 8, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1 }}>
           <Pressable
             accessibilityRole="button"
@@ -499,6 +505,7 @@ export function ProjectsEditor({ theme, scopes, edit, setCategoryOrder, intro, h
 }
 
 type Props = {
+  readOnly?: boolean;
   theme: PluginTheme;
   data: ProjectsData | null;
   onChanged: () => void;
@@ -509,12 +516,13 @@ type Props = {
 };
 
 // 리규형님 프로젝트 목록(PC 데몬 목록 파일)
-export function ProjectsManage({ theme, data, onChanged, onEditFile, fileTitle }: Props) {
+export function ProjectsManage({ readOnly = false, theme, data, onChanged, onEditFile, fileTitle }: Props) {
   const c = theme.colors;
   const scale = useFontScale();
   const edit = useRpc(projectsEdit);
   const readHosts = useRpc(projectsHosts);
-  const { orders, setOrder, reload } = useGroupOrders();
+  readOnly = readOnly || data?.readOnly === true || isOfflineFallback();
+  const { orders, setOrder, reload } = useGroupOrders(readOnly);
 
   const [hosts, setHosts] = useState<string[]>(["PC"]);
   useEffect(() => {
@@ -540,9 +548,11 @@ export function ProjectsManage({ theme, data, onChanged, onEditFile, fileTitle }
     <UiButton
       theme={theme}
       label="프로젝트 파일 수정"
+      disabled={readOnly}
       hint={fileTitle}
       fontSize={scaled(14, scale)}
       onPress={() => {
+        if (readOnly || isOfflineFallback()) return;
         setFileProblem(null);
         void onEditFile().then(setFileProblem);
       }}
@@ -551,9 +561,11 @@ export function ProjectsManage({ theme, data, onChanged, onEditFile, fileTitle }
 
   return (
     <ProjectsEditor
+      readOnly={readOnly}
       theme={theme}
       scopes={scopes}
       edit={async (_scope, op) => {
+        if (readOnly || isOfflineFallback()) return { ok: false, error: OFFLINE_NOTICE };
         const r = await edit(op);
         if (r.ok) {
           onChanged();
@@ -563,7 +575,7 @@ export function ProjectsManage({ theme, data, onChanged, onEditFile, fileTitle }
         return r;
       }}
       setCategoryOrder={(_scope, names) => setOrder(CATEGORY_ORDER_KEY, names)}
-      intro="목록에 보이는 이름·묶음만 바뀝니다. 실제 폴더는 건드리지 않습니다."
+      intro={readOnly ? OFFLINE_NOTICE : "목록에 보이는 이름·묶음만 바뀝니다. 실제 폴더는 건드리지 않습니다."}
       headerAction={fileButton}
       notice={fileProblem}
       error={data?.error}

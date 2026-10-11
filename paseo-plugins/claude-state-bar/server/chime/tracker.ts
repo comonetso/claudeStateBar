@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { findCodexLogDir, scanCodexRuns, scanSession, type ChimeItem } from "./scan";
+import { findAllCodexLogDirs, scanCodexRuns, scanSession, type ChimeItem } from "./scan";
 
 // Claude Code 가 대화 기록을 두는 곳. CLAUDE_CONFIG_DIR 를 쓰면 그 아래다.
 function projectsDir(): string {
@@ -91,8 +91,8 @@ export async function checkSession(
     recheckAfterMs = result.recheckAfterMs;
   }
   // codex_rescue 실행은 대화가 아니라 저장소에 쌓인다. 같은 저장소의 대화가 여럿이어도 한 번만 울리게 앱 단위로 센다.
-  const logDir = cwd ? await findCodexLogDir(cwd) : null;
-  if (logDir) {
+  // 같은 저장소 다른 작업 트리(worktree)에서 돈 실행도 울린다(10-12) — 트리마다 기록 폴더가 달라 문도 따로
+  for (const logDir of cwd ? await findAllCodexLogDirs(cwd) : []) {
     const { gate, baseline } = gateFor(`${clientId}|codex|${logDir}`);
     chimes += judge(gate, await scanCodexRuns(logDir), baseline);
   }
@@ -127,8 +127,7 @@ export async function checkSessionV2(clientId: string, sessionId: string, cwd: s
     events.push(...judgeEvents(gate, result.items, baseline || forceBaseline, sessionId));
     recheckAfterMs = result.recheckAfterMs;
   }
-  const logDir = cwd ? await findCodexLogDir(cwd) : null;
-  if (logDir) {
+  for (const logDir of cwd ? await findAllCodexLogDirs(cwd) : []) {
     const { gate, baseline } = gateFor(clientId + "|v2-codex|" + logDir);
     events.push(...judgeEvents(gate, await scanCodexRuns(logDir), baseline || forceBaseline, "codex"));
   }

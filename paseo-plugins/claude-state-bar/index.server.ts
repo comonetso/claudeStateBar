@@ -1,3 +1,5 @@
+import { offlineProjectsStatus } from "./shared/offlineProjects";
+import { assertProjectsWritable, copiedProjects, readOfflineCopy, startOfflineProjectsCopy, stopOfflineCopyWatch, usesOfflineCopy, waitOfflineCopy } from "./server/offlineProjects";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { clearFinishedBg, countRunning, listActivity, readAgentActivity, readBgOutput } from "./server/activity/workflows";
 import { checkSession, checkSessionV2, forgetClient } from "./server/chime/tracker";
@@ -168,19 +170,21 @@ export default function contribute(server: PluginServerContext) {
   // 작업 현황 "통계" 탭(10-08) — 이 기기 ~/.claude 전체(stats-cache.json + 오늘 대화 기록)로 확장 Claude Status 통계 탭과 같은 값
   server.handle(claudeStats, async ({ force }) => collectClaudeStats(force === true));
   // 프로젝트 매니저 목록(VS Code 가 있는 이 PC 데몬에서만 뜻이 있다 — 화면도 PC 플러그인만 붙인다)
-  server.handle(projectsManager, async () => listProjects());
-  server.handle(projectsWait, async ({ mtimeMs }) => waitProjectsChange(mtimeMs));
-  server.handle(projectsPins, async () => projectPins());
-  server.handle(projectsPinSet, async ({ key, pinned }) => setProjectPin(key, pinned));
-  server.handle(projectsPinOrder, async ({ keys }) => setProjectPinOrder(keys));
-  server.handle(projectsOrder, async () => projectOrders());
-  server.handle(projectsOrderSet, async ({ group, keys }) => setProjectOrder(group, keys));
+  server.handle(offlineProjectsStatus, ({ mtimeMs }) => waitOfflineCopy(mtimeMs));
+  server.handle(projectsManager, async () => (await copiedProjects()) ?? listProjects());
+  server.handle(projectsWait, async ({ mtimeMs }) => usesOfflineCopy() ? waitOfflineCopy(mtimeMs) : waitProjectsChange(mtimeMs));
+  server.handle(projectsPins, async () => { const value = await readOfflineCopy(); return value ? { keys: value.copy?.keys ?? [] } : projectPins(); });
+  server.handle(projectsPinSet, async ({ key, pinned }) => { assertProjectsWritable(); return setProjectPin(key, pinned); });
+  server.handle(projectsPinOrder, async ({ keys }) => { assertProjectsWritable(); return setProjectPinOrder(keys); });
+  server.handle(projectsOrder, async () => { const value = await readOfflineCopy(); return value ? { groups: value.copy?.groups ?? {} } : projectOrders(); });
+  server.handle(projectsOrderSet, async ({ group, keys }) => { assertProjectsWritable(); return setProjectOrder(group, keys); });
   server.handle(projectsResetOrder, async () => {
+    assertProjectsWritable();
     await Promise.all([clearProjectOrders(), clearProjectPins()]);
     return { ok: true };
   });
   // 프로젝트 관리 화면(10-10) — 목록 파일을 화면에서 고친다(이름·카테고리·켜고 끄기·추가·삭제·카테고리 이름 바꾸기·지우기)
-  server.handle(projectsEdit, async (op) => editProjects(op));
+  server.handle(projectsEdit, async (op) => { assertProjectsWritable(); return editProjects(op); });
   server.handle(projectsHosts, async () => projectHosts());
   // 팀원 관리 시험판(10-11) — 고를 스킬·명령어 목록(PC 것은 비교용, 고르는 것은 서버 것 — SSH 로 읽는다)
   server.handle(teamSkills, async () => listGlobalSkills());
@@ -262,6 +266,7 @@ export default function contribute(server: PluginServerContext) {
   // 웹·폰 원격과 Paseo 보관 상태 맞추기(rcSync, 10-06)는 10-10 리규형님 결정으로 걷었다 — Paseo 대화엔 리모트 컨트롤을 안 켠다
   // 폰·웹 세션 제목의 프로젝트 이름표 — 목록이 있는 PC 데몬만 실제로 보낸다(10-07)
   const stopProjectLabels = startProjectLabels();
+  const stopProjectsCopy = startOfflineProjectsCopy();
   // 폰 받아쓰기의 받는 곳(10-10) — 모든 기기 데몬에서 연다(리규형님 결정 "4대 모두". 데몬 설정의 받아쓰기 칸을 돌린 기기만 실제로 쓴다).
   // 팀원 데몬(서버 울타리 안)은 열지 않는다 — 같은 서버 리규형님 데몬이 이미 그 포트를 쥐고 있고(EADDRINUSE, 10-11 IVR),
   // 서버 팀원 도구가 팀원 마이크를 그 창구로 돌려 둔다
@@ -270,6 +275,8 @@ export default function contribute(server: PluginServerContext) {
   return () => {
     void routerPromise?.then((value) => value.dispose(), () => {});
     stopProjectLabels();
+    stopProjectsCopy();
+    stopOfflineCopyWatch();
     stopSttServer();
   };
 }

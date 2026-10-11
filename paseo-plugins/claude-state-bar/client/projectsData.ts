@@ -1,3 +1,5 @@
+import { isOfflineFallback } from "./uiRole";
+import { OFFLINE_NOTICE } from "../shared/offlineProjects";
 import { getPaseoClient, useHosts, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { projectsManager, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsWait, type ProjectEntry } from "../shared/projects";
@@ -15,7 +17,7 @@ export const norm = (p: string) => {
   return /^[a-z]:/i.test(s) || s.startsWith("//") ? s.toLowerCase() : s;
 };
 
-export type ProjectsData = { source: string | null; entries: ProjectEntry[]; error?: string };
+export type ProjectsData = { source: string | null; entries: ProjectEntry[]; readOnly?: boolean; error?: string };
 
 // 맨 위 고정(10-06) — 왼쪽 칸과 전체 화면이 같은 고정 목록을 보도록 바뀌면 서로 알린다
 export const pinKey = (e: ProjectEntry) => `${e.host}|${e.path}`;
@@ -24,27 +26,31 @@ export const announcePins = (keys: string[]) => {
   for (const listener of pinListeners) listener(keys);
 };
 
-export function usePins(): { pins: Set<string>; order: string[]; toggle: (key: string) => void; reorder: (keys: string[]) => void } {
+export function usePins(readOnly = false): { pins: Set<string>; order: string[]; toggle: (key: string) => void; reorder: (keys: string[]) => void } {
   const readPins = useRpc(projectsPins);
   const writePin = useRpc(projectsPinSet);
   const writeOrder = useRpc(projectsPinOrder);
   const [keys, setKeys] = useState<string[]>([]);
   useEffect(() => {
     let alive = true;
-    void readPins({})
+    const refresh = () => { void readPins({})
       .then((r) => {
         if (alive) setKeys(r.keys);
       })
-      .catch(() => {});
+      .catch(() => {}); };
+    refresh();
+    reloaders.add(refresh);
     pinListeners.add(setKeys);
     return () => {
       alive = false;
       pinListeners.delete(setKeys);
+      reloaders.delete(refresh);
     };
   }, [readPins]);
   const pins = useMemo(() => new Set(keys), [keys]);
   const toggle = useCallback(
     (key: string) => {
+      if (readOnly || isOfflineFallback()) return;
       const pinned = !pins.has(key);
       // 누르자마자 옮기고, 데몬 답으로 맞춘다. 실패하면 되돌린다
       announcePins(pinned ? [...keys, key] : keys.filter((k) => k !== key));
@@ -52,17 +58,18 @@ export function usePins(): { pins: Set<string>; order: string[]; toggle: (key: s
         .then((r) => announcePins(r.keys))
         .catch(() => announcePins(keys));
     },
-    [pins, keys, writePin],
+    [pins, keys, writePin, readOnly],
   );
   // 드래그로 바꾼 순서도 같은 방식 — 바로 옮기고 데몬 답으로 맞춘다
   const reorder = useCallback(
     (next: string[]) => {
+      if (readOnly || isOfflineFallback()) return;
       announcePins(next);
       void writeOrder({ keys: next })
         .then((r) => announcePins(r.keys))
         .catch(() => announcePins(keys));
     },
-    [keys, writeOrder],
+    [keys, writeOrder, readOnly],
   );
   return { pins, order: keys, toggle, reorder };
 }
@@ -74,32 +81,36 @@ export const announceOrders = (groups: GroupOrders) => {
   for (const listener of orderListeners) listener(groups);
 };
 
-export function useGroupOrders(): { orders: GroupOrders; setOrder: (group: string, keys: string[]) => void; reload: () => void } {
+export function useGroupOrders(readOnly = false): { orders: GroupOrders; setOrder: (group: string, keys: string[]) => void; reload: () => void } {
   const readOrders = useRpc(projectsOrder);
   const writeOrder = useRpc(projectsOrderSet);
   const [orders, setOrders] = useState<GroupOrders>({});
   useEffect(() => {
     let alive = true;
-    void readOrders({})
+    const refresh = () => { void readOrders({})
       .then((r) => {
         if (alive) setOrders(r.groups);
       })
-      .catch(() => {});
+      .catch(() => {}); };
+    refresh();
+    reloaders.add(refresh);
     orderListeners.add(setOrders);
     return () => {
       alive = false;
       orderListeners.delete(setOrders);
+      reloaders.delete(refresh);
     };
   }, [readOrders]);
   // 바로 옮기고 데몬 답으로 맞춘다. 실패하면 되돌린다
   const setOrder = useCallback(
     (group: string, keys: string[]) => {
+      if (readOnly || isOfflineFallback()) return;
       announceOrders({ ...orders, [group]: keys });
       void writeOrder({ group, keys })
         .then((r) => announceOrders(r.groups))
         .catch(() => announceOrders(orders));
     },
-    [orders, writeOrder],
+    [orders, writeOrder, readOnly],
   );
   // 데몬이 순서 파일을 직접 고친 뒤(카테고리 이름 바꾸기·지우기) 다시 읽는다 — 안 읽으면 바뀐 카테고리 번호가 잠깐 맨 뒤로 간다
   const reload = useCallback(() => {
@@ -190,7 +201,7 @@ export function useProjectsData(): { data: ProjectsData | null; load: () => Prom
           continue;
         }
         if (stopped) return;
-        if (known !== undefined && r.mtimeMs !== known) void load();
+        if (known !== undefined && r.mtimeMs !== known) notifyProjectsChanged();
         known = r.mtimeMs;
       }
     })();
@@ -205,6 +216,7 @@ const PROJECT_LIST_TITLE = "프로젝트 목록";
 
 /** 목록 파일을 열 수 없는 이유(열 수 있으면 null) — 왼쪽 칸이 화면으로 넘기기 전에도 같은 글로 알린다 */
 export function projectsFileProblem(serverId: string | undefined, source: string | null): string | null {
+  if (isOfflineFallback()) return OFFLINE_NOTICE;
   if (!source) return "목록 파일 위치를 아직 모릅니다";
   if (!serverId) return "이 PC 의 Paseo 연결을 아직 찾지 못했습니다";
   return null;

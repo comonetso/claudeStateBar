@@ -23,3 +23,11 @@ Claude State Bar 설정의 **TTS · STT · 번역 공급자** 칸에서 언어 �
 모델: Gemini `gemini-3.5-flash-lite`(번역), `gemini-3.8-flash`(받아쓰기), Anthropic `claude-haiku-5-5`(번역), OpenAI `gpt-4.1-mini`(번역·받아쓰기 다듬기), `gpt-4o-mini-tts`(읽기), `gpt-transcribe`(받아쓰기).
 
 목소리 근거: [Google Chirp 3 HD](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd), [OpenAI TTS](https://developers.openai.com/api/docs/guides/text-to-speech), [OpenAI CLI 합성 예제](https://developers.openai.com/api/reference/cli/resources/audio/subresources/speech/methods/create).
+
+## PC 연결이 끊겼을 때
+
+PC 연결이 끊기면 Calladmin-Gabia가 프로젝트 목록과 관리 화면, 사용량, 설정 화면, 받아쓰기 입력창 보호를 대신 맡습니다. PC가 다시 연결되면 PC로 돌아오며 한 화면에 이 기능들이 한 벌만 보입니다. 다른 서버는 대신 맡지 않고 직원 데몬은 기존대로 동작합니다.
+
+PC 데몬은 시작할 때와 목록·고정·카테고리/프로젝트 순서 파일이 바뀔 때 받아쓰기 이름 힌트와 같은 서버들에 별도 사본을 보냅니다. 사본은 `~/.paseo/claude-state-bar/pc-offline-projects.json`에 저장되며 서버 자신의 목록 파일과 다릅니다. 전달에 실패하면 다음 변경이나 데몬 시작 때 다시 시도합니다. 대체 서버에는 성공적으로 전달된 사본이 있어야 합니다.
+
+Calladmin-Gabia가 대신 맡는 동안 목록·설정은 보기만 가능합니다. PC 프로젝트를 누르면 연결 끊김 안내가 나오고 연결된 서버 프로젝트는 평소대로 열립니다. 사용량과 표시되는 설정 값은 Calladmin-Gabia의 값입니다. 설정·공급자·키·이름 저장, 음원 업로드, 목록 편집과 순서 초기화는 막힙니다. 자동 알림 소리, 기기 사이 설정 맞추기, 화면 배치 저장/가져오기, 대표 기기 지정, 칸 최대화 기록은 PC가 맡습니다. 받아쓰기 입력창 보호는 기존에 지원하던 앱 버전에서만 작동합니다.

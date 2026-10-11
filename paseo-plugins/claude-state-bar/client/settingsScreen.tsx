@@ -1,3 +1,4 @@
+import { OFFLINE_NOTICE } from "../shared/offlineProjects";
 import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { SettingsSelect } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -113,7 +114,7 @@ function uploadedName(path: string): string | null {
   return m ? m[1] : null;
 }
 
-export function createSettingsScreen(onSaved: () => void) {
+export function createSettingsScreen(onSaved: () => void, readOnly = false) {
   return function SoundSettingsScreen({ theme, layout }: PluginSurfaceProps) {
     // 열릴 때 한 번 — 이 화면이 떠 있는 동안 언어는 바뀌지 않는다
     const t = useMemo(() => settingsText(), []);
@@ -171,6 +172,7 @@ export function createSettingsScreen(onSaved: () => void) {
       };
     }, [hintsGetRpc, t]);
     const doReset = async () => {
+      if (readOnly) return;
       setConfirmReset(false);
       try {
         await resetOrder({});
@@ -223,12 +225,13 @@ export function createSettingsScreen(onSaved: () => void) {
     const webGate = hasWebGate();
     const shell = (body: ReactNode) => (
       <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        {readOnly ? <Text style={{ color: theme.colors.statusWarning, fontSize: 14 }}>{OFFLINE_NOTICE}</Text> : null}
         <Text style={styles.title}>{SETTINGS_TITLE}</Text>
         {/* 로그인·계정은 맨 위(10-09 리규형님) — 우리 로그인 서버를 거친 화면만. PC 앱처럼 안 거치면 "로그인 서버 없음" 안내라 원래 자리에 */}
-        {webGate ? <WebLoginSection theme={theme} compact={layout.compact} t={t} /> : null}
-        <MainDeviceSection theme={theme} t={t} />
+        {webGate ? <WebLoginSection readOnly={readOnly} theme={theme} compact={layout.compact} t={t} /> : null}
+        {readOnly ? null : <MainDeviceSection theme={theme} t={t} />}
         <VersionStatusSection theme={theme} t={t} />
-        {webGate ? null : <WebLoginSection theme={theme} compact={layout.compact} t={t} />}
+        {webGate ? null : <WebLoginSection readOnly={readOnly} theme={theme} compact={layout.compact} t={t} />}
         {body}
       </ScrollView>
     );
@@ -244,6 +247,7 @@ export function createSettingsScreen(onSaved: () => void) {
       setDraft({ ...draft, [kind]: { ...draft[kind], ...patch } });
 
     const play = async (kind: SoundKind) => {
+      if (readOnly) return;
       setMessage(null);
       try {
         const gain = Number(draft[kind].gain);
@@ -259,6 +263,7 @@ export function createSettingsScreen(onSaved: () => void) {
     };
 
     const save = async () => {
+      if (readOnly) return;
       const parsed = fromDraft(draft);
       if (!parsed.success) {
         const issue = parsed.error.issues[0];
@@ -278,6 +283,7 @@ export function createSettingsScreen(onSaved: () => void) {
     };
 
     const reset = async () => {
+      if (readOnly) return;
       const ok = await state.reset();
       setMessage(ok ? t.resetDone : t.resetFailed(state.saveError ?? ""));
       if (ok) {
@@ -295,7 +301,7 @@ export function createSettingsScreen(onSaved: () => void) {
           <Text style={styles.text}>{title}</Text>
           <Text style={styles.muted}>{hint}</Text>
         </View>
-        <Switch value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={t.syncSwitchLabel(title)} />
+        <Switch disabled={readOnly} value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={t.syncSwitchLabel(title)} />
       </View>
     );
 
@@ -310,11 +316,12 @@ export function createSettingsScreen(onSaved: () => void) {
     const speechSwitch = (key: "translateEnabled" | "ttsEnabled" | "thinkingAutoOpen", title: string, hint: string) => (
       <View style={[styles.card, styles.switchRow]}>
         <View style={styles.switchText}>{titled(title, hint)}</View>
-        <Switch value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={title} />
+        <Switch disabled={readOnly} value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={title} />
       </View>
     );
 
     const saveHints = async () => {
+      if (readOnly) return;
       setHintsBusy(true);
       setHintsMessage(null);
       try {
@@ -349,7 +356,7 @@ export function createSettingsScreen(onSaved: () => void) {
         <SectionTitle icon="Activity" title={t.activitySection} theme={theme} />
         <View style={styles.card}>
           {titled(t.activitySplitTitle, t.activitySplitHint)}
-          <UiInput
+          <UiInput editable={!readOnly}
             theme={theme}
             fontSize={14}
             compact={false}
@@ -367,7 +374,7 @@ export function createSettingsScreen(onSaved: () => void) {
           {confirmReset ? (
             <View style={styles.row}>
               <Text style={styles.error}>{t.resetOrderConfirm}</Text>
-              <Pressable style={styles.button} onPress={() => void doReset()} accessibilityRole="button" accessibilityLabel={t.resetOrderDoLabel}>
+              <Pressable style={styles.button} onPress={() => void doReset()} disabled={readOnly} accessibilityRole="button" accessibilityLabel={t.resetOrderDoLabel}>
                 <Text style={[styles.buttonText, { color: theme.colors.statusDanger }]}>{t.resetOrderDo}</Text>
               </Pressable>
               <Pressable style={styles.button} onPress={() => setConfirmReset(false)} accessibilityRole="button" accessibilityLabel={t.resetOrderCancelLabel}>
@@ -378,10 +385,12 @@ export function createSettingsScreen(onSaved: () => void) {
             <Pressable
               style={styles.button}
               onPress={() => {
+                if (readOnly) return;
                 setResetMessage(null);
                 setConfirmReset(true);
               }}
               accessibilityRole="button"
+              disabled={readOnly}
               accessibilityLabel={t.resetOrderButtonLabel}
             >
               <Text style={styles.buttonText}>{t.resetOrderButton}</Text>
@@ -396,14 +405,14 @@ export function createSettingsScreen(onSaved: () => void) {
           writeLocal("claude-state-bar:speech-providers-open", open ? "1" : "0");
           setSpeechOpen(open);
         }} labels={t.fold} help={t.speechIntro} />
-        <SpeechProviders theme={theme} t={t} visible={speechOpen} />
+        <SpeechProviders readOnly={readOnly} theme={theme} t={t} visible={speechOpen} />
         {speechOpen ? (
         <>
         {speechSwitch("translateEnabled", t.translateTitle, t.translateHint)}
         {speechSwitch("ttsEnabled", t.ttsTitle, t.ttsHint)}
         {speechSwitch("thinkingAutoOpen", t.autoOpenTitle, t.autoOpenHint)}
         <View style={styles.card}>
-          <SettingsSelect label={t.speedStepTitle} hint={t.speedStepHint} value={String(draft.ttsSpeedStep)}
+          <SettingsSelect disabled={readOnly} label={t.speedStepTitle} hint={t.speedStepHint} value={String(draft.ttsSpeedStep)}
             options={[{ label: "0.1x", value: "0.1" }, { label: "0.25x", value: "0.25" }]}
             onValueChange={(value) => setDraft({ ...draft, ttsSpeedStep: value === "0.1" ? 0.1 : 0.25 })} />
           {titled(t.speedShortcuts, t.speedShortcutsHint)}
@@ -421,13 +430,13 @@ export function createSettingsScreen(onSaved: () => void) {
             placeholderTextColor={theme.colors.foregroundMuted}
             autoCapitalize="none"
             autoCorrect={false}
-            editable={hintsSaved !== null}
+            editable={!readOnly && hintsSaved !== null}
             accessibilityLabel={t.sttHintsTitle}
           />
           {hintsSaved === null && !hintsMessage ? <Text style={styles.muted}>{t.sttHintsReading}</Text> : null}
           {hintsSaved !== null && hintsDraft.replace(/\s+/g, " ").trim() !== hintsSaved ? <Text style={styles.muted}>{t.sttHintsUnsaved}</Text> : null}
           <View style={styles.actions}>
-            <Pressable style={styles.button} onPress={() => void saveHints()} disabled={hintsBusy || hintsSaved === null} accessibilityRole="button" accessibilityLabel={t.sttHintsSave}>
+            <Pressable style={styles.button} onPress={() => void saveHints()} disabled={readOnly || hintsBusy || hintsSaved === null} accessibilityRole="button" accessibilityLabel={t.sttHintsSave}>
               <Text style={styles.buttonText}>{hintsBusy ? t.sttHintsSaving : t.sttHintsSave}</Text>
             </Pressable>
           </View>
@@ -468,12 +477,15 @@ export function createSettingsScreen(onSaved: () => void) {
                           { value: UPLOAD_SOUND, label: t.soundUpload },
                           { value: CUSTOM_SOUND, label: t.soundCustom },
                         ]}
+                        disabled={readOnly}
+                        dim={readOnly}
                         onChange={(v) => {
+                          if (readOnly) return;
                           if (v === UPLOAD_SOUND) {
                             void (async () => {
                               setMessage(null);
                               const picked = await pickAudioFile();
-                              if (!picked) return;
+                              if (!picked || readOnly) return;
                               if (picked.size > SOUND_UPLOAD_MAX) return setMessage(t.soundUploadFailed("size"));
                               const r = await uploadSound({ kind, name: picked.name, base64: picked.base64 }).catch(() => null);
                               if (!r?.ok) return setMessage(t.soundUploadFailed(r && !r.ok ? r.reason : "write"));
@@ -497,7 +509,7 @@ export function createSettingsScreen(onSaved: () => void) {
                     );
                   })()}
                   {customKinds.has(kind) || (draft[kind].file.trim() !== "" && !uploadedName(draft[kind].file.trim()) && !systemSounds.some((x) => x.path.toLowerCase() === draft[kind].file.trim().toLowerCase())) ? (
-                    <UiInput
+                    <UiInput editable={!readOnly}
                       theme={theme}
                       fontSize={14}
                       compact={false}
@@ -509,7 +521,7 @@ export function createSettingsScreen(onSaved: () => void) {
                       accessibilityLabel={t.fileLabel(t.sounds[kind].title)}
                     />
                   ) : null}
-                  <UiInput
+                  <UiInput editable={!readOnly}
                     theme={theme}
                     fontSize={14}
                     compact={false}
@@ -521,6 +533,7 @@ export function createSettingsScreen(onSaved: () => void) {
                   />
                   <Pressable
                     style={styles.button}
+                    disabled={readOnly}
                     onPress={() => void play(kind)}
                     accessibilityRole="button"
                     accessibilityLabel={t.previewLabel(t.sounds[kind].title)}
@@ -534,7 +547,7 @@ export function createSettingsScreen(onSaved: () => void) {
             <View style={styles.card}>
               <Text style={styles.text}>{t.settleTitle}</Text>
               <Text style={styles.muted}>{t.settleHint}</Text>
-              <UiInput
+              <UiInput editable={!readOnly}
                 theme={theme}
                 fontSize={14}
                 compact={false}
@@ -546,7 +559,7 @@ export function createSettingsScreen(onSaved: () => void) {
               />
               <Text style={styles.text}>{t.thresholdsTitle}</Text>
               <View style={styles.row}>
-                <UiInput
+                <UiInput editable={!readOnly}
                   theme={theme}
                   fontSize={14}
                   compact={false}
@@ -556,7 +569,7 @@ export function createSettingsScreen(onSaved: () => void) {
                   keyboardType="numeric"
                   accessibilityLabel={t.warningLabel}
                 />
-                <UiInput
+                <UiInput editable={!readOnly}
                   theme={theme}
                   fontSize={14}
                   compact={false}
@@ -574,7 +587,7 @@ export function createSettingsScreen(onSaved: () => void) {
                 <Text style={styles.text}>{t.workflowBeepTitle}</Text>
                 <Text style={styles.muted}>{t.workflowBeepHint}</Text>
               </View>
-              <Switch
+              <Switch disabled={readOnly}
                 value={draft.workflowBeep}
                 onValueChange={(workflowBeep) => setDraft({ ...draft, workflowBeep })}
                 accessibilityLabel={t.workflowBeepTitle}
@@ -585,10 +598,10 @@ export function createSettingsScreen(onSaved: () => void) {
 
         {message ? <Text style={styles.text}>{message}</Text> : null}
         <View style={styles.actions}>
-          <Pressable style={styles.primary} onPress={() => void save()} accessibilityRole="button" disabled={state.saving}>
+          <Pressable style={styles.primary} onPress={() => void save()} accessibilityRole="button" disabled={readOnly || state.saving}>
             <Text style={styles.primaryText}>{state.saving ? t.saving : t.save}</Text>
           </Pressable>
-          <Pressable style={styles.button} onPress={() => void reset()} accessibilityRole="button">
+          <Pressable style={styles.button} onPress={() => void reset()} disabled={readOnly} accessibilityRole="button">
             <Text style={styles.buttonText}>{t.resetDefaults}</Text>
           </Pressable>
         </View>

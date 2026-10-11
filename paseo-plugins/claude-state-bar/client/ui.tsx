@@ -118,13 +118,13 @@ export type UiOption = { value: string; label: string };
  * 선택 상자(10-11 리규형님: 단추를 늘어놓지 말고 선택 상자) — 웹은 브라우저 선택 상자를 그대로 그린다(플러그인 도구의
  * SettingsSelect 는 설정 줄 모양이라 옆에 칸을 붙일 수 없다). 웹이 아니면 단추 줄. dim = 흐리게(옆 칸이 대신 쓰일 때)
  */
-export function UiSelect({ theme, value, options, onChange, fontSize, dim }: { theme: PluginTheme; value: string; options: UiOption[]; onChange: (value: string) => void; fontSize: number; dim?: boolean }) {
+export function UiSelect({ theme, value, options, onChange, fontSize, dim, disabled }: { theme: PluginTheme; value: string; options: UiOption[]; onChange: (value: string) => void; fontSize: number; dim?: boolean; disabled?: boolean }) {
   const c = theme.colors;
   if (Platform.OS !== "web") {
     return (
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         {options.map((o) => (
-          <UiButton key={o.value} theme={theme} label={o.label} fontSize={fontSize} on={o.value === value} onPress={() => onChange(o.value)} />
+          <UiButton key={o.value} theme={theme} label={o.label} fontSize={fontSize} on={o.value === value} disabled={disabled} onPress={() => { if (!disabled) onChange(o.value); }} />
         ))}
       </View>
     );
@@ -133,7 +133,8 @@ export function UiSelect({ theme, value, options, onChange, fontSize, dim }: { t
     "select",
     {
       value,
-      onChange: (e: { target: { value: string } }) => onChange(e.target.value),
+      disabled,
+      onChange: (e: { target: { value: string } }) => { if (!disabled) onChange(e.target.value); },
       style: {
         fontSize,
         fontFamily: "inherit",

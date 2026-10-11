@@ -1,3 +1,5 @@
+import { isOfflineFallback } from "./uiRole";
+import { OFFLINE_NOTICE } from "../shared/offlineProjects";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMemo, useState, type ReactNode } from "react";
@@ -61,10 +63,11 @@ export function ProjectsList(props: {
   const [, bump] = useState(0);
   const scale = useFontScale();
   const c = theme.colors;
+  const readOnly = data?.readOnly === true || isOfflineFallback();
   const entries = data?.entries ?? [];
   const sidebar = variant === "sidebar";
 
-  const { pins, order: pinOrder, toggle: togglePin, reorder: reorderPins } = usePins();
+  const { pins, order: pinOrder, toggle: togglePin, reorder: reorderPins } = usePins(readOnly);
   // 이 화면(브라우저 탭)이 지금 보고 있는 프로젝트 — 이름을 녹색으로(10-07 리규형님: 탭을 나눠 여러 프로젝트를 볼 때
   // 점·고리만으로는 지금 탭이 어느 프로젝트인지 안 보인다). 고정·활성·원래 묶음 어디서나
   const currentDir = useCurrentWorkspaceDir();
@@ -78,7 +81,7 @@ export function ProjectsList(props: {
     reorderPins(next);
   };
   // 고정 아닌 묶음의 순서(10-07) — 활성은 따로 이름 붙인 칸에, 카테고리 묶음은 묶음 이름 그대로
-  const { orders, setOrder } = useGroupOrders();
+  const { orders, setOrder } = useGroupOrders(readOnly);
   const orderKey = (group: string) => (group === ACTIVE_GROUP ? ACTIVE_ORDER_KEY : group);
   const dropIn = (group: string, visible: string[]) => (from: string, to: string, after: boolean) => {
     const next = reorderKeys(orders[orderKey(group)] ?? [], visible, from, to, after);
@@ -219,6 +222,7 @@ export function ProjectsList(props: {
           {tools}
         </View>
       )}
+      {readOnly ? <Text style={{ color: c.statusWarning, fontSize: fs(12) }}>{OFFLINE_NOTICE}</Text> : null}
       {notice ? <Text style={{ color: c.statusWarning, fontSize: fs(12) }}>{notice}</Text> : null}
       {data?.error ? <Text style={{ color: c.statusDanger, fontSize: fs(12) }}>{data.error}</Text> : null}
       {data && !data.source ? <Text style={{ color: c.foregroundMuted, fontSize: fs(12) }}>프로젝트 목록 파일을 찾지 못했습니다.</Text> : null}
@@ -231,7 +235,7 @@ export function ProjectsList(props: {
           <View key={g.name} style={{ gap: 2 }}>
             <Pressable
               ref={(node: unknown) => {
-                if (movable) setDraggableRow(node, g.name, CATEGORY_DRAG, c.accent, onDropCategory);
+                if (movable && !readOnly) setDraggableRow(node, g.name, CATEGORY_DRAG, c.accent, onDropCategory);
               }}
               accessibilityRole="button"
               accessibilityState={{ expanded: !shut }}
@@ -279,11 +283,11 @@ export function ProjectsList(props: {
                       ref={(node: unknown) => {
                         setHoverTitle(node, mixed && badge ? `${badge}. ${e.category} · ${hoverHost}` : hoverHost);
                         // 마우스로 끌어 같은 묶음 안 순서를 바꾼다(10-06 고정 → 10-07 모든 묶음, PC·웹 — 폰은 순서 바꾸기 없음)
-                        setDraggableRow(node, key, g.name, c.accent, onDrop);
+                        if (!readOnly) setDraggableRow(node, key, g.name, c.accent, onDrop);
                       }}
                       accessibilityRole="button"
                       accessibilityLabel={`${e.name}${mixed && e.category ? ` (${e.category})` : ""} 열기${alive ? ` (열린 대화 ${alive.open}개${alive.running ? `, 돌고 있음 ${alive.running}개` : ""}${alive.asking ? `, 질문 대기 ${alive.asking}개` : ""})` : ""}`}
-                      disabled={!!busy || e.missing}
+                      disabled={!!busy || (e.missing && !(readOnly && e.host === "PC"))}
                       onPress={() => onOpen(e)}
                       style={({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) => [
                         { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: sidebar ? 4 : 6, paddingLeft: sidebar ? 14 : 18, paddingRight: 6, borderRadius: 6 },
@@ -322,6 +326,7 @@ export function ProjectsList(props: {
                           ) : (
                             <Pressable
                               accessibilityRole="button"
+                              disabled={readOnly}
                               accessibilityLabel={pinned ? `${e.name} 고정 풀기` : `${e.name} 맨 위에 고정`}
                               hitSlop={6}
                               onPress={(ev) => {

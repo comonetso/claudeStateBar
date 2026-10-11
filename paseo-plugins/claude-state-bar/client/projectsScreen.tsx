@@ -1,3 +1,5 @@
+import { isOfflineFallback } from "./uiRole";
+import { OFFLINE_NOTICE, PC_OFFLINE_NOTICE } from "../shared/offlineProjects";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
@@ -28,6 +30,7 @@ export const PROJECTS_SCREEN_ID = "projects";
 
 export function ProjectsScreen({ theme, navigation, layout, params }: PluginScreenProps) {
   const { data, load } = useProjectsData();
+  const readOnly = data?.readOnly === true || isOfflineFallback();
   const index = useHostIndex(data?.entries ?? []);
   const live = useLiveSessions();
   const [busy, setBusy] = useState<string | null>(null);
@@ -67,6 +70,9 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
   useEffect(() => {
     if (!routeReq || handled.current === routeReq) return;
     handled.current = routeReq;
+    if (readOnly && (params.projectHost === "PC" || params.editList)) {
+      setNotice(params.editList ? OFFLINE_NOTICE : PC_OFFLINE_NOTICE); setRouteDone(routeReq); return;
+    }
     if (params.editList) {
       void openProjectsFile(params.serverId, params.editList)
         .then((problem) => problem && setNotice(problem))
@@ -82,6 +88,7 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
   }, [routeReq]);
 
   const open = (e: ProjectEntry) => {
+    if (readOnly && e.host === "PC") { setNotice(PC_OFFLINE_NOTICE); return; }
     const serverId = serverOf(e, index);
     if (!serverId) {
       setNotice(`${e.host === "PC" ? "이 PC" : e.host} 에 연결된 Paseo 가 없어 열 수 없습니다`);
@@ -102,7 +109,7 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
   const fs = (px: number) => scaled(px + 3, scale);
   const editFile = () => openProjectsFile(index.byAlias.get("PC"), data?.source ?? null);
   // 직원 화면(10-11 리규형님)은 프로젝트 목록 탭만 — 프로젝트 관리·팀원 관리는 관리자 것
-  const tabs = isTeamMember() ? MEMBER_TABS : ADMIN_TABS;
+  const tabs = isTeamMember() ? MEMBER_TABS : readOnly ? ADMIN_TABS.filter(t => t.id === "manage") : ADMIN_TABS;
   const current = tabs.some((t) => t.id === tab) ? tab : tabs[0].id;
   const tabBar = (
     <View ref={setNoTranslate} style={{ flexDirection: "row", alignItems: "flex-end", flexWrap: "wrap", gap: 2, marginBottom: 14, borderBottomWidth: 1, borderColor: c.border }}>
@@ -142,6 +149,7 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
         <ProjectsManage
           theme={theme}
           data={data}
+          readOnly={readOnly}
           onChanged={() => void load()}
           onEditFile={editFile}
           fileTitle={data?.source ? `프로젝트 목록 파일을 편집기로 엽니다: ${data.source}` : "프로젝트 목록 파일을 편집기로 엽니다"}

@@ -1,3 +1,5 @@
+import { PC_OFFLINE_NOTICE } from "../shared/offlineProjects";
+import { isOfflineFallback, uiProvider } from "./uiRole";
 import type { PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
@@ -97,7 +99,7 @@ function HealthLine({ theme }: { theme: PluginSidebarItemProps["theme"] }) {
   return (
     <Pressable
       accessibilityRole="button"
-      onPress={() => soundProvider()?.openSettings?.()}
+      onPress={() => (uiProvider() ?? soundProvider())?.openSettings?.()}
       style={{ marginHorizontal: 8, marginTop: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, borderLeftWidth: 3, borderLeftColor: color, backgroundColor: theme.colors.surface1 }}
     >
       <Text style={{ color, fontSize: scaled(12, scale) }}>{t.healthSummary(stopped, limited)}</Text>
@@ -136,6 +138,7 @@ function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme
   const c = theme.colors;
 
   const open = (e: ProjectEntry) => {
+    if ((data?.readOnly || isOfflineFallback()) && e.host === "PC") { setNotice(PC_OFFLINE_NOTICE); return; }
     const serverId = serverOf(e, index);
     if (!serverId) {
       setNotice(`${e.host === "PC" ? "이 PC" : e.host} 에 연결된 Paseo 가 없어 열 수 없습니다`);
@@ -146,7 +149,7 @@ function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme
     // agentId: 30초마다 읽어 두는 목록의 가장 최근 대화 — 있으면 화면이 데몬에 묻지 않고 바로 연다(10-06 리규형님 결정,
     // 서버 프로젝트가 1~2초 걸리던 것). 그 뒤 새로 생긴 대화는 다음 읽기 전까지 모른다
     const latest = liveOf(e, serverId, live)?.latest;
-    openScreen({ screenId: PROJECTS_SCREEN_ID, params: { openPath: e.path, serverId, n: String(Date.now()), ...(latest ? { agentId: latest.agentId } : {}) } });
+    openScreen({ screenId: PROJECTS_SCREEN_ID, params: { openPath: e.path, projectHost: e.host, serverId, n: String(Date.now()), ...(latest ? { agentId: latest.agentId } : {}) } });
   };
 
   // 프로젝트 관리(10-10) — 프로젝트 화면을 관리 모드로 연다(manage: 같은 단추를 다시 눌러도 새 요청으로 알아보게)

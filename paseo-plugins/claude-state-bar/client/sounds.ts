@@ -1,3 +1,4 @@
+import { uiProvider } from "./uiRole";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import type { LayoutSnapshot } from "../shared/layoutSync";
 import { DEFAULT_SETTINGS, type SoundSettings } from "../shared/settings";
@@ -66,7 +67,7 @@ export function registerProvider(provider: SoundProvider): (() => void) | undefi
 }
 
 export function currentSettings(): SoundSettings {
-  return shared().provider?.settings() ?? DEFAULT_SETTINGS;
+  return shared().provider?.settings() ?? uiProvider()?.settings() ?? DEFAULT_SETTINGS;
 }
 
 /** 번역·읽기 기능이 켜져 있는가(설정 화면 "번역·읽기" 칸, 10-08). 소리 담당(PC) 설정을 모든 호스트 화면이 같이 따른다.
