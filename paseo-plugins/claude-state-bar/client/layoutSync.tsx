@@ -7,6 +7,7 @@ import { fmtStamp } from "./format";
 import { isPublisher, noteOwner, onOwnerChange, ownerState, refreshOwner, screenKey } from "./screenRole";
 import { currentSettings, soundProvider } from "./sounds";
 import { appBundleId, applyPaseoLayoutCopy, isDesktopApp, readLocal, readSession, watchLocalWrites, workspaceInteractionVersion, writeLocal, writeLocalAndReload, writeSession } from "./web";
+import { lineColor } from "./ui";
 
 // PC 에서 가져오기(리규형님 10-07 결정 — 다시 묻지 않는다).
 // - PC 앱은 작업 공간 순서·화면 구성이 바뀔 때마다 이 PC 데몬에 조용히 맡긴다(startLayoutSave)
@@ -303,7 +304,7 @@ function SyncPopover({ theme }: PluginButtonContentProps) {
         onPress={pull}
         disabled={busy || !ready.length}
         accessibilityRole="button"
-        style={{ paddingVertical: 8, borderRadius: 8, backgroundColor: ready.length ? c.accent : c.surface2, opacity: busy ? 0.6 : 1 }}
+        style={{ paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: ready.length ? c.accent : lineColor(theme), backgroundColor: ready.length ? c.accent : c.surface2, opacity: busy ? 0.6 : 1 }}
       >
         <Text style={{ color: ready.length ? c.accentForeground : c.foregroundMuted, textAlign: "center", fontSize: 13 }}>
           {busy ? "가져오는 중" : "대표 배치 가져오기"}

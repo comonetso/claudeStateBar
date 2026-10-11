@@ -3,9 +3,9 @@ import { z } from "zod";
 
 // 프로젝트 목록(리규형님 10-05: VS Code 프로젝트 매니저 묶음 그대로 → 10-07: 목록을 플러그인 데이터 폴더로 옮겨 정본으로,
 // tags → category). 데몬(PC)이 server/projects 로 읽어 준다.
-const entrySchema = z.object({
+export const projectEntrySchema = z.object({
   name: z.string(),
-  /** 묶음 이름 — 옛 tags 의 하나뿐이던 값("8. 확장프로그램"). 없으면 "" */
+  /** 묶음 이름 — 옛 tags 의 하나뿐이던 값. 없으면 "". 번호는 이름에 넣지 않고 화면이 순서대로 붙인다(10-11) */
   category: z.string(),
   enabled: z.boolean(),
   /** "PC"(이 데몬의 기계) 또는 Remote-SSH 호스트 별칭(~/.ssh/config Host) */
@@ -14,7 +14,7 @@ const entrySchema = z.object({
   /** PC 경로인데 폴더가 없다 */
   missing: z.boolean().optional(),
 });
-export type ProjectEntry = z.infer<typeof entrySchema>;
+export type ProjectEntry = z.infer<typeof projectEntrySchema>;
 
 // 맨 위 고정(10-06) — 키는 "<host>|<path>". 데몬(PC)의 플러그인 전용 파일에 둔다(server/projectsPins)
 export const projectsPins = defineRpc({
@@ -39,7 +39,7 @@ export const projectsPinOrder = defineRpc({
 // 묶음 안 순서(10-07 리규형님 결정 — 활성 묶음과 태그 묶음도 끌어서 순서를 바꾼다). 묶음 이름 → 키 순서.
 // 끌어 놓은 적 없는 프로젝트는 여기 없고, 화면은 그것들을 이름순으로 뒤에 붙인다(server/projectsOrder)
 export const ACTIVE_ORDER_KEY = ":active";
-/** 카테고리 묶음끼리의 순서(10-07 리규형님: 카테고리도 끌어 옮긴다) — 값은 카테고리 이름 */
+/** 카테고리 묶음끼리의 순서(10-07 리규형님: 카테고리도 끌어 옮긴다) — 값은 카테고리 이름. 10-11부터 이 순서가 카테고리 번호다 */
 export const CATEGORY_ORDER_KEY = ":categories";
 /** 카테고리가 빈 프로젝트의 묶음 이름 — 화면 묶음 이름이자 순서 파일의 묶음 열쇠(관리 화면이 옮길 때 데몬도 쓴다) */
 export const UNTAGGED_GROUP = "카테고리 없음";
@@ -73,7 +73,8 @@ export const projectsWait = defineRpc({
 
 // 프로젝트 관리 화면(10-10 리규형님: "사용자들이 json 을 건드는 건 좀 그래서" — 목록 파일 직접 편집 대신 화면에서 고친다).
 // key 는 고정·순서와 같은 "<기기>|<경로>". 실제 폴더는 건드리지 않고 목록 파일만 고친다
-const editOp = z.discriminatedUnion("op", [
+// 팀원 프로젝트(shared/team)도 같은 고치기를 쓴다
+export const projectsEditOpSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("rename"), key: z.string(), name: z.string() }),
   /** 다른 카테고리로 — 그 묶음 맨 아래로 간다(10-10 결정). "" = 카테고리 없음 */
   z.object({ op: z.literal("category"), key: z.string(), category: z.string() }),
@@ -85,11 +86,11 @@ const editOp = z.discriminatedUnion("op", [
   /** 카테고리만 지운다 — 안의 프로젝트는 "카테고리 없음"으로(10-10 결정) */
   z.object({ op: z.literal("deleteCategory"), name: z.string() }),
 ]);
-export type ProjectsEditOp = z.infer<typeof editOp>;
+export type ProjectsEditOp = z.infer<typeof projectsEditOpSchema>;
 
 export const projectsEdit = defineRpc({
   name: "projects.edit",
-  input: editOp,
+  input: projectsEditOpSchema,
   output: z.object({ ok: z.boolean(), error: z.string().optional() }),
 });
 
@@ -106,7 +107,7 @@ export const projectsManager = defineRpc({
   output: z.object({
     /** 읽은 목록 파일 경로. 못 찾았으면 null */
     source: z.string().nullable(),
-    entries: z.array(entrySchema),
+    entries: z.array(projectEntrySchema),
     error: z.string().optional(),
   }),
 });

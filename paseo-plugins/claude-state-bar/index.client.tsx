@@ -115,7 +115,7 @@ export default function contribute(client: PluginClientContext) {
       if (disposed) return;
       if (info.serverId) cleanups.push(registerSoundOrigin(info.serverId, client));
       // 직원용 Paseo(10-11)는 그 화면의 유일한 호스트라 PC 처럼 설정·사용량·프로젝트 목록을 붙인다(관리 탭은 projectsScreen 이 숨김)
-      setTeamMember(info.team === true);
+      setTeamMember(info.team === true, info.team === true && info.serverId && info.home ? { serverId: info.serverId, path: info.home } : null);
       if (!info.serverId || (info.team !== true && (!info.canPlay || info.platform !== "win32"))) {
         log(`host ${info.platform}: sounds come from the providing host`);
         return;
@@ -139,6 +139,7 @@ export default function contribute(client: PluginClientContext) {
       if (disposed) return;
       const withdraw = registerProvider({
         hostLabel: info.platform,
+        // 직원 데몬도 자기 화면의 소리 대기열을 연다. 서버 기본음은 파일 없이 만든다.
         soundRouter: { coordinatorId: info.serverId, rpc: client.rpc.bind(client) },
         sound: async (kind) => (await client.rpc(soundDataV2, { kind })).dataUrl,
         settings: () => settings,

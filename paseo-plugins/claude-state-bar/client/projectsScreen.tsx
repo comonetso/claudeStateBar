@@ -7,17 +7,18 @@ import { openProjectOn, openProjectsFile, serverOf, useHostIndex, useLiveSession
 import { ProjectsList } from "./projectsList";
 import { ProjectsManage } from "./projectsManage";
 import { TeamManage } from "./teamManage";
-import { setHoverTitle, setNoTranslate } from "./web";
+import { setNoTranslate } from "./web";
 import { isTeamMember } from "./teamMode";
 
-// 화면 안 탭(10-11 리규형님: 목록 → 관리로 가면 돌아올 길이 없었다 — 세 칸을 탭으로 토글).
-// "목록 파일 직접 편집"은 프로젝트 목록 탭에서만 보인다
+// 화면 안 탭(10-11 리규형님: 목록 → 관리로 가면 돌아올 길이 없었다 — 탭으로 토글). 같은 날 오후 리규형님: 프로젝트 목록 탭은
+// 왼쪽 목록과 같아 필요 없다 → 빼고, 그 탭의 "목록 파일 직접 편집"은 "프로젝트 파일 수정"으로 프로젝트 관리 탭 맨 위 오른쪽에.
+// 직원 화면은 프로젝트 목록 탭 하나만 보던 화면이라 거기는 그대로 둔다
 type Tab = "list" | "manage" | "team";
-const TABS: { id: Tab; label: string }[] = [
-  { id: "list", label: "프로젝트 목록" },
+const ADMIN_TABS: { id: Tab; label: string }[] = [
   { id: "manage", label: "프로젝트 관리" },
   { id: "team", label: "팀원 관리" },
 ];
+const MEMBER_TABS: { id: Tab; label: string }[] = [{ id: "list", label: "프로젝트 목록" }];
 
 // 프로젝트 화면 — VS Code 프로젝트 매니저 묶음 화면(리규형님 10-05 결정: Paseo 기본 목록 등록 + 이 묶음 화면 둘 다).
 // 10-06부터 목록은 왼쪽 목록 칸 맨 위에도 있다(projectsSidebar). 칸에는 대화로 가는 기능이 없어서, 칸에서 누르면 이 화면이
@@ -33,7 +34,7 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
   const [notice, setNotice] = useState<string | null>(null);
   const handled = useRef<string | null>(null);
   // 탭(10-11) — 왼쪽 칸의 프로젝트 관리 단추는 params.manage 로 "프로젝트 관리" 탭을 연다
-  const [tab, setTab] = useState<Tab>("list");
+  const [tab, setTab] = useState<Tab>("manage");
   useEffect(() => {
     if (params?.manage && !isTeamMember()) setTab("manage");
   }, [params?.manage]);
@@ -99,14 +100,14 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
   }
   const c = theme.colors;
   const fs = (px: number) => scaled(px + 3, scale);
-  const editFile = () => {
-    void openProjectsFile(index.byAlias.get("PC"), data?.source ?? null).then((problem) => problem && setNotice(problem));
-  };
+  const editFile = () => openProjectsFile(index.byAlias.get("PC"), data?.source ?? null);
+  // 직원 화면(10-11 리규형님)은 프로젝트 목록 탭만 — 프로젝트 관리·팀원 관리는 관리자 것
+  const tabs = isTeamMember() ? MEMBER_TABS : ADMIN_TABS;
+  const current = tabs.some((t) => t.id === tab) ? tab : tabs[0].id;
   const tabBar = (
     <View ref={setNoTranslate} style={{ flexDirection: "row", alignItems: "flex-end", flexWrap: "wrap", gap: 2, marginBottom: 14, borderBottomWidth: 1, borderColor: c.border }}>
-      {/* 직원 화면(10-11 리규형님)은 프로젝트 목록 탭만 — 프로젝트 관리·팀원 관리는 관리자 것 */}
-      {(isTeamMember() ? TABS.filter((t) => t.id === "list") : TABS).map((t) => {
-        const on = tab === t.id;
+      {tabs.map((t) => {
+        const on = current === t.id;
         return (
           <Pressable
             key={t.id}
@@ -128,35 +129,23 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
           </Pressable>
         );
       })}
-      <View style={{ flex: 1 }} />
-      {tab === "list" ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="목록 파일 직접 편집"
-          ref={(node: unknown) => setHoverTitle(node, data?.source ? `목록 파일 편집: ${data.source}` : "목록 파일 편집")}
-          onPress={editFile}
-          style={({ hovered }: { hovered?: boolean; pressed: boolean }) => ({
-            marginBottom: 6,
-            paddingHorizontal: 8,
-            paddingVertical: 4,
-            borderRadius: 6,
-            borderWidth: 1,
-            borderColor: c.border,
-            backgroundColor: hovered ? c.surface2 : "transparent",
-          })}
-        >
-          <Text style={{ fontSize: fs(11), color: c.foreground }}>목록 파일 직접 편집</Text>
-        </Pressable>
-      ) : null}
     </View>
   );
   return (
     <ScrollView style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ padding: pad }}>
       {tabBar}
-      {tab === "list" ? (
+      {/* 왼쪽 목록에서 열다 못 연 이유 — 목록 탭이 없는 관리자 화면은 여기에(목록 탭은 목록 안에 보인다) */}
+      {notice && current !== "list" ? <Text style={{ color: c.statusWarning, fontSize: fs(12), marginBottom: 10 }}>{notice}</Text> : null}
+      {current === "list" ? (
         <ProjectsList theme={theme} variant="screen" data={data} index={index} live={live} busy={busy} notice={notice} onOpen={open} onReload={() => void load()} />
-      ) : tab === "manage" ? (
-        <ProjectsManage theme={theme} data={data} onChanged={() => void load()} />
+      ) : current === "manage" ? (
+        <ProjectsManage
+          theme={theme}
+          data={data}
+          onChanged={() => void load()}
+          onEditFile={editFile}
+          fileTitle={data?.source ? `프로젝트 목록 파일을 편집기로 엽니다: ${data.source}` : "프로젝트 목록 파일을 편집기로 엽니다"}
+        />
       ) : (
         <TeamManage theme={theme} data={data} index={index} />
       )}

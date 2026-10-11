@@ -3,7 +3,16 @@ import { useWindowDimensions } from "react-native";
 import { probeSettingsCache } from "./settingsCache";
 import { useScreenRole } from "./screenRole";
 import { useSyncSlots, type SyncSlotsView } from "./settingsSync";
-import { appBundleId, isCompactWidth, isDesktopApp, onPaseoStoresHydrated, probePaseoInternals, type InternalsReason, type PaseoInternals } from "./web";
+import {
+  appBundleId,
+  isCompactWidth,
+  isDesktopApp,
+  isGateMember,
+  onPaseoStoresHydrated,
+  probePaseoInternals,
+  type InternalsReason,
+  type PaseoInternals,
+} from "./web";
 
 // 기능별 상태(10-08 리규형님 결정 — Codex 261008_150613 작업 1~3, 정본 응답 5.3절).
 // 0.11.1 업데이트 때 판 칸이 "아는 판 = 모두 켜짐"이라 실제로 꺼진 것을 알 길이 없었다. 기능마다 다섯 가지로 판정한다:
@@ -22,7 +31,8 @@ export type HealthReason =
   | "publisher" // 이 화면이 기준 화면(화면 구성을 저장하는 쪽 — 대표 PC 웹, 없으면 PC 앱. client/screenRole)
   | "no-slot" // 이 판 공통 설정 칸이 아직 없음
   | "other-version" // 이 화면을 연 뒤 판이 다른 화면이 설정을 바꿈
-  | "rpc-failed"; // PC 데몬에 물어보지 못함
+  | "rpc-failed" // PC 데몬에 물어보지 못함
+  | "member"; // 직원 계정 화면 — 기준 화면(리규형님 PC)이 없어 설정 맞추기를 하지 않음(10-11)
 export type FeatureHealth = { id: FeatureId; state: HealthState; reason: HealthReason | null; detail?: string };
 
 export type HealthInput = {
@@ -34,6 +44,8 @@ export type HealthInput = {
   internals: PaseoInternals;
   cache: InternalsReason | null;
   sync: SyncSlotsView | null;
+  /** 직원 계정 화면(로그인 서버 표식) */
+  member: boolean;
 };
 
 /** 내부 연결 이유들 중 처음 걸린 것으로 판정한다. failState = 막혔을 때 그 기능이 어떻게 되는지 */
@@ -46,7 +58,7 @@ function fromInternals(id: FeatureId, reasons: (InternalsReason | null)[], failS
   return { id, state: failState, reason: "internals-changed", detail: r };
 }
 
-function judgeSync(slot: string | null, publisher: boolean, sync: SyncSlotsView | null): FeatureHealth {
+function judgeSync(slot: string | null, publisher: boolean, sync: SyncSlotsView | null, member: boolean): FeatureHealth {
   const id: FeatureId = "settingsSync";
   if (!slot) return { id, state: "na", reason: "not-web" };
   if (!sync) return { id, state: "checking", reason: null };
@@ -61,7 +73,7 @@ function judgeSync(slot: string | null, publisher: boolean, sync: SyncSlotsView 
 }
 
 export function judgeHealth(input: HealthInput): FeatureHealth[] {
-  const { slot, publisher, compact, internals: i, cache, sync } = input;
+  const { slot, publisher, compact, internals: i, cache, sync, member } = input;
   return [
     // 막히면 같은 칸 탭으로 연다(activityButton → client.openPanel)
     slot && compact ? { id: "split", state: "na", reason: "narrow" } : fromInternals("split", [i.layout, i.schema], "limited"),
@@ -71,7 +83,7 @@ export function judgeHealth(input: HealthInput): FeatureHealth[] {
     publisher ? { id: "layoutPull", state: "na", reason: "publisher" } : fromInternals("layoutPull", [i.layout, i.sidebarOrder], "limited"),
     // 막히면 화면을 새로 읽어 반영한다(settingsSync)
     fromInternals("settingsLive", [cache], "limited"),
-    judgeSync(slot, publisher, sync),
+    judgeSync(slot, publisher, sync, member),
   ];
 }
 
@@ -96,6 +108,7 @@ export function useHealth(): FeatureHealth[] {
         internals: probePaseoInternals(),
         cache: probeSettingsCache(),
         sync,
+        member: isGateMember(),
       }),
     // width·hydrated 는 다시 판정할 때를 알리는 값이다
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -18,12 +18,22 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
   let serial = 0;
   let target: unknown;
   let box: ThinkingBoxState | undefined;
+  // 마지막 실패 — 재생기를 정리한 뒤에도 그 단추 옆에 남긴다(10-11 리규형님 "눌러도 아무 반응도 없어")
+  let failed: { target: unknown; error: string } | null = null;
   const made = new Set<ThinkingBoxState>();
   const playing = () => box ? controller.state(box) : undefined;
+  const fail = (nextTarget: unknown, reason: string) => {
+    failed = { target: nextTarget, error: reason };
+    log(`turn read: 중단 ${reason}`);
+    dom.refresh();
+  };
   const refresh = () => {
     if (!live) return;
     if (box && !playing()?.active) {
-      if (box.error) log(`turn read: ${box.error}`);
+      if (box.error) {
+        log(`turn read: ${box.error}`);
+        failed = { target, error: box.error };
+      }
       controller.dispose(made);
       made.clear();
       box = undefined;
@@ -37,14 +47,29 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     enabled: live && canSpeak && featureSwitches().tts,
     speedOptions: controller.speedOptions(),
     playing: box && playing()?.active ? { target, paused: playing()!.paused, rate: controller.rate, error: box.error, index: playing()!.index, status: playing()!.status } : null,
+    failed,
+    log: (message) => log(`turn read: ${message}`),
+    fail,
     read: (nextTarget, text) => {
-      if (!live || !hostId || !canSpeak || !featureSwitches().tts) return;
+      const readHost = hostId;
+      if (!readHost) { fail(nextTarget, "호스트 번호를 확인하지 못했습니다"); return; }
+      const reason = !live ? "읽기 연결이 종료되었습니다" :
+        !canSpeak ? "음성 합성 키를 확인하지 못했습니다" : !featureSwitches().tts ? "설정에서 소리 읽기가 꺼져 있습니다" :
+        !text.trim() ? "화면에 읽을 글이 없습니다" : "";
+      if (reason) { fail(nextTarget, reason); return; }
+      failed = null;
       controller.dispose(made);
       made.clear();
       target = nextTarget;
-      box = controller.box(hostId, `turn-read-${++serial}`, Date.now(), text, "complete");
-      box.rpc = { translate: (input) => client.rpc(translateKo, input), synthesize: (input) => client.rpc(ttsSynthesize, input) };
+      box = controller.box(readHost, `turn-read-${++serial}`, Date.now(), text, "complete");
+      box.rpc = { translate: (input) => client.rpc(translateKo, input), synthesize: async (input) => {
+        log(`turn read: 음성 합성 요청 ${input.text.length}자`);
+        const result = await client.rpc(ttsSynthesize, input);
+        log(`turn read: 음성 합성 ${result.ok ? "성공" : "실패"}`);
+        return result;
+      } };
       made.add(box);
+      log(`turn read: 재생기 시작 ${text.length}자`);
       controller.start(box, false);
     },
     previous: () => controller.previous(),
@@ -67,12 +92,13 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     };
   });
   // 호스트 번호가 없는 연결은 다른 서버의 키로 읽지 않는다. 화면 fiber 의 serverId 와 대조한다.
-  void client.rpc(hostInfo, {}).then((info) => { if (live) { hostId = info.serverId ?? null; refresh(); } }, (error: unknown) => { if (live) log(`turn read: host check failed ${String(error)}`); });
+  void client.rpc(hostInfo, {}).then((info) => { if (live) { hostId = info.serverId ?? null; log(`turn read: 호스트 ${hostId ? "확인" : "번호 없음"}`); refresh(); } }, (error: unknown) => { if (live) log(`turn read: host check failed ${String(error)}`); });
   const checkKeys = () => {
     const mine = ++keyCheck;
     void client.rpc(googleStatus, {}).then((status) => {
       if (!live || mine !== keyCheck) return;
       canSpeak = status.tts;
+      log(`turn read: 음성 합성 키 ${canSpeak ? "있음" : "없음"}`);
       if (!canSpeak && box && playing()?.active) controller.stop();
       refresh();
     }, (error: unknown) => {

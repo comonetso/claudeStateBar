@@ -13,7 +13,9 @@ import { PROJECTS_SCREEN_ID } from "./projectsScreen";
 import { settingsText } from "./settingsI18n";
 import { clearSyncNotice, useSyncNotice } from "./settingsSync";
 import { soundProvider } from "./sounds";
-import { measureRoomAbove, overlapFromRight, watchSizeOf } from "./web";
+import { takeStaffHome } from "./teamMode";
+import { atStartScreen, measureRoomAbove, overlapFromRight, watchSizeOf } from "./web";
+import { lineColor } from "./ui";
 
 // 왼쪽 목록 칸 맨 위(리규형님 10-06 결정): 프로젝트 목록을 바로 보이고, 보이는 동안 아래 워크스페이스 목록은 가린다(웹·데스크톱).
 // 칸 높이는 아래쪽 줄(사용량)까지 남은 높이로 맞춘다. 칸에는 대화로 바로 가는 기능이 주어지지 않아서(플러그인 도구에서
@@ -150,12 +152,19 @@ function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme
   // 프로젝트 관리(10-10) — 프로젝트 화면을 관리 모드로 연다(manage: 같은 단추를 다시 눌러도 새 요청으로 알아보게)
   const manage = () => openScreen({ screenId: PROJECTS_SCREEN_ID, params: { manage: String(Date.now()) } });
 
+  // 직원 화면이 시작 화면(빈 "프로젝트 추가" 화면)으로 열렸으면 직원 홈을 바로 연다 — 목록에서 누를 때와 같은 길(10-11 리규형님)
+  useEffect(() => {
+    if (!atStartScreen()) return;
+    const home = takeStaffHome();
+    if (home) openScreen({ screenId: PROJECTS_SCREEN_ID, params: { openPath: home.path, serverId: home.serverId, n: String(Date.now()) } });
+  }, [openScreen]);
+
   const toWorkspaces = (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel="워크스페이스 목록 보기 (Ctrl+Alt+Shift+B)"
       onPress={() => setProjectsMode("workspaces")}
-      style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 6, paddingVertical: 5, borderRadius: 6, backgroundColor: c.surface2 }}
+      style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 6, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: lineColor(theme), backgroundColor: c.surface2 }}
     >
       <Icon name="PanelLeft" size={scaled(14, scale)} color={c.foreground} />
       <Text style={{ color: c.foreground, fontSize: scaled(12, scale) }} numberOfLines={1}>

@@ -14,6 +14,7 @@ import { boxPhase, boxText, normalizeRate, saidText, splitParagraphs, ThinkingCo
 import { onThinkingAllOpen, thinkingAllOpen } from "./thinkingFold";
 import { translationCache } from "./translationCache";
 import { clearSelection, createThinkingAudio, elementText, readAppFontSizes, readLocal, listenTtsSpeedKeys, setHoverTitle, setNoTranslate, selectionStartIn, themeVar, watchSelection, writeLocal, type SelectionSnapshot } from "./web";
+import { lineColor } from "./ui";
 
 const KIND = "csb-thinking";
 const schema = z.object({ text: z.string(), phase: z.enum(["streaming", "complete"]) });
@@ -164,7 +165,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
     <Pressable key={label} ref={(node) => setHoverTitle(node, label)} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={() => {
       if (speechOptions().autoOpen) controller.expand(box);
       onPress();
-    }} style={[buttonStyle(active && !reading), { flexDirection: "row", alignItems: "center", gap: 2, borderWidth: 1, borderColor: reading ? green : "transparent" }]}>
+    }} style={[buttonStyle(active && !reading), { flexDirection: "row", alignItems: "center", gap: 2, borderWidth: 1, borderColor: reading ? green : lineColor(theme) }]}>
       {icons.map((name) => <Icon key={name} name={name} size={px - 1} color={reading ? green : active ? c.accentForeground : c.foregroundMuted} />)}
     </Pressable>
   );

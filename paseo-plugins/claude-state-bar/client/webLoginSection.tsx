@@ -1,9 +1,10 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
+import { buttonStyle, UiInput } from "./ui";
 import { FoldTitle, SectionTitle } from "./sectionTitle";
 import type { SettingsText } from "./settingsI18n";
-import { readLocal, reloadPage, writeLocal } from "./web";
+import { isGateMember, readLocal, reloadPage, writeLocal } from "./web";
 
 // 설정 화면 맨 위 "웹 로그인" 칸(리규형님 10-07 결정). 우리가 직접 올린 웹은 로그인 서버(web-gate)가 앞에 서 있고,
 // 그 서버가 Paseo 화면 맨 앞에 guard.js 를 끼워 window.paseoGate 를 만든다 — 그게 있을 때만 이 칸이 동작한다.
@@ -98,21 +99,11 @@ export function WebLoginSection({ theme, compact, t }: { theme: PluginTheme; com
       muted: { color: theme.colors.foregroundMuted, fontSize: 13 },
       error: { color: theme.colors.statusDanger, fontSize: 13 },
       row: { flexDirection: (compact ? "column" : "row") as "column" | "row", gap: 8 },
-      input: {
-        flex: compact ? undefined : 1,
-        color: theme.colors.foreground,
-        backgroundColor: theme.colors.surface0,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        borderRadius: 8,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        fontSize: 14,
-      },
+      input: { flex: compact ? undefined : 1 },
       actions: { flexDirection: "row" as const, gap: 8, flexWrap: "wrap" as const },
-      button: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8, backgroundColor: theme.colors.surface2 },
+      button: buttonStyle(theme, "filled"),
       buttonText: { color: theme.colors.foreground, textAlign: "center" as const },
-      primary: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8, backgroundColor: theme.colors.accent },
+      primary: buttonStyle(theme, "primary"),
       primaryText: { color: theme.colors.accentForeground, textAlign: "center" as const },
     }),
     [theme, compact],
@@ -130,9 +121,27 @@ export function WebLoginSection({ theme, compact, t }: { theme: PluginTheme; com
     }
   }, [t]);
 
+  // 직원 계정 화면 — 관리자 계정 칸(GET /__gate/account)은 로그인 서버가 403 으로 거절한다(10-10 밤·10-11). 로그아웃만 남긴다
+  const member = isGateMember();
   useEffect(() => {
-    if (g) void load();
-  }, [g, load]);
+    if (g && !member) void load();
+  }, [g, member, load]);
+
+  if (g && member) {
+    return (
+      <>
+        <SectionTitle icon="KeyRound" title={t.loginHeading} theme={theme} />
+        <View style={styles.card}>
+          <Text style={styles.muted}>{t.loginMember}</Text>
+          <View style={styles.actions}>
+            <Pressable style={styles.button} onPress={() => g.logout()} accessibilityRole="button" accessibilityLabel={t.loginLogout}>
+              <Text style={styles.buttonText}>{t.loginLogout}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </>
+    );
+  }
 
   if (!g) {
     // 제목은 다른 칸처럼 박스 밖에(10-09 리규형님 — 박스 안에 있어 위 칸의 하위 항목처럼 보였다)
@@ -201,7 +210,10 @@ export function WebLoginSection({ theme, compact, t }: { theme: PluginTheme; com
   };
 
   const input = (key: keyof typeof form, placeholder: string, opts: { secret?: boolean; numeric?: boolean; multiline?: boolean } = {}) => (
-    <TextInput
+    <UiInput
+      theme={theme}
+      fontSize={14}
+      compact={false}
       style={styles.input}
       value={form[key]}
       onChangeText={(v) => set({ [key]: v })}

@@ -1,7 +1,8 @@
 import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { SettingsSelect } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, Switch, Text, View } from "react-native";
+import { buttonStyle, UiInput } from "./ui";
 import { extSettingsImport } from "../shared/extSettings";
 import { googleKeysCheck, googleKeysSave, googleKeysState, type GoogleKeysState } from "../shared/googleKeys";
 import { settingsSchema, soundSettings, type SoundSettings } from "../shared/settings";
@@ -187,21 +188,11 @@ export function createSettingsScreen(onSaved: () => void) {
           backgroundColor: theme.colors.surface1,
         },
         row: { flexDirection: (layout.compact ? "column" : "row") as "column" | "row", gap: 8 },
-        input: {
-          color: theme.colors.foreground,
-          backgroundColor: theme.colors.surface0,
-          borderWidth: 1,
-          borderColor: theme.colors.border,
-          borderRadius: 8,
-          paddingHorizontal: 10,
-          paddingVertical: 8,
-          fontSize: 14,
-        },
         fileInput: { flex: layout.compact ? undefined : 1 },
         smallInput: { width: layout.compact ? undefined : 90 },
-        button: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8, backgroundColor: theme.colors.surface2 },
+        button: buttonStyle(theme, "filled"),
         buttonText: { color: theme.colors.foreground, textAlign: "center" as const },
-        primary: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8, backgroundColor: theme.colors.accent },
+        primary: buttonStyle(theme, "primary"),
         primaryText: { color: theme.colors.accentForeground, textAlign: "center" as const },
         error: { color: theme.colors.statusDanger, fontSize: 13 },
         actions: { flexDirection: "row" as const, gap: 8 },
@@ -333,8 +324,10 @@ export function createSettingsScreen(onSaved: () => void) {
         ) : (
           <Text style={styles.text}>{name}</Text>
         )}
-        <TextInput
-          style={styles.input}
+        <UiInput
+          theme={theme}
+          fontSize={14}
+          compact={false}
           value={keyInputs[field]}
           onChangeText={(value) => setKeyInputs((current) => ({ ...current, [field]: value }))}
           placeholder={state?.saved ? t.keyPlaceholderSaved : t.keyPlaceholderMissing}
@@ -431,8 +424,11 @@ export function createSettingsScreen(onSaved: () => void) {
         <View style={styles.card}>
           <Text style={styles.text}>{t.activitySplitTitle}</Text>
           <Text style={styles.muted}>{t.activitySplitHint}</Text>
-          <TextInput
-            style={[styles.input, styles.smallInput]}
+          <UiInput
+            theme={theme}
+            fontSize={14}
+            compact={false}
+            style={styles.smallInput}
             value={draft.activitySplitPercent}
             onChangeText={(activitySplitPercent) => setDraft({ ...draft, activitySplitPercent })}
             keyboardType="numeric"
@@ -506,8 +502,10 @@ export function createSettingsScreen(onSaved: () => void) {
         <View style={styles.card}>
           <Text style={styles.text}>{t.sttHintsTitle}</Text>
           <Text style={styles.muted}>{t.sttHintsHint}</Text>
-          <TextInput
-            style={styles.input}
+          <UiInput
+            theme={theme}
+            fontSize={14}
+            compact={false}
             value={hintsDraft}
             onChangeText={setHintsDraft}
             placeholder={t.sttHintsPlaceholder}
@@ -570,16 +568,22 @@ export function createSettingsScreen(onSaved: () => void) {
                 <Text style={styles.text}>{t.sounds[kind].title}</Text>
                 <Text style={styles.muted}>{t.sounds[kind].hint}</Text>
                 <View style={styles.row}>
-                  <TextInput
-                    style={[styles.input, styles.fileInput]}
+                  <UiInput
+                    theme={theme}
+                    fontSize={14}
+                    compact={false}
+                    style={styles.fileInput}
                     value={draft[kind].file}
                     onChangeText={(file) => setSound(kind, { file })}
                     placeholder={t.filePlaceholder}
                     placeholderTextColor={theme.colors.foregroundMuted}
                     accessibilityLabel={t.fileLabel(t.sounds[kind].title)}
                   />
-                  <TextInput
-                    style={[styles.input, styles.smallInput]}
+                  <UiInput
+                    theme={theme}
+                    fontSize={14}
+                    compact={false}
+                    style={styles.smallInput}
                     value={draft[kind].gain}
                     onChangeText={(gain) => setSound(kind, { gain })}
                     keyboardType="numeric"
@@ -600,8 +604,11 @@ export function createSettingsScreen(onSaved: () => void) {
             <View style={styles.card}>
               <Text style={styles.text}>{t.settleTitle}</Text>
               <Text style={styles.muted}>{t.settleHint}</Text>
-              <TextInput
-                style={[styles.input, styles.smallInput]}
+              <UiInput
+                theme={theme}
+                fontSize={14}
+                compact={false}
+                style={styles.smallInput}
                 value={draft.settleMs}
                 onChangeText={(settleMs) => setDraft({ ...draft, settleMs })}
                 keyboardType="numeric"
@@ -609,15 +616,21 @@ export function createSettingsScreen(onSaved: () => void) {
               />
               <Text style={styles.text}>{t.thresholdsTitle}</Text>
               <View style={styles.row}>
-                <TextInput
-                  style={[styles.input, styles.smallInput]}
+                <UiInput
+                  theme={theme}
+                  fontSize={14}
+                  compact={false}
+                  style={styles.smallInput}
                   value={draft.warningPercent}
                   onChangeText={(warningPercent) => setDraft({ ...draft, warningPercent })}
                   keyboardType="numeric"
                   accessibilityLabel={t.warningLabel}
                 />
-                <TextInput
-                  style={[styles.input, styles.smallInput]}
+                <UiInput
+                  theme={theme}
+                  fontSize={14}
+                  compact={false}
+                  style={styles.smallInput}
                   value={draft.dangerPercent}
                   onChangeText={(dangerPercent) => setDraft({ ...draft, dangerPercent })}
                   keyboardType="numeric"

@@ -133,7 +133,7 @@ export async function editProjects(op: ProjectsEditOp): Promise<Result> {
     case "add": {
       const host = op.host.trim();
       const input = op.path.trim();
-      if (!host) return { ok: false, error: "기기를 고르세요" };
+      if (!host) return { ok: false, error: "디바이스를 고르세요" };
       if (!input) return { ok: false, error: "경로가 비어 있습니다" };
       let rootPath: string;
       let path: string;

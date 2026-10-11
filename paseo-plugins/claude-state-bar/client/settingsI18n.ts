@@ -212,6 +212,8 @@ const ko = {
         return `이 화면을 연 뒤 Paseo 버전이 다른 곳(${detail})에서 바꾼 설정은 여기에 오지 않습니다 — 설정은 버전이 같은 곳끼리만 맞춥니다`;
       case "rpc-failed":
         return `PC 데몬에 묻지 못했습니다(${detail}) — 30초마다 다시 묻습니다`;
+      case "member":
+        return "팀원 계정 화면에서는 쓰지 않는 기능입니다";
     }
   },
   featureFallback: {
@@ -268,6 +270,7 @@ const ko = {
   loginServerRemoveCancel: "지우기 취소",
   loginReading: "읽는 중…",
   loginLogout: "로그아웃",
+  loginMember: "팀원 계정으로 로그인했습니다. 아이디·비밀번호 바꾸기는 관리자에게 부탁하세요.",
   loginOpenChange: "아이디·비밀번호·유지 시간·링크 바꾸기",
   loginCloseChange: "바꾸기 닫기",
   loginChangeIntro: "바꿀 칸만 채우세요. 비운 칸은 그대로 둡니다.",
@@ -482,6 +485,8 @@ const en: SettingsText = {
         return `Settings changed after this screen opened on a screen with a different version (${detail}) don't come here — settings only sync between screens on the same version`;
       case "rpc-failed":
         return `Couldn't reach the PC daemon (${detail}) — retrying every 30 seconds`;
+      case "member":
+        return "Not used on a team member account screen";
     }
   },
   featureFallback: {
@@ -536,6 +541,7 @@ const en: SettingsText = {
   loginServerRemoveCancel: "Keep",
   loginReading: "Reading…",
   loginLogout: "Log out",
+  loginMember: "You are signed in with a team member account. Ask the administrator to change your ID or password.",
   loginOpenChange: "Change ID, password, session length or links",
   loginCloseChange: "Close",
   loginChangeIntro: "Fill in only what you want to change. Empty fields stay as they are.",

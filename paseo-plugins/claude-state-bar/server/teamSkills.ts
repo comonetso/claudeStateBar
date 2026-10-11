@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { TEAM_LOGS } from "../shared/teamAccess";
 import { projectHosts } from "./projectsEdit";
 import { SAFE_HOST, sshExe } from "./projectLabels";
 
@@ -71,6 +72,8 @@ export async function listGlobalSkills(): Promise<{ skills: Item[] }> {
 
 // 서버에서 도는 같은 기준의 목록 뽑기 — 줄마다 "종류<탭>이름<탭>설명". node 가 PATH 에 없는 서버(nvm)가 있어 bash·awk 로.
 export const REMOTE_LIST = [
+  // 팀원에게 붙일 수 있는 기록 중 이 서버에 있는 것(화면은 있는 것만 고르게 한다) — ~/.claude 가 없어도 먼저 본다
+  ...TEAM_LOGS.map((l) => `[ -e '${l.path}' ] && printf 'log\\t%s\\n' '${l.path}'`),
   "cd ~/.claude 2>/dev/null || exit 0",
   "desc() { tr -d '\\r' < \"$1\" 2>/dev/null | awk 'NR==1{if($0!=\"---\")exit;next} $0==\"---\"{exit} /^description:/{sub(/^description:[ \\t]*/,\"\");gsub(/\\t/,\" \");print;exit}' | sed -E \"s/^[\\\"']//; s/[\\\"']$//\"; }",
   "for d in skills/*/; do",
@@ -98,7 +101,17 @@ export function parseRemoteList(stdout: string): Item[] {
 }
 
 /** 서버 한 대의 글로벌 스킬·명령어(SSH). 목록의 SSH 별칭만 받는다 — 입력 글자가 ssh 옵션으로 읽히지 않게 */
-export async function listServerSkills(host: string): Promise<{ skills: Item[]; error: string | null }> {
+/** 서버 목록 출력 중 기록 줄(log\t경로) — 아는 기록 경로만 */
+export function parseRemoteLogs(stdout: string): string[] {
+  const known = TEAM_LOGS.map((l) => l.path as string);
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.split("\t"))
+    .filter(([kind, path]) => kind === "log" && known.includes(path))
+    .map(([, path]) => path);
+}
+
+export async function listServerSkills(host: string): Promise<{ skills: Item[]; logs?: string[]; error: string | null }> {
   if (!SAFE_HOST.test(host) || !(await projectHosts()).hosts.includes(host)) return { skills: [], error: "SSH 설정에 없는 서버입니다" };
   const b64 = Buffer.from(REMOTE_LIST, "utf8").toString("base64");
   // 스크립트는 base64 로 명령 인자에 싣는다 — 이 PC 의 ssh 는 파이프 입력의 끝을 못 알린다(09-14). -n 으로 입력도 닫는다
@@ -112,7 +125,7 @@ export async function listServerSkills(host: string): Promise<{ skills: Item[]; 
           const why = `${stderr}`.replace(/\*\*[^\n]*\n?/g, "").trim().replace(/\s+/g, " ").slice(0, 160);
           return resolve({ skills: [], error: `서버에서 읽지 못했습니다${why ? ` — ${why}` : ""}` });
         }
-        resolve({ skills: parseRemoteList(`${stdout}`), error: null });
+        resolve({ skills: parseRemoteList(`${stdout}`), logs: parseRemoteLogs(`${stdout}`), error: null });
       },
     );
   });

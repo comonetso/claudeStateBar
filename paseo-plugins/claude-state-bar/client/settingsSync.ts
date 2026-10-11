@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { APP_SETTINGS_KEY, isSyncKey, SHARED_APP_FIELDS, syncPut, syncWait, toShared } from "../shared/settingsSync";
 import { isPublisher, onOwnerChange, ownerState, screenKey } from "./screenRole";
 import { refreshSettingsCache } from "./settingsCache";
+import { isTeamMember } from "./teamMode";
 import {
   appBundleId,
   isDesktopApp,
@@ -271,8 +272,9 @@ export function startSettingsSync(client: PluginClientContext, log: (message: st
         const empty = res.slots.length === 0;
         // 칸은 기준 화면이 만든다(10-08): 대표 PC 웹이 있으면 그 브라우저만(이미 맞추던 화면이라도 아니다 — Codex 지적),
         // 없으면 예전 규칙(처음 = PC 앱, 새 판 = 이미 맞추던 화면). 데몬에 아직 못 물었으면 예전 규칙
+        // 직원은 PC 앱 없이 첫 웹·폰 화면이 자기 데몬의 칸을 만든다. 지정한 대표가 있으면 그 대표만.
         const role = isPublisher();
-        const mayCreate = ownerState().owner ? role === true : empty ? (role ?? isDesktopApp()) : joined;
+        const mayCreate = ownerState().owner ? role === true : empty ? (role === true || isDesktopApp() || isTeamMember()) : joined;
         if (mayCreate && !seedRefused) {
           try {
             await seed(empty ? "first, desktop app" : "new app version");

@@ -11,6 +11,7 @@ import { fontStep, scaled, useFontScale } from "./fontScale";
 import { onTabRequest, takeRequestedTab, useCounts } from "./useCounts";
 import { StatsPanel } from "./statsPanel";
 import { listenCtrlTab } from "./web";
+import { lineColor } from "./ui";
 import { WorkflowsPanel } from "./workflowPanel";
 
 // 작업 현황 패널 하나에 탭 넷(확장 activityPanel.ts 와 같은 모양 — 리규형님 10-05: 패널이 넷으로 따로 있으면 불편하다).
@@ -77,7 +78,7 @@ export function ActivityPanel(props: PluginWorkspacePanelProps) {
       count: { color: RUNNING_COLOR, fontSize: scaled(12, scale), fontWeight: "600" as const },
       tools: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4, marginLeft: "auto" as const, paddingLeft: 12 },
       flabel: { color: c.foregroundMuted, fontSize: scaled(12, scale) },
-      fbtn: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 4, backgroundColor: c.surface2 },
+      fbtn: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 4, borderWidth: 1, borderColor: lineColor(theme), backgroundColor: c.surface2 },
       fbtnText: { color: c.foreground, fontSize: scaled(12, scale) },
     }),
     [c, scale],

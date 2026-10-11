@@ -2,6 +2,7 @@ import { getPaseoClient, useHosts, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { projectsManager, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsWait, type ProjectEntry } from "../shared/projects";
 import { agentBucket, mostUrgent, type StatusBucket } from "./statusIndicator";
+import { staffServerId } from "./teamMode";
 import { canOpenWorkspaceFile, currentWorkspaceFromUrl, markWorkspaceInteraction, openWorkspaceFile, watchLocation } from "./web";
 
 // 프로젝트 매니저 데이터 — 전체 화면(projectsScreen)과 왼쪽 목록 칸(projectsSidebar)이 같이 쓴다.
@@ -73,7 +74,7 @@ export const announceOrders = (groups: GroupOrders) => {
   for (const listener of orderListeners) listener(groups);
 };
 
-export function useGroupOrders(): { orders: GroupOrders; setOrder: (group: string, keys: string[]) => void } {
+export function useGroupOrders(): { orders: GroupOrders; setOrder: (group: string, keys: string[]) => void; reload: () => void } {
   const readOrders = useRpc(projectsOrder);
   const writeOrder = useRpc(projectsOrderSet);
   const [orders, setOrders] = useState<GroupOrders>({});
@@ -100,7 +101,35 @@ export function useGroupOrders(): { orders: GroupOrders; setOrder: (group: strin
     },
     [orders, writeOrder],
   );
-  return { orders, setOrder };
+  // 데몬이 순서 파일을 직접 고친 뒤(카테고리 이름 바꾸기·지우기) 다시 읽는다 — 안 읽으면 바뀐 카테고리 번호가 잠깐 맨 뒤로 간다
+  const reload = useCallback(() => {
+    void readOrders({})
+      .then((r) => announceOrders(r.groups))
+      .catch(() => {});
+  }, [readOrders]);
+  return { orders, setOrder, reload };
+}
+
+/**
+ * 카테고리 순서 = 번호(10-11 리규형님: 이름 앞에 손으로 붙이던 번호를 떼고, 끌어 놓은 순서대로 번호를 붙인다) — 끌어 놓은
+ * 순서(saved) 다음에, 끌어 놓은 적 없는 카테고리는 목록에 처음 나오는 순서로 뒤에. 카테고리 없음(빈 이름)은 빠진다(번호 없음)
+ */
+export function orderedCategories(entries: { category: string }[], saved: string[]): string[] {
+  const present: string[] = [];
+  for (const e of entries) if (e.category && !present.includes(e.category)) present.push(e.category);
+  const rank = (name: string) => {
+    const i = saved.indexOf(name);
+    return i < 0 ? saved.length : i;
+  };
+  return present.map((name, i) => ({ name, i })).sort((a, b) => rank(a.name) - rank(b.name) || a.i - b.i).map((x) => x.name);
+}
+
+/** 카테고리 하나를 다른 카테고리의 위(after=false)·아래로 옮긴 전체 순서 — 화면에 안 보이는 카테고리도 제자리에 남아 번호가 흔들리지 않는다 */
+export function moveCategory(all: string[], from: string, to: string, after: boolean): string[] | null {
+  if (from === to || !all.includes(from) || !all.includes(to)) return null;
+  const next = all.filter((name) => name !== from);
+  next.splice(next.indexOf(to) + (after ? 1 : 0), 0, from);
+  return next;
 }
 
 /**
@@ -266,7 +295,8 @@ export function hostIndexOf(entries: ProjectEntry[], paths: Map<string, string>)
 
 export function serverOf(e: ProjectEntry, index: HostIndex): string | undefined {
   const key = norm(e.path);
-  return (index.shared.has(key) ? undefined : index.byPath.get(key)) ?? index.byAlias.get(e.host);
+  // 직원 화면은 자기 데몬 하나뿐 — 경로·별칭으로 못 찾으면 자기 데몬에서 연다
+  return (index.shared.has(key) ? undefined : index.byPath.get(key)) ?? index.byAlias.get(e.host) ?? staffServerId();
 }
 
 // 살아 있는 세션 — 프로젝트 폴더(또는 그 아래)에서 보관 안 된 Paseo 대화(Claude 가 지금 떠 있는지는 보지 않는다)

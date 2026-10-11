@@ -3,6 +3,7 @@ import type { RpcInput } from "@getpaseo/plugin";
 import type { SoundSettings } from "../shared/settings";
 import type { SoundKind, soundData } from "../shared/sound";
 import { amplifyWav } from "./amplify";
+import { defaultChime } from "./defaultChime";
 
 // 구버전 자동 알림에는 정상 WAV 무음을 반환한다(PCM 16bit 표본 하나). 미리듣기는 실제 음원이다.
 export const LEGACY_SILENT_WAV = "data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAAAAAA==";
@@ -16,8 +17,17 @@ const DEFAULT_WAVS: Record<SoundKind, { win32: string; darwin: string }> = {
   workflow: { win32: "C:\\Windows\\Media\\Ring06.wav", darwin: "/System/Library/Sounds/Funk.aiff" },
 };
 
+/** 직원 데몬은 자기 화면의 소리 정본이다. 일반 서버는 계속 PC 공급자를 쓴다. */
+export function isTeamDaemon(): boolean {
+  return !!process.env.TEAM_UID || process.env.PASEO_HOME === "/team/paseo";
+}
+
+export function canCoordinateSound(): boolean {
+  return process.platform === "win32" || (process.platform === "linux" && isTeamDaemon());
+}
+
 export function canPlayHere(): boolean {
-  return process.platform === "win32" || process.platform === "darwin";
+  return process.platform === "win32" || process.platform === "darwin" || (process.platform === "linux" && isTeamDaemon());
 }
 
 export function defaultSoundPath(kind: SoundKind): string {
@@ -41,8 +51,17 @@ export function createSoundReader(readSettings: () => Promise<SoundSettings>) {
   return async ({ kind, file, gain }: RpcInput<typeof soundData>) => {
     const settings = await readSettings();
     const chosenFile = (file ?? settings[kind].file).trim();
-    const path = chosenFile || defaultSoundPath(kind);
     const gainPercent = Math.max(50, Math.min(300, Math.round(gain ?? settings[kind].gain)));
+    // 리눅스 직원 기본음은 메모리에서 만든다. 윈도우 음원 복사·서버 파일 설치가 필요 없다.
+    // 직접 정한 파일이 없을 때만 — 잘못 정한 경로를 조용히 기본음으로 바꾸지는 않는다.
+    if (!chosenFile && process.platform === "linux" && isTeamDaemon()) {
+      const key = "generated|" + kind + "|" + gainPercent;
+      const hit = cache.get(kind);
+      const dataUrl = hit?.key === key ? hit.dataUrl : "data:audio/wav;base64," + amplifyWav(defaultChime(kind), gainPercent).toString("base64");
+      if (file === undefined && gain === undefined) cache.set(kind, { key, dataUrl });
+      return { dataUrl, path: "기본 알림음(생성)" };
+    }
+    const path = chosenFile || defaultSoundPath(kind);
     const info = await stat(path);
     const key = `${path}|${info.mtimeMs}|${info.size}|${gainPercent}`;
     const hit = cache.get(kind);

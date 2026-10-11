@@ -26,7 +26,7 @@ import { googleStatus, ttsSynthesize } from "./shared/tts";
 import { startSttServer } from "./server/sttServer";
 import { readSttHints, saveSttHints } from "./server/sttHints";
 import { sttHintsGet, sttHintsSave } from "./shared/stt";
-import { canPlayHere, createSoundReader, LEGACY_SILENT_WAV } from "./server/sound";
+import { canPlayHere, canCoordinateSound, isTeamDaemon, createSoundReader, LEGACY_SILENT_WAV } from "./server/sound";
 import { activityCounts, activityList, agentActivity, bgClear, bgOutput } from "./shared/activity";
 import { chimeCheck, chimeCheckV2, chimeForget, lastTurnCheck } from "./shared/chime";
 import {
@@ -52,7 +52,9 @@ import { thinkingBoundary } from "./shared/thinkingBoundary";
 import { thinkingCut } from "./server/thinkingBoundary";
 import { projectsEdit, projectsHosts, projectsManager, projectsWait, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsResetOrder } from "./shared/projects";
 import { editProjects, projectHosts } from "./server/projectsEdit";
-import { teamServerSkills, teamSkills } from "./shared/team";
+import { teamCategoryOrder, teamJobStart, teamJobWait, teamMemberRemove, teamMemberSave, teamProjectEdit, teamServerSkills, teamSkills, teamState } from "./shared/team";
+import { startTeamJob, waitTeamJob } from "./server/teamApply";
+import { editMemberProjects, removeMember, saveMember, setMemberCategoryOrder, teamStateRead } from "./server/team";
 import { listGlobalSkills, listServerSkills } from "./server/teamSkills";
 import { clearProjectOrders, projectOrders, setProjectOrder } from "./server/projectsOrder";
 import { clearProjectPins, projectPins, setProjectPin, setProjectPinOrder } from "./server/projectsPins";
@@ -79,7 +81,11 @@ export default function contribute(server: PluginServerContext) {
   server.handle(soundData, async (input) => input.file !== undefined || input.gain !== undefined
     ? readSound(input) : { dataUrl: LEGACY_SILENT_WAV, path: "" });
   // team = 서버 울타리 안 직원 데몬(10-11, paseo-team@ 유닛이 TEAM_UID·PASEO_HOME=/team/paseo 를 준다)
-  server.handle(hostInfo, async () => ({ platform: process.platform, canPlay: canPlayHere(), team: !!process.env.TEAM_UID || process.env.PASEO_HOME === "/team/paseo", ...(await hostIdentity()) }));
+  server.handle(hostInfo, async () => {
+    const team = isTeamDaemon();
+    // 직원용 Paseo 는 HOME=/home/<아이디> 로 돈다(서버 직원 도구 drop-in)
+    return { platform: process.platform, canPlay: canPlayHere(), team, ...(team && process.env.HOME ? { home: process.env.HOME } : {}), ...(await hostIdentity()) };
+  });
   server.handle(chimeCheck, async ({ clientId, sessionId, cwd }) => checkSession(clientId, sessionId, cwd));
   server.handle(chimeCheckV2, async ({ clientId, sessionId, cwd, baseline }) => checkSessionV2(clientId, sessionId, cwd, baseline));
   server.handle(lastTurnCheck, async ({ sessionId }) => ({ commandOnly: await lastTurnCommandOnly(sessionId) }));
@@ -175,16 +181,25 @@ export default function contribute(server: PluginServerContext) {
   // 팀원 관리 시험판(10-11) — 고를 스킬·명령어 목록(PC 것은 비교용, 고르는 것은 서버 것 — SSH 로 읽는다)
   server.handle(teamSkills, async () => listGlobalSkills());
   server.handle(teamServerSkills, async ({ host }) => listServerSkills(host));
+  // 팀원 목록·팀원 전용 프로젝트(10-11) — PC 플러그인 전용 파일 team.json 에 저장만 한다(서버에 직원을 만드는 일은 뒷단 작업 때)
+  server.handle(teamState, async () => teamStateRead());
+  server.handle(teamMemberSave, async (input) => saveMember(input));
+  server.handle(teamMemberRemove, async ({ id }) => removeMember(id));
+  server.handle(teamProjectEdit, async ({ member, op }) => editMemberProjects(member, op));
+  server.handle(teamCategoryOrder, async ({ member, names }) => setMemberCategoryOrder(member, names));
+  // 서버 작업(10-11 — 서버에 반영·스킬 다시 맞추기·지우기). SSH 로 서버 직원 도구·로그인 서버 관리 도구를 부른다
+  server.handle(teamJobStart, async ({ member, action }) => startTeamJob(member, action));
+  server.handle(teamJobWait, async ({ jobId, seen }) => waitTeamJob(jobId, seen));
   // VS Code 확장 설정 가져오기(10-08) — 설정 화면 소리 칸 단추. 이 기기 VS Code 사용자 설정을 읽기만 한다(설정 화면은 PC 플러그인만 붙인다)
   server.handle(extSettingsImport, async () => importExtSettings());
   // 소리는 화면 하나에서만(10-08) — 화면들의 "울려도 되나"를 모아 하나만 고른다(화면은 이 PC 플러그인에만 묻는다)
   server.handle(soundScreenUsed, async ({ screenId }) => markScreenUsed(screenId));
   server.handle(soundClaim, async (input) => claimSound(input));
-  // 정본은 이 환경의 Windows PC 하나다. 다른 소리 파일 호스트로 자동 failover하지 않는다.
+  // Windows PC 또는 직원 Linux 데몬이 자기 화면의 정본이다. 일반 서버로 자동 넘기지 않는다.
   let routerPromise: Promise<ReturnType<typeof createSoundRouter>> | undefined;
   const router = () => routerPromise ??= (async () => {
     const { serverId } = await hostIdentity();
-    if (process.platform !== "win32" || !serverId) throw new Error("v2 소리 정본 PC 아님/번호 미확인");
+    if (!canCoordinateSound() || !serverId) throw new Error("v2 소리 정본 호스트 아님/번호 미확인");
     return createSoundRouter(serverId);
   })();
   const origins = createSoundOrigins();
@@ -232,8 +247,11 @@ export default function contribute(server: PluginServerContext) {
   // 웹·폰 원격과 Paseo 보관 상태 맞추기(rcSync, 10-06)는 10-10 리규형님 결정으로 걷었다 — Paseo 대화엔 리모트 컨트롤을 안 켠다
   // 폰·웹 세션 제목의 프로젝트 이름표 — 목록이 있는 PC 데몬만 실제로 보낸다(10-07)
   const stopProjectLabels = startProjectLabels();
-  // 폰 받아쓰기의 받는 곳(10-10) — 모든 기기 데몬에서 연다(리규형님 결정 "4대 모두". 데몬 설정의 받아쓰기 칸을 돌린 기기만 실제로 쓴다)
-  const stopSttServer = startSttServer();
+  // 폰 받아쓰기의 받는 곳(10-10) — 모든 기기 데몬에서 연다(리규형님 결정 "4대 모두". 데몬 설정의 받아쓰기 칸을 돌린 기기만 실제로 쓴다).
+  // 팀원 데몬(서버 울타리 안)은 열지 않는다 — 같은 서버 리규형님 데몬이 이미 그 포트를 쥐고 있고(EADDRINUSE, 10-11 IVR),
+  // 서버 팀원 도구가 팀원 마이크를 그 창구로 돌려 둔다
+  const teamDaemon = isTeamDaemon();
+  const stopSttServer = teamDaemon ? () => {} : startSttServer();
   return () => {
     void routerPromise?.then((value) => value.dispose(), () => {});
     stopProjectLabels();

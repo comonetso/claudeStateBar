@@ -665,6 +665,21 @@ export function writeLocalAndReload(entries: Record<string, string>): void {
 
 /** 화면을 새로 읽는다(웹·데스크톱만) — Paseo 는 설정을 처음 한 번만 저장소에서 읽는다. 설정 맞추기는 먼저 캐시 다시 읽기
  *  (settingsCache)를 쓰고, 그게 안 되는 판에서만 이것으로 물러난다(10-08 리규형님 결정) */
+/** Paseo 시작 화면(열린 작업 공간이 없을 때의 "프로젝트 추가·세션 가져오기")인가 — 웹만 */
+export function atStartScreen(): boolean {
+  if (typeof location === "undefined") return false;
+  return location.pathname === "/" || location.pathname === "/open-project";
+}
+
+/**
+ * 로그인 서버(web-gate)를 거쳐 직원 계정으로 열린 화면인가 — 로그인 서버가 화면 맨 앞에 끼우는 guard.js 의 표식(paseoGate).
+ * 직원 화면에는 관리자 계정 칸·기기 사이 설정 맞추기(기준 화면이 리규형님 PC)가 맞지 않는다(10-11)
+ */
+export function isGateMember(): boolean {
+  const g = (globalThis as { paseoGate?: { canManageAccount?: unknown } }).paseoGate;
+  return !!g && g.canManageAccount === false;
+}
+
 export function reloadPage(): void {
   if (isWeb() && typeof location !== "undefined") location.reload();
 }
@@ -1624,6 +1639,10 @@ export type TurnReadBinding = {
   speedOptions?: number[];
   /** index: 재생기가 지금 읽는 문단 번호(형광펜 자리, 10-09) · status "loading" = 소리 만드는 중(스피커 옆 빙글빙글, 10-11) */
   playing: { target: unknown; paused: boolean; rate: number; error: string; index?: number; status?: string } | null;
+  /** 마지막으로 실패한 읽기 — 그 단추 옆에 빨간 글로 남긴다(10-11 리규형님 "눌러도 아무 반응도 없어", 다시 누르면 지운다) */
+  failed?: { target: unknown; error: string } | null;
+  log?(message: string): void;
+  fail?(target: unknown, reason: string): void;
   read(target: unknown, text: string): void;
   previous(): void;
   toggle(): void;
@@ -1666,7 +1685,7 @@ const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turn
 const READ_MARK = "data-csb-turn-read";
 // v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
 const READ_SHEET = "claude-state-bar-turn-read-v6";
-const TURN_READ_VERSION = 6;
+const TURN_READ_VERSION = 9; // 9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12)
 /** 읽는 중 스피커·컨트롤러 재생 단추 색 — Paseo 테마의 밝은 녹색(상태 점 색) */
 const READ_GREEN = "var(--colors-status-dot-success, #35c264)";
 const READ_ICONS: Record<string, string> = {
@@ -1778,16 +1797,22 @@ function streamKey(el: ReadEl): string | null {
   return `${p.agentId as string}|${serverId ?? ""}`;
 }
 /** 4873 de → We: 각 타임라인 항목은 itemId·gapBelow를 가진 자기 행이다. */
-function timelineRow(el: ReadEl): { root: ReadEl; stream: string; kind: string } | null {
+function timelineRow(el: ReadEl): { root: ReadEl; stream: string; kind: string; id: string } | null {
   const rowProps = readProps(el, (p) => typeof p.itemId === "string" && "gapBelow" in p);
-  const layout = readProps(el, (p) => !!(p.layoutItem as { item?: unknown } | undefined)?.item);
-  const item = (layout?.layoutItem as { item?: { id?: string; kind?: string } } | undefined)?.item;
+  if (!rowProps) return null;
+  type Item = { id?: string; kind?: string };
+  const layout = readProps(el, (p) => (p.layoutItem as { item?: Item } | undefined)?.item?.id === rowProps.itemId);
+  // 0.11.1 liveHead는 layoutItem 없이 item/index/items/render로 그린다(대표님 실제 fiber 10-12).
+  // 같은 행 번호·배열·그리는 함수가 모두 맞아야 한다. 번호 접두어로 다른 턴을 추측하지 않는다.
+  const liveRow = layout ? null : readProps(el, (p) => (p.item as Item | undefined)?.id === rowProps.itemId &&
+    typeof (p.item as Item).kind === "string" && Array.isArray(p.items) && typeof p.render === "function");
+  const item = (layout?.layoutItem as { item?: Item } | undefined)?.item ?? liveRow?.item as Item | undefined;
   const stream = streamKey(el);
   if (!rowProps || !stream || typeof item?.kind !== "string" || item.id !== rowProps.itemId) return null;
   let root = el;
   // 같은 행인지도 객체가 아니라 항목 번호로 본다(위 streamKey 와 같은 까닭)
   while (root.parentElement && readProps(root.parentElement, (p) => p.itemId === rowProps.itemId && "gapBelow" in p)) root = root.parentElement;
-  return { root, stream, kind: item.kind };
+  return { root, stream, kind: item.kind, id: rowProps.itemId as string };
 }
 function speechRow(el: ReadEl) {
   const row = timelineRow(el);
@@ -1847,10 +1872,24 @@ function speechGroup(el: ReadEl): SpeechGroup | null {
   }
   return { first: messages[0], last: messages[messages.length - 1], messages };
 }
-/** 꼬리 줄 바로 앞의 말만. 복사 글이나 앞쪽 말로 대체하지 않는다. */
+/** 4873 de / 4959 I: 꼬리 줄은 마지막 도구 뒤에도 놓인다. 자기 말 번호로 화면의 말만 찾는다. */
 function lastSpeech(copy: ReadEl): SpeechGroup | null {
   const stream = streamKey(copy);
   if (!stream) return null;
+  type Footer = { itemId?: string; items?: unknown[]; startIndex?: number };
+  const props = readProps(copy, (p) => typeof (p.layoutItem as { completedFooter?: Footer } | undefined)?.completedFooter?.itemId === "string" ||
+    (typeof (p.host as Footer | undefined)?.itemId === "string" && Array.isArray((p.host as Footer).items)));
+  const footer = (props?.layoutItem as { completedFooter?: Footer } | undefined)?.completedFooter ?? props?.host as Footer | undefined;
+  if (footer?.itemId) {
+    const messages = document.querySelectorAll('[data-testid="assistant-message"]') as unknown as ArrayLike<ReadEl>;
+    for (let i = 0; i < messages.length; i++) {
+      const row = speechRow(messages[i]);
+      if (row?.stream === stream && row.id === footer.itemId) return speechGroup(messages[i]);
+    }
+    // 자기 말이 가상 목록 밖이면 앞선 다른 턴을 대신 읽지 않는다.
+    return null;
+  }
+  // 번호가 없는 옛 판만 바로 이웃한 말로 확인한다. 복사 글·대화 전체를 대체로 쓰지 않는다.
   const messages = copy.parentElement ? adjacentSpeech(copy.parentElement, "previousElementSibling", stream) : [];
   return messages.length ? speechGroup(messages[messages.length - 1]) : null;
 }
@@ -1875,6 +1914,9 @@ type ReadRecord = {
   group: ReadEl | null;
   /** 소리 만드는 중 스피커 옆 빙글빙글(10-11) */
   spin: ReadEl | null;
+  /** 읽기 실패 글(10-11) */
+  err?: ReadEl | null;
+  failure?: string;
   look?: string;
   muted?: string;
   /** 읽기 시작 때 넘긴 문단마다의 화면 문단 요소 — 재생기 문단 번호로 형광펜을 칠한다 */
@@ -1894,7 +1936,17 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
     const records = new Map<ReadEl, ReadRecord>();
     let live = true;
     let queued = false;
+    // 화면 탐색 실패는 그릴 때마다 되풀이된다 — 같은 이유는 한 번만 서버 기록으로 보낸다
+    let lastScanError = "";
     const owner = (hostId: string) => [...hub.users.values()].filter((get) => get.csbVersion === TURN_READ_VERSION).map((get) => get()).find((b) => b.hostId === hostId && b.enabled);
+    const bindingFor = (hostId: string) => [...hub.users.values()].filter((get) => get.csbVersion === TURN_READ_VERSION).map((get) => get()).find((b) => b.hostId === hostId);
+    const trace = (r: ReadRecord, message: string) => (bindingFor(r.hostId) ?? [...hub.users.values()][0]?.())?.log?.(`${r.kind}: ${message}`);
+    const fail = (r: ReadRecord, reason: string) => {
+      r.failure = reason;
+      trace(r, `중단: ${reason}`);
+      bindingFor(r.hostId)?.fail?.(r.anchor, reason);
+      hub.refresh?.();
+    };
     // 옛 판 정리가 늦었던 요소도 전용 표식으로만 걷는다.
     const orphaned = document.querySelectorAll(`[${READ_MARK}]`) as unknown as ArrayLike<ReadEl>;
     for (let i = 0; i < orphaned.length; i++) orphaned[i].remove();
@@ -1905,6 +1957,7 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       // 읽는 중이면 녹색 — 턴 단추는 복사 단추 색을 cssText 로 받으므로 !important 로 덮는다(10-11)
       `[${READ_MARK}="button"][data-csb-read-on]{color:${READ_GREEN}!important}` +
       `[${READ_MARK}="spin"]{display:inline-block;flex-shrink:0;align-self:center;width:12px;height:12px;margin:0 2px;box-sizing:border-box;border:2px solid ${READ_GREEN};border-right-color:transparent;border-radius:50%;animation:csb-read-spin .8s linear infinite}` +
+      `[${READ_MARK}="error"]{align-self:center;margin-left:4px;font-size:12px;color:#e5534b}` +
       `@keyframes csb-read-spin{to{transform:rotate(360deg)}}` +
       `::highlight(${READ_HIGHLIGHT}){background-color:rgba(255, 226, 0, 0.3)}`);
     const button = (name: string, icon: string, action: () => void, size = String((readAppFontSizes().content ?? 15) - 1)) => {
@@ -1912,28 +1965,34 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       el.setAttribute("type", "button");
       labelRead(el, name);
       readIcon(el, icon, size);
-      el.addEventListener("click", (event) => { event.stopPropagation(); try { action(); } catch { /* 구조가 바뀌면 조용히 생략한다 */ } });
+      el.addEventListener("click", (event) => { event.stopPropagation(); action(); });
       return el;
     };
     const remove = (r: ReadRecord) => {
       const b = owner(r.hostId);
       if (b?.playing?.target === r.anchor) b.stop();
       r.spin?.remove();
+      r.err?.remove();
       r.button.remove();
       r.group?.remove();
       records.delete(r.anchor);
     };
     const start = (r: ReadRecord) => {
-      const b = owner(r.hostId);
-      if (!b) return;
-      const group = r.kind === "turn" ? lastSpeech(r.anchor) : speechGroup(r.anchor);
-      if (!group) return;
-      // 덜 그려졌으면 현재 그려진 부분만 읽는다. getContent·원문으로 범위를 늘리지 않는다.
-      const parts = group.messages.flatMap(screenParts);
-      const text = parts.map((p) => p.text).join("\n\n").trim();
-      if (!text) return;
-      r.blocks = parts.map((p) => p.block);
-      b.read(r.anchor, text);
+      try {
+        r.failure = "";
+        trace(r, "클릭");
+        const b = bindingFor(r.hostId);
+        if (!b) { fail(r, "이 호스트의 읽기 연결을 찾지 못했습니다"); return; }
+        if (!b.enabled) { b.read(r.anchor, ""); return; } // 키·설정의 정확한 이유는 연결 쪽에서
+        const group = r.kind === "turn" ? lastSpeech(r.anchor) : speechGroup(r.anchor);
+        if (!group) { fail(r, "이 턴의 화면 본문을 찾지 못했습니다. 본문을 화면에 보이게 한 뒤 다시 눌러 주세요"); return; }
+        const parts = group.messages.flatMap(screenParts);
+        const text = parts.map((p) => p.text).join("\n\n").trim();
+        trace(r, `화면 본문 ${group.messages.length}블록·${parts.length}문단·${text.length}자`);
+        if (!text) { fail(r, "이 턴의 화면에 읽을 글이 없습니다"); return; }
+        r.blocks = parts.map((p) => p.block);
+        b.read(r.anchor, text);
+      } catch (error) { fail(r, `읽기 시작 실패: ${String(error)}`); }
     };
     const paintTurn = (r: ReadRecord) => {
       // Qe 의 계산된 여백·크기와 실제 아이콘 색을 따른다. 원래 DOM 은 움직이지 않는다.
@@ -1978,6 +2037,16 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       }
       if (loading && r.spin && (r.spin.parentElement !== r.button.parentElement || r.button.nextSibling !== r.spin)) r.button.parentElement?.insertBefore(r.spin, r.button.nextSibling);
       if (!loading && r.spin) { r.spin.remove(); r.spin = null; }
+      // 실패하면 단추 오른쪽에 빨간 글 — 생각 상자와 같은 문구(10-11, 전엔 마우스를 올려야만 보였다)
+      const error = r.failure || (!playing && b.failed?.target === r.anchor ? b.failed.error : playing?.error || "");
+      const text = error ? (error.startsWith("소리 읽기 실패") ? error : `소리 읽기 실패: ${error}`) : "";
+      if (text && !r.err) r.err = readNode("span", "error");
+      if (text && r.err) {
+        if (r.err.textContent !== text) r.err.textContent = text;
+        const after = r.spin ?? r.button;
+        if (r.err.parentElement !== r.button.parentElement || after.nextSibling !== r.err) r.button.parentElement?.insertBefore(r.err, after.nextSibling);
+      }
+      if (!text && r.err) { r.err.remove(); r.err = null; }
     };
     const apply = () => {
       queued = false;
@@ -2002,7 +2071,7 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           r ??= make(copy, hostId, "turn", row);
           paintTurn(r);
           // 작업 시간 글자 등이 뒤늦게 붙으면 다시 맨 오른쪽으로(10-11)
-          if (row.lastElementChild !== r.button && row.lastElementChild !== r.spin) row.appendChild(r.button);
+          if (row.lastElementChild !== r.button && row.lastElementChild !== r.spin && row.lastElementChild !== r.err) row.appendChild(r.button);
           speaker(r, b);
         }
         const messages = document.querySelectorAll('[data-testid="assistant-message"]') as unknown as ArrayLike<ReadEl>;
@@ -2038,7 +2107,13 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           if (playing?.target === r.anchor && typeof playing.index === "number") lit = r.blocks?.[playing.index] ?? null;
         }
         paintReading(lit);
-      } catch { /* 모르는 DOM·fiber 는 단추만 생략한다. Paseo 본문은 건드리지 않는다. */ }
+      } catch (error) {
+        const reason = `화면 탐색 실패: ${String(error)}`;
+        if (reason !== lastScanError) {
+          lastScanError = reason;
+          for (const get of hub.users.values()) get().log?.(reason);
+        }
+      }
     };
     // 대화 화면은 스트리밍 중 글자마다 바뀐다 — 바뀔 때마다 단추 붙이기(전체 찾기·fiber 오르기)를 돌리지 않고 화면을 한 번
     // 그릴 때 한 번만 돈다(Claude 10-09 검토: 처음엔 매 변경 직후 마이크로태스크였다). 화면 그리기 맞춤 함수가 없으면 예전대로

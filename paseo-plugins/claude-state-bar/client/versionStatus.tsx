@@ -7,6 +7,7 @@ import { claimOwner, refreshOwner, releaseOwner, useScreenRole } from "./screenR
 import type { SettingsText } from "./settingsI18n";
 import { useSyncSlots } from "./settingsSync";
 import { appBundleId, isCompactWidth, isDesktopApp, PASEO_BUNDLES } from "./web";
+import { lineColor } from "./ui";
 
 // 설정 화면 위쪽 "Paseo 버전·기능 상태" 칸(10-08 리규형님 결정: 판이 안 맞아 조용히 꺼진 기능을 화면에 알리기. 10-09 "이 화면의
 // Paseo 판이 무슨 뜻이냐"로 이름을 바꿈 — 화면 글은 "판" 대신 "버전").
@@ -68,7 +69,7 @@ function RoleBlock({ t, theme }: { t: SettingsText; theme: PluginTheme }) {
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setBusy(false));
   };
-  const button = { alignSelf: "flex-start" as const, paddingVertical: 7, paddingHorizontal: 12, borderRadius: 8, backgroundColor: c.surface2, opacity: busy ? 0.6 : 1 };
+  const button = { alignSelf: "flex-start" as const, paddingVertical: 7, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: lineColor(theme), backgroundColor: c.surface2, opacity: busy ? 0.6 : 1 };
   return (
     <>
       <Text style={{ color: c.foreground, fontSize: 14 }}>{line}</Text>

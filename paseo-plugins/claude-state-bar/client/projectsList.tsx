@@ -1,12 +1,14 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMemo, useState, type ReactNode } from "react";
-import { Platform, Pressable, Text, TextInput, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { ACTIVE_ORDER_KEY, CATEGORY_ORDER_KEY, UNTAGGED_GROUP, type ProjectEntry } from "../shared/projects";
 import { fontStep, scaled, useFontScale } from "./fontScale";
 import {
   currentProjectKey,
   liveOf,
+  moveCategory,
+  orderedCategories,
   pinKey,
   reorderKeys,
   serverOf,
@@ -18,20 +20,23 @@ import {
   type ProjectsData,
 } from "./projectsData";
 import { StatusIndicator } from "./statusIndicator";
+import { isTeamMember } from "./teamMode";
+import { lineColor, UiInput } from "./ui";
 import { setDraggableRow, setHoverTitle, setNoTranslate } from "./web";
 
-// 프로젝트 목록 — 카테고리 묶음을 접고 편다(리규형님 10-05 결정: 꺼 둔 것은 "꺼 둠" 묶음 · 10-07: tags → category).
+// 프로젝트 목록 — 카테고리 묶음을 접고 편다(리규형님 10-05 결정: 꺼 둔 것은 따로 묶음 · 10-07: tags → category ·
+// 10-11: "꺼 둠" → "숨김"으로 용어 통일, 카테고리 번호는 이름에서 떼고 순서대로 붙인다).
 // 전체 화면과 왼쪽 목록 칸이 같이 쓴다. 칸(sidebar)은 폭이 좁아 도구 단추를 검색창 아래 줄에 둔다.
 
 const PINNED_GROUP = "고정";
 /** 왼쪽 칸 머리줄(워크스페이스·새로고침·A−·A+) — 폰 웹에서 Paseo 닫기 단추와 겹치는지 잴 때 쓴다 */
 export const TOOLBAR_ID = "claude-state-bar-projects-toolbar";
 const ACTIVE_GROUP = "활성";
-const DISABLED_GROUP = "꺼 둠";
+const DISABLED_GROUP = "숨김";
 // 카테고리 묶음 머리끼리 끌어 옮길 때 쓰는 끌기 묶음 이름(프로젝트 줄 묶음 이름과 겹치지 않게)
 const CATEGORY_DRAG = ":category-headers";
 
-// 접은 묶음은 화면을 닫았다 열어도 그대로(앱이 켜져 있는 동안, 전체 화면과 칸이 함께). 꺼 둠은 처음부터 접혀 있다
+// 접은 묶음은 화면을 닫았다 열어도 그대로(앱이 켜져 있는 동안, 전체 화면과 칸이 함께). 숨김은 처음부터 접혀 있다
 const collapsed = new Set<string>([DISABLED_GROUP]);
 
 export function ProjectsList(props: {
@@ -82,19 +87,19 @@ export function ProjectsList(props: {
   // 목록 파일 순서 — 끌어 놓은 적 없는 줄과 묶음의 기본 순서(10-07 리규형님: 초기화하면 목록 파일 순서)
   const categoryGroup = (e: ProjectEntry) => (!e.enabled ? DISABLED_GROUP : e.category || UNTAGGED_GROUP);
   const fileRank = useMemo(() => new Map(entries.map((e, i) => [e, i] as const)), [entries]);
-  const firstSeen = useMemo(() => {
-    const m = new Map<string, number>();
-    entries.forEach((e, i) => {
-      const g = categoryGroup(e);
-      if (!m.has(g)) m.set(g, i);
-    });
-    return m;
-  }, [entries]);
+  // 카테고리 번호(10-11 리규형님) — 끌어 놓은 순서(순서 파일 ":categories") 다음에 목록 파일에 처음 나오는 순서. 숨긴 프로젝트만
+  // 있는 카테고리도 번호를 받는다(프로젝트 관리 탭과 같은 번호). 카테고리 없음은 번호가 없다
+  const categories = useMemo(() => orderedCategories(entries, orders[CATEGORY_ORDER_KEY] ?? []), [entries, orders]);
+  const catNumber = useMemo(() => new Map(categories.map((name, i) => [name, i + 1] as const)), [categories]);
+  const member = isTeamMember();
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const map = new Map<string, ProjectEntry[]>();
     const add = (g: string, e: ProjectEntry) => map.set(g, [...(map.get(g) ?? []), e]);
+    // 팀원 화면은 메인이 숨긴 프로젝트를 아예 안 보인다(10-12 리규형님 "팀원은 숨김 카테를 히든 처리" — 숨김 묶음을 펼쳐
+    // 눌러 들어가던 것). 활성·고정·찾기에도 안 나온다. 서버의 읽기 권한은 그대로라 팀원 Claude 의 분석은 된다
     for (const e of entries) {
+      if (member && !e.enabled) continue;
       if (q && !e.name.toLowerCase().includes(q) && !e.path.toLowerCase().includes(q) && !e.category.toLowerCase().includes(q)) continue;
       // 열린 대화가 있는 것(점이 회색·초록)은 고정이든 아니든 "활성"에 모은다 — 활성은 활성끼리 모아 보는 칸이고 고정은
       // 그대로 고정에 남는다(10-07 리규형님: "고정은 고정, 활성은 활성끼리"). 원래 묶음 쪽도 지금처럼(대화를 열고 닫을 때
@@ -107,17 +112,12 @@ export function ProjectsList(props: {
       }
       add(categoryGroup(e), e);
     }
-    // 카테고리 묶음 순서: 끌어 놓은 순서(순서 파일 ":categories") 다음에, 끌어 놓은 적 없는 것은 목록 파일에 처음 나오는 순서
-    // (10-07 리규형님: 초기화하면 목록 파일 순서). 고정·활성은 맨 위, 꺼 둠은 맨 아래에 그대로
-    const special = new Set([PINNED_GROUP, ACTIVE_GROUP, DISABLED_GROUP]);
-    const savedCats = orders[CATEGORY_ORDER_KEY] ?? [];
-    const catRank = (g: string) => {
-      const i = savedCats.indexOf(g);
-      return i < 0 ? savedCats.length : i;
-    };
-    const order = [...map.keys()].filter((g) => !special.has(g)).sort((a, b) => catRank(a) - catRank(b) || (firstSeen.get(a) ?? 0) - (firstSeen.get(b) ?? 0));
+    // 묶음 순서: 고정·활성은 맨 위, 카테고리는 번호 순서, 그다음 카테고리 없음, 숨김은 맨 아래(10-11 리규형님 "숨김은 이동에서 제외,
+    // 항상 맨 끝" — 카테고리 없음도 번호가 없어 자리 고정)
+    const order = categories.filter((g) => map.has(g));
     if (map.has(ACTIVE_GROUP)) order.unshift(ACTIVE_GROUP);
     if (map.has(PINNED_GROUP)) order.unshift(PINNED_GROUP);
+    if (map.has(UNTAGGED_GROUP)) order.push(UNTAGGED_GROUP);
     if (map.has(DISABLED_GROUP)) order.push(DISABLED_GROUP);
     // 고정 묶음은 고정 목록 파일의 순서. 나머지는 끌어 놓은 순서(묶음별 순서 파일) 다음에, 끌어 놓은 적 없는 것을 목록 파일
     // 순서로 뒤에 붙인다 — 활성에 처음 들어온 것은 맨 아래(10-07 리규형님 결정. 처음엔 이름순이었다가 같은 날 목록 파일 순서로)
@@ -132,25 +132,19 @@ export function ProjectsList(props: {
       return items.sort((a, b) => rank(a) - rank(b) || (fileRank.get(a) ?? 0) - (fileRank.get(b) ?? 0));
     };
     return order.map((g) => ({ name: g, items: sortIn(g, map.get(g) ?? []) }));
-  }, [entries, filter, pins, pinOrder, live, index, orders, firstSeen, fileRank]);
-  // 카테고리 묶음 머리를 끌어 놓은 자리로(고정·활성·꺼 둠은 자리 고정)
+  }, [entries, filter, pins, pinOrder, live, index, orders, categories, fileRank, member]);
+  // 카테고리 묶음 머리를 끌어 놓은 자리로(고정·활성·카테고리 없음·숨김은 자리 고정). 화면에 안 보이는 카테고리(전부 고정한 것 등)도
+  // 전체 순서에 남겨 번호가 흔들리지 않게 한다
   const onDropCategory = (from: string, to: string, after: boolean) => {
-    const visible = groups.map((g) => g.name).filter((n) => n !== PINNED_GROUP && n !== ACTIVE_GROUP && n !== DISABLED_GROUP);
-    const next = reorderKeys(orders[CATEGORY_ORDER_KEY] ?? [], visible, from, to, after);
+    const next = moveCategory(categories, from, to, after);
     if (next) setOrder(CATEGORY_ORDER_KEY, next);
   };
 
   // 글자는 기본보다 크게(10-05 "+3px"). 왼쪽 칸만 10-06 리규형님 "폰트 조금 줄이고"로 +1px
   const fs = (px: number) => scaled(px + (sidebar ? 1 : 3), scale);
-  const btn = { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, backgroundColor: c.surface2 } as const;
+  const btn = { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: lineColor(theme), backgroundColor: c.surface2 } as const;
   const search = (
-    <TextInput
-      value={filter}
-      onChangeText={setFilter}
-      placeholder="이름·경로·카테고리로 찾기"
-      placeholderTextColor={c.foregroundMuted}
-      style={{ flex: 1, minWidth: 0, color: c.foreground, fontSize: fs(13), paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1 }}
-    />
+    <UiInput theme={theme} fontSize={fs(13)} value={filter} onChangeText={setFilter} placeholder="이름·경로·카테고리로 찾기" style={{ flex: 1, minWidth: 0, paddingHorizontal: 10, paddingVertical: 6 }} />
   );
   // 프로젝트 관리(10-10 리규형님: "사용자들이 json 을 건드는 건 좀 그래서") — 이름·카테고리·추가·삭제·켜고 끄기를 화면에서
   const editList = onManage ? (
@@ -165,7 +159,7 @@ export function ProjectsList(props: {
     </Pressable>
   ) : null;
   // 전체 접기·펼치기(10-07 리규형님 결정: 목록 파일 편집 아이콘 왼쪽, 아이콘 하나로 번갈아). 고정·활성은 빼고 그대로 둔다
-  // (같은 날 정정 — 처음엔 고정·활성까지 전부였다). 나머지가 다 접혀 있으면 모두 펼치고(꺼 둠 포함), 하나라도 펼쳐져 있으면 모두 접는다
+  // (같은 날 정정 — 처음엔 고정·활성까지 전부였다). 나머지가 다 접혀 있으면 모두 펼치고(숨김 포함), 하나라도 펼쳐져 있으면 모두 접는다
   const foldable = groups.filter((g) => g.name !== PINNED_GROUP && g.name !== ACTIVE_GROUP);
   const allShut = foldable.length > 0 && foldable.every((g) => collapsed.has(g.name));
   const foldTitle = allShut ? "모두 펼치기" : "모두 접기";
@@ -230,8 +224,8 @@ export function ProjectsList(props: {
       {groups.map((g) => {
         const shut = collapsed.has(g.name) && !filter.trim();
         const onDrop = g.name === PINNED_GROUP ? dropPin : dropIn(g.name, g.items.map(pinKey));
-        // 카테고리 묶음 머리도 끌어 옮긴다(10-07 리규형님) — 고정·활성·꺼 둠 머리는 자리 고정
-        const movable = g.name !== PINNED_GROUP && g.name !== ACTIVE_GROUP && g.name !== DISABLED_GROUP;
+        // 카테고리 묶음 머리도 끌어 옮긴다(10-07 리규형님) — 고정·활성·카테고리 없음·숨김 머리는 자리 고정
+        const movable = catNumber.has(g.name);
         return (
           <View key={g.name} style={{ gap: 2 }}>
             <Pressable
@@ -249,7 +243,7 @@ export function ProjectsList(props: {
             >
               <Icon name={shut ? "ChevronRight" : "ChevronDown"} size={fs(14)} color={c.foregroundMuted} />
               <Text style={{ flexShrink: 1, color: c.foregroundMuted, fontSize: fs(13), fontWeight: "600" }} numberOfLines={1}>
-                {g.name}
+                {catNumber.has(g.name) ? `${catNumber.get(g.name)}. ${g.name}` : g.name}
               </Text>
               <Text style={{ color: c.foregroundMuted, fontSize: fs(11) }}>{g.items.length}</Text>
             </Pressable>
@@ -272,17 +266,17 @@ export function ProjectsList(props: {
                     pinKey(e) === currentKey ? c.statusSuccess : e.missing ? c.foregroundMuted : !known ? c.statusWarning : c.foreground;
                   const key = pinKey(e);
                   const pinned = pins.has(key);
-                  // 고정·활성은 여러 카테고리가 섞여 소속이 안 보인다 → 카테고리 이름 앞 번호("1. MainServers" → 1)를 이름 앞 작은
-                  // 배지로(10-09 리규형님 결정 — 카테고리 이름을 통째로 붙이면 좁은 칸에서 프로젝트 이름이 잘린다). 번호 없는 카테고리는
-                  // 배지 없음. 마우스를 올리면 카테고리 이름도 뜬다. 원래 카테고리 묶음 안 줄은 그대로
+                  // 고정·활성은 여러 카테고리가 섞여 소속이 안 보인다 → 카테고리 번호를 이름 앞 작은 배지로(10-09 리규형님 결정 —
+                  // 카테고리 이름을 통째로 붙이면 좁은 칸에서 프로젝트 이름이 잘린다). 10-11부터 번호는 카테고리 순서(끌어 옮긴 순서)이고
+                  // 카테고리 없음은 배지 없음. 마우스를 올리면 카테고리 이름도 뜬다. 원래 카테고리 묶음 안 줄은 그대로
                   const mixed = g.name === PINNED_GROUP || g.name === ACTIVE_GROUP;
-                  const badge = mixed ? (/^\s*(\d+)/.exec(e.category)?.[1] ?? null) : null;
+                  const badge = mixed && catNumber.has(e.category) ? String(catNumber.get(e.category)) : null;
                   const hoverHost = !known && !e.missing ? `${e.host} · 연결 없음` : e.host;
                   return (
                     <Pressable
                       key={`${g.name}|${e.host}|${e.path}`}
                       ref={(node: unknown) => {
-                        setHoverTitle(node, mixed && e.category ? `${e.category} · ${hoverHost}` : hoverHost);
+                        setHoverTitle(node, mixed && badge ? `${badge}. ${e.category} · ${hoverHost}` : hoverHost);
                         // 마우스로 끌어 같은 묶음 안 순서를 바꾼다(10-06 고정 → 10-07 모든 묶음, PC·웹 — 폰은 순서 바꾸기 없음)
                         setDraggableRow(node, key, g.name, c.accent, onDrop);
                       }}
