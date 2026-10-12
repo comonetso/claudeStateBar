@@ -20,6 +20,8 @@ Claude State Bar 설정의 **TTS · STT · 번역 공급자** 칸에서 언어 �
 
 번역 보관은 공급자와 언어별로 나뉩니다. 공급자가 없던 옛 항목은 Google 것으로 읽고 원래의 7일 만료를 유지합니다. 키가 없거나 요청이 실패하면 사유를 표시하며 다른 공급자로 넘기지 않습니다.
 
+**생각 상자 자동 번역**(처음엔 꺼짐)을 켜면 번역 단추를 누르지 않아도 생각 상자를 처음부터 번역해 보여 줍니다. 고른 언어로 쓰이지 않은 문단만 번역하고, 번역이 오기 전까지는 원문이 잠깐 보입니다. 켜 둔 동안 상자 단추는 원문 보기와 읽기만 남고, 읽기는 번역이 오기를 기다렸다가 번역문으로 읽습니다. 끄면 단추가 번역·읽기·번역읽기로 돌아가며, 번역읽기는 읽는 동안만 번역을 보여 주고 끝나면 원래 화면으로 돌아갑니다. 서버에서 도는 대화는 그 서버의 키 파일로 번역합니다. 바로 아래 **생각 상자 자동 펼침**(처음엔 켜짐)은 자동 번역이 켜져 있을 때 지금 생각 중인 상자를 열고 높이 제한을 풀어 스크롤 없이 보이게 합니다.
+
 모델: Gemini `gemini-3.5-flash-lite`(번역), `gemini-3.8-flash`(받아쓰기), Anthropic `claude-haiku-5-5`(번역), OpenAI `gpt-4.1-mini`(번역·받아쓰기 다듬기), `gpt-4o-mini-tts`(읽기), `gpt-transcribe`(받아쓰기).
 
 목소리 근거: [Google Chirp 3 HD](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd), [OpenAI TTS](https://developers.openai.com/api/docs/guides/text-to-speech), [OpenAI CLI 합성 예제](https://developers.openai.com/api/reference/cli/resources/audio/subresources/speech/methods/create).

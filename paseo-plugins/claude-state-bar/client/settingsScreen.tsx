@@ -36,6 +36,8 @@ type Draft = Record<SoundKind, { file: string; gain: string }> & {
   translateEnabled: boolean;
   ttsEnabled: boolean;
   thinkingAutoOpen: boolean;
+  thinkingAutoTranslate: boolean;
+  thinkingAutoTranslateExpand: boolean;
   ttsSpeedStep: 0.1 | 0.25;
 };
 
@@ -55,6 +57,8 @@ function toDraft(values: SoundSettings): Draft {
     translateEnabled: values.translateEnabled,
     ttsEnabled: values.ttsEnabled,
     thinkingAutoOpen: values.thinkingAutoOpen,
+    thinkingAutoTranslate: values.thinkingAutoTranslate,
+    thinkingAutoTranslateExpand: values.thinkingAutoTranslateExpand,
     ttsSpeedStep: values.ttsSpeedStep,
   };
 }
@@ -75,6 +79,8 @@ function fromDraft(draft: Draft) {
     translateEnabled: draft.translateEnabled,
     ttsEnabled: draft.ttsEnabled,
     thinkingAutoOpen: draft.thinkingAutoOpen,
+    thinkingAutoTranslate: draft.thinkingAutoTranslate,
+    thinkingAutoTranslateExpand: draft.thinkingAutoTranslateExpand,
     ttsSpeedStep: draft.ttsSpeedStep,
   });
 }
@@ -313,10 +319,11 @@ export function createSettingsScreen(onSaved: () => void, readOnly = false) {
       </View>
     );
 
-    const speechSwitch = (key: "translateEnabled" | "ttsEnabled" | "thinkingAutoOpen", title: string, hint: string) => (
-      <View style={[styles.card, styles.switchRow]}>
+    // off = 위 스위치가 꺼져 있어 쓸 수 없는 하위 스위치(10-12 자동 펼침 — 자동 번역이 꺼져 있으면 흐리게·못 누름)
+    const speechSwitch = (key: "translateEnabled" | "thinkingAutoTranslate" | "thinkingAutoTranslateExpand" | "ttsEnabled" | "thinkingAutoOpen", title: string, hint: string, off = false) => (
+      <View style={[styles.card, styles.switchRow, off ? { opacity: 0.5 } : null]}>
         <View style={styles.switchText}>{titled(title, hint)}</View>
-        <Switch disabled={readOnly} value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={title} />
+        <Switch disabled={readOnly || off} value={draft[key]} onValueChange={(on) => setDraft({ ...draft, [key]: on })} accessibilityLabel={title} />
       </View>
     );
 
@@ -409,6 +416,8 @@ export function createSettingsScreen(onSaved: () => void, readOnly = false) {
         {speechOpen ? (
         <>
         {speechSwitch("translateEnabled", t.translateTitle, t.translateHint)}
+        {speechSwitch("thinkingAutoTranslate", t.autoTranslateTitle, t.autoTranslateHint)}
+        {speechSwitch("thinkingAutoTranslateExpand", t.autoExpandTitle, t.autoExpandHint, !draft.thinkingAutoTranslate)}
         {speechSwitch("ttsEnabled", t.ttsTitle, t.ttsHint)}
         {speechSwitch("thinkingAutoOpen", t.autoOpenTitle, t.autoOpenHint)}
         <View style={styles.card}>

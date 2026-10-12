@@ -72,9 +72,12 @@ export function currentSettings(): SoundSettings {
 
 /** 번역·읽기 기능이 켜져 있는가(설정 화면 "번역·읽기" 칸, 10-08). 소리 담당(PC) 설정을 모든 호스트 화면이 같이 따른다.
  *  칸이 없는 옛 공급자 설정이면 켬(처음 값과 같다) */
-export function featureSwitches(): { translate: boolean; tts: boolean } {
+export function featureSwitches(): { translate: boolean; tts: boolean; autoTranslate: boolean; autoExpand: boolean } {
   const s = currentSettings() as Partial<SoundSettings>;
-  return { translate: s.translateEnabled !== false, tts: s.ttsEnabled !== false };
+  return {
+    translate: s.translateEnabled !== false, tts: s.ttsEnabled !== false,
+    autoTranslate: s.thinkingAutoTranslate === true, autoExpand: s.thinkingAutoTranslateExpand !== false,
+  };
 }
 
 /** 옛 공급자에도 새 읽기 설정의 기본값을 적용한다. 속도 값 자체는 기기 저장소에만 둔다. */

@@ -20,6 +20,8 @@ Only the selected providers' required key fields are shown. **Save keys** update
 
 Translation storage is separate for each provider and language. Existing entries without a provider are read as Google entries, retaining their original seven-day expiry. A missing key or a failed request returns an error without changing providers.
 
+**Translate thinking automatically** (off by default) shows thinking boxes translated from the start, without pressing Translate. Only paragraphs not already in the chosen language are translated, and the original shows briefly until the translation arrives. While it is on, each box keeps only the Original and Read buttons, and Read waits for the translation before reading it. When it is off, the buttons go back to Translate, Read and Translate and read; Translate and read shows the translation only while reading and returns to the previous view when it finishes. Chats running on a server are translated with that server's key file. Right below it, **Expand thinking automatically** (on by default) opens the box that is still thinking and lifts its height limit while automatic translation is on, so it shows without scrolling.
+
 Models: Gemini `gemini-3.5-flash-lite` (translation), `gemini-3.8-flash` (dictation); Anthropic `claude-haiku-5-5` (translation); OpenAI `gpt-4.1-mini` (translation/dictation cleanup), `gpt-4o-mini-tts` (speech), `gpt-transcribe` (dictation).
 
 Voice evidence: [Google Chirp 3 HD](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd), [OpenAI TTS](https://developers.openai.com/api/docs/guides/text-to-speech), [OpenAI CLI speech example](https://developers.openai.com/api/reference/cli/resources/audio/subresources/speech/methods/create).

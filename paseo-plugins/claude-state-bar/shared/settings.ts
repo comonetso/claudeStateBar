@@ -35,6 +35,12 @@ export const settingsSchema = z.object({
   translateEnabled: z.boolean().default(true),
   ttsEnabled: z.boolean().default(true),
   thinkingAutoOpen: z.boolean().default(true),
+  // 생각 상자 자동 번역(리규형님 10-12 결정: 번역 스위치 아래 · 처음 값 꺼짐 · 화면의 모든 상자 · 상자 크기는 그대로).
+  // 서비스가 돌려주는 생각은 요약본이라 영어로 바뀔 때가 있어 화면 쪽에서 메운다. 번역이 켜져 있고 번역 키가 있어야 돈다
+  thinkingAutoTranslate: z.boolean().default(false),
+  // 자동 번역 때 생각 중인 상자 펼치기(리규형님 10-12 — 열고 높이 제한까지 푼다, 최대화 단추는 그대로). 처음 값 켬(자동 번역이
+  // 꺼져 있으면 아무 일도 안 한다) · 입력창 위 "모두 접기"를 눌러 둔 동안은 펼치지 않는다 · 한 번 펼친 상자는 다시 펼치지 않는다
+  thinkingAutoTranslateExpand: z.boolean().default(true),
   ttsSpeedStep: z.union([z.literal(0.1), z.literal(0.25)]).default(0.25),
 });
 

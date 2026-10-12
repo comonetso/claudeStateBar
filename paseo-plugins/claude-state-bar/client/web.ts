@@ -1685,7 +1685,7 @@ const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turn
 const READ_MARK = "data-csb-turn-read";
 // v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
 const READ_SHEET = "claude-state-bar-turn-read-v6";
-const TURN_READ_VERSION = 9; // 9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12)
+const TURN_READ_VERSION = 10; // 9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12)
 /** 읽는 중 스피커·컨트롤러 재생 단추 색 — Paseo 테마의 밝은 녹색(상태 점 색) */
 const READ_GREEN = "var(--colors-status-dot-success, #35c264)";
 const READ_ICONS: Record<string, string> = {
@@ -1983,6 +1983,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
         trace(r, "클릭");
         const b = bindingFor(r.hostId);
         if (!b) { fail(r, "이 호스트의 읽기 연결을 찾지 못했습니다"); return; }
+        // 이 단추로 읽는 중(소리 만드는 중·일시정지 포함)이면 다시 누를 때 멈춘다(10-12 리규형님). 기준은 스피커 녹색과 같다(speaker)
+        if (b.playing?.target === r.anchor) { trace(r, "다시 눌러 중지"); b.stop(); return; }
         if (!b.enabled) { b.read(r.anchor, ""); return; } // 키·설정의 정확한 이유는 연결 쪽에서
         const group = r.kind === "turn" ? lastSpeech(r.anchor) : speechGroup(r.anchor);
         if (!group) { fail(r, "이 턴의 화면 본문을 찾지 못했습니다. 본문을 화면에 보이게 한 뒤 다시 눌러 주세요"); return; }
@@ -2151,7 +2153,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
 
 /**
  * 입력창 위 읽기 컨트롤러 — 화면에 하나(10-11 리규형님 "컨트롤러를 여기로 통일 · 찾아 다니는 일도 일").
- * 턴·말·생각 상자·꺼낸 말 무엇을 읽든 같은 자리: 넓은 화면은 입력창 위 알약 줄 맨 오른쪽, 좁은 화면(폰)은 그 줄 아래 새 줄.
+ * 턴·말·생각 상자·꺼낸 말 무엇을 읽든 같은 자리: 넓은 화면은 입력창 위 알약 줄 정가운데, 좁은 화면(폰)은 그 줄 아래 새 줄 가운데
+ * (10-12 리규형님 "오른쪽은 눈이 잘 안 가" — 10-11 의 맨 오른쪽을 바꿈). 넓은 화면이라도 가운데 자리가 좌우 알약과 겹치면 아래 줄 가운데.
  * 읽기는 한 번에 하나라 컨트롤러도 하나다. 칸이 나뉘어 있으면 읽기를 누른 칸의 입력창 위. 읽는 동안에만 보인다.
  * 색(리규형님 "컨트롤러에 색상"): 일시정지·이어서 = 녹색, 중지 = 빨강, 이전·다음 = 흐린 글자색, 속도 = 밝은 강조색 — 모두 Paseo 테마 변수.
  * 알약 줄 찾기는 startComposerRail 이 붙이는 data-csb-track(입력창 위 띠) 표식을 쓴다.
@@ -2167,8 +2170,9 @@ export type ReadDockState = {
   speed(value: number): void;
 };
 const DOCK_MARK = "data-csb-read-dock";
-const DOCK_SHEET = "claude-state-bar-read-dock-v1";
-const DOCK_VERSION = 1;
+// 판이 오르면 스타일 이름도 바꾼다 — 옛 판을 정리할 때 옛 이름 스타일만 지워지게(project_paseo_client_hub_stale)
+const DOCK_SHEET = "claude-state-bar-read-dock-v2";
+const DOCK_VERSION = 2; // 2: 가운데 배치(10-12)
 type DockHub = { version: number; users: Map<object, (() => ReadDockState) & { csbVersion?: number }>; stop: (() => void) | null; refresh: (() => void) | null };
 export function startReadDock(state: () => ReadDockState): { refresh(): void; dispose(): void } {
   const noop = { refresh: () => {}, dispose: () => {} };
@@ -2203,9 +2207,9 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
     for (let i = 0; i < orphaned.length; i++) orphaned[i].remove();
     setStyleSheet(DOCK_SHEET,
       `[${DOCK_MARK}="dock"]{display:flex;align-items:center;gap:2px;flex-shrink:0;height:32px;box-sizing:border-box;padding:0 4px;border:1px solid var(--colors-border, rgba(127,127,127,.4));border-radius:999px;background:var(--colors-surface1, transparent)}` +
-      `[${DOCK_MARK}="dock"][data-place="row"]{margin-left:auto}` +
-      `[${DOCK_MARK}="dock"][data-place="after"]{margin-left:4px}` +
-      `[${DOCK_MARK}="dock"][data-place="below"]{align-self:flex-end;margin-top:4px}` +
+      // 알약 줄(Paseo 가 이미 position:relative)의 정가운데에 띄운다 — 알약 줄 흐름에 끼지 않아 다른 알약 자리를 밀지 않는다
+      `[${DOCK_MARK}="dock"][data-place="center"]{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1}` +
+      `[${DOCK_MARK}="dock"][data-place="below"]{align-self:center;margin-top:4px}` +
       `[${DOCK_MARK}="button"]{display:flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;margin:0;border:0;border-radius:999px;background:transparent;cursor:pointer;color:var(--colors-foreground-muted, currentColor)}` +
       `[${DOCK_MARK}="button"]:hover{background:var(--colors-surface2, rgba(127,127,127,.15))}` +
       `[${DOCK_MARK}="button"]:focus-visible{outline:2px solid currentColor;outline-offset:1px}` +
@@ -2258,13 +2262,24 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
       for (let i = 0; i < all.length; i++) if (all[i].getBoundingClientRect().width > 0) return all[i];
       return null;
     };
+    type Boxed = ReadEl & { getBoundingClientRect(): { left: number; right: number; width: number } };
+    const kidsOf = (el: ReadEl) => Array.from((el as unknown as { children: ArrayLike<ReadEl> }).children);
+    // 알약 줄 가운데에 컨트롤러 폭만큼 빈자리가 있나 — 컨트롤러가 어디 붙어 있든 같은 계산이라(알약 줄 가운데 ± 폭) 자리를 옮겨도
+    // 답이 바뀌지 않는다(옮김 → 다시 잼이 왔다 갔다 하지 않는다). 알약 감싸개는 display:contents 라 그 안쪽 단추를 잰다
+    const fitsCenter = (row: ReadEl): boolean => {
+      const width = (dock as Boxed).getBoundingClientRect().width;
+      if (!width) return true; // 아직 안 붙었다 — 붙인 뒤 다음 차례에 다시 잰다
+      const box = (row as Boxed).getBoundingClientRect();
+      const left = box.left + box.width / 2 - width / 2 - 4;
+      const right = left + width + 8;
+      const items = kidsOf(row).flatMap((c) => c === dock ? [] : (window.getComputedStyle(c as never) as unknown as { display: string }).display === "contents" ? kidsOf(c) : [c]);
+      return !items.some((c) => { const r = (c as Boxed).getBoundingClientRect(); return r.width > 0 && r.right > left && r.left < right; });
+    };
     const place = (track: ReadEl) => {
       const row = track.firstElementChild;
-      if (!isCompactWidth() && row) {
-        // 오른쪽 끝에 이미 Paseo "변경사항" 알약이 붙어 있으면(그 알약이 남는 칸을 차지) 그 뒤에 바로 붙인다
-        const where = row.querySelector('[data-testid="composer-diff-stat-pill"]') ? "after" : "row";
-        if (dock!.getAttribute("data-place") !== where) dock!.setAttribute("data-place", where);
-        if (dock!.parentElement !== row || row.lastElementChild !== dock) row.appendChild(dock!);
+      if (!isCompactWidth() && row && fitsCenter(row)) {
+        if (dock!.getAttribute("data-place") !== "center") dock!.setAttribute("data-place", "center");
+        if (dock!.parentElement !== row) row.appendChild(dock!);
       } else {
         if (dock!.getAttribute("data-place") !== "below") dock!.setAttribute("data-place", "below");
         if (dock!.parentElement !== track || track.lastElementChild !== dock) track.appendChild(dock!);

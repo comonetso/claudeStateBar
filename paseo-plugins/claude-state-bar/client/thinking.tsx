@@ -46,6 +46,14 @@ function applyReadingSettings(): void {
 }
 applyReadingSettings();
 const statuses = new Map<string, Promise<{ translate: boolean; tts: boolean; settings: SpeechSettings }>>();
+// 생각 상자 자동 번역(10-12) — 설정 스위치 + 번역 켜짐 + 그 호스트의 번역 키가 있을 때만 켠다. 키 확인이 끝난 뒤와 설정이 바뀔 때만
+// 부른다: 상자가 처음 그려질 때 키 확인 전 값(없음)으로 부르면 같은 호스트의 다른 상자까지 껐다 켜진다
+function applyAutoTranslate(hostId: string, translateKey: boolean): void {
+  const features = featureSwitches();
+  // 자동 펼침(설정은 호스트 구분 없이 하나)을 먼저 맞춘다 — 자동 번역이 켜지는 순간 생각 중인 상자를 펼칠지 이 값으로 정한다
+  controller.setAutoExpand(features.autoExpand);
+  controller.setAutoTranslate(hostId, translateKey && features.translate && features.autoTranslate);
+}
 // 설정 화면에서 키를 저장·확인하면(10-08) 위 키 확인 기억을 비우고 떠 있는 상자들이 다시 묻게 한다
 const keyListeners = new Set<() => void>();
 // 화면에서 마지막으로 선택한 글(웹·데스크톱) — 상자의 읽기·번역읽기를 누르는 순간 선택이 풀려도 누름이 먼저 처리돼 이것을 쓴다
@@ -97,7 +105,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
       status = Promise.all([statusRpc({}), speechRpc({ lang: uiLanguage() })]).then(([keys, speech]) => ({ ...keys, settings: speech.settings }));
       statuses.set(host.id, status);
     }
-    void status.then((result) => { if (live) { controller.applySpeech(host.id, result.settings); setKeys(result); } }, (error: unknown) => {
+    void status.then((result) => { if (live) { controller.applySpeech(host.id, result.settings); applyAutoTranslate(host.id, result.translate); setKeys(result); } }, (error: unknown) => {
       if (live) { box.error = `키 확인 실패: ${String(error)}`; bump((n) => n + 1); }
     });
     return () => { live = false; };
@@ -155,7 +163,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   const playback = controller.state(box);
   // 원문 보기(10-10)는 웹·PC 앱만 — 브라우저 번역기를 막은 원문 칸을 따로 그린다. 폰은 번역 아이콘 끄기가 곧 원문이다
   const original = web && !!box.original;
-  const translated = box.translate && !original ? paragraphs.filter((p) => p.done && typeof box.translations.get(p.src) === "string").length : 0;
+  const translated = controller.showsTranslation(box) && !original ? paragraphs.filter((p) => p.done && typeof box.translations.get(p.src) === "string").length : 0;
   const title = box.phase === "streaming" ? "Thinking…" : "Thinking";
   const buttonStyle = (active: boolean) => ({ borderRadius: 5, paddingHorizontal: layout.compact ? 5 : 7, paddingVertical: 4, backgroundColor: active ? c.accent : c.surface2 });
   // 읽는 중 녹색·소리 만드는 중 빙글빙글(10-11) — 답 아래 스피커(web.ts)와 같은 밝은 녹색
@@ -176,6 +184,11 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   const features = featureSwitches();
   const canTranslate = keys.translate && features.translate;
   const canRead = web && keys.tts && features.tts;
+  // 자동 번역 중(10-12 리규형님 결정)이면 상자 단추는 원문 보기·읽기만, 꺼져 있으면 번역·읽기·번역읽기만. 자동 번역 중 읽기는
+  // 번역이 오기를 기다렸다가 번역으로 읽는다(원문 보기 중이면 원문) — 그래서 어느 쪽으로 읽든 읽는 중이면 읽기 단추가 켜진다
+  const autoTranslate = canTranslate && features.autoTranslate;
+  const readStrict = autoTranslate && !original;
+  const readActive = playback.active && (autoTranslate || !playback.strict);
   // 상자 안에서 글을 선택해 두고(한 글자라도) 누르면 그 문단, 그 글자부터 읽는다 — 선택이 없거나 이 상자 밖이면 처음부터(10-08).
   // 선택을 썼으면 푼다: 선택 색이 형광펜을 덮지 않게, 입력창 위 "선택 읽기" 알약도 숨게(selectionRead 와 같이)
   const startReading = (strict: boolean) => {
@@ -190,14 +203,15 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   // 번역·읽기·번역읽기·최대화 — 위 머리줄과 아래 줄이 같이 쓴다(리규형님 10-07: 긴 생각을 펼치면 위로 한참 올라가야 해서 아래에도)
   const actionButtons = () => (
     <>
-      {canTranslate ? button("번역", ["Languages"], box.translate, () => controller.toggleTranslation(box)) : null}
-      {/* 원문 보기(10-10 리규형님 "번역본이면 원문으로, 원문이면 번역문으로") — 플러그인 번역이든 브라우저 번역이든. 번역 키가 없어도
-          브라우저 번역기 글을 원문으로 돌릴 수 있게 웹이면 늘 보인다 */}
-      {web ? button("원문 보기", ["FileText"], original, () => controller.toggleOriginal(box)) : null}
-      {canRead ? button("읽기", ["Volume2"], playback.active && !playback.strict, () => startReading(false), playback.active && !playback.strict) : null}
-      {canRead && playback.active && !playback.strict && playback.status === "loading" ? spinner("spin-read") : null}
-      {canRead && canTranslate ? button("번역읽기", ["Languages", "Volume2"], playback.active && playback.strict, () => startReading(true), playback.active && playback.strict) : null}
-      {canRead && canTranslate && playback.active && playback.strict && playback.status === "loading" ? spinner("spin-strict") : null}
+      {canTranslate && !autoTranslate ? button("번역", ["Languages"], box.translate, () => controller.toggleTranslation(box)) : null}
+      {/* 원문 보기(10-10 리규형님 "번역본이면 원문으로, 원문이면 번역문으로") — 브라우저 번역을 막은 원문 칸. 10-12 부터 자동 번역 중에만
+          (리규형님 "꺼져 있으면 번역 단추를 끄면 원문이 나와 중복") */}
+      {web && autoTranslate ? button("원문 보기", ["FileText"], original, () => controller.toggleOriginal(box)) : null}
+      {/* 읽는 중(소리 만드는 중·일시정지 포함) 다시 누르면 멈춘다(10-12 리규형님) — 입력창 위 조절 줄의 중지도 그대로 */}
+      {canRead ? button("읽기", ["Volume2"], readActive, () => (readActive ? controller.stop() : startReading(readStrict)), readActive) : null}
+      {canRead && readActive && playback.status === "loading" ? spinner("spin-read") : null}
+      {canRead && canTranslate && !autoTranslate ? button("번역읽기", ["Languages", "Volume2"], playback.active && playback.strict, () => (playback.active && playback.strict ? controller.stop() : startReading(true)), playback.active && playback.strict) : null}
+      {canRead && canTranslate && !autoTranslate && playback.active && playback.strict && playback.status === "loading" ? spinner("spin-strict") : null}
       {box.open ? (
         <Pressable
           accessibilityRole="button"
@@ -216,7 +230,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
       {box.error ? <Text accessibilityLiveRegion="polite" numberOfLines={1} style={{ color: c.statusDanger, fontSize: px - 3, flexShrink: 1 }}>{box.error.slice(0, 100)}</Text> : null}
       {web && playback.active ? <Text style={labelStyle(false)}>{playback.paused ? "일시정지" : playback.status === "waiting" ? "다음 문단 대기" : playback.status === "loading" ? "소리 준비" : "읽는 중"}</Text> : null}
       {translated ? <Text style={labelStyle(false)}>{"번역 " + translated + "문단"}</Text> : null}
-      {box.translate && box.pending.size ? <Text accessibilityLiveRegion="polite" style={labelStyle(false)}>번역 중</Text> : null}
+      {controller.showsTranslation(box) && box.pending.size ? <Text accessibilityLiveRegion="polite" style={labelStyle(false)}>번역 중</Text> : null}
     </View>
   );
   // 꺼낸 말 읽기 단추·조절 — 배경 없는 아이콘(Paseo 복사 단추·web.ts "이 말 읽기"와 같은 모양: 여백 4, 모서리 5)
@@ -236,6 +250,9 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
     if (!said.trim()) return;
     if (saidReader.box) controller.dispose(new Set([saidReader.box]));
     const next = controller.box(host.id, `said-${++saidReader.serial}`, Date.now(), said, "complete");
+    // 재생용 상자 — 자동 번역 대상이 아니다(화면 글을 읽으므로 번역을 받아도 쓰지 않는다)
+    next.said = true;
+    next.translate = false;
     next.screenText = web ? (index) => elementText(`${saidId}-${index}`) : undefined;
     next.rpc = rpc;
     saidReader.box = next;
@@ -323,7 +340,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
           "이 말 읽기"(web.ts 턴·말 읽기 단추)와 같은 이름·모양. 읽는 중 녹색·소리 만드는 중 빙글빙글(10-11), 조절은 입력창 위 */}
       {said && canRead ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 2 }}>
-          {plainIcon("Volume2", saidActive ? "이 말 읽기(읽는 중)" : "이 말 읽기", readSaid, saidActive)}
+          {plainIcon("Volume2", saidActive ? "이 말 읽기(읽는 중)" : "이 말 읽기", () => (saidActive ? controller.stop() : readSaid()), saidActive)}
           {saidActive && saidState!.status === "loading" ? spinner("spin-said") : null}
         </View>
       ) : null}
@@ -354,6 +371,8 @@ export function registerThinking(client: PluginClientContext): () => void {
     const features = featureSwitches();
     applyReadingSettings();
     controller.applyFeatures(features.translate, features.tts);
+    // 자동 번역 스위치(10-12) — 키 확인이 끝난 호스트마다 다시 맞춘다(아직 확인 전인 호스트는 확인이 끝날 때 맞춘다)
+    for (const [hostId, status] of statuses) void status.then((result) => applyAutoTranslate(hostId, result.translate), () => {});
   });
   const stopKeys = onSharedSignal("googleKeys", () => {
     statuses.clear();

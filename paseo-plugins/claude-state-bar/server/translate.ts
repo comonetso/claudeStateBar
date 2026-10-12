@@ -27,16 +27,11 @@ type ParagraphResult = { translation: string | null; error?: string };
 const cache = new Map<string, string>();
 const pending = new Map<string, Promise<ParagraphResult>>();
 const keyOf = (provider: TranslateProvider, lang: TargetLang, text: string) => `${provider}:${lang}:${text}`;
-function sentenceNeedsTranslation(text: string, lang: TargetLang): boolean {
-  const value = text.trim();
-  if (!value) return false;
-  if (lang === "en") return /[^\P{L}\p{Script=Latin}]/u.test(value);
-  if (lang !== "ko") return /\p{L}/u.test(value); // 공통 문자권만으로 언어를 단정하지 않고 모델에 기존 언어 보존을 지시한다.
-  return !/[\u1100-\u11ff\u3130-\u318f\uac00-\ud7a3]/.test(value) && /\p{L}/u.test(value.replace(/HTTP URL\./g, ""));
-}
-function needsTranslation(text: string, lang: TargetLang): boolean {
-  return text.split(/(?<=[.!?\u2026\u3002\uff01\uff1f])\s+|\n+/).some((sentence) => sentenceNeedsTranslation(sentence, lang));
-}
+// 무엇을 번역할지는 화면(client/thinkingPlayer.ts needsTranslation)이 정해 보낸다 — 이 RPC 를 부르는 곳은 생각 상자 재생기뿐이다.
+// 10-12 까지 데몬이 문장마다 다른 규칙으로 한 번 더 걸렀는데, 리규형님 한국어 말을 인용한 영어 문단(화면: 한글 20% 미만이라 보냄 ·
+// 데몬: 그 문장에 한글이 있어 건너뜀)이 빈 결과로 돌아가 화면에 "일부 문단 번역 실패"가 떴다. 그래서 데몬은 빈 글만 거른다.
+// 이미 그 언어인 부분은 그대로 두라고 모델에 지시해 둔다(instruction)
+const hasText = (text: string) => text.trim().length > 0;
 function remember(provider: TranslateProvider, lang: TargetLang, source: string, translation: string): void {
   cache.set(keyOf(provider, lang, source), translation);
   if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value as string);
@@ -49,6 +44,12 @@ export function restoreSourceBackslashes(source: string, translated: string): st
     translated = translated.split(doubled).join(token);
   }
   return translated;
+}
+/** 응답을 감싼 Markdown 코드 표시(```json … ```)를 벗긴다. Haiku 5.5 가 "JSON 배열만"이라는 지시에도 가끔 감싸서 보낸다
+ *  (10-12 실측 7번 중 3번 — 그때마다 JSON.parse 가 실패해 "번역 요청 또는 응답 실패"). 감싸지 않은 응답은 그대로 */
+export function stripCodeFence(raw: string): string {
+  const fenced = /^```[A-Za-z]*[ \t]*\r?\n([\s\S]*?)\r?\n?```$/.exec(raw.trim());
+  return fenced ? fenced[1] : raw;
 }
 /** 기억 없이 공급자를 한 번 부른다. 키 확인도 명시한 공급자로 호출한다. */
 export async function translateBatch(texts: string[], key: string, lang: TargetLang = "ko", provider: TranslateProvider = "google"): Promise<TranslationResult> {
@@ -94,7 +95,7 @@ export async function translateBatch(texts: string[], key: string, lang: TargetL
       const data = await response.json() as { candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] } }[] };
       raw = data.candidates?.[0]?.content?.parts?.filter((part) => !part.thought).map((part) => part.text ?? "").join("") ?? "";
     }
-    const translated: unknown = JSON.parse(raw);
+    const translated: unknown = JSON.parse(stripCodeFence(raw));
     if (!Array.isArray(translated) || translated.length !== texts.length ||
         !translated.every((text) => typeof text === "string" && text.trim() && !text.includes(key))) {
       return { translations, error: "번역 응답 형식 오류" };
@@ -113,7 +114,7 @@ export async function translateTexts(texts: string[], requestLang: TargetLang = 
     result = { ...result, provider, lang };
     if (texts.length > 20) return result = { ...result, error: "번역은 최대 20문단까지 가능합니다" };
     const id = (text: string) => keyOf(provider, lang, text);
-    const needs = (text: string) => needsTranslation(text, lang);
+    const needs = hasText;
     const needed = [...new Set(texts.filter((text) => needs(text) && !cache.has(id(text))))];
     const fresh = needed.filter((text) => !pending.has(id(text)));
     if (fresh.length) {

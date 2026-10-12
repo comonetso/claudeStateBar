@@ -46,6 +46,10 @@ export type ThinkingBoxState = {
    * thinking.tsx). 보던 글(플러그인 번역·브라우저 번역기 글)은 지우지 않고 숨겨 두어 끄면 그대로 다시 보인다
    */
   original?: boolean;
+  /** 상자에서 꺼낸 말을 읽으려고 만든 재생용 상자(thinking.tsx readSaid) — 자동 번역 대상이 아니다 */
+  said?: boolean;
+  /** 자동 번역 때 한 번 자동으로 펼쳤다(10-12) — 리규형님이 줄이거나 접은 뒤엔 다시 펼치지 않는다 */
+  autoExpanded?: boolean;
   suspended: boolean;
   controls: boolean;
   error: string;
@@ -245,9 +249,11 @@ export class ThinkingController {
     }
     box = {
       key: JSON.stringify([hostId, agentId, stamp, ++this.serial]), hostId, agentId, stamps: new Set([stamp]), text, phase,
-      open: this.openByDefault, maximized: false, translate: false, suspended: false, controls: false, error: "", translations: new Map(), failures: new Map(), pending: new Set(), epoch: 0,
+      open: this.openByDefault, maximized: false, translate: this.autoHosts.has(hostId), suspended: false, controls: false, error: "", translations: new Map(), failures: new Map(), pending: new Set(), epoch: 0,
     };
     this.boxes.set(box.key, box);
+    // 자동 번역 중이면 생각 중인 새 상자를 펼친다(10-12) — 그리는 중에 만드는 새 상자라 알림 없이 처음 값으로 둔다
+    if (phase === "streaming" && this.autoHosts.has(hostId)) this.autoOpen(box);
     return box;
   }
 
@@ -266,7 +272,55 @@ export class ThinkingController {
 
   shown(box: ThinkingBoxState, paragraph: Paragraph): string {
     const translated = box.translations.get(paragraph.src);
-    return box.translate && paragraph.done && typeof translated === "string" ? translated : paragraph.src;
+    return this.showsTranslation(box) && paragraph.done && typeof translated === "string" ? translated : paragraph.src;
+  }
+
+  /** 상자가 지금 번역을 보여 주는가 — 번역 스위치가 켜졌거나, 번역읽기로 읽는 중이거나(10-12: 번역읽기는 번역 스위치를 켜지 않고
+   *  읽는 동안만 번역을 보여 준다. 끝나면 누르기 전 화면으로 — 리규형님 "번역 버튼까지 초록색으로 변하는 게 보기 싫다") */
+  showsTranslation(box: ThinkingBoxState): boolean {
+    return box.translate || (this.run?.box === box && this.run.strict);
+  }
+
+  /** 생각 상자 자동 번역이 켜진 호스트(10-12, 설정 thinkingAutoTranslate + 번역 켜짐 + 번역 키 있음 — thinking.tsx 가 알려 준다) */
+  private autoHosts = new Set<string>();
+  autoTranslating(hostId: string): boolean { return this.autoHosts.has(hostId); }
+  /**
+   * 자동 번역 켜기·끄기(리규형님 10-12 결정). 켜면 그 호스트의 상자 전부와 앞으로 생길 상자가 번역 켜짐으로(화면의 모든 상자),
+   * 끄면 전부 원문으로 돌아가고 원문 보기도 푼다(꺼진 동안은 원문 보기 단추가 없다). 상자 크기는 건드리지 않는다
+   */
+  /** 자동 번역 때 생각 중인 상자 펼치기(설정 thinkingAutoTranslateExpand, 리규형님 10-12) */
+  private autoExpand = false;
+  /** 켜는 순간 자동 번역 중인 호스트의 생각 중인(streaming) 상자를 펼친다. 끈다고 펼친 상자를 줄이지는 않는다(최대화 단추는 그대로) */
+  setAutoExpand(on: boolean): void {
+    if (this.autoExpand === on) return;
+    this.autoExpand = on;
+    if (!on) return;
+    for (const box of this.boxes.values()) {
+      if (!box.said && box.phase === "streaming" && this.autoHosts.has(box.hostId)) this.autoOpen(box);
+    }
+    this.notify();
+  }
+  /** 열고 높이 제한까지 푼다(expand 와 같다). 입력창 위 "모두 접기"를 눌러 둔 동안과, 한 번 펼친 상자(리규형님이 줄였을 수 있다)는 그대로 */
+  private autoOpen(box: ThinkingBoxState): void {
+    if (!this.autoExpand || !this.openByDefault || box.autoExpanded) return;
+    box.autoExpanded = true;
+    box.open = true;
+    box.maximized = true;
+  }
+
+  setAutoTranslate(hostId: string, on: boolean): void {
+    if (this.autoHosts.has(hostId) === on) return;
+    if (on) this.autoHosts.add(hostId); else this.autoHosts.delete(hostId);
+    for (const box of this.boxes.values()) {
+      if (box.hostId !== hostId || box.said) continue;
+      box.original = false;
+      if (on) { box.translate = true; box.suspended = false; box.error = ""; if (box.phase === "streaming") this.autoOpen(box); }
+      else { box.translate = false; this.cancelTranslation(box); }
+      if (this.run?.box === box) { this.run.strict = false; this.seek(this.run.index); }
+      this.syncWatch(box);
+      this.translateMore(box);
+    }
+    this.notify();
   }
 
   /** 읽을 글 — 화면에 보이는 글이 있으면 그것(브라우저 번역 반영, 원문 보기면 원문 칸), 없으면 shown(원문 보기면 원문) */
@@ -340,7 +394,7 @@ export class ThinkingController {
     }
     box.translatedLang = lang;
     box.translatedProvider = provider;
-    if (!box.translate || box.suspended || box.busy || !box.rpc) return;
+    if (!this.showsTranslation(box) || box.suspended || box.busy || !box.rpc) return;
     const texts = [...new Set(splitParagraphs(boxText(box), boxPhase(box)).filter((p) => p.done && needsTranslation(p.src, lang) && !box.translations.has(p.src)).map((p) => p.src))].slice(0, 20);
     if (!texts.length) return;
     const epoch = box.epoch;
@@ -388,7 +442,7 @@ export class ThinkingController {
       if (!live()) return;
       for (const [text, value] of cached) box.translations.set(text, value);
       rest = texts.filter((text) => !cached.has(text));
-      if (!rest.length || !box.translate) return;
+      if (!rest.length || !this.showsTranslation(box)) return;
     }
     try {
       const result = await rpc.translate({ texts: rest, lang });
@@ -412,11 +466,11 @@ export class ThinkingController {
         if (translation === null) box.failures.set(text, result.error || "문단을 번역하지 못했습니다");
       });
       // 끈 상자에는 실패 글을 띄우지 않는다(실패 문단은 기록돼 다시 켜면 그 문단 실패로 보인다)
-      if (box.translate && (result.error || rest.some((t) => box.translations.get(t) === null))) box.error = result.error || "일부 문단 번역 실패";
+      if (this.showsTranslation(box) && (result.error || rest.some((t) => box.translations.get(t) === null))) box.error = result.error || "일부 문단 번역 실패";
     } catch (error) {
       if (!live()) return;
       const reason = String(error);
-      if (box.translate) box.error = reason;
+      if (this.showsTranslation(box)) box.error = reason;
       rest.forEach((text) => { box.translations.set(text, null); box.failures.set(text, reason); });
     }
   }
@@ -451,8 +505,8 @@ export class ThinkingController {
     // 글자 자리는 누를 때 화면에 보이던 글 기준이다 — 번역읽기가 번역을 켜 화면 글이 바뀌기 전에 그 글을 잡아 둔다
     const target = at ? splitParagraphs(boxText(box), boxPhase(box))[at.index] : undefined;
     const shownAtPress = target && at ? this.spoken(box, at.index, target) : undefined;
-    // 번역읽기는 번역을 읽겠다는 뜻 — 원문 보기를 푼다(10-10). 그냥 읽기는 보이는 글(원문 보기면 원문)을 읽는다
-    if (strict) { box.translate = true; box.original = false; }
+    // 번역읽기는 번역 스위치를 켜지 않는다(10-12) — run.strict 인 동안만 showsTranslation 이 번역을 보여 준다. 그냥 읽기는
+    // 보이는 글(원문 보기면 원문)을 읽는다. 원문 보기는 자동 번역 중에만 있고 그때는 번역읽기 단추가 없다(thinking.tsx)
     const run: Run = { box, index: 0, strict, paused: false, status: "loading", generation: 0, loaded: false, startedAt: 0, slots: new Map() };
     if (at && target && shownAtPress !== undefined) {
       run.index = at.index;
@@ -473,10 +527,16 @@ export class ThinkingController {
     const run = this.run;
     if (!run) return;
     this.finish(run);
-    run.box.suspended = true;
-    this.cancelTranslation(run.box);
+    // 자동 번역 상자는 사용자가 읽기를 멈춰도 번역을 이어 간다(10-12) — 멈추면 그 상자의 새 문단이 더 번역되지 않았다.
+    // 오류로 멈춘 때(reason 있음)와 그 밖의 상자는 전처럼 번역도 멈춘다
+    const keepTranslating = !reason && !run.box.said && this.autoHosts.has(run.box.hostId);
+    if (!keepTranslating) {
+      run.box.suspended = true;
+      this.cancelTranslation(run.box);
+    }
     if (reason) run.box.error = reason;
     this.syncWatch(run.box);
+    if (keepTranslating) this.translateMore(run.box);
     this.notify();
   }
 
