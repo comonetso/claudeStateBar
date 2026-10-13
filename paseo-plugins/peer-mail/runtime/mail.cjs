@@ -93,6 +93,13 @@ function requireVisibleProject(ctx, cwd) {
   return ctx.proj;
 }
 
+// 우편 한 항목이 크기 상한(mailbox.MAX_ITEM_BYTES) 안에 드는지 기록을 남기기 **전에** 본다.
+// 넣다가 실패하면 기록(결과 확정본 등)만 남아, 다시 해도 "이미 보냈다"로 빈손이 되던 문제(Codex 261013 재현).
+function requireFits(item, what) {
+  const f = mailbox.fits(item);
+  if (!f.ok) throw new UsageError(what + ' is too large for one mailbox item (' + f.bytes + ' bytes, limit ' + f.max + ' — the message carries the body twice: as text and in the envelope). Nothing was recorded or queued. Shorten the body (write the long part to a file and point to it) and run the command again');
+}
+
 const NEXT = {
   query: 'investigate only what was asked, write the answer to a file, then run reply --status completed',
   notice: 'check only the impact on this repository and report it with reply --status completed. Do not fix anything',
@@ -101,10 +108,15 @@ const NEXT = {
 
 // ───────── targets · whoami ─────────
 
+// 받는 쪽 한 줄 — 이름이 겹치면 사용자가 카테고리·기기·경로로 고른다(SKILL.md §1)
+function targetRow(e) {
+  return { name: e.name, category: e.category || null, host: e.host, path: e.path, to: e.host + ':' + e.path };
+}
+
 function cmdTargets(args, cwd) {
   const ctx = context(cwd);
   const mine = ctx.proj ? ctx.proj.key : null;
-  const rows = ctx.p.entries.filter((e) => e.enabled && e.key !== mine).map((e) => ({ name: e.name, host: e.host, path: e.path, to: e.host + ':' + e.path }));
+  const rows = ctx.p.entries.filter((e) => e.enabled && e.key !== mine).map(targetRow);
   print({ self: ctx.host, this_project: ctx.proj ? { name: ctx.proj.name, visible: ctx.proj.enabled } : null, count: rows.length, targets: rows, source: ctx.p.source });
 }
 
@@ -135,7 +147,7 @@ function cmdSend(args, cwd) {
     const toArg = opt(args, 'to');
     if (toArg) {
       const r = projects.resolveTo(ctx.p.entries, toArg);
-      if (!r.ok) return print({ ok: false, error: r.error, candidates: (r.candidates || []).map((e) => ({ name: e.name, to: e.host + ':' + e.path })) });
+      if (!r.ok) return print({ ok: false, error: r.error, candidates: (r.candidates || []).map(targetRow) });
       if (r.entry.key !== projects.keyOf(t.host, t.root)) throw new UsageError('a resend goes only to the first target (' + t.host + ':' + t.root + ') — send it as a new request');
       target = r.entry;
     } else {
@@ -149,7 +161,7 @@ function cmdSend(args, cwd) {
     body = readFileArg(args, 'body-file').replace(/\s+$/, '');
     if (!body) throw new UsageError('the body is empty');
     const r = projects.resolveTo(ctx.p.entries, need(args, 'to'));
-    if (!r.ok) return print({ ok: false, error: r.error, candidates: (r.candidates || []).map((e) => ({ name: e.name, to: e.host + ':' + e.path })) });
+    if (!r.ok) return print({ ok: false, error: r.error, candidates: (r.candidates || []).map(targetRow) });
     target = r.entry;
     if (target.key === proj.key) throw new UsageError('that is this project itself');
     requestId = util.uuid();
@@ -158,19 +170,7 @@ function cmdSend(args, cwd) {
   const pickAgent = opt(args, 'agent');
   if (pickAgent && !/^[0-9a-f-]{8,36}$/i.test(pickAgent)) throw new UsageError('--agent must be a Paseo conversation id');
   const dir = store.requestDir(root, requestId);
-  store.applyCommitPolicy(root, true);
-  if (!opt(args, 'request-id')) {
-    store.createRequestRecord(dir, {
-      direction: 'outbound',
-      request_id: requestId,
-      conversation_id: conversationId,
-      intent: intent,
-      body: body,
-      sender: { host: ctx.host, root: root, project: proj.name },
-      targets: { peer: { host: target.host, root: target.path, project: target.name } },
-      created_at: util.nowIso(),
-    });
-  }
+  // 커밋 정책은 건드리지 않는다 — 기록 폴더 .gitignore 에 "커밋 안 함" 블록이 있으면 그대로 둔다(store.applyCommitPolicy 주석)
   const env = envl.makeRequest({
     requestId: requestId,
     conversationId: conversationId,
@@ -191,6 +191,19 @@ function cmdSend(args, cwd) {
     to: { host: target.host, path: target.path, agent: pickAgent || null },
     message: envl.renderMessage(env),
   };
+  requireFits(item, 'the request');
+  if (!opt(args, 'request-id')) {
+    store.createRequestRecord(dir, {
+      direction: 'outbound',
+      request_id: requestId,
+      conversation_id: conversationId,
+      intent: intent,
+      body: body,
+      sender: { host: ctx.host, root: root, project: proj.name },
+      targets: { peer: { host: target.host, root: target.path, project: target.name } },
+      created_at: util.nowIso(),
+    });
+  }
   const put = mailbox.put('outbox', item);
   store.writeText(dir, 'outbox', 'request-' + env.attempt_id + '.txt', item.message);
   store.appendEvent(dir, { type: 'prepared', recipient: PEER, attempt_id: env.attempt_id, detail: 'peer_mail to=' + target.host + ':' + target.path + (pickAgent ? ' agent=' + pickAgent : ''), route: { transport: 'peer_mail', host: target.host, path: target.path, agent: pickAgent || null } });
@@ -208,9 +221,12 @@ function cmdSend(args, cwd) {
 
 // ───────── receive · reply (받는 쪽) ─────────
 
+function replyItem(kind, requestId, env) {
+  return { v: 1, id: util.uuid(), kind: kind, request_id: requestId, created_at: util.nowIso(), from_agent: process.env.PASEO_AGENT_ID || null, message: envl.renderMessage(env) };
+}
+
 function putReply(kind, requestId, env) {
-  const item = { v: 1, id: util.uuid(), kind: kind, request_id: requestId, created_at: util.nowIso(), from_agent: process.env.PASEO_AGENT_ID || null, message: envl.renderMessage(env) };
-  return mailbox.put('outbox', item).file;
+  return mailbox.put('outbox', replyItem(kind, requestId, env)).file;
 }
 
 function cmdReceive(args, cwd) {
@@ -239,7 +255,7 @@ function cmdReceive(args, cwd) {
     return print({ verdict: 'wrong_target', request_id: env.request_id, mismatch: mismatch, instruction: 'do not investigate. The relay tells the sender. Tell the user a peer_mail request meant for another target arrived' });
   }
   const root = ctx.proj.path;
-  store.applyCommitPolicy(root, true);
+  // 커밋 정책은 건드리지 않는다(cmdSend 와 같다)
   const dir = store.requestDir(root, env.request_id);
   const from = 'peer_mail:' + env.sender_host + ':' + env.sender_root;
   const made = store.createRequestRecord(dir, { direction: 'inbound', request_id: env.request_id, envelope: env, from: from, received_at: util.nowIso() });
@@ -284,24 +300,40 @@ function cmdReply(args, cwd) {
     throw new UsageError('the result of this request is already final as "' + prev.status + '" — not overwriting it');
   }
   const env = envl.makeReply({ type: 'result', request: rec.envelope, status: status, body: body });
-  const text = envl.renderMessage(env);
+  const item = replyItem('result', id, env);
+  const text = item.message;
+  requireFits(item, 'the result'); // 확정본을 게시하기 전에 — 넘으면 아무 기록도 남기지 않는다
   if (state.FINAL.indexOf(status) !== -1) {
-    if (!util.publishOnce(finFile, text)) throw new UsageError('another process finalized the result of this request just now');
+    if (!store.publishText(dir, 'outbox', store.RESULT_FINAL, text)) throw new UsageError('another process finalized the result of this request just now');
   } else {
     store.writeText(dir, 'outbox', store.RESULT_TEMP, text);
   }
   store.writeText(dir, 'result', 'result.md', body + '\n');
   store.appendEvent(dir, { type: status, recipient: 'self', attempt_id: rec.envelope.attempt_id });
-  putReply('result', id, env);
+  mailbox.put('outbox', item);
   print({ ok: true, request_id: id, status: status, instruction: 'the relay delivers the result to the sending conversation — send nothing yourself' });
 }
 
 // ───────── ingest · inbox · status (보낸 쪽) ─────────
 
+// 답(접수 확인·결과)의 봉투가 말하는 응답 쪽이 이 요청을 보낸 대상(기록의 받는 쪽 기기·폴더)인가.
+// 맞으면 null, 아니면 이유. request_id 만 맞는 엉뚱한 곳의 봉투를 받지 않는다(Codex 261013 재현).
+// 진짜 답은 응답 쪽을 받은 요청 봉투의 recipient 에서 그대로 옮겨 적으므로(envelope.makeReply) 보낸 기록과 같다.
+function responderMismatch(rec, env) {
+  const t = rec.targets && rec.targets[PEER];
+  if (!t || !t.host || !t.root) return 'the sent record has no target to compare the reply with';
+  if (env.responder_host !== t.host || !util.samePath(env.responder_root, t.root, projects.platformOfHost(t.host))) {
+    return 'the reply says it comes from ' + env.responder_host + ':' + env.responder_root + ', but this request was sent to ' + t.host + ':' + t.root;
+  }
+  return null;
+}
+
 function recordReply(root, env, from) {
   const dir = store.requestDir(root, env.request_id);
   const rec = store.readRequestRecord(dir);
   if (!rec || rec.direction !== 'outbound') return { ok: false, unknown_request: true, request_id: env.request_id, hint: 'not a request sent from this project — not recorded' };
+  const mismatch = responderMismatch(rec, env);
+  if (mismatch) return { ok: false, accepted: false, request_id: env.request_id, short_id: util.shortId(env.request_id), type: env.type, status: env.status, reason: mismatch, instruction: 'not recorded. Do not treat it as the peer\'s answer. Tell the user a peer_mail reply from an unexpected place arrived for this request' };
   const before = state.fold(store.listEvents(dir))[PEER];
   if (env.type === 'result' && before && before.state === env.status) {
     const prevFile = path.join(dir, 'result', 'peer.md');

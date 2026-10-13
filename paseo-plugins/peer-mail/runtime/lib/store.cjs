@@ -1,7 +1,7 @@
 //
 // store.cjs — 발신·수신 기록 (TODO I4)
 //
-// 위치: <저장소 루트>/docs/_msg/peer_req/<request_id>/
+// 위치: <저장소 루트>/docs/_msg/peer_mail/<request_id>/
 //   request.json        방향(outbound|inbound)·envelope·대상 스냅샷 — 처음 한 번만 게시한다(publishOnce)
 //   events/<ms>-<rand>-<type>.json
 //                       상태 변화 한 건 = 파일 한 개. 동시에 써도 서로 덮지 않는다
@@ -10,6 +10,8 @@
 //
 // 🔴 한 파일에 여러 프로세스가 append 하지 않는다. 이벤트는 항상 새 파일로 만든다(C7·Codex 6.2).
 // 머신 전용 상태(선언·락)는 여기 두지 않는다 — Git 에 올라가면 안 된다. sessions.cjs 참고.
+// 🔴 본문이 들어 있다. docs/_msg/peer_mail 과 그 아래를 새로 만들 때 폴더 0700·파일 0600(Linux)으로 만든다.
+//    그 위 docs·docs/_msg 는 저장소의 공용 폴더라 기본 권한으로 둔다. 이미 있는 폴더·파일 권한은 바꾸지 않는다.
 //
 
 'use strict';
@@ -32,11 +34,24 @@ function recordsRoot(repoRoot) {
   return path.join(repoRoot, RECORD_SUBDIR);
 }
 
-// D18: 기본은 커밋한다. 주소록 peer_mail records.commit=false 면 기록 폴더의 .gitignore 에 우리 블록을 둔다.
+// target(기록 폴더 recordsDir 와 그 아래)을 이 사용자만 쓰게 만든다. recordsDir 의 상위는 기본 권한으로.
+function ensurePrivateDir(target, recordsDir) {
+  util.mkdirp(path.dirname(recordsDir));
+  util.mkdirp(target, util.PRIVATE_DIR_MODE);
+}
+
+// 요청 폴더(requestDir 이 돌려준 것) 아래 하위 폴더를 만든다. 요청 폴더의 부모가 기록 폴더다.
+function ensureUnder(dir, sub) {
+  ensurePrivateDir(sub ? path.join(dir, sub) : dir, path.dirname(dir));
+}
+
+// D18: 기본은 커밋한다. records.commit=false 면 기록 폴더의 .gitignore 에 우리 블록을 둔다.
 // 사용자가 이미 만든 .gitignore 가 있어도 블록을 덧붙이고, 다시 켤 때는 그 블록만 뺀다(2차 리뷰 P2).
+// peer_mail 에는 주소록이 없어 send·receive 는 이 함수를 부르지 않는다 — 블록이 있으면 있는 대로(커밋 안 함),
+// 없으면 없는 대로(기본: 커밋) 둔다. 예전에는 send·receive 가 commit=true 로 불러 사용자가 넣은 블록을 지웠다(Codex 261013 재현).
 function applyCommitPolicy(repoRoot, commit) {
   const dir = recordsRoot(repoRoot);
-  util.mkdirp(dir);
+  ensurePrivateDir(dir, dir);
   const gi = path.join(dir, '.gitignore');
   const cur = fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : null;
   const has = cur !== null && cur.indexOf(BLOCK_BEGIN) !== -1;
@@ -69,7 +84,7 @@ function requestDir(repoRoot, requestId) {
 // 게시된 request.json 은 항상 완성본이다 — 늦게 온 쪽이 반쪽 JSON 을 읽지 않는다(리뷰 P2).
 // 폴백 경로에서 남이 선점만 하고 아직 붙이지 못했으면 { created:false, pending:true }.
 function createRequestRecord(dir, meta) {
-  util.mkdirp(path.join(dir, 'events'));
+  ensureUnder(dir, 'events');
   const file = path.join(dir, 'request.json');
   if (util.publishOnce(file, JSON.stringify(meta, null, 2) + '\n')) return { created: true };
   const existing = util.readJson(file, null);
@@ -83,7 +98,7 @@ function readRequestRecord(dir) {
 
 function appendEvent(dir, event) {
   const evDir = path.join(dir, 'events');
-  util.mkdirp(evDir);
+  ensureUnder(dir, 'events');
   const ev = Object.assign({ at: util.nowIso() }, event);
   const safeType = String(ev.type || 'event').replace(/[^a-z_]/gi, '');
   for (let i = 0; i < 5; i++) {
@@ -115,8 +130,15 @@ function listEvents(dir) {
 
 function writeText(dir, sub, name, text) {
   const f = path.join(dir, sub, name);
+  ensureUnder(dir, sub);
   util.writeFileAtomic(f, text);
   return f;
+}
+
+// 처음 한 번만 게시한다(결과 확정본). 이미 있으면 false — util.publishOnce 와 같다
+function publishText(dir, sub, name, text) {
+  ensureUnder(dir, sub);
+  return util.publishOnce(path.join(dir, sub, name), text);
 }
 
 function listRequestIds(repoRoot) {
@@ -127,4 +149,4 @@ function listRequestIds(repoRoot) {
   }
 }
 
-module.exports = { RECORD_SUBDIR, RESULT_FINAL, RESULT_TEMP, resultMessageFile, recordsRoot, applyCommitPolicy, requestDir, createRequestRecord, readRequestRecord, appendEvent, listEvents, writeText, listRequestIds };
+module.exports = { RECORD_SUBDIR, RESULT_FINAL, RESULT_TEMP, resultMessageFile, recordsRoot, applyCommitPolicy, requestDir, createRequestRecord, readRequestRecord, appendEvent, listEvents, writeText, publishText, listRequestIds };

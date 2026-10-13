@@ -54,6 +54,11 @@ function keyOf(host, p) {
 
 // 반환: { ok, self, entries:[{name, host, path, enabled, key}], source, error }
 //   self = 이 기기의 이름(PC 또는 별칭)
+// 카테고리 — 이름이 겹칠 때 사용자가 후보를 구분하는 데만 쓴다. 없으면 null
+function categoryOf(o) {
+  return typeof o.category === 'string' && o.category.trim() ? o.category.trim() : null;
+}
+
 function load() {
   let raw = null;
   let source = null;
@@ -64,7 +69,7 @@ function load() {
     try {
       const arr = JSON.parse(fs.readFileSync(source, 'utf8'));
       if (!Array.isArray(arr)) return { ok: false, error: 'the project list is not an array: ' + source };
-      raw = arr.map((o) => (o && typeof o.rootPath === 'string' && typeof o.name === 'string' ? { name: o.name.trim(), host: hostOf(o.rootPath), path: pathOf(o.rootPath), enabled: o.enabled !== false } : null));
+      raw = arr.map((o) => (o && typeof o.rootPath === 'string' && typeof o.name === 'string' ? { name: o.name.trim(), category: categoryOf(o), host: hostOf(o.rootPath), path: pathOf(o.rootPath), enabled: o.enabled !== false } : null));
     } catch (e) {
       return { ok: false, error: 'could not read the project list: ' + e.message };
     }
@@ -73,7 +78,7 @@ function load() {
     try {
       const j = JSON.parse(fs.readFileSync(source, 'utf8'));
       self = typeof j.recipient === 'string' && j.recipient ? j.recipient : null;
-      raw = (Array.isArray(j.entries) ? j.entries : []).map((o) => (o && typeof o.name === 'string' && typeof o.host === 'string' && typeof o.path === 'string' ? { name: o.name.trim(), host: o.host, path: o.path, enabled: o.enabled !== false } : null));
+      raw = (Array.isArray(j.entries) ? j.entries : []).map((o) => (o && typeof o.name === 'string' && typeof o.host === 'string' && typeof o.path === 'string' ? { name: o.name.trim(), category: categoryOf(o), host: o.host, path: o.path, enabled: o.enabled !== false } : null));
     } catch (e) {
       return { ok: false, error: 'could not read the project list copy: ' + e.message };
     }

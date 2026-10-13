@@ -35,14 +35,21 @@ function dir(name) {
 }
 
 function ensureDirs() {
+  util.mkdirp(path.dirname(base())); // Paseo 홈 등 우편함 위 폴더는 기본 권한으로
   ['outbox', 'sent', 'inbox', 'inbox-done'].forEach((n) => {
-    util.mkdirp(dir(n));
+    util.mkdirp(dir(n), util.PRIVATE_DIR_MODE); // 새로 만드는 우편함 폴더(peer-mail 포함)는 0700
     try {
       fs.chmodSync(dir(n), 448); // 0o700 — Windows 에서는 의미 없다
     } catch (e) {
       // 못 바꾸면 그대로
     }
   });
+}
+
+// 항목 하나가 우편함 크기 상한 안에 드는가 — 기록을 남기기 전에 먼저 재 본다(넣다가 실패해 기록만 남지 않게)
+function fits(item) {
+  const bytes = Buffer.byteLength(JSON.stringify(item), 'utf8');
+  return { ok: bytes <= MAX_ITEM_BYTES, bytes: bytes, max: MAX_ITEM_BYTES };
 }
 
 // 항목을 폴더에 넣는다 — 다 쓴 임시 파일을 rename. 같은 id 가 이미 있으면 덮지 않는다.
@@ -63,7 +70,8 @@ function list(folder) {
   try {
     return fs
       .readdirSync(dir(folder))
-      .filter((n) => /^[0-9a-f-]{36}\.json$/i.test(n))
+      // 정확한 UUID 이름만 — 느슨하면 다리의 ack 검사(NAME_RE)를 못 지나는 이름이 ping 마다 다시 올라간다(Codex 리뷰 261014_010400)
+      .filter((n) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i.test(n))
       .sort();
   } catch (e) {
     return [];
@@ -74,7 +82,9 @@ function read(folder, name) {
   try {
     const st = fs.statSync(path.join(dir(folder), name));
     if (st.size > MAX_ITEM_BYTES) return null;
-    return JSON.parse(fs.readFileSync(path.join(dir(folder), name), 'utf8'));
+    const buf = fs.readFileSync(path.join(dir(folder), name));
+    if (buf.length > MAX_ITEM_BYTES) return null; // 잰 뒤 읽기 전에 커진 파일(Codex 261013 #12)
+    return JSON.parse(buf.toString('utf8'));
   } catch (e) {
     return null;
   }
@@ -90,4 +100,4 @@ function move(from, to, name) {
   }
 }
 
-module.exports = { MAX_ITEM_BYTES, ID_RE, paseoHome, base, dir, ensureDirs, put, list, read, move };
+module.exports = { MAX_ITEM_BYTES, ID_RE, paseoHome, base, dir, ensureDirs, fits, put, list, read, move };

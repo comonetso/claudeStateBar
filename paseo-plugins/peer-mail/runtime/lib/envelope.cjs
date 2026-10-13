@@ -160,4 +160,32 @@ function checkEnvelope(env) {
   return problems;
 }
 
-module.exports = { INTENTS, HEADER_VERSION, ACK_STATUS, RESULT_STATUS, UUID_RE, makeRequest, makeReply, renderMessage, firstLine, extractEnvelope, checkEnvelope };
+// ───────── 중계기가 넣을 글을 다시 만들 때 (2026-10-14 보안 점검) ─────────
+// 중계기는 받은 글(우편의 message)을 그대로 넣지 않는다. checkEnvelope 를 통과한 봉투에서 이 형식의 칸만 남겨
+// renderMessage 로 다시 만든다 — 봉투 밖에 붙은 글(머리말을 지운 표시문 따위)은 상대 대화에 들어가지 않는다.
+//   · 칸 목록은 makeRequest·makeReply 가 만드는 칸과 같다. 그 밖의 칸은 버린다(검사하지 않은 값이 따라가지 않게)
+//   · 첫 줄(firstLine)에 들어가는 이름 칸의 줄바꿈·제어 문자는 공백 하나로 — 첫 줄을 넘어 규칙 앞에 글을 끼우지 못하게.
+//     정상 우편은 이 칸들이 한 줄이라 바뀌는 것이 없다
+//   · 본문(body)·해시는 손대지 않는다 — checkEnvelope 가 해시를 맞춰 본 봉투에만 쓴다
+// 🔴 봉투에 칸을 새로 넣으면 이 목록에도 넣어라. 안 넣으면 중계기를 거치며 그 칸이 빠진다.
+const REQUEST_FIELDS = ['protocol', 'type', 'request_id', 'attempt_id', 'conversation_id', 'sender_host', 'sender_root', 'sender_project', 'recipient_host', 'recipient_root', 'recipient_project', 'intent', 'header_version', 'created_at', 'body_sha256', 'body'];
+const REPLY_FIELDS = ['protocol', 'type', 'request_id', 'attempt_id', 'conversation_id', 'responder_host', 'responder_root', 'responder_project', 'status', 'created_at', 'body_sha256', 'body'];
+const LABEL_FIELDS = ['sender_host', 'sender_project', 'recipient_host', 'recipient_project', 'responder_host', 'responder_project'];
+const CONTROL_RUN = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+', 'g');
+
+function canonicalEnvelope(env) {
+  const fields = env.type === 'request' ? REQUEST_FIELDS : REPLY_FIELDS;
+  const out = {};
+  fields.forEach((k) => {
+    if (env[k] === undefined) return;
+    out[k] = LABEL_FIELDS.indexOf(k) !== -1 && typeof env[k] === 'string' ? env[k].replace(CONTROL_RUN, ' ') : env[k];
+  });
+  return out;
+}
+
+// 검사를 통과한 봉투 → 상대 대화에 넣을 글(첫 줄 머리말 · 규칙 · 본문 · ```peer_mail 블록)
+function renderRelayed(env) {
+  return renderMessage(canonicalEnvelope(env));
+}
+
+module.exports = { INTENTS, HEADER_VERSION, ACK_STATUS, RESULT_STATUS, UUID_RE, makeRequest, makeReply, renderMessage, firstLine, extractEnvelope, checkEnvelope, canonicalEnvelope, renderRelayed };

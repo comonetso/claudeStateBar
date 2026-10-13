@@ -91,12 +91,19 @@ function isAbsolutePath(p) {
   return s.charAt(0) === '/' || /^[a-zA-Z]:\//.test(s);
 }
 
-// mkdirSync({recursive}) 는 Node 10.12 부터라 직접 만든다
-function mkdirp(dir) {
+// 본문이 든 기록·우편함은 이 사용자만 읽고 쓴다(서버에서 다른 계정이 0644 기록을 읽은 일이 있다 — Codex 261013 실측).
+// 새로 만들 때만 이 권한을 준다. 이미 있는 폴더·파일의 권한은 바꾸지 않는다. Windows 에서는 권한 비트가 의미 없다.
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
+
+// mkdirSync({recursive}) 는 Node 10.12 부터라 직접 만든다.
+// mode 를 주면 이번에 새로 만드는 폴더(빠진 상위 폴더 포함)에만 그 권한을 준다. 이미 있는 폴더는 건드리지 않는다.
+function mkdirp(dir, mode) {
   if (!dir || fs.existsSync(dir)) return;
-  mkdirp(path.dirname(dir));
+  mkdirp(path.dirname(dir), mode);
   try {
-    fs.mkdirSync(dir);
+    if (mode === undefined) fs.mkdirSync(dir);
+    else fs.mkdirSync(dir, mode);
   } catch (e) {
     if (e.code !== 'EEXIST') throw e;
   }
@@ -104,6 +111,26 @@ function mkdirp(dir) {
 
 function tmpName(file) {
   return file + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+}
+
+// 임시 파일에 쓸 권한 — 새 파일은 0600, 이미 있는 파일을 덮을 때는 그 파일의 지금 권한(rename 이 새 파일로 바꾸므로 그대로 옮겨 준다).
+// Windows 는 null = 예전처럼 기본값으로 쓴다.
+function modeFor(file) {
+  if (process.platform === 'win32') return null;
+  try {
+    return fs.statSync(file).mode & 0o777;
+  } catch (e) {
+    return PRIVATE_FILE_MODE;
+  }
+}
+
+function writeTmp(tmp, text, mode) {
+  if (mode === null) {
+    fs.writeFileSync(tmp, text, 'utf8');
+    return;
+  }
+  fs.writeFileSync(tmp, text, { encoding: 'utf8', mode: mode });
+  fs.chmodSync(tmp, mode); // umask 에 깎이지 않게 — 기존 파일 권한을 그대로 옮길 때 필요하다
 }
 
 function unlinkQuiet(file) {
@@ -118,7 +145,7 @@ function unlinkQuiet(file) {
 function writeFileAtomic(file, text) {
   mkdirp(path.dirname(file));
   const tmp = tmpName(file);
-  fs.writeFileSync(tmp, text, 'utf8');
+  writeTmp(tmp, text, modeFor(file));
   fs.renameSync(tmp, file);
 }
 
@@ -137,7 +164,7 @@ function writeJsonAtomic(file, value) {
 function publishOnce(file, text) {
   mkdirp(path.dirname(file));
   const tmp = tmpName(file);
-  fs.writeFileSync(tmp, text, 'utf8');
+  writeTmp(tmp, text, process.platform === 'win32' ? null : PRIVATE_FILE_MODE); // 늘 새 파일이다
   try {
     if (process.env.PEER_REQ_NO_LINK !== '1') {
       try {
@@ -251,19 +278,6 @@ function claudeHome() {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 }
 
-// 머신 전용 상태(선언·락·캐시). Git 에 올리지 않는다.
-// 우선순위: --state-dir(= PEER_REQ_STATE) → CLAUDE_PLUGIN_DATA(훅) → OS 기본 위치
-function stateDir() {
-  const fromEnv = process.env.PEER_REQ_STATE || process.env.CLAUDE_PLUGIN_DATA;
-  if (fromEnv && fromEnv.indexOf('${') === -1) return fromEnv;
-  if (process.platform === 'win32') {
-    const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-    return path.join(base, 'peer_req');
-  }
-  const base = process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
-  return path.join(base, 'peer_req');
-}
-
 function shortId(id) {
   return String(id || '').slice(0, 8);
 }
@@ -280,6 +294,8 @@ module.exports = {
   deviceName,
   fileKey,
   isAbsolutePath,
+  PRIVATE_DIR_MODE,
+  PRIVATE_FILE_MODE,
   mkdirp,
   unlinkQuiet,
   writeFileAtomic,
@@ -293,6 +309,5 @@ module.exports = {
   runExe,
   readJson,
   claudeHome,
-  stateDir,
   shortId,
 };
