@@ -108,11 +108,9 @@ export function ProjectsList(props: {
       // 그대로 고정에 남는다(10-07 리규형님: "고정은 고정, 활성은 활성끼리"). 원래 묶음 쪽도 지금처럼(대화를 열고 닫을 때
       // 줄이 들락날락하지 않게)
       if (liveOf(e, serverOf(e, index), live)) add(ACTIVE_GROUP, e);
-      // 고정한 것은 맨 위 "고정" 묶음으로 옮기고 원래 묶음에서는 뺀다(10-06 리규형님 결정)
-      if (pins.has(pinKey(e))) {
-        add(PINNED_GROUP, e);
-        continue;
-      }
+      // 고정한 것은 맨 위 "고정" 묶음에도 넣고 원래 묶음에도 그대로 둔다 — 원래 묶음에서 빠지면 지워진 줄로 착각한다
+      // (10-06 처음엔 원래 묶음에서 뺐다 → 10-13 리규형님 "핀으로 고정을 해도 원래 카테에 남도록")
+      if (pins.has(pinKey(e))) add(PINNED_GROUP, e);
       add(categoryGroup(e), e);
     }
     // 묶음 순서: 고정·활성은 맨 위, 카테고리는 번호 순서, 그다음 카테고리 없음, 숨김은 맨 아래(10-11 리규형님 "숨김은 이동에서 제외,
@@ -136,7 +134,7 @@ export function ProjectsList(props: {
     };
     return order.map((g) => ({ name: g, items: sortIn(g, map.get(g) ?? []) }));
   }, [entries, filter, pins, pinOrder, live, index, orders, categories, fileRank, member]);
-  // 카테고리 묶음 머리를 끌어 놓은 자리로(고정·활성·카테고리 없음·숨김은 자리 고정). 화면에 안 보이는 카테고리(전부 고정한 것 등)도
+  // 카테고리 묶음 머리를 끌어 놓은 자리로(고정·활성·카테고리 없음·숨김은 자리 고정). 화면에 안 보이는 카테고리(찾기로 걸러진 것 등)도
   // 전체 순서에 남겨 번호가 흔들리지 않게 한다
   const onDropCategory = (from: string, to: string, after: boolean) => {
     const next = moveCategory(categories, from, to, after);
@@ -313,8 +311,8 @@ export function ProjectsList(props: {
                           ) : null}
                           <View style={{ flex: 1 }} />
                           {/* 맨 위 고정 핀(10-06 리규형님): 고정된 것은 항상, 나머지는 마우스를 올릴 때만(폰은 마우스가 없어 항상).
-                              자리는 늘 잡아 둬서 나타날 때 이름 줄이 흔들리지 않는다. 활성 묶음 줄에는 핀이 없다 — 고정은 원래 묶음에서,
-                              풀기는 고정 묶음에서(10-07 리규형님 "활성에서만 고정 해제 버튼 제거") */}
+                              자리는 늘 잡아 둬서 나타날 때 이름 줄이 흔들리지 않는다. 활성 묶음 줄에는 핀이 없다 — 고정·풀기는 원래 묶음과
+                              고정 묶음에서(10-07 리규형님 "활성에서만 고정 해제 버튼 제거" · 10-13부터 고정한 줄도 원래 묶음에 남는다) */}
                           {/* 활성 줄 오른쪽 빈자리(핀이 없는 자리): Claude 가 질문을 올려 답을 기다리면 물음표(10-09 리규형님 "질문이
                               올라온 세션 표시, 활성 탭만"). 색은 Paseo "답을 기다림" 색(왼쪽 점 느낌표와 같은 주황) */}
                           {g.name === ACTIVE_GROUP ? (

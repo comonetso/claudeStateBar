@@ -3,6 +3,7 @@ import { GOOGLE_LANGUAGE_CODES, GOOGLE_VOICES, OPENAI_VOICES, LANGUAGE_NAMES, PR
 import { readGoogleKeys } from "./googleKeys";
 import { readSpeechSettings } from "./speech";
 import { makeSpokenText } from "./spokenText";
+import { LEGACY_SILENT_WAV } from "./sound";
 
 const SYNTHESIZE_URL = "https://texttospeech.googleapis.com/v1/text:synthesize";
 // 음성 언어 = 저장한 공통 언어. Google 기본 목소리 Zephyr는 기획서대로 유지.
@@ -123,7 +124,12 @@ export async function synthesizeVoice(text: string, lang: TargetLang, provider: 
     const key = provider === "google" ? keys.tts : keys.openai;
     if (!key) return { ok: false, error: `${provider} TTS 키가 없습니다` };
     const spoken = makeSpokenText(text, lang);
-    if (!spoken) return { ok: false, error: "읽을 글이 없습니다" };
+    // 다듬으니 빈 글(괄호·기호만 있던 문단 — 10-13 괄호 안·기호를 안 읽게 한 뒤 생긴다)은 오류 대신 아주 짧은 무음.
+    // 재생기는 합성 실패에서 멈추므로, 무음이면 그 문단을 소리 없이 지나 다음 문단으로 간다
+    if (!spoken) {
+      ok = true;
+      return { ok: true, base64: LEGACY_SILENT_WAV.slice(LEGACY_SILENT_WAV.indexOf(",") + 1), mimeType: "audio/wav" };
+    }
     const chunks = splitInput(spoken, lang);
     count = chunks.length;
     const audio: Buffer[] = [];

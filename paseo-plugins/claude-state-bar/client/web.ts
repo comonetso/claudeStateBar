@@ -1643,7 +1643,8 @@ export type TurnReadBinding = {
   failed?: { target: unknown; error: string } | null;
   log?(message: string): void;
   fail?(target: unknown, reason: string): void;
-  read(target: unknown, text: string): void;
+  /** from: 화면에서 선택한 글이 걸친 첫 문단 번호 — 있으면 그 문단부터 읽는다(10-13) */
+  read(target: unknown, text: string, from?: number): void;
   previous(): void;
   toggle(): void;
   stop(): void;
@@ -1675,6 +1676,7 @@ type ReadEl = NodeLike & {
   remove(): void;
 };
 type ReadFiber = {
+  type?: unknown;
   return?: ReadFiber | null;
   alternate?: ReadFiber | null;
   memoizedProps?: Record<string, unknown>;
@@ -1685,7 +1687,7 @@ const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turn
 const READ_MARK = "data-csb-turn-read";
 // v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
 const READ_SHEET = "claude-state-bar-turn-read-v6";
-const TURN_READ_VERSION = 10; // 9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12)
+const TURN_READ_VERSION = 12; // 9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13)
 /** 읽는 중 스피커·컨트롤러 재생 단추 색 — Paseo 테마의 밝은 녹색(상태 점 색) */
 const READ_GREEN = "var(--colors-status-dot-success, #35c264)";
 const READ_ICONS: Record<string, string> = {
@@ -1741,28 +1743,90 @@ function readIcon(el: ReadEl, icon: string, size: string): void {
   el.setAttribute("data-csb-read-icon", icon);
   el.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${READ_ICONS[icon]}</svg>`;
 }
-/** 화면 문단마다 글과 그 문단 요소(형광펜 자리, 10-09). 글은 문단 안 빈 줄을 없애 재생기 splitParagraphs 와 번호가 하나씩 맞는다 */
+/**
+ * Paseo 표 칸인가 — 공개 소스 0.11.1 `components/markdown/renderer.tsx` 의 th·td 규칙이 칸을 `MarkdownTableCellText`(문맥 값 "table-cell")로
+ * 감싼다. 그 문맥 바로 아래의 화면 요소가 칸이다(사이에 다른 화면 요소가 끼면 칸 안쪽 요소). 화면 요소 이름에 기대지 않는다
+ */
+function isTableCell(el: ReadEl): boolean {
+  let f = readFiber(el);
+  for (let i = 0; f && i < 8; i++, f = f.return ?? null) {
+    if (i > 0 && typeof f.type === "string") return false;
+    if (f.memoizedProps?.value === "table-cell") return true;
+  }
+  return false;
+}
+/**
+ * 말 블록 안 표마다 읽을 글 — 줄마다 "첫 칸, 머리글 값, 머리글 값." (10-13 리규형님 "표는 한 덩어리로, 안에서는 줄마다 머리글과 짝지어").
+ * 칸 → 줄(칸의 부모) → 표(줄 묶음 thead·tbody 의 부모). 머리줄만 있거나 칸을 못 찾으면 표로 보지 않아 예전처럼 칸마다 읽는다.
+ * 칸 글은 화면 글(번역기가 바꿨으면 바뀐 글). 생각 상자 원문 표는 서버 spokenText tableToSentences 가 같은 모양으로 만든다
+ */
+function readTables(root: ReadEl): Map<ReadEl, string> {
+  const rowsOf = new Map<ReadEl, ReadEl[][]>();
+  const cellsOf = new Map<ReadEl, ReadEl[]>();
+  const all = root.querySelectorAll("*");
+  for (let i = 0; i < all.length; i++) {
+    const cell = all[i];
+    if (!isTableCell(cell)) continue;
+    const row = cell.parentElement;
+    const table = row?.parentElement?.parentElement;
+    if (!row || !table) continue;
+    let rows = rowsOf.get(table);
+    if (!rows) rowsOf.set(table, (rows = []));
+    let cells = cellsOf.get(row);
+    if (!cells) { cellsOf.set(row, (cells = [])); rows.push(cells); }
+    cells.push(cell);
+  }
+  const out = new Map<ReadEl, string>();
+  for (const [table, rows] of rowsOf) {
+    if (rows.length < 2) continue;
+    const text = (c: ReadEl) => (c.textContent ?? "").replace(/\s+/g, " ").trim();
+    const head = rows[0].map(text);
+    const sentences = rows.slice(1).map((cells) => {
+      const parts = cells.map((c, k) => { const v = text(c); return !v ? "" : k === 0 || !head[k] ? v : `${head[k]} ${v}`; }).filter(Boolean);
+      return parts.length ? `${parts.join(", ")}.` : "";
+    }).filter(Boolean);
+    if (sentences.length) out.set(table, sentences.join(" "));
+  }
+  return out;
+}
+/**
+ * 화면 문단마다 글과 그 문단 요소(형광펜 자리, 10-09). 글은 문단 안 빈 줄을 없애 재생기 splitParagraphs 와 번호가 하나씩 맞는다.
+ * 10-13: 표는 표마다 한 문단(readTables — 다음 한 번이면 표 전체를 건너뛴다), 글자가 하나도 없는 문단(목록 글머리 "•"·번호 "1." 칸 —
+ * Paseo 는 목록 한 줄을 글머리 칸 + 내용 칸 가로 줄로 그린다)은 뺀다 — 글머리를 따로 "점"으로 읽고 다음을 두 번 눌러야 했다
+ */
+/** 마지막으로 모은 말 묶음에서 표로 묶은 수 — 읽기 기록 줄에 남겨 표 칸 표시를 못 찾게 됐는지(Paseo 판 변경) 알아본다 */
+let tablesSeen = 0;
 function screenParts(root: ReadEl): { block: ReadEl | null; text: string }[] {
+  const tables = readTables(root);
+  tablesSeen += tables.size;
+  const spoken = new Set<ReadEl>();
   const walker = document.createTreeWalker(root, 5); // 요소 + 글자: br 도 문단 안 줄바꿈으로 읽는다.
   const parts: { block: NodeLike | null; text: string }[] = [];
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const el = node as ReadEl;
     if (node.nodeType !== 3 && el.tagName !== "BR") continue;
     let hidden = false;
+    let table: ReadEl | null = null;
     for (let p = node.nodeType === 3 ? el.parentElement : el; p; p = p.parentElement) {
       const style = window.getComputedStyle(p);
       if (p.getAttribute(READ_MARK) !== null || p.getAttribute("aria-hidden") === "true" || p.getAttribute("hidden") !== null ||
           p.getAttribute("role") === "button" || /^(BUTTON|SVG|SCRIPT|STYLE)$/.test(p.tagName) || style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" ||
           p.getAttribute("data-testid") === "assistant-message-capped-notice") { hidden = true; break; }
+      if (!table && tables.has(p)) table = p;
       if (p === root) break;
     }
     if (hidden) continue;
+    if (table) {
+      // 표 첫 글자 자리에 그 표 문단 하나 — 나머지 칸 글은 건너뛴다
+      if (!spoken.has(table)) { spoken.add(table); parts.push({ block: table, text: tables.get(table)! }); }
+      continue;
+    }
     const block = blockOf(node);
     let part = parts[parts.length - 1];
     if (!part || part.block !== block) { part = { block, text: "" }; parts.push(part); }
     part.text += node.nodeType === 3 ? node.nodeValue ?? "" : "\n";
   }
-  return parts.map((p) => ({ block: p.block as ReadEl | null, text: p.text.replace(/\n[\t ]*\n\s*/g, "\n").trim() })).filter((p) => p.text);
+  return parts.map((p) => ({ block: p.block as ReadEl | null, text: p.text.replace(/\n[\t ]*\n\s*/g, "\n").trim() })).filter((p) => /\p{L}/u.test(p.text));
 }
 /** 읽는 문단 형광펜 — 생각 상자 READING_HIGHLIGHT 와 같은 색. 브라우저 글 강조(CSS Highlight)로 칠해 Paseo 글 요소를 바꾸지 않는다
  *  (요소를 감싸거나 스타일을 바꾸면 번역기가 글을 되돌리거나 Paseo 가 다시 그리며 지운다). 글줄마다 칠해지는 것도 생각 상자와 같다 */
@@ -1783,6 +1847,20 @@ function paintReading(block: ReadEl | null): void {
   range.selectNodeContents(block);
   reg.set(READ_HIGHLIGHT, new Make(range));
   litBlock = { block, text };
+}
+/**
+ * 화면에서 선택한 글이 걸친 첫 문단 번호(blocks = screenParts 의 문단 요소 순서) — 말 읽기를 그 문단부터(10-13 리규형님 "생각 상자와
+ * 마찬가지로, 선택 글자가 있으면 그 문단부터"). 선택이 없거나 이 말의 어느 문단에도 안 걸치면 null(처음부터)
+ */
+function selectedPart(blocks: readonly (ReadEl | null)[]): number | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !sel.toString().trim()) return null;
+  const range = sel.getRangeAt(0);
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    try { if (block && range.intersectsNode(block)) return i; } catch { /* 문서에서 떨어진 요소 */ }
+  }
+  return null;
 }
 type SpeechGroup = { first: ReadEl; last: ReadEl; messages: ReadEl[] };
 /**
@@ -1965,6 +2043,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       el.setAttribute("type", "button");
       labelRead(el, name);
       readIcon(el, icon, size);
+      // 누르는 순간 화면 선택이 풀리지 않게 — 선택한 문단부터 읽으려면 클릭 때 선택이 남아 있어야 한다(10-13)
+      el.addEventListener("mousedown", (event) => event.preventDefault());
       el.addEventListener("click", (event) => { event.stopPropagation(); action(); });
       return el;
     };
@@ -1988,12 +2068,16 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
         if (!b.enabled) { b.read(r.anchor, ""); return; } // 키·설정의 정확한 이유는 연결 쪽에서
         const group = r.kind === "turn" ? lastSpeech(r.anchor) : speechGroup(r.anchor);
         if (!group) { fail(r, "이 턴의 화면 본문을 찾지 못했습니다. 본문을 화면에 보이게 한 뒤 다시 눌러 주세요"); return; }
+        tablesSeen = 0;
         const parts = group.messages.flatMap(screenParts);
         const text = parts.map((p) => p.text).join("\n\n").trim();
-        trace(r, `화면 본문 ${group.messages.length}블록·${parts.length}문단·${text.length}자`);
+        trace(r, `화면 본문 ${group.messages.length}블록·${parts.length}문단·${text.length}자·표 ${tablesSeen}개`);
         if (!text) { fail(r, "이 턴의 화면에 읽을 글이 없습니다"); return; }
         r.blocks = parts.map((p) => p.block);
-        b.read(r.anchor, text);
+        // 이 말 안에서 글을 선택해 두고 누르면 그 문단부터(재생기 문단 번호 = parts 번호). 선택을 썼으면 푼다 — 선택 색이 형광펜을 덮지 않게
+        const from = selectedPart(r.blocks);
+        if (from !== null) { trace(r, `선택한 ${from + 1}번째 문단부터`); clearSelection(); }
+        b.read(r.anchor, text, from ?? undefined);
       } catch (error) { fail(r, `읽기 시작 실패: ${String(error)}`); }
     };
     const paintTurn = (r: ReadRecord) => {

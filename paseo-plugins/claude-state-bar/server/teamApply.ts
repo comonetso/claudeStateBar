@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ProjectEntry } from "../shared/projects";
 import type { TeamJobAction, TeamMember } from "../shared/team";
@@ -299,6 +300,61 @@ async function applyOn(job: Job, m: TeamMember, server: string): Promise<boolean
   return true;
 }
 
+/** 팀원 Paseo 폴더(서버 팀원 도구 ctl.py DATA + '/instances/<아이디>/paseo' — 팀원 데몬의 PASEO_HOME 이 여기 붙는다) */
+const teamHome = (id: string) => `/var/lib/paseo-team/instances/${id}/paseo`;
+/** 이 PC 데몬의 설정 화면 값 — Paseo 가 registerSettings 값을 두는 자리(PASEO_HOME/plugin-settings/<플러그인>/<설정 id>.json) */
+const SETTINGS_FILE = join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "plugin-settings", "claude-state-bar", "sounds.json");
+/** 이 PC 의 공급자 선택(server/speech.ts speechFile 과 같은 자리 — 그 모듈은 Paseo 플러그인 도구를 불러와 여기선 경로만 같게 쓴다) */
+const SPEECH_FILE = join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "claude-state-bar", "speech.json");
+
+/** 팀원에게 처음 줄 설정(base64) — 설정 화면 값과 공급자 선택. 이 PC 에 없는 것은 빈 글 */
+export function seedPayload(): { settings: string; speech: string } {
+  let settings = "";
+  try {
+    const parsed = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) as { values?: Record<string, unknown> };
+    // 소리 파일 칸은 이 PC 의 경로라 서버에선 못 쓴다 — 비워서 팀원 쪽 기본음으로
+    for (const value of Object.values(parsed.values ?? {})) {
+      if (value && typeof value === "object" && "file" in value) (value as { file: unknown }).file = "";
+    }
+    settings = Buffer.from(JSON.stringify(parsed, null, 2) + "\n", "utf8").toString("base64");
+  } catch { /* 이 PC 에서 설정을 저장한 적이 없다 */ }
+  let speech = "";
+  try { speech = Buffer.from(readFileSync(SPEECH_FILE, "utf8"), "utf8").toString("base64"); } catch { /* 공급자를 저장한 적이 없다 */ }
+  return { settings, speech };
+}
+
+const SEED_TEXT: Record<string, string> = { seeded: "리규형님 값으로 시작", kept: "팀원 것 그대로", none: "리규형님 쪽에 없음", failed: "넣지 못함" };
+
+/**
+ * 팀원 첫 설정 = 리규형님 값(10-13 리규형님 결정 "처음엔 내 값, 그 뒤는 팀원 것") — 설정 화면 값(자동 번역·읽기 속도 등)과
+ * 공급자 선택을 팀원 쪽에 파일이 없을 때만 넣고, 있으면 그대로 둔다. 그 전엔 둘 다 기본값이라 대표님 쪽 자동 번역이 꺼져 있었다.
+ * 실패해도 반영은 계속한다(팀원은 설정 화면에서 직접 맞출 수 있다)
+ */
+async function seedSettings(job: Job, m: TeamMember, server: string): Promise<void> {
+  const { settings, speech } = seedPayload();
+  if (!settings && !speech) return;
+  const r = await ssh(server, seedCommand(teamHome(m.id), settings, speech));
+  const j = lastJson(r.out);
+  if (!j?.ok) {
+    say(job, `${server}: 팀원 첫 설정을 넣지 못했습니다 — ${failText(j, r)} (팀원이 설정 화면에서 직접 맞출 수 있습니다)`);
+    return;
+  }
+  say(job, `${server}: 팀원 설정 — 설정 화면 값 ${SEED_TEXT[String(j.settings)] ?? "?"} · 공급자 선택 ${SEED_TEXT[String(j.speech)] ?? "?"}`);
+}
+
+/** 팀원 폴더에 첫 설정을 넣는 서버 명령 — 없을 때만 넣고 팀원 폴더 소유자·600 으로. 결과는 JSON 한 줄(seeded·kept·none·failed) */
+export function seedCommand(home: string, settings: string, speech: string): string {
+  return (
+    `umask 077; D=${home}; [ -d "$D" ] || { echo '{"ok":false,"error":"팀원 Paseo 폴더가 없습니다"}'; exit 3; }; ` +
+    `o=$(stat -c %u "$D"); g=$(stat -c %g "$D"); ` +
+    `for d in plugin-settings plugin-settings/claude-state-bar claude-state-bar; do [ -d "$D/$d" ] || install -d -o "$o" -g "$g" -m 700 "$D/$d" || exit 4; done; ` +
+    `put(){ t="$D/$1"; [ -n "$2" ] || { printf none; return; }; [ -e "$t" ] && { printf kept; return; }; ` +
+    `echo "$2" | base64 -d > "$t.csb" && chown "$o:$g" "$t.csb" && chmod 600 "$t.csb" && mv "$t.csb" "$t" && printf seeded || printf failed; }; ` +
+    `a=$(put plugin-settings/claude-state-bar/sounds.json '${settings}'); b=$(put claude-state-bar/speech.json '${speech}'); ` +
+    `echo "{\\"ok\\":true,\\"settings\\":\\"$a\\",\\"speech\\":\\"$b\\"}"`
+  );
+}
+
 /** 그 서버의 팀원 Paseo 연결을 로그인 서버에 등록한다 — 연결 파일은 서버 → 로그인 서버로 바로 옮기고 등록 뒤 양쪽에서 지운다 */
 async function registerLink(job: Job, m: TeamMember, server: string): Promise<string | null> {
   const link = linkName(server, m.id);
@@ -382,6 +438,7 @@ async function applyJob(job: Job, m: TeamMember): Promise<boolean> {
       continue;
     }
     applied.add(server);
+    await seedSettings(job, m, server);
     if (!links[server]) {
       const link = await registerLink(job, m, server);
       if (link) links[server] = link;

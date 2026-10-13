@@ -28,6 +28,7 @@ import { readGoogleKeys } from "./server/googleKeys";
 import { translateKo } from "./shared/translate";
 import { googleStatus, ttsSynthesize } from "./shared/tts";
 import { startSttServer } from "./server/sttServer";
+import { startTeamKeySync } from "./server/teamKeySync";
 import { readSttHints, saveSttHints } from "./server/sttHints";
 import { sttHintsGet, sttHintsSave } from "./shared/stt";
 import { canPlayHere, canCoordinateSound, isTeamDaemon, createSoundReader, LEGACY_SILENT_WAV, listSystemSounds, saveUploadedSound } from "./server/sound";
@@ -272,11 +273,14 @@ export default function contribute(server: PluginServerContext) {
   // 서버 팀원 도구가 팀원 마이크를 그 창구로 돌려 둔다
   const teamDaemon = isTeamDaemon();
   const stopSttServer = teamDaemon ? () => {} : startSttServer();
+  // 리규형님 키가 바뀌면 같은 서버 팀원의 키 사본도 맞춘다(10-13) — 팀원 도구가 깔린 서버의 리규형님 데몬에서만 돈다
+  const stopTeamKeySync = startTeamKeySync();
   return () => {
     void routerPromise?.then((value) => value.dispose(), () => {});
     stopProjectLabels();
     stopProjectsCopy();
     stopOfflineCopyWatch();
     stopSttServer();
+    stopTeamKeySync();
   };
 }

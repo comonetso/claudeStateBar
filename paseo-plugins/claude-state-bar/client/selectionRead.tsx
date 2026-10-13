@@ -53,7 +53,7 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     failed,
     log: (message) => log(`turn read: ${message}`),
     fail,
-    read: (nextTarget, text) => {
+    read: (nextTarget, text, from) => {
       const readHost = hostId;
       if (!readHost) { fail(nextTarget, "호스트 번호를 확인하지 못했습니다"); return; }
       const reason = !live ? "읽기 연결이 종료되었습니다" :
@@ -72,8 +72,9 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
         return result;
       } };
       made.add(box);
-      log(`turn read: 재생기 시작 ${text.length}자`);
-      controller.start(box, false);
+      log(`turn read: 재생기 시작 ${text.length}자${from !== undefined ? ` · ${from + 1}번째 문단부터` : ""}`);
+      // 선택한 문단이 있으면 그 문단 처음부터(10-13 리규형님 "그 문단부터")
+      controller.start(box, false, from !== undefined ? { index: from, offset: 0 } : undefined);
     },
     previous: () => controller.previous(),
     toggle: () => playing()?.paused ? controller.resume() : controller.pause(),

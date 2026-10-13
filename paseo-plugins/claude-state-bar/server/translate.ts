@@ -51,11 +51,23 @@ export function stripCodeFence(raw: string): string {
   const fenced = /^```[A-Za-z]*[ \t]*\r?\n([\s\S]*?)\r?\n?```$/.exec(raw.trim());
   return fenced ? fenced[1] : raw;
 }
-/** 기억 없이 공급자를 한 번 부른다. 키 확인도 명시한 공급자로 호출한다. */
+/** 기억 없이 공급자를 부른다. 키 확인도 명시한 공급자로 호출한다. 거절되거나 형식이 틀리면 같은 요청을 한 번만 다시 보낸다
+ *  (10-13 리규형님 결정 — 실패했던 문단을 13번 다시 보내니 전부 통과해, 가끔 흔들린 실패는 두 번째에 대개 통과한다).
+ *  시간 초과·HTTP 오류·키 없음·응답에 키가 섞인 경우는 다시 보내지 않는다. 화면 쪽 요청은 Paseo 기본 60초까지 기다린다
+ *  (@getpaseo/client invokePluginRpc — 따로 정하지 않아 DEFAULT_SESSION_RPC_TIMEOUT_MS) */
 export async function translateBatch(texts: string[], key: string, lang: TargetLang = "ko", provider: TranslateProvider = "google"): Promise<TranslationResult> {
+  const first = await translateOnce(texts, key, lang, provider);
+  if (!first.retry) return { translations: first.translations, ...(first.error ? { error: first.error } : {}) };
+  console.log(`[translate] ${provider} ${texts.length}문단 다시 보냄 · 첫 실패: ${first.error}`);
+  const second = await translateOnce(texts, key, lang, provider);
+  return { translations: second.translations, ...(second.error ? { error: `${second.error} · 다시 보내도 실패` } : {}) };
+}
+async function translateOnce(texts: string[], key: string, lang: TargetLang, provider: TranslateProvider): Promise<TranslationResult & { retry?: boolean }> {
   const translations = texts.map(() => null);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  // 형식 오류는 이유를 붙인다 — 10-13 까지 이유 없이 "번역 응답 형식 오류"만 떠서 실패 한 건의 원인을 확정하지 못했다
+  const badFormat = (why: string) => ({ translations, error: `번역 응답 형식 오류(${why})`, retry: true });
   try {
     let raw: string;
     if (provider === "openai") {
@@ -78,8 +90,13 @@ export async function translateBatch(texts: string[], key: string, lang: TargetL
         }),
       });
       if (!response.ok) return { translations, error: `Anthropic HTTP ${response.status}` };
-      const data = await response.json() as { content?: { type?: string; text?: string }[]; stop_reason?: string };
-      if (data.stop_reason !== "end_turn") return { translations, error: "번역 응답 형식 오류" };
+      const data = await response.json() as { content?: { type?: string; text?: string }[]; stop_reason?: string; stop_details?: { category?: string | null } | null };
+      // Haiku 5.5 는 안전 검사에 걸리면 HTTP 200 + stop_reason "refusal" 로 거절하고 stop_details.category 에 분류를 준다.
+      // 평범한 글도 걸릴 수 있다(공식 문서 — claude-api 스킬 model-migration.md "Migrating to Claude Haiku 5.5" Safeguards)
+      if (data.stop_reason === "refusal") {
+        return { translations, error: `번역 거절됨(안전 검사${data.stop_details?.category ? `: ${data.stop_details.category}` : ""})`, retry: true };
+      }
+      if (data.stop_reason !== "end_turn") return badFormat(`끝난 이유 ${data.stop_reason ?? "없음"}`);
       raw = data.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("") ?? "";
     } else {
       const response = await fetch(`${API_BASE}/models/${MODEL}:generateContent`, {
@@ -95,11 +112,12 @@ export async function translateBatch(texts: string[], key: string, lang: TargetL
       const data = await response.json() as { candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] } }[] };
       raw = data.candidates?.[0]?.content?.parts?.filter((part) => !part.thought).map((part) => part.text ?? "").join("") ?? "";
     }
-    const translated: unknown = JSON.parse(stripCodeFence(raw));
-    if (!Array.isArray(translated) || translated.length !== texts.length ||
-        !translated.every((text) => typeof text === "string" && text.trim() && !text.includes(key))) {
-      return { translations, error: "번역 응답 형식 오류" };
-    }
+    let translated: unknown;
+    try { translated = JSON.parse(stripCodeFence(raw)); } catch { return badFormat("JSON 아님"); }
+    if (!Array.isArray(translated)) return badFormat("배열 아님");
+    if (translated.length !== texts.length) return badFormat(`문단 수 ${translated.length}/${texts.length}`);
+    if (!translated.every((text) => typeof text === "string" && text.trim())) return badFormat("빈 번역");
+    if (translated.some((text) => (text as string).includes(key))) return { translations, error: "번역 응답 형식 오류(응답에 키가 섞임)" };
     return { translations: (translated as string[]).map((text, i) => provider === "anthropic" ? restoreSourceBackslashes(texts[i], text) : text) };
   } catch {
     return { translations, error: controller.signal.aborted ? "번역 시간 초과" : "번역 요청 또는 응답 실패" };
@@ -142,6 +160,6 @@ export async function translateTexts(texts: string[], requestLang: TargetLang = 
   } catch {
     return result = { ...result, error: "음성 공급자 설정을 읽지 못했습니다" };
   } finally {
-    console.log(`[translate] ${result.provider ?? "설정오류"} ${result.lang ?? requestLang} ${texts.length}문단 · ${Date.now() - started}ms · ${result.error ? "실패" : "완료"}`);
+    console.log(`[translate] ${result.provider ?? "설정오류"} ${result.lang ?? requestLang} ${texts.length}문단 · ${Date.now() - started}ms · ${result.error ? `실패(${result.error})` : "완료"}`);
   }
 }

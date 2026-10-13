@@ -248,6 +248,13 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   // 화면 문단과 하나씩 맞아 형광펜 자리가 된다. 못 읽으면 그 문단 원문
   const readSaid = () => {
     if (!said.trim()) return;
+    // 꺼낸 말 안에서 글을 선택해 두고 누르면 그 문단 처음부터(10-13 리규형님 "생각 상자와 마찬가지로, 선택 글자가 있으면 그 문단부터") —
+    // 선택이 없거나 이 말 밖이면 처음부터. 선택을 썼으면 푼다(선택 색이 형광펜을 덮지 않게)
+    const at = web ? selectionStartIn(selected?.token, saidParagraphs.map((_, i) => `${saidId}-${i}`)) : null;
+    if (at) {
+      selected = null;
+      clearSelection();
+    }
     if (saidReader.box) controller.dispose(new Set([saidReader.box]));
     const next = controller.box(host.id, `said-${++saidReader.serial}`, Date.now(), said, "complete");
     // 재생용 상자 — 자동 번역 대상이 아니다(화면 글을 읽으므로 번역을 받아도 쓰지 않는다)
@@ -257,7 +264,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
     next.rpc = rpc;
     saidReader.box = next;
     saidReader.owner = box.key;
-    controller.start(next, false);
+    controller.start(next, false, at ? { index: at.index, offset: 0 } : undefined);
   };
   // 읽기 조절(이전·일시정지·중지·다음·속도)은 입력창 위 한 곳(web.ts startReadDock) — 10-11 리규형님 "컨트롤러를 여기로 통일".
   // 예전엔 상자 위·아래 두 곳과 꺼낸 말 밑에 따로 있었다
