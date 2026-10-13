@@ -121,13 +121,32 @@ const stats = {
     tickLagMaxMs: 0,
     menus: 0, menuMaxMs: 0,
     reuses: 0,
+    agentReuses: 0,
     fills: 0, fillMaxMs: 0,
 };
+
+/** A sub-agent log answered from its kept result instead of being transferred again. */
+export function recordAgentLogReuse(): void {
+    stats.agentReuses++;
+}
 
 export function recordPass(ms: number): void {
     stats.passes++;
     stats.passTotalMs += ms;
     if (ms > stats.passMaxMs) stats.passMaxMs = ms;
+}
+
+// Where a pass spends its time, by stage, in the order the pass reaches them. A Remote-SSH window
+// measured 6-9s a pass with nothing read at all (2026-10-01), which the pass total alone cannot
+// place. Measurement only: nothing reads these but the summary line.
+const stages = new Map<string, { n: number; total: number; max: number }>();
+
+export function recordStage(name: string, ms: number): void {
+    let s = stages.get(name);
+    if (!s) stages.set(name, s = { n: 0, total: 0, max: 0 });
+    s.n++;
+    s.total += ms;
+    if (ms > s.max) s.max = ms;
 }
 
 export function recordFolded(): void {
@@ -165,16 +184,21 @@ export function takeRefreshSummary(): string {
         ` pass(max=${stats.passMaxMs}ms avg=${avg}ms)` +
         ` reads=${stats.reads} ${mb(stats.readChars)}Mchars(max=${stats.readMaxMs}ms ${mb(stats.readMaxChars)}Mchars)` +
         ` parse(max=${stats.parseMaxMs}ms total=${stats.parseTotalMs}ms)` +
-        ` reuse=${stats.reuses}` +
+        ` reuse=${stats.reuses} agentReuse=${stats.agentReuses}` +
         ` tickLag(max=${stats.tickLagMaxMs}ms)` +
         ` menu(n=${stats.menus} max=${stats.menuMaxMs}ms)` +
-        ` menuFill(n=${stats.fills} max=${stats.fillMaxMs}ms)`;
+        ` menuFill(n=${stats.fills} max=${stats.fillMaxMs}ms)` +
+        (stages.size
+            ? ' stages(' + [...stages].map(([k, s]) => `${k}=${Math.round(s.total / s.n)}/${s.max}`).join(' ') + 'ms avg/max)'
+            : '');
+    stages.clear();
     stats.passes = 0; stats.folded = 0; stats.passMaxMs = 0; stats.passTotalMs = 0;
     stats.reads = 0; stats.readChars = 0; stats.readMaxMs = 0; stats.readMaxChars = 0;
     stats.parseMaxMs = 0; stats.parseTotalMs = 0;
     stats.tickLagMaxMs = 0;
     stats.menus = 0; stats.menuMaxMs = 0;
     stats.reuses = 0;
+    stats.agentReuses = 0;
     stats.fills = 0; stats.fillMaxMs = 0;
     return line;
 }

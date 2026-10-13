@@ -99,7 +99,11 @@ export interface CodexRunState {
      * See `openTurnIfPending` for why the boundary is detected here and not at `turn.started`.
      */
     pendingTurnBreak: boolean;
-    /** Only ever present on `turn.completed`; there is no live token counter in exec JSONL. */
+    /**
+     * The thread's running total. Plain `codex exec` reports it only on `turn.completed`; the
+     * live-steer bridge (codex_rescue 1.17.3+) also writes a `token_usage` line after every
+     * model call, so a run on that path shows its count while it works.
+     */
     usage?: CodexUsage;
     /** Insertion-ordered activities. */
     items: CodexRunItem[];
@@ -312,6 +316,17 @@ function openTurnIfPending(st: CodexRunState): void {
     st.turnSeq++;
 }
 
+function readUsage(u: any): CodexUsage | undefined {
+    if (!u || typeof u !== 'object') return undefined;
+    return {
+        inputTokens: Number(u.input_tokens) || 0,
+        cachedInputTokens: Number(u.cached_input_tokens) || 0,
+        cacheWriteInputTokens: Number(u.cache_write_input_tokens) || 0,
+        outputTokens: Number(u.output_tokens) || 0,
+        reasoningOutputTokens: Number(u.reasoning_output_tokens) || 0,
+    };
+}
+
 /**
  * Feed one raw JSONL line. Never throws: malformed lines are counted, not propagated,
  * because the writer may be mid-flush and a torn line is expected, not exceptional.
@@ -356,16 +371,16 @@ export function feedExecLine(st: CodexRunState, line: string, nowMs: number): vo
             st.pendingTurnBreak = true;
             // NOT accumulated: `usage` on a followup's `turn.completed` is already the running
             // session total (measured: 293,443 → 546,777 input tokens), so summing double-counts.
-            const u = ev.usage;
-            if (u && typeof u === 'object') {
-                st.usage = {
-                    inputTokens: Number(u.input_tokens) || 0,
-                    cachedInputTokens: Number(u.cached_input_tokens) || 0,
-                    cacheWriteInputTokens: Number(u.cache_write_input_tokens) || 0,
-                    outputTokens: Number(u.output_tokens) || 0,
-                    reasoningOutputTokens: Number(u.reasoning_output_tokens) || 0,
-                };
-            }
+            const u = readUsage(ev.usage);
+            if (u) st.usage = u;
+            return;
+        }
+        case 'token_usage': {
+            // Written by the codex_rescue live-steer bridge (1.17.3+) after every model call.
+            // Not in the exec contract, and deliberately not terminal: it only moves the count.
+            // Same running thread total as turn.completed, so it replaces rather than adds.
+            const u = readUsage(ev.usage);
+            if (u) st.usage = u;
             return;
         }
         case 'turn.failed':

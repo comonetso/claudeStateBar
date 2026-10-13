@@ -52,6 +52,11 @@
   // until the panel is closed (user's call, 2026-09-19): the finish chime brings you here to read
   // the result, and the card folding away at that moment would undo the reason you came.
   const watchedLive = {};
+  // Runs on disk the host left off the list, and whether a "show earlier" click is being served.
+  let olderCount = 0;
+  let olderLoading = false;
+  // This project's disk-use record as the host read it (usageFile.ts UsageView); null = not read yet.
+  let usage = null;
 
   function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
   function pad2(n) { return String(n).padStart(2, '0'); }
@@ -77,6 +82,58 @@
   function fmtHM(ms) {
     const d = new Date(ms);
     return pad2(d.getHours())+':'+pad2(d.getMinutes());
+  }
+  // Same short form as the workflow tab's agent tokens (7.1M, 256k); the exact count is on hover.
+  function trimZero(x) { const v = x.toFixed(1); return v.slice(-2) === '.0' ? v.slice(0, -2) : v; }
+  function fmtTok(n) {
+    if (!n || n <= 0) return '';
+    if (n >= 1000000) return trimZero(n / 1000000) + 'M';
+    if (n >= 1000) return trimZero(n / 1000) + 'k';
+    return String(n);
+  }
+  function isOver(r) { return r.phase === 'done' || r.phase === 'failed' || r.phase === 'stopped'; }
+
+  // The disk-use line (codex_rescue 1.17.3+): the total, the four items and when the plugin worked
+  // them out — time only when that was today. The figures come from the plugin, which rewrites
+  // them after each run's cleanup; this line only shows them. Without a record there is just the
+  // hint and no button: there would be nothing to build the cleanup command from.
+  function usageClock(ms) {
+    const d = new Date(ms), now = new Date();
+    const today = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    return today ? fmtHM(ms) : fmtClock(ms);
+  }
+  function renderUsage() {
+    const box = document.getElementById('cx-usage');
+    const text = document.getElementById('cx-usage-text');
+    const btn = document.getElementById('cx-usage-clean');
+    if (!box || !text || !btn) return;
+    if (!usage) { box.style.display = 'none'; return; }
+    box.style.display = '';
+    if (usage.state !== 'ok' || !usage.items) {
+      text.textContent = t('cx.usage.none');
+      text.title = t('cx.usage.noneHover');
+      btn.style.display = 'none';
+      return;
+    }
+    const parts = usage.items.map(function (it) { return t('cx.usage.' + it.key) + ' ' + it.size; });
+    text.textContent = t('cx.usage.lead', usage.total) + ' — ' + parts.join(' · ') +
+      ' · ' + t('cx.usage.at', usageClock(usage.computedAt));
+    text.title = t('cx.usage.hover', fmtClock(usage.computedAt));
+    btn.style.display = '';
+  }
+  // "model - effort · tokens" in small print under a card's title, so a folded card says what ran
+  // and how much it used (user's request, 2026-10-01). It sits on its own line rather than in the
+  // head: on the head line it crowded the title and left a long one nowhere to go (user's call,
+  // same day). Tokens are the thread's running total with cached input included (user's call) —
+  // the same figure the expanded card has always shown. A live run gets the count while it works
+  // only on codex_rescue 1.17.3+; before that it appears at the end.
+  function runStat(run) {
+    const parts = [];
+    if (run.model) parts.push(run.model + (run.effort ? ' - ' + run.effort : ''));
+    if (run.totalTokens) parts.push(fmtTok(run.totalTokens));
+    if (!parts.length) return '';
+    const hover = run.totalTokens ? t('cx.tokens', run.totalTokens.toLocaleString()) : '';
+    return '<div class="run-sub"' + (hover ? ' title="' + esc(hover) + '"' : '') + '>' + esc(parts.join(' · ')) + '</div>';
   }
   // Independent 1s ticker so a running run's clock advances even when its data is unchanged.
   function tick() {
@@ -115,6 +172,12 @@
   function isExpanded(id) {
     return (id in userToggled) ? userToggled[id] : false;
   }
+  // What a card's remembered state (folded, open rows, kept on top) is filed under. Another
+  // working tree can hold the same stamp, so its cards add the tree; this window's own trees
+  // carry no tag and keep the bare stamp they always had.
+  function cardKey(r) {
+    return r.tag ? r.stamp + '@' + r.root : r.stamp;
+  }
   function captureOpenDetails() {
     root.querySelectorAll('details[data-dkey]').forEach(function (d) {
       openDetails[d.getAttribute('data-dkey')] = d.open;
@@ -122,7 +185,7 @@
   }
   function sigOf(runs) {
     return JSON.stringify((runs||[]).map(function (r) {
-      return [r.stamp, r.tag||'', r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultUri, (r.model||'') + '/' + (r.effort||''),
+      return [r.stamp, r.tag||'', r.groupKey||'', r.phase, r.endedAt||0, r.totalTokens||0, r.todo, !!r.resultUri, (r.model||'') + '/' + (r.effort||''),
         r.items.map(function (i) { return [i.id,i.status,i.label,i.body,i.durationMs,i.turn||1]; }),
         (r.turnDocs||[]).map(function (d) { return [d.startedAt||0, d.endedAt||0]; })];
     }));
@@ -232,7 +295,7 @@
           // A label the parser itself truncated is known-clipped without measuring. Everything
           // else depends on the panel's width, so markClipped() decides after layout.
           const more = !!(it.body && it.body.length > it.label.length);
-          const dkey = run.stamp + ' ' + it.id;
+          const dkey = cardKey(run) + ' ' + it.id;
           const openAttr = openDetails[dkey] ? ' open' : '';
           const rowCls = it.kind === 'claude_steer' ? 'it steer' : 'it';
           return '<div class="' + rowCls + '"><details class="row' + (hasFull ? ' hasfull' : '') +
@@ -326,7 +389,7 @@
       function turnHead(turn) {
         if (maxTurn < 2 || turn === shownTurn) return '';
         shownTurn = turn;
-        const fkey = run.stamp + ':' + turn;
+        const fkey = cardKey(run) + ':' + turn;
         const folded = !!foldedTurns[fkey];
         return '<div class="turn-hd' + (folded ? ' folded' : '') + '" data-tfold="' + esc(fkey) + '">' +
                  '<span class="turn-fold">▾</span>' +
@@ -356,7 +419,7 @@
       function renderNode(node) {
           if (node.one) return renderItem(node.one);
           if (node.cmds.length === 1) return renderItem(node.cmds[0]);
-          const gkey = run.stamp + ' g' + node.cmds[0].id;
+          const gkey = cardKey(run) + ' g' + node.cmds[0].id;
           const openAttr = openDetails[gkey] ? ' open' : '';
           return '<details class="cmdgroup" data-dkey="' + esc(gkey) + '"' + openAttr + '><summary>' +
             '<span class="dot done"></span><span class="kind k-' + esc(node.kind) + '">' +
@@ -377,7 +440,7 @@
             const tn = node.turn || 1;
             if (maxTurn >= 2 && tn !== openTurn) {
               if (openTurn) out += '</div>';
-              const fkey = run.stamp + ':' + tn;
+              const fkey = cardKey(run) + ':' + tn;
               // The says-block lives inside the body so one class toggle hides the whole turn.
               out += turnHead(tn)
                    + '<div class="turn-body' + (foldedTurns[fkey] ? ' folded' : '') + '">'
@@ -416,7 +479,7 @@
           (wc ? ' data-work="' + wc.sum + '" data-wlive="' + (wc.live || '') + '"' : '') + '></span>'
         : '';
 
-      return '<div class="run' + (isExpanded(run.stamp)?'':' collapsed') + '" data-id="' + esc(run.stamp) + '">' +
+      return '<div class="run' + (isExpanded(cardKey(run))?'':' collapsed') + '" data-id="' + esc(cardKey(run)) + '">' +
         '<div class="run-head">' +
           '<span class="arrow">▾</span>' +
           // Prefer the subject: the slug is a filename fragment and reads as a symbol. Either
@@ -429,10 +492,15 @@
           (maxTurn >= 2 ? '<span class="mode-chip">' + esc(t('cx.turnCount', maxTurn)) + '</span>' : '') +
           (run.tag ? '<span class="mode-chip tree-chip" title="' + esc(run.tagPath || run.tag) + '">⎇ ' + esc(run.tag) + '</span>' : '') +
           (run.docsOnly ? '<span class="mode-chip docs-chip">' + esc(t('cx.docsOnly.badge')) + '</span>' : '') +
-          timeHtml + '<span class="spacer"></span>' + badge +
-          // Only finished runs get a delete button — deleting mid-write would race send.sh.
-          (finished ? '<button class="del-btn" data-del="' + esc(run.stamp) + '" title="' + esc(t('common.delete')) + '">🗑</button>' : '') +
+          timeHtml + '<span class="spacer"></span>' +
+          // Only finished runs get a delete button — deleting mid-write would race send.sh. It
+          // sits left of the badge so the badge keeps the right edge on every card, live or not
+          // (user's call, 2026-10-01). The tree goes along: another tree can hold the stamp.
+          (finished ? '<button class="del-btn" data-del="' + esc(run.stamp) + '" data-root="' + esc(run.root || '') + '" title="' + esc(t('common.delete')) + '">🗑</button>' : '') +
+          badge +
         '</div>' +
+        // Outside run-body, so it stays visible on a folded card.
+        runStat(run) +
         '<div class="run-body">' +
           '<div class="meta">' + esc(run.stamp) +
             (run.threadId ? ' · thread ' + esc(run.threadId.slice(0,8)) : '') +
@@ -444,17 +512,81 @@
       '</div>';
     });
 
-    // Live and not-yet-settled runs stay on top; finished ones go into the group below them.
-    // 'stale' is not finished: it is the one state that asks the user to go and look.
-    const liveCards = [], overCards = [];
-    let gFail = 0, gStop = 0;
+    // Runs Claude started together — same batch name from the same conversation, carried in
+    // groupKey — draw as one group card (user's call, 2026-10-01). A key only one run holds stays
+    // a plain card, the same rule as the command groups inside a card. The list is newest first,
+    // so a group sits where its newest run would have.
+    const keyCount = {};
+    lastRuns.forEach(function (r) { if (r.groupKey) keyCount[r.groupKey] = (keyCount[r.groupKey] || 0) + 1; });
+    const units = [];
+    const unitAt = {};
     lastRuns.forEach(function (r, i) {
-      const over = r.phase==='done' || r.phase==='failed' || r.phase==='stopped';
-      if (!over) watchedLive[r.stamp] = true;
-      if (!over || watchedLive[r.stamp]) { liveCards.push(cards[i]); return; }
-      overCards.push(cards[i]);
-      if (r.phase === 'failed') gFail++;
-      if (r.phase === 'stopped') gStop++;
+      const k = (r.groupKey && keyCount[r.groupKey] >= 2) ? r.groupKey : null;
+      if (!k) { units.push({ idx: [i] }); return; }
+      if (!(k in unitAt)) { unitAt[k] = units.length; units.push({ key: k, idx: [] }); }
+      units[unitAt[k]].idx.push(i);
+    });
+
+    function groupCard(u, rs) {
+      const gid = 'g:' + u.key;
+      const nLiveG = rs.filter(function (r) { return r.phase==='running'||r.phase==='starting'||r.phase==='finalizing'; }).length;
+      const nStaleG = rs.filter(function (r) { return r.phase === 'stale'; }).length;
+      const nDoneG = rs.filter(function (r) { return r.phase === 'done'; }).length;
+      const nFailG = rs.filter(function (r) { return r.phase === 'failed'; }).length;
+      const nStopG = rs.filter(function (r) { return r.phase === 'stopped'; }).length;
+      const allOver = rs.every(isOver);
+      // Open while anything in it is still going, folded once it is all over (user's call,
+      // 2026-10-01). A click overrides that and sticks, like a run card's.
+      const open = (gid in userToggled) ? userToggled[gid] : !allOver;
+      // The worst state inside wins the badge, so a failure is visible with the group folded.
+      const state = nLiveG ? 'running' : nStaleG ? 'stale' : nFailG ? 'failed' : nStopG ? 'stopped' : 'done';
+      const badge = '<span class="badge ' + state + '">' + esc(t('cx.phase.' + state)) + '</span>';
+      const counts = [t('cx.grp.progress', nDoneG, rs.length)];
+      if (nFailG) counts.push(t('cx.nFailed', nFailG));
+      if (nStopG) counts.push(t('cx.nStopped', nStopG));
+      // The combined count goes under the title in small print, the same place a run card puts
+      // its own. Only the count: runs in one group can use different models.
+      const tok = rs.reduce(function (a, r) { return a + (r.totalTokens || 0); }, 0);
+      const tokHtml = tok
+        ? '<div class="run-sub" title="' + esc(t('cx.grp.tokens', tok.toLocaleString())) + '">' + esc(fmtTok(tok)) + '</div>'
+        : '';
+      // First start to last end. Left out when a finished group lacks an end on record: a start
+      // with nothing to stop it would count up forever, as if the group were still running.
+      const starts = rs.map(function (r) { return r.startedAt || 0; }).filter(Boolean);
+      const ends = rs.map(function (r) { return r.endedAt || 0; }).filter(Boolean);
+      let timeHtml = '';
+      if (starts.length && (!allOver || ends.length === rs.length)) {
+        timeHtml = '<span class="run-time" data-started="' + Math.min.apply(null, starts) +
+          '" data-done="' + (allOver ? Math.max.apply(null, ends) : '') + '"></span>';
+      }
+      return '<div class="grp' + (open ? '' : ' collapsed') + '">' +
+        '<div class="grp-head" data-gid="' + esc(gid) + '" data-gopen="' + (open ? '1' : '0') + '">' +
+          '<span class="arrow">▾</span>' +
+          '<span class="grp-name" title="' + esc(rs[0].group || '') + '">' + esc(rs[0].group || '') + '</span>' +
+          '<span class="grp-count">' + esc(counts.join(' · ')) + '</span>' +
+          timeHtml + '<span class="spacer"></span>' + badge +
+        '</div>' + tokHtml +
+        '<div class="grp-body">' + u.idx.map(function (i) { return cards[i]; }).join('') + '</div>' +
+      '</div>';
+    }
+
+    // Live and not-yet-settled runs stay on top; finished ones go into the group below them.
+    // 'stale' is not finished: it is the one state that asks the user to go and look. A group
+    // card moves as one: it stays up while any run in it does.
+    const liveCards = [], overCards = [];
+    let gFail = 0, gStop = 0, overRuns = 0;
+    lastRuns.forEach(function (r) { if (!isOver(r)) watchedLive[cardKey(r)] = true; });
+    units.forEach(function (u) {
+      const rs = u.idx.map(function (i) { return lastRuns[i]; });
+      const html1 = u.key ? groupCard(u, rs) : cards[u.idx[0]];
+      const stayUp = rs.some(function (r) { return !isOver(r) || watchedLive[cardKey(r)]; });
+      if (stayUp) { liveCards.push(html1); return; }
+      overCards.push(html1);
+      overRuns += rs.length;
+      rs.forEach(function (r) {
+        if (r.phase === 'failed') gFail++;
+        if (r.phase === 'stopped') gStop++;
+      });
     });
     let html = liveCards.join('');
     if (overCards.length) {
@@ -467,11 +599,16 @@
       html += '<div class="done-group' + (doneGroupOpen ? '' : ' collapsed') + '">' +
         '<div class="done-head" data-dgroup="1">' +
           '<span class="arrow">▾</span>' +
-          '<span>' + esc(t('cx.doneGroup', overCards.length)) + '</span>' +
+          // Counts runs, not cards: a group card inside holds several.
+          '<span>' + esc(t('cx.doneGroup', overRuns)) + '</span>' +
           (extra.length ? '<span>· ' + esc(extra.join(' · ')) + '</span>' : '') +
         '</div>' +
         '<div class="done-body">' + overCards.join('') + '</div>' +
       '</div>';
+    }
+    if (olderCount > 0) {
+      html += '<div class="older-row' + (olderLoading ? ' loading' : '') + '" data-older="1">' +
+        '<span>' + esc(olderLoading ? t('cx.olderLoading') : t('cx.older', olderCount)) + '</span></div>';
     }
     list.innerHTML = html;
     tick();
@@ -540,6 +677,8 @@
       fontPx = fb.getAttribute('data-font')==='inc' ? Math.min(28,fontPx+1) : Math.max(10,fontPx-1);
       applyFont(); return;
     }
+    // The host asks what to delete and confirms; nothing is deleted from the webview.
+    if (e.target.closest('[data-usage]')) { vscodeApi.postMessage({ type: 'clean' }); return; }
     const tt = e.target.closest('[data-trash]');
     if (tt) {
       const act = tt.getAttribute('data-trash');
@@ -575,8 +714,30 @@
     }
     const dg = e.target.closest('[data-dgroup]');
     if (dg) { doneGroupOpen = !doneGroupOpen; render(lastRuns, true); return; }
+    // "Show earlier": everything it adds is finished, so the finished group opens to show it.
+    const ol = e.target.closest('[data-older]');
+    if (ol) {
+      if (!olderLoading) {
+        olderLoading = true;
+        doneGroupOpen = true;
+        vscodeApi.postMessage({ type: 'loadOlder' });
+        render(lastRuns, true);
+      }
+      return;
+    }
+    // Group card head. The run cards inside have heads of their own, which this does not match.
+    const gh = e.target.closest('.grp-head');
+    if (gh) {
+      userToggled[gh.getAttribute('data-gid')] = gh.getAttribute('data-gopen') !== '1';
+      render(lastRuns, true);
+      return;
+    }
     const del = e.target.closest('[data-del]');
-    if (del) { vscodeApi.postMessage({ type:'delete', stamp: del.getAttribute('data-del') }); return; }
+    if (del) {
+      vscodeApi.postMessage({ type:'delete', stamp: del.getAttribute('data-del'),
+                              root: del.getAttribute('data-root') || undefined });
+      return;
+    }
     // A fully-visible row has nothing to open; swallow the click so it doesn't flicker.
     const plain = e.target.closest('details.row.plain > summary');
     if (plain) { e.preventDefault(); return; }
@@ -612,8 +773,16 @@
   // list when the language arrives would swap that line for "no runs" while they are still coming.
   let gotRuns = false;
   window.ActivityHost.onMessage('codexRuns', m => {
-    if (m && m.type === 'i18n') { dict = m.dict || {}; applyI18n(); if (gotRuns) render(lastRuns, true); }
-    else if (m && m.type === 'runs') { gotRuns = true; render(m.runs); }
+    if (m && m.type === 'i18n') { dict = m.dict || {}; applyI18n(); renderUsage(); if (gotRuns) render(lastRuns, true); }
+    else if (m && m.type === 'usage') { usage = m.usage || null; renderUsage(); }
+    else if (m && m.type === 'runs') {
+      gotRuns = true;
+      const n = m.older || 0;
+      const changed = n !== olderCount;
+      olderCount = n;
+      render(m.runs, changed);
+    }
+    else if (m && m.type === 'olderDone') { olderLoading = false; render(lastRuns, true); }
     else if (m && m.type === 'trash') renderTrash(m.items || []);
   });
   vscodeApi.postMessage({ type: 'ready' });

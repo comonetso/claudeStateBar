@@ -17,6 +17,11 @@
       "name": "browser-check",
       "source": "./skills/browser_check",
       "description": "Let Claude look at, click through and diagnose your real browser (Aside/Chromium) from a server or the PC, behind a policy layer."
+    },
+    {
+      "name": "android-check",
+      "source": "./skills/android_check",
+      "description": "Let Claude tap a real Android device by element name, capture the screen, read that moment's logcat for the app, measure response time and re-run the app after a fix — Flutter and native."
     }
   ]
 }

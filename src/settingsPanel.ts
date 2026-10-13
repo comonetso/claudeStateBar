@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { getDict, Lang } from './i18n';
 import * as creds from './credentials';
 import * as telegram from './telegram';
+import { readRetentionSettings, writeRetentionSettings } from './providers/codexRescue/retentionSettings';
 
 export interface PanelCallbacks {
     // Called when plan-usage-affecting settings change (enabled/orgId/cookie/interval).
@@ -9,6 +10,10 @@ export interface PanelCallbacks {
     // Called when the user clicks "Refresh now". Should fetch usage and report back
     // via SettingsPanel.notifyUsage(...).
     onRefreshRequested: () => void;
+    // The ~/.claude folder of the host this window is attached to — the server for a
+    // Remote-SSH window. The Codex retention section reads and writes the codex-rescue
+    // plugin's settings file under it.
+    getClaudeBaseUri: () => Promise<vscode.Uri | null>;
 }
 
 let panel: vscode.WebviewPanel | null = null;
@@ -119,6 +124,35 @@ async function collectState() {
     };
 }
 
+// The Codex retention section is filled after 'init', in its own message: on a Remote-SSH window
+// the read is a round trip to the server, and the rest of the form should not wait for it.
+async function pushCodexRetention(): Promise<void> {
+    let base: vscode.Uri | null = null;
+    try { base = (await callbacks?.getClaudeBaseUri()) ?? null; } catch { /* reported as unavailable */ }
+    const view = await readRetentionSettings(base);
+    panel?.webview.postMessage({ type: 'codexRetention', view });
+}
+
+async function saveCodexRetention(values: any): Promise<void> {
+    try {
+        const base = await callbacks?.getClaudeBaseUri();
+        if (!base) throw new Error('~/.claude not found');
+        const view = await writeRetentionSettings(base, {
+            scratchDays: values?.scratchDays,
+            logDays: values?.logDays
+        });
+        panel?.webview.postMessage({ type: 'codexRetention', view, saved: true });
+    } catch (e: any) {
+        const tmpl = getDict(creds.getLanguage())['cxret.msg.saveFailed'];
+        const reason = e?.message ?? String(e);
+        const text = typeof tmpl === 'string' ? tmpl.replace('{0}', reason) : reason;
+        // Shown in the section as well as the shared status line, which the plan-usage refresh
+        // started by the same save may overwrite a moment later.
+        panel?.webview.postMessage({ type: 'codexRetentionError', text });
+        panel?.webview.postMessage({ type: 'status', text, kind: 'err' });
+    }
+}
+
 async function handleMessage(msg: any): Promise<void> {
     if (!panel) return;
 
@@ -131,6 +165,7 @@ async function handleMessage(msg: any): Promise<void> {
                 dict: getDict(lang),
                 state: await collectState()
             });
+            void pushCodexRetention();
             break;
         }
 
@@ -185,7 +220,7 @@ async function handleMessage(msg: any): Promise<void> {
                     const clampGain = (v: any) => {
                         const n = Number(v);
                         if (!Number.isFinite(n)) return 100;
-                        return Math.max(50, Math.min(5000, Math.round(n)));
+                        return Math.max(50, Math.min(300, Math.round(n)));
                     };
                     await cbCfg.update('soundWarningGain', clampGain(p.cb.soundWarningGain), T);
                     await cbCfg.update('soundDangerGain', clampGain(p.cb.soundDangerGain), T);
@@ -223,6 +258,9 @@ async function handleMessage(msg: any): Promise<void> {
                 const text = typeof tmpl === 'string' ? tmpl.replace('{0}', e?.message ?? String(e)) : String(e);
                 panel.webview.postMessage({ type: 'status', text, kind: 'err' });
             }
+            // The webview sends this only when a retention value changed (a broken file too is
+            // rewritten only then), so saving other settings does not create or rewrite the plugin's file.
+            if (p.codexRetention) await saveCodexRetention(p.codexRetention);
             break;
         }
 
@@ -487,15 +525,39 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       </div>
     </div>
 
+    <!-- Codex run-history retention: the codex-rescue plugin's own settings file on this
+         window's host (not a claudeContextBar.* setting). Filled by the 'codexRetention' message. -->
+    <div class="section">
+      <h2 class="section-header" data-i18n="section.codexRetention">Codex — Run History Retention</h2>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="ret-scratchDays"><span data-i18n="cxret.scratchDays.label">Keep work folders (days)</span> <span class="ret-badge" id="ret-scratchDays-default" data-i18n="cxret.default" hidden>default</span></label>
+          <input type="number" id="ret-scratchDays" min="0" step="1" disabled />
+          <p class="hint" data-i18n="cxret.scratchDays.hint"></p>
+        </div>
+        <div class="field">
+          <label for="ret-logDays"><span data-i18n="cxret.logDays.label">Keep run records (days)</span> <span class="ret-badge" id="ret-logDays-default" data-i18n="cxret.default" hidden>default</span></label>
+          <input type="number" id="ret-logDays" min="0" step="1" disabled />
+          <p class="hint" data-i18n="cxret.logDays.hint"></p>
+        </div>
+      </div>
+
+      <p class="hint" data-i18n="cxret.zeroHint"></p>
+      <p class="hint" data-i18n="cxret.envHint"></p>
+      <p class="ret-state" id="ret-state"></p>
+      <p class="note"><span data-i18n="cxret.note"></span><br><span id="ret-path" class="ret-path"></span></p>
+    </div>
+
     <!-- Sound settings -->
     <div class="section">
       <h2 class="section-header" data-i18n="sound.title">비프음 설정</h2>
-      <p class="hint" style="margin-bottom:10px;" data-i18n="sound.hint">WAV / MP3 파일 경로 (비워두면 OS 기본음). 볼륨 50~5000% (WAV만 증폭, MP3는 감쇠만). 300% 이상은 클리핑(왜곡) 발생. 로컬 PC에서 재생되며 Remote-SSH·워크스페이스 무관하게 동일하게 적용됩니다.</p>
+      <p class="hint" style="margin-bottom:10px;" data-i18n="sound.hint">WAV / MP3 파일 경로 (비워두면 OS 기본음). 볼륨 50~300% (WAV만 증폭, MP3는 감쇠만). 높이면 클리핑(왜곡)이 생길 수 있습니다. 로컬 PC에서 재생되며 Remote-SSH·워크스페이스 무관하게 동일하게 적용됩니다.</p>
 
       <div class="sound-row" data-kind="warning">
         <label class="sound-label" data-i18n="sound.warning">⚠️ 경고 (1×)</label>
         <input type="text" id="sound-warning" class="sound-input" placeholder="C:\\Windows\\Media\\Windows Notify.wav (기본)" />
-        <input type="number" id="sound-warning-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <input type="number" id="sound-warning-gain" class="sound-gain" min="50" max="300" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="warning" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="warning" title="파일 찾기">📁</button>
       </div>
@@ -503,7 +565,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       <div class="sound-row" data-kind="danger">
         <label class="sound-label" data-i18n="sound.danger">🔴 위험 (2×)</label>
         <input type="text" id="sound-danger" class="sound-input" placeholder="C:\\Windows\\Media\\Windows Critical Stop.wav (기본)" />
-        <input type="number" id="sound-danger-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <input type="number" id="sound-danger-gain" class="sound-gain" min="50" max="300" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="danger" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="danger" title="파일 찾기">📁</button>
       </div>
@@ -511,7 +573,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       <div class="sound-row" data-kind="completion">
         <label class="sound-label" data-i18n="sound.completion">✅ 작업 완료</label>
         <input type="text" id="sound-completion" class="sound-input" placeholder="C:\\Windows\\Media\\tada.wav (기본)" />
-        <input type="number" id="sound-completion-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <input type="number" id="sound-completion-gain" class="sound-gain" min="50" max="300" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="completion" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="completion" title="파일 찾기">📁</button>
       </div>
@@ -519,7 +581,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       <div class="sound-row" data-kind="question">
         <label class="sound-label" data-i18n="sound.question">❓ 질문 대기</label>
         <input type="text" id="sound-question" class="sound-input" placeholder="C:\\Windows\\Media\\Speech On.wav (기본)" />
-        <input type="number" id="sound-question-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <input type="number" id="sound-question-gain" class="sound-gain" min="50" max="300" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="question" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="question" title="파일 찾기">📁</button>
       </div>
@@ -527,7 +589,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
       <div class="sound-row" data-kind="workflow">
         <label class="sound-label" data-i18n="sound.workflow">🔁 워크플로우 완료음</label>
         <input type="text" id="sound-workflow" class="sound-input" placeholder="C:\\Windows\\Media\\Ring06.wav (기본)" />
-        <input type="number" id="sound-workflow-gain" class="sound-gain" min="50" max="5000" step="10" value="100" title="볼륨 (%)" />
+        <input type="number" id="sound-workflow-gain" class="sound-gain" min="50" max="300" step="10" value="100" title="볼륨 (%)" />
         <button class="secondary small sound-preview-btn" data-kind="workflow" title="미리듣기">▶</button>
         <button class="secondary small sound-pick-btn"    data-kind="workflow" title="파일 찾기">📁</button>
       </div>

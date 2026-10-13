@@ -88,6 +88,15 @@ async function statOf(uri: vscode.Uri): Promise<vscode.FileStat | null> {
     }
 }
 
+/** True when a trash bin holds anything besides its meta.json — a file a restore left behind. */
+async function binHoldsFiles(bin: vscode.Uri): Promise<boolean> {
+    try {
+        return (await vscode.workspace.fs.readDirectory(bin)).some(([name]) => name !== 'meta.json');
+    } catch {
+        return false;   // no bin yet
+    }
+}
+
 async function readText(uri: vscode.Uri): Promise<string | null> {
     try {
         return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
@@ -336,6 +345,42 @@ export async function discoverChats(folderUri: vscode.Uri, limit = 50): Promise<
     return out.sort((a, b) => (b.lastAtMs ?? 0) - (a.lastAtMs ?? 0));
 }
 
+/**
+ * How many conversations discoverChats would mark live, without reading a single document — the
+ * chat tab's badge while that tab is not on screen (user's call, 2026-09-30). discoverChats' rule:
+ * each marker makes one conversation live — its own document, or a card of its own when it names
+ * its stamp. A marker from before the stamp field counts only when a document of its slug is
+ * among the `limit` newest. With no marker this is one directory listing.
+ */
+export async function countLiveChats(folderUri: vscode.Uri, limit = 50): Promise<number> {
+    const docs = await docsDir(folderUri);
+    if (!docs) return 0;
+    const logDir = vscode.Uri.joinPath(docs, '.log');
+    const slugs: string[] = [];
+    for (const n of (await listNames(logDir)) ?? []) {
+        const m = /^\.chat_(.+)\.inflight$/.exec(n);
+        if (m) slugs.push(m[1]);
+    }
+    if (!slugs.length) return 0;
+    let newestSlugs: Set<string> | null = null;
+    let live = 0;
+    for (const slug of slugs) {
+        const mk = parseInflight(slug, (await readText(vscode.Uri.joinPath(logDir, '.chat_' + slug + '.inflight'))) ?? '');
+        if (mk.stamp) { live++; continue; }
+        if (!newestSlugs) {
+            const found: { stamp: string; slug: string }[] = [];
+            for (const n of (await listNames(docs)) ?? []) {
+                const m = /^(\d{6}_\d{6})_chat_(.+)\.md$/.exec(n);
+                if (m) found.push({ stamp: m[1], slug: m[2] });
+            }
+            found.sort((a, b) => (a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0));
+            newestSlugs = new Set(found.slice(0, limit).map(f => f.slug));
+        }
+        if (newestSlugs.has(slug)) live++;
+    }
+    return live;
+}
+
 // ---------------------------------------------------------------------------
 // Trash
 //
@@ -400,22 +445,25 @@ async function readMeta(bin: vscode.Uri): Promise<ChatTrashMeta | null> {
     }
 }
 
-/** Move one conversation into the trash. Returns false when there was nothing to move. */
-export async function trashChat(folderUri: vscode.Uri, stamp: string, nowMs: number): Promise<boolean> {
-    if (!/^\d{6}_\d{6}$/.test(stamp)) return false;   // never accept a stamp we didn't parse ourselves
+/** Move one conversation into the trash. Returns 'skipped' when there was nothing to move and 'occupied' when the trash still holds it. */
+export async function trashChat(folderUri: vscode.Uri, stamp: string, nowMs: number): Promise<'moved' | 'skipped' | 'occupied'> {
+    if (!/^\d{6}_\d{6}$/.test(stamp)) return 'skipped';   // never accept a stamp we didn't parse ourselves
     const docs = await docsDir(folderUri);
-    if (!docs) return false;
+    if (!docs) return 'skipped';
 
     const names = (await listNames(docs)) ?? [];
     const name = names.find(n => new RegExp('^' + stamp + '_chat_.+\\.md$').test(n));
-    if (!name) return false;
+    if (!name) return 'skipped';
 
     const src = vscode.Uri.joinPath(docs, name);
     const text = await readText(src);
     const root = await ensureTrashDir(docs);
     const bin = vscode.Uri.joinPath(root, stamp);
-    // A conversation can be trashed, restored and trashed again; start clean so a stale
-    // meta.json can never claim a file that is no longer there.
+    // A conversation can be trashed, restored and trashed again. A restore that found its name
+    // taken leaves the file in the bin, and clearing that bin here destroyed it for good, so a
+    // bin still holding a file is refused. One holding only meta.json (or nothing) starts over
+    // clean, so a stale meta.json can never claim a file that is no longer there.
+    if (await binHoldsFiles(bin)) return 'occupied';
     try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* absent */ }
     await vscode.workspace.fs.createDirectory(bin);
 
@@ -423,7 +471,7 @@ export async function trashChat(folderUri: vscode.Uri, stamp: string, nowMs: num
         await vscode.workspace.fs.rename(src, vscode.Uri.joinPath(bin, name), { overwrite: true });
     } catch {
         try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* ignore */ }
-        return false;
+        return 'skipped';
     }
 
     const meta: ChatTrashMeta = {
@@ -435,7 +483,7 @@ export async function trashChat(folderUri: vscode.Uri, stamp: string, nowMs: num
     };
     await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(bin, 'meta.json'),
                                         Buffer.from(JSON.stringify(meta), 'utf8'));
-    return true;
+    return 'moved';
 }
 
 /** Everything in the chat trash, newest deletion first. */

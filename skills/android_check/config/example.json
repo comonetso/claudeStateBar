@@ -1,0 +1,21 @@
+{
+  "_comment": "Private runtime config. Lives at ${CLAUDE_PLUGIN_DATA}/config.json — never in this repository. `setup` writes it from what it finds on this machine.",
+  "adb": "C:/Android/platform-tools/adb.exe",
+  "python_image": "C:/tools/artemis/.venv/Scripts/python.exe",
+  "artemis_dir": "C:/tools/artemis",
+  "devices": {
+    "192.168.0.10:5555": { "label": "test phone", "display": "4630000000000000000" }
+  },
+  "apps": {
+    "com.example.app.dev": {
+      "type": "flutter",
+      "project_dir": "C:/work/my_flutter_app",
+      "run_args": ["--flavor", "dev"]
+    },
+    "com.example.native": {
+      "type": "native",
+      "project_dir": "C:/work/my_native_app",
+      "install_task": ":app:installDebug"
+    }
+  }
+}

@@ -12,8 +12,12 @@ opens the first tab with something running, or else the tab last looked at in th
 the status-bar dots open their own tab. The Codex tabs appear only when `codex_rescue` is installed,
 as their menu entries did. "Clean up stale/zombie items" moved to the bottom of the menu.
 
-While the panel is open all four tabs are kept up to date, so each tab's count matches what it lists.
-The background tab's 2-second output refresh now runs only while that tab is showing.
+Only the tab on screen is re-read, which keeps Remote-SSH windows light. The workflow, background and
+chat lists refresh while their tab is showing and the panel is not behind another editor tab, and a
+tab is read the moment you switch to it or the panel comes back into view. Codex progress is read
+either way, for its completion beep. The counts on the other tabs keep updating without reading their
+lists. The background tab's 2-second output refresh runs only while that tab is on screen. No beep
+depends on these reads.
 
 With the panel in front, Ctrl+Tab and Ctrl+Shift+Tab switch to the next and previous tab, also when
 keybindings.json binds Ctrl+Tab to something else, as long as the focus is in the panel's content;
@@ -22,6 +26,73 @@ session began fold into one "from earlier sessions" row, and the conversation th
 the newest one of this session. A chat document does not record which Claude conversation wrote it, so
 this session is taken to start with the earliest Claude conversation the status bar shows for the
 workspace.
+
+A card on the Codex progress tab now has a small line under its title, visible with the card folded,
+with the model, the reasoning effort and the tokens the run used, as in `gpt-6.1-sol - max · 7.1M`,
+and the exact count on hover. The count is the thread's running total with cached input included, the
+figure the expanded card already had. With codex-rescue 1.17.3 or later, a run on the live-steering
+route updates it after every model call; before that, and on the old route, it appears when the run
+ends. Runs Claude starts together under one batch name, which the plugin records from 1.17.3, share a
+group card. Its head shows the batch name, how many are done out of how many, any failures, the time
+from the first start to the last end and the state of the worst run, with the combined tokens in small
+print below. The group is open while anything in it runs and folds when all are over; clicking its head
+opens or folds it, and that choice sticks. A finished group moves into the finished list as a whole.
+Runs from another Claude conversation stay apart even under the same name.
+
+In a project that commits its codex_rescue request documents, the completion beep could sound every
+two seconds. A worktree created after a run started carries a copy of its request, which the progress
+tab read as a finished documents-only run with the same stamp as the live one, and the two overwrote
+each other on every poll. Runs are now told apart by working tree as well as stamp. A run held by
+several trees is listed once, from the tree with its records or else the tree the window has open, and
+one trashed there stays hidden in the other trees, where git keeps the documents. 🗑 on a card only
+ever touches that card's own tree; before, a refusal there could fall through to another tree's run of the same
+stamp. On the Codex progress and workflow tabs 🗑 now sits left of the status badge, so the badge keeps
+the right edge whether a card is finished or not.
+
+The Codex progress tab reads only the newest 20 runs of each working tree, and nothing said so: in a
+busy project the previous night's runs were simply missing. A `Show N earlier runs` row now closes the
+list when there are more on disk. Clicking it reads them once, opens the finished group and keeps them
+listed until the window reloads; they are not re-read on the 2-second refresh, so a Remote-SSH window
+costs no more than before.
+
+The workflow scan transferred every sub-agent log of every live session in full on each status-bar
+pass, and a workflow agent's log twice. In a busy Remote-SSH project that was 47MB a pass and about
+five of the seven seconds each pass took. A log is now read once and its result kept while its size and
+modification time stay the same, which a finished agent's log always does. A sub-agent that has just
+ended on a text reply is still re-read until it has been quiet for the four seconds that mark it done,
+so its chime is not lost. The results were compared against the previous build on 20 local
+conversations with 238 agents and came out identical. Opening the workflow tab in a new window also
+used to wait out that window's first full read, 29 seconds in the same project; it now shows the list
+from the last window meanwhile, under a "Last list · reading again…" line. The badges, the session menu
+and the chime never use that saved list.
+
+With codex-rescue 1.17.3 or later, the Codex progress tab also lists runs that this window's Claude
+conversations started in another folder, such as another repository or a folder outside any
+repository. The plugin records which conversation started each run and where, under
+`~/.claude/codex_rescue/runs/` on the machine it ran on, and the tab reads that record on the machine
+the window points at. A conversation counts as this window's when it belongs to the window's project
+and was active within `hideAfter`, including ones hidden from the status bar, cleared or replaced by a
+newer one; runs another conversation started elsewhere stay out. Such a card carries the folder chip
+other working trees' cards have, chimes when it finishes, is always listed in full, and goes to that
+folder's own trash. The trash now also takes the plugin's new launch and watch files with a run
+(`_launch.out`, `_launch.err`, `_launch.exit`, `_reported` and their per-turn copies).
+
+The settings panel has a new Codex — Run History Retention section. It is not a VS Code setting: it
+edits the codex-rescue plugin's own retention file, `~/.claude/codex_rescue/settings.json`, on the
+machine the window points at, because the plugin does the cleaning and also runs without VS Code.
+From plugin 1.17.3 that file keeps work folders for 1 day and run records for 7 by default, and the
+run-record period also covers Codex's own session logs of the conversations codex_rescue started on
+the live-steering route, which the plugin removes with Codex's official delete command. 0 turns a cleanup off. A broken file is
+reported and left as it is until you change a value, and the section notes that `CR_KEEP_DAYS`, when
+set where Codex runs, replaces both periods.
+
+With plugin 1.17.3 or later, the Codex progress tab shows under its toolbar how much the project's
+codex_rescue records take up, as measured at the last run: work folders, run records, the trash and
+the Codex conversations. Clean up beside it removes the ones you tick, whatever their age. It asks once
+more, then runs the plugin's cleanup command in a terminal opened in the project. Runs still in
+progress, and runs whose result Claude has not picked up yet, keep their files. It only runs a cleanup
+program the plugin recorded under `~/.claude` for that project, and refuses a record copied from
+another folder.
 
 The codex-rescue plugin moved to 1.17.2 on 2026-09-30. Before a run it now asks three things at once:
 the model, the reasoning effort and how deep Codex should dig. The model and the effort start from
@@ -34,6 +105,70 @@ question opens with a warning and the choice stays yours. Reruns and ping-pong a
 the effort. Three spots in the plugin's scripts that failed on a stock Mac were fixed: an empty list
 under bash 3.2, a checksum tool macOS doesn't have, and GNU-style `sed -i`. They were checked with the
 bash and sed versions macOS ships, not on a Mac itself.
+
+The repository's plugin marketplace (`comonetso`) has a fourth plugin, `android_check` (0.1.0). It lets
+Claude Code tap a real Android device or emulator by element name, capture the screen at the same
+moment, read that moment's logcat for the app alone (errors, frame-skip warnings, and whether the
+touch reached the app), measure the response time, and re-run the app after a fix: hot reload for a
+Flutter app, a Gradle reinstall for a native one. Multi-step flows can go to the ARTEMIS MCP. Like the
+others it is a separate install, not part of the extension; setup is in `skills/android_check/README.md`.
+The auto-update notice now recognises it as well, so it also appears when android_check is the only
+plugin from the marketplace on that machine.
+
+Conversations started from Paseo, a desktop and mobile front end for Claude Code and Codex, no longer
+get the completion, question, warning and danger sounds twice. Where this repository's Paseo plugin
+`claude-state-bar` is installed and enabled, it plays those four inside the Paseo app, and the
+extension now skips them for Paseo's conversations. It tells them apart by the session ids in Paseo's
+records under `~/.paseo/agents/`, read on the machine the window points at and only when a sound is
+due. The workflow sound is unchanged: the extension still plays it for Paseo's conversations, so with
+the plugin installed it can sound in both. Without Paseo or the plugin nothing changes.
+
+The sound gain settings now say 50–300%, which is what has always been applied: the settings and the
+README offered up to 5000%, but any value above 300 was played at 300. Nothing sounds different. The
+README also named `Ring01.wav` and `Ring02.wav` as the default warning and danger sounds; the defaults
+are `Windows Notify.wav` and `Windows Critical Stop.wav`, as they have been.
+
+A workflow agent whose instructions quoted Claude Code's interruption marker, `[Request interrupted by
+user]`, was shown as stopped from its first second, because the marker was looked for anywhere in the
+agent's messages, its first prompt included. Only a text block that begins with the marker counts now,
+which is the form Claude Code writes when an agent is actually interrupted.
+
+Trashing a Codex run or chat again could destroy files for good. A restore that finds a name already
+taken leaves that file in the trash, and pressing 🗑 on the card afterwards cleared the run's trash
+entry before moving the new files in, so the file the restore had kept was deleted. The trash entry is
+now left alone when it still holds files: nothing is moved, and a notice asks you to restore or delete
+that entry first. An entry holding only its record file is replaced as before.
+
+Two plugins were updated on 2026-10-14 (codex-rescue 1.17.3, browser-check 0.1.5). codex_rescue used
+to run Codex inside one of Claude's own background commands, which Claude ends after 30 minutes by
+default and 2 hours at most, and which a window reload ends too, so a long run went down with its
+command; one was cut off exactly at the 2-hour mark. Every run except ping-pong now starts detached
+from Claude's command and is followed by a separate watch command, so the time limit and a reload end
+only the watcher. The watcher stops by itself after 110 minutes and Claude starts it again; the run is
+never started twice. A new session-start hook tells Claude, after a reload, a resumed conversation or a
+compaction, which runs of that conversation it has not received the result of yet, so it can watch them
+again; with nothing to pick up it prints nothing. A Codex turn that started sub-agents could be taken as
+finished when a sub-agent's turn ended, cutting the answer short; only the main turn's own
+notifications end it now. A run stopped by a signal records which signal, how long it had run and
+whether that falls within 15 seconds of Claude's 30-minute or 2-hour limit, and keeps Codex's stderr,
+which used to be deleted with the run's temporary folder. The release is also the plugin side of the
+Codex tab changes described above: the retention file, the cleanup of the Codex conversations
+codex_rescue started, the usage figures behind Clean up, the record of which conversation started each
+run, the running token count and batch names.
+
+browser_check's direct CDP connection (transport C) was documented as stalling whenever the PC's Aside
+window was covered. Measured again on Windows, it stalls only once every Aside window is covered, and an
+Aside started with `--disable-backgrounding-occluded-windows` and
+`--disable-features=CalculateNativeWinOcclusion` keeps capturing even then. A minimized window stopped
+it with or without those two; `--enable-features=CDPScreenshotNewSurface`, Chromium's screenshot path
+that copies a fresh surface instead of waiting for the next presented frame, let captures and real
+clicks and key presses through while minimized in a test browser. A new `launch-flags` command (Windows
+only) checks whether the running Aside has all three flags; `--apply` adds them to the Aside shortcuts after saving their old
+arguments, and `--undo` puts those back. It never restarts Aside, so the flags take effect once Aside is
+fully closed and started again from a shortcut, and Claude runs `--apply` only with the user's OK.
+Aside's own Start-menu shortcuts can't be written by the user and are reported as failed; a shortcut
+pinned to the taskbar or made by the user takes the flags. `doctor` and `setup` print a one-line warning
+when the running Aside lacks them.
 
 ## [1.17.1] - 2026-09-30
 

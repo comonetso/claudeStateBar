@@ -32,6 +32,13 @@ export interface RunStatus {
     mode?: string;
     kind?: string;
     scope?: string;
+    /**
+     * Batch name Claude gave runs it started together (codex_rescue 1.17.3+, `CR_GROUP`), and the
+     * Claude conversation that started them. The panel groups on both, so another conversation
+     * reusing the name stays apart (user's call, 2026-10-01).
+     */
+    group?: string;
+    group_session?: string;
     state?: 'running' | 'finalizing' | 'done' | 'failed' | 'interrupted' | string;
     started_at?: string;
     finished_at?: string | null;
@@ -53,6 +60,9 @@ export interface CodexRun {
     subject?: string;
     mode: string;
     scope?: string;
+    /** Batch name and the key the panel groups on (name + starting conversation). See RunStatus.group. */
+    group?: string;
+    groupKey?: string;
     phase: RunPhase;
     startedAtMs?: number;
     endedAtMs?: number;
@@ -170,6 +180,18 @@ async function statOf(uri: vscode.Uri): Promise<vscode.FileStat | null> {
         return await vscode.workspace.fs.stat(uri);
     } catch {
         return null;   // absent, mid-rename, or a permission blip — never fatal
+    }
+}
+
+/** What `trashRun` did: moved the run, left it (locked or nothing to move), or refused because the trash still holds its files. */
+export type TrashOutcome = 'moved' | 'skipped' | 'occupied';
+
+/** True when a trash bin holds anything besides its meta.json — files a restore left behind. */
+async function binHoldsFiles(bin: vscode.Uri): Promise<boolean> {
+    try {
+        return (await vscode.workspace.fs.readDirectory(bin)).some(([name]) => name !== 'meta.json');
+    } catch {
+        return false;   // no bin yet
     }
 }
 
@@ -336,14 +358,35 @@ async function listNames(dir: vscode.Uri): Promise<string[] | null> {
     }
 }
 
+/** One folder's scan: the newest runs read in full, plus what the limit left out. */
+export interface RunScan {
+    runs: CodexRun[];
+    /**
+     * Stamps past the limit, newest first. Only the names are known — nothing about them was
+     * read — which is what lets the panel offer "show earlier" without paying for it.
+     */
+    older: string[];
+    /** Every stamp in this folder with an event log, listed or not. */
+    recorded: Set<string>;
+}
+
 /**
  * Scan one workspace folder for codex_rescue runs, newest first.
- * Returns [] when the project doesn't use the skill — which is how the whole feature
+ * Returns no runs when the project doesn't use the skill — which is how the whole feature
  * stays invisible to ordinary users of this extension.
+ *
+ * Only the newest `limit` runs are read: on a live run this repeats every 2s, and each run costs
+ * a round trip on a remote workspace. A project that commits its documents keeps every run it ever
+ * made, so the rest is returned by name in `older` for the panel to load on request.
+ *
+ * `only` narrows the scan to those stamps — a folder outside this window that a run was attached
+ * from (runLedger.ts), where every other run belongs to someone else.
  */
-export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit = 20): Promise<CodexRun[]> {
+export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit = 20,
+                                   only?: ReadonlySet<string>): Promise<RunScan> {
+    const none: RunScan = { runs: [], older: [], recorded: new Set() };
     const docsDir = await codexRescueDocsDir(folderUri);
-    if (!docsDir) return [];
+    if (!docsDir) return none;
     const logDir = vscode.Uri.joinPath(docsDir, '.log');
 
     const logNames = (await listNames(logDir)) ?? [];
@@ -355,7 +398,7 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
     // `<stamp>_{request,response,review}_<slug>.md` — so this is a read of the contract.
     const docNames = (await listNames(docsDir)) ?? [];
     const docSet = new Set(docNames);
-    if (!logNames.length && !docNames.length) return [];
+    if (!logNames.length && !docNames.length) return none;
 
     const eventStamps = new Set(
         logNames.map(n => /^(\d{6}_\d{6})_events\.jsonl$/.exec(n)?.[1])
@@ -372,10 +415,11 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
         docOnlyStamps.set(m[1], m[2]);
     }
 
-    const stamps = Array.from(new Set([...eventStamps, ...docOnlyStamps.keys()]))
+    const allStamps = Array.from(new Set([...eventStamps, ...docOnlyStamps.keys()]))
+        .filter(s => !only || only.has(s))
         .sort()
-        .reverse()
-        .slice(0, limit);
+        .reverse();
+    const stamps = allStamps.slice(0, limit);
 
     const runs: CodexRun[] = [];
     for (const stamp of stamps) {
@@ -558,6 +602,9 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
             subject: status?.subject?.trim() || undefined,
             mode: status?.mode || 'readonly',
             scope: status?.scope,
+            group: status?.group?.trim() || undefined,
+            groupKey: status?.group?.trim()
+                ? JSON.stringify([status.group_session || '', status.group.trim()]) : undefined,
             phase,
             staleForMs,
             startedAtMs: isFollowup
@@ -579,7 +626,7 @@ export async function discoverRuns(folderUri: vscode.Uri, nowMs: number, limit =
 
         runs.push(run);
     }
-    return runs;
+    return { runs, older: allStamps.slice(stamps.length), recorded: eventStamps };
 }
 
 /** Drop cached state for files that no longer exist (deleted logs, closed folders). */
@@ -654,7 +701,9 @@ async function followupExtras(docsDir: vscode.Uri, logDir: vscode.Uri, stamp: st
     : Promise<{ logs: string[]; docs: string[] }> {
     const st = escapeRe(stamp);
 
-    const logRe = new RegExp(`^${st}_t\\d+_(?:stderr\\.log|last_message\\.md)$`);
+    // `_t<N>_launch.{out,err,exit}` and `_t<N>_reported` are the per-turn copies of the launch
+    // files listed in runLogNames (codex_rescue 1.17.3+).
+    const logRe = new RegExp(`^${st}_t\\d+_(?:stderr\\.log|last_message\\.md|launch\\.(?:out|err|exit)|reported)$`);
     const logs = ((await listNames(logDir)) ?? []).filter(n => logRe.test(n)).sort();
 
     // An EDIT follow-up (2026-09-15) records what its turn changed in `<stamp>_edit<N>_<slug>.md`,
@@ -674,11 +723,17 @@ async function followupExtras(docsDir: vscode.Uri, logDir: vscode.Uri, stamp: st
  * `_appserver.jsonl` and `_steers.jsonl` come from the steering route (the app-server bridge):
  * the raw RPC transcript — the largest file a run writes, 0.3–3 MB in measured runs — and the
  * messages Claude cut in with. Missing them here left megabytes behind on every delete.
+ *
+ * `_launch.{out,err,exit}` and `_reported` (and their `_t<N>_` per-turn copies) are new in
+ * codex_rescue 1.17.3, which starts runs detached. The plugin's own working folder (`.scratch`)
+ * is never touched here.
  */
 function runLogNames(stamp: string, perTurn: string[]): string[] {
     return [`${stamp}_events.jsonl`, `${stamp}_status.json`, `${stamp}_stderr.log`,
             `${stamp}_last_message.md`, `${stamp}_heartbeat`,
-            `${stamp}_appserver.jsonl`, `${stamp}_steers.jsonl`, ...perTurn];
+            `${stamp}_appserver.jsonl`, `${stamp}_steers.jsonl`,
+            `${stamp}_launch.out`, `${stamp}_launch.err`, `${stamp}_launch.exit`, `${stamp}_reported`,
+            ...perTurn];
 }
 
 // ---------------------------------------------------------------------------
@@ -739,6 +794,13 @@ function trashRoot(docsDir: vscode.Uri): vscode.Uri {
     return vscode.Uri.joinPath(docsDir, TRASH_DIR);
 }
 
+/** Stamps sitting in a folder's trash — names only, one directory read. */
+export async function trashedStamps(folderUri: vscode.Uri): Promise<string[]> {
+    const docsDir = await codexRescueDocsDir(folderUri);
+    if (!docsDir) return [];
+    return ((await listNames(trashRoot(docsDir))) ?? []).filter(n => /^\d{6}_\d{6}$/.test(n));
+}
+
 /**
  * The trash holds copies of documents that are otherwise tracked, so it must never itself become
  * something git offers to commit — same reasoning (and same mechanism) as `.log/`.
@@ -770,22 +832,26 @@ async function readTrashMeta(dir: vscode.Uri): Promise<TrashMeta | null> {
  * Move one run's files into the trash. A run still holding its lock is left alone, because send.sh may be mid-write and moving a file out from under it
  * would corrupt the record rather than preserve it.
  *
- * Returns false when nothing was moved (still locked, or no files found).
+ * Returns 'skipped' when nothing was moved (still locked, or no files found) and 'occupied' when the
+ * trash already holds files of this run.
  */
 export async function trashRun(folderUri: vscode.Uri, stamp: string, slug: string,
                                includeDocs: boolean, subject: string | undefined, mode: string | undefined,
-                               nowMs: number): Promise<boolean> {
-    if (!/^\d{6}_\d{6}$/.test(stamp)) return false;
+                               nowMs: number): Promise<TrashOutcome> {
+    if (!/^\d{6}_\d{6}$/.test(stamp)) return 'skipped';
     const docsDir = await codexRescueDocsDir(folderUri);
-    if (!docsDir) return false;
+    if (!docsDir) return 'skipped';
     const logDir = vscode.Uri.joinPath(docsDir, '.log');
 
-    if (await statOf(vscode.Uri.joinPath(logDir, `.${stamp}.lock`))) return false;
+    if (await statOf(vscode.Uri.joinPath(logDir, `.${stamp}.lock`))) return 'skipped';
 
     const root = await ensureTrashDir(docsDir);
     const bin = vscode.Uri.joinPath(root, stamp);
-    // A run can be trashed, restored and trashed again; start from a clean bin each time so a
-    // stale meta.json can never claim files that are no longer there.
+    // A run can be trashed, restored and trashed again. Restore leaves behind every file whose
+    // name was taken in the meantime, and clearing that bin here destroyed those files for good,
+    // so a bin still holding files is refused. One holding only meta.json (or nothing) carries
+    // no data and starts over clean, so a stale meta.json can never claim files that are gone.
+    if (await binHoldsFiles(bin)) return 'occupied';
     try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* absent */ }
     await vscode.workspace.fs.createDirectory(bin);
 
@@ -818,7 +884,7 @@ export async function trashRun(folderUri: vscode.Uri, stamp: string, slug: strin
 
     if (!entries.length) {
         try { await vscode.workspace.fs.delete(bin, { recursive: true, useTrash: false }); } catch { /* ignore */ }
-        return false;
+        return 'skipped';
     }
 
     const meta: TrashMeta = {
@@ -831,7 +897,7 @@ export async function trashRun(folderUri: vscode.Uri, stamp: string, slug: strin
     const key = runCacheKey(logDir, stamp);
     tails.delete(key);
     settled.delete(key);
-    return true;
+    return 'moved';
 }
 
 /** Everything currently in the trash, newest deletion first. */

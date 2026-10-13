@@ -44,6 +44,8 @@
 
   let lastWfs = [];
   let gotWfs = false;
+  // True while the list is the one saved from an earlier window (see the host's restoreSavedWorkflowViews).
+  let savedList = false;
   let lastRenderedSig = null;
   // Everything starts collapsed and is remembered only while the panel is open — the Codex
   // panel's rule. userToggled holds the cards the user opened.
@@ -296,7 +298,9 @@
       '<div class="run-head"><span class="arrow">▾</span>' +
         '<span class="run-name" title="' + esc(title) + '">' + esc(wf.name) + '</span>' +
         (wf.isTask ? '<span class="mode-chip task-chip">' + esc(t('wf.taskChip')) + '</span>' : '') +
-        timeHtml + '<span class="spacer"></span>' + badgeOf(wf, st) + delBtn +
+        // The delete button sits left of the badge so the badge keeps the right edge on every
+        // card, finished or not (user's call, 2026-10-01).
+        timeHtml + '<span class="spacer"></span>' + delBtn + badgeOf(wf, st) +
       '</div>' +
       '<div class="run-body">' +
         '<div class="meta">' + meta.join(' · ') + '</div>' +
@@ -337,6 +341,9 @@
     if (nStop) parts.push(t('cx.nStopped', nStop));
     parts.push(t('cx.nLive', nLive));
     parts.push(t('cx.autoRefresh'));
+    // The list saved from an earlier window, until this window's first read replaces it: what reads
+    // as running may well have finished since.
+    if (savedList) parts.unshift(t('wf.savedList'));
     sub.textContent = parts.join(' · ');
 
     let html = liveCards.join('');
@@ -471,7 +478,12 @@
     // Before the first list lands the panel shows its loading line; re-rendering the empty initial
     // list here would swap it for "no workflows" while they are still being read.
     if (m.type === 'i18n') { dict = m.dict || {}; lang = m.lang || 'en'; applyI18n(); if (gotWfs) render(lastWfs, true); }
-    else if (m.type === 'workflows') { gotWfs = true; render(m.workflows); }
+    else if (m.type === 'workflows') {
+      gotWfs = true;
+      const changed = !!m.saved !== savedList;
+      savedList = !!m.saved;
+      render(m.workflows, changed);
+    }
     else if (m.type === 'trash') renderTrash(m.items || []);
     else if (m.type === 'activity') {
       activity[m.akey] = { items: m.items || [], report: m.report || '' };
