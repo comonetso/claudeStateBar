@@ -31,6 +31,12 @@ function useLatest(agentId: string) {
 }
 const agentOf = (props: { context: "workspace" | "agent"; agentId?: string }) => (props.context === "agent" ? (props.agentId ?? "") : "");
 
+/** 대화의 지금 맥락 토큰 수 — 계정 바꾸기 확인 창이 "다시 읽을 양"으로 보여 준다(10-14). 아직 모르면 undefined */
+export function contextUsedTokens(agentId: string): number | undefined {
+  const used = latest.get(agentId)?.usage?.contextWindowUsedTokens;
+  return typeof used === "number" ? used : undefined;
+}
+
 function percentOf(usage: Usage): number | undefined {
   const used = usage?.contextWindowUsedTokens;
   const max = usage?.contextWindowMaxTokens;

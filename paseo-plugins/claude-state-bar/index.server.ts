@@ -73,6 +73,8 @@ import { importExtSettings } from "./server/extSettings";
 import { extSettingsImport } from "./shared/extSettings";
 import { collectClaudeStats } from "./server/stats/claudeStats";
 import { claudeStats } from "./shared/stats";
+import { forgetAccount, providerFromDisk, switchAccount, waitAccounts } from "./server/account";
+import { accountSwitch, accountsWait } from "./shared/account";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(soundSettings);
@@ -275,7 +277,23 @@ export default function contribute(server: PluginServerContext) {
   const stopSttServer = teamDaemon ? () => {} : startSttServer();
   // 리규형님 키가 바뀌면 같은 서버 팀원의 키 사본도 맞춘다(10-13) — 팀원 도구가 깔린 서버의 리규형님 데몬에서만 돈다
   const stopTeamKeySync = startTeamKeySync();
+  // 같은 창에서 계정 바꾸기(10-14) — 입력창 위 알약이 기록을 바꾸고, 실행기(claude-rc-relay/account.mjs)가 그 기록으로 계정을 정한다.
+  // 팀원 데몬은 안 한다
+  server.handle(accountsWait, async ({ rev }) => waitAccounts(rev));
+  server.handle(accountSwitch, async ({ agentId, to }, { paseo }) => {
+    const handle = paseo.agents.ref(agentId);
+    await handle.refresh().catch(() => null);
+    const provider = (handle.current() as { provider?: string } | null)?.provider ?? providerFromDisk(agentId);
+    return switchAccount(agentId, to, provider);
+  });
+  const stopAccountHooks: Array<() => void> = [];
+  if (!teamDaemon) {
+    stopAccountHooks.push(server.on("agent.archived", ({ agent }) => {
+      void forgetAccount(agent.id);
+    }));
+  }
   return () => {
+    for (const stop of stopAccountHooks) stop();
     void routerPromise?.then((value) => value.dispose(), () => {});
     stopProjectLabels();
     stopProjectsCopy();

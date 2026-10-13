@@ -7,6 +7,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { applyAccount, watchAccount } from "../claude-rc-relay/account.mjs";
 
 const args = process.argv.slice(2);
 const at = args.indexOf("--real");
@@ -17,17 +18,33 @@ if (at < 0 || !args[at + 1]) {
 const real = args[at + 1];
 const argv = [...args.slice(0, at), ...args.slice(at + 2)];
 
+// 같은 창 계정 바꾸기(10-14, ../claude-rc-relay/account.mjs): 이 대화를 개인 계정으로 바꿔 둔 기록이 있으면 팀 계정 값
+// (CLAUDE_CONFIG_DIR)을 지우고 기본 폴더(개인 계정)로 띄운다. 그때는 팀 설정 동기화도 하지 않는다.
+const agentId = process.env.PASEO_AGENT_ID || null;
 const env = { ...process.env, CLAUDE_CONFIG_DIR: join(homedir(), ".claude-team") };
-const sync = spawnSync(process.execPath, [join(homedir(), ".local", "bin", "claude-team-sync.js"), "team"], {
-  stdio: ["ignore", 2, 2],
-  env,
-  windowsHide: true,
-});
-if (sync.error || sync.status !== 0) {
-  process.stderr.write(`claude-team-launch: 설정 동기화 실패(${sync.error?.message ?? `exit ${sync.status}`}) — 그대로 실행합니다\n`);
+const personal = applyAccount(env, agentId) === "personal";
+if (personal) delete env.CLAUDE_CONFIG_DIR;
+if (!personal) {
+  const sync = spawnSync(process.execPath, [join(homedir(), ".local", "bin", "claude-team-sync.js"), "team"], {
+    stdio: ["ignore", 2, 2],
+    env,
+    windowsHide: true,
+  });
+  if (sync.error || sync.status !== 0) {
+    process.stderr.write(`claude-team-launch: 설정 동기화 실패(${sync.error?.message ?? `exit ${sync.status}`}) — 그대로 실행합니다\n`);
+  }
 }
 
 const child = spawn(real, argv, { stdio: "inherit", env, windowsHide: true });
+// 켜져 있는 동안 이 대화의 계정 기록이 바뀌면 Claude 를 끈다 — 다음 말 때 Paseo 가 이 실행기를 다시 띄우며 새 계정이 적용된다
+const stopAccountWatch = watchAccount(agentId, () => {
+  try {
+    child.kill();
+  } catch {
+    /* 이미 끝남 */
+  }
+});
+child.on("exit", () => stopAccountWatch());
 child.on("error", (e) => {
   process.stderr.write(`claude-team-launch: claude 실행 실패 ${e.message}\n`);
   process.exit(127);

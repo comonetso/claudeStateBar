@@ -1,11 +1,10 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { watch } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { LABELS_FILE } from "./projectLabels";
-import { findCli } from "./paseoCli";
+import { findCli, runPaseo } from "./paseoCli";
 
 // 위쪽 제목 "카테고리 - 이름"(shared/headerTitles) — 기기마다 돈다. 이 기기 이름표(~/.claude/project-labels.json, PC 가 보낸 것)의
 // 경로별 제목을 화면에 주고, 화면이 바꾸자고 하면 원래 이름을 기록한 뒤 프로젝트 이름을 이 기기의 paseo 명령으로 바꾼다
@@ -65,21 +64,6 @@ export async function waitHeaderTitles(known: string | null): Promise<{ sig: str
     waiters.add(done);
   });
   return readTitles();
-}
-
-/** paseo 명령 실행. .cmd(윈도우)는 cmd 를 거치므로 칸마다 큰따옴표로 싼다 — cmd 는 따옴표 안의 %…% 도 풀어서 " % 가 든 글은 받지 않는다 */
-function runPaseo(cli: string, args: string[]): Promise<{ ok: boolean; out: string }> {
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE; // Paseo 데몬이 켜 둔 값 — 남기면 명령어가 Electron 앱으로 뜨지 않는다(rcSync 와 같다)
-  const shell = cli.toLowerCase().endsWith(".cmd");
-  if (shell && args.some((a) => /["%\r\n]/.test(a))) return Promise.resolve({ ok: false, out: '이름에 " 나 % 가 있어 윈도우 명령으로 넘길 수 없습니다' });
-  const argv = shell ? args.map((a) => `"${a}"`) : args;
-  return new Promise((resolve) => {
-    // 60초는 명령어가 멈췄을 때 다음 요청을 막지 않게 하는 안전장치(rcSync 와 같다)
-    execFile(shell ? `"${cli}"` : cli, argv, { env, shell, timeout: 60_000, windowsHide: true }, (err, stdout, stderr) =>
-      resolve({ ok: !err, out: `${stdout}${stderr}`.trim().replace(/\s+/g, " ").slice(0, 200) }),
-    );
-  });
 }
 
 async function record(entry: { kind: string; id: string; before: string; after: string }): Promise<void> {

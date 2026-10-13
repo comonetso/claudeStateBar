@@ -13,11 +13,12 @@
 // Paseo 가 Remote Control 기능을 넣으면 설정에서 command 를 지우고 이 파일을 버린다 — 그때 화면 중복도 Paseo 에서
 // 고쳐졌는지 먼저 본다(요청: https://github.com/getpaseo/paseo/discussions/6141, 10-05).
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { applyAccount, watchAccount } from "./account.mjs";
 
 const argv = process.argv.slice(2);
 let real = "claude";
@@ -83,7 +84,38 @@ const saveState = (patch) => {
 };
 saveState({});
 
-const child = spawn(real, argv, { stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+// 같은 창 계정 바꾸기(10-14, account.mjs): 이 대화를 다른 계정으로 바꿔 둔 기록이 있으면 그 계정으로 띄운다. 팀으로 띄울 때 PC 는
+// 팀 실행기(claude-team-launch)처럼 팀 설정 동기화를 한 번 돌린다(동기화 없이 팀 폴더를 바로 지정했을 때 한 번 "로그인 안 됨"이 났다
+// — 10-14 실측, 원인 미확정). 서버는 동기화할 것이 없다(팀 계정이 토큰이라 설정 폴더가 같다).
+const agentId = process.env.PASEO_AGENT_ID || null;
+const childEnv = { ...process.env };
+const account = ephemeral ? null : applyAccount(childEnv, agentId);
+if (account === "team" && process.platform === "win32" && childEnv.CLAUDE_CONFIG_DIR) {
+  const sync = spawnSync(process.execPath, [join(homedir(), ".local", "bin", "claude-team-sync.js"), "team"], {
+    stdio: ["ignore", 2, 2],
+    env: childEnv,
+    windowsHide: true,
+  });
+  log(`team account: settings sync ${sync.error || sync.status !== 0 ? "failed" : "ok"}`);
+}
+if (account) log(`account ${account} (agent ${String(agentId).slice(0, 8)})`);
+// 어느 계정으로 띄우는지 남긴다(값은 안 남긴다) — 서버 팀 토큰은 claude auth status 에 안 보이고 대화 안 명령 창에도 안 넘어가서
+// 대화 안에서는 확인할 수 없었다(10-14). 계정 바꾸기가 의심될 때 이 줄로 본다
+if (!ephemeral) log(`auth (agent ${String(agentId).slice(0, 8)}): team token ${childEnv.CLAUDE_CODE_OAUTH_TOKEN ? "set" : "none"} · config dir ${childEnv.CLAUDE_CONFIG_DIR ? childEnv.CLAUDE_CONFIG_DIR.replace(/^.*[\\/]/, "") : "default"}`);
+
+const child = spawn(real, argv, { stdio: ["pipe", "pipe", "inherit"], env: childEnv, windowsHide: true });
+// 켜져 있는 동안 이 대화의 계정 기록이 바뀌면 Claude 를 끈다 — 다음 말 때 Paseo 가 이 실행기를 다시 띄우며 새 계정이 적용된다
+const stopAccountWatch = ephemeral
+  ? () => {}
+  : watchAccount(agentId, () => {
+      log(`account changed (agent ${String(agentId).slice(0, 8)}) — stopping claude; the next message restarts it`);
+      try {
+        child.kill();
+      } catch {
+        /* 이미 끝남 */
+      }
+    });
+child.on("exit", () => stopAccountWatch());
 child.on("error", (e) => {
   log(`spawn failed: ${e.message}`);
   process.stderr.write(`claude-rc-relay: cannot start ${real}: ${e.message}\n`);
