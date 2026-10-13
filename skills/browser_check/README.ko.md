@@ -12,7 +12,7 @@
 | **B** repl 안 날 CDP(`page._sendToTarget`) | 첫 로딩 전 주입·기기 폭·다크/인쇄·CSS 캐스케이드·AX 트리·프로파일 | A 와 같음 (비공개 메서드 — 매번 `typeof` 확인) |
 | **C** 직결 CDP(로컬 TCP 또는 서버의 역방향 SSH 유닉스 소켓) | 콘솔·네트워크 **이벤트**, 백그라운드 탭, 60초 넘는 작업 | 브라우저의 원격 디버깅 포트 + (서버면) 터널 |
 
-이벤트는 A/B 로 오지 않는다 — 페이지 안 기록기 v2.1(`scripts/kit/diag-v2.1.js`)을 첫 로딩 전에 넣어 회수하거나 C 를 쓴다. C 에서는 브라우저 확장 프로그램이 낸 오류가 페이지 오류와 함께 오는데, 녹화기가 따로 분류해(`ext-exception`·`ext-console`, 확장 이름 포함) 문제 목록에서 뺀다. C 는 보이지 않는 탭에서 일하는데, 이런 탭은 한 번 그려지기 전까지 클릭·키 입력을 오류 없이 버린다. 그래서 클라이언트가 문서마다 첫 입력 전에 작은 캡처 1장을 찍어 깨우고, 그 캡처가 실패하면 입력을 잃는 대신 오류로 거절한다. 또 C 는 PC 의 Aside 창이 화면에 보여야 한다 — 다른 창에 가려져 있는 동안은 브라우저가 화면을 그리지 않아 캡처(그래서 입력도)가 멈춘다(PC·터널 모두 실측). A·B 는 영향이 없다.
+이벤트는 A/B 로 오지 않는다 — 페이지 안 기록기 v2.1(`scripts/kit/diag-v2.1.js`)을 첫 로딩 전에 넣어 회수하거나 C 를 쓴다. C 에서는 브라우저 확장 프로그램이 낸 오류가 페이지 오류와 함께 오는데, 녹화기가 따로 분류해(`ext-exception`·`ext-console`, 확장 이름 포함) 문제 목록에서 뺀다. C 는 보이지 않는 탭에서 일하는데, 이런 탭은 한 번 그려지기 전까지 클릭·키 입력을 오류 없이 버린다. 그래서 클라이언트가 문서마다 첫 입력 전에 작은 캡처 1장을 찍어 깨우고, 그 캡처가 실패하면 입력을 잃는 대신 오류로 거절한다. 또 C 는 Aside 를 실행 옵션 세 개(`--disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion --enable-features=CDPScreenshotNewSurface`)로 켜야 한다. 옵션이 없으면 Aside 창이 전부 가려지는 동안이나 창이 최소화된 동안 캡처(그래서 입력도)가 멈춘다(PC·터널 모두 실측). 옵션이 있으면 Windows 실측에서 둘 다 계속됐다(앞의 두 개는 가림, 세 번째는 최소화). Windows 에서는 `launch-flags` 가 실행 중인 Aside 를 점검하고 Aside 바로가기에 옵션을 넣어 준다. A·B 는 영향이 없다.
 
 ## 설치 (서버·PC 공통)
 1. `claude plugin install browser-check@comonetso`
@@ -28,15 +28,15 @@
 .claude-plugin/plugin.json      매니페스트(version 필수)
 hooks/hooks.json                SessionStart — stat-only(설정·소켓 권한만, 브라우저 접촉 없음)
 skills/browser_check/SKILL.md   발동·안전 규칙·라우팅   recipes/*.md  지시별 절차 10개
-scripts/browser-check.mjs       진입점: setup(처음 설정) · doctor · cdp · run(1회성 repl, 50초 가드, 잠금, @@IMG 저장, 가림) · unlock
+scripts/browser-check.mjs       진입점: setup(처음 설정) · doctor · cdp · run(1회성 repl, 50초 가드, 잠금, @@IMG 저장, 가림) · unlock · launch-flags(Windows: 창이 가려지거나 최소화돼도 C 가 돌게 하는 실행 옵션 세 개가 Aside 에 붙어 있는지 · --apply 는 Aside 바로가기에 넣기 · --undo 는 되돌리기)
 scripts/lib/                    setup · config · capabilities(감지 순서) · policy(작업 5분류·CDP allow/deny) · redact · lock
 scripts/kit/                    head.js(공통 머리) · diag-v2.1.js(기록기) · webcheck*.js · vitals*.js · perfdiag · emu-lib · responsive-iframe
 scripts/image/                  decode · crop · stitch (Pillow 선택)
 scripts/session/                영구 세션 구동기(drv.py/run.sh) · MCP 중계기(aside_mcp_shim.py)
-test/                           basic.test.mjs(가림·정책·설정·누출 검사) · cdp-unit.test.mjs(WebSocket 프레임·CDP 클라이언트) · setup.test.mjs(처음 설정) · regress/(Aside 업데이트 뒤 회귀) · unix-bridge.mjs(TCP→소켓 다리, 시험 전용)
+test/                           basic.test.mjs(가림·정책·설정·누출 검사) · cdp-unit.test.mjs(WebSocket 프레임·CDP 클라이언트) · setup.test.mjs(처음 설정) · launch-flags.test.mjs(Aside 실행 옵션) · regress/(Aside 업데이트 뒤 회귀) · unix-bridge.mjs(TCP→소켓 다리, 시험 전용)
 ```
 
-`node --test test/basic.test.mjs test/cdp-unit.test.mjs test/setup.test.mjs` 는 브라우저 없이 돈다. 누출 검사는 막을 값 목록을 로컬 파일(`~/.claude/_private/browser_check_leak.txt`, 또는 `BROWSER_CHECK_LEAK_LIST` 에 적은 경로)에서 한 줄에 `/정규식/플래그` 하나씩 읽는다. 목록을 이 패키지에 넣으면 막으려는 값이 그대로 공개되므로 밖에 둔다. 목록이 없으면 이 검사는 통과가 아니라 건너뜀으로 나온다.
+`node --test test/basic.test.mjs test/cdp-unit.test.mjs test/setup.test.mjs test/launch-flags.test.mjs` 는 브라우저 없이 돈다. 누출 검사는 막을 값 목록을 로컬 파일(`~/.claude/_private/browser_check_leak.txt`, 또는 `BROWSER_CHECK_LEAK_LIST` 에 적은 경로)에서 한 줄에 `/정규식/플래그` 하나씩 읽는다. 목록을 이 패키지에 넣으면 막으려는 값이 그대로 공개되므로 밖에 둔다. 목록이 없으면 이 검사는 통과가 아니라 건너뜀으로 나온다.
 
 ## 실행 환경 — 낮은 Node 에서도 같은 기능
 - **외부 패키지 0**(package.json 없음). Node 코어 모듈만 쓴다. Node 22 전용 기능(전역 `WebSocket`·`fetch`)은 쓰지 않는다 — 유닉스 소켓 위 WebSocket 은 `lib/cdp-ws.mjs` 가 `net`+`crypto` 로 직접 구현.

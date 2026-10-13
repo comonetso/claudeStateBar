@@ -2,7 +2,14 @@
 
 ## 9. Automatic wake-up → review
 
-When Codex ends you are **woken automatically** with `send.sh`'s stdout; the user doesn't need to tell you. Then:
+When the run ends, the watcher (`scripts/wait-run.mjs`, SKILL.md §3) ends too and you are **woken automatically** with its output; the user doesn't need to tell you. It starts with `codex_rescue watch: finished — <stamp>[_t<N>] · send.sh exit <code>`, then `send.sh`'s stderr, then **`send.sh`'s report (its stdout)** — read the report as before. Other ways the watcher ends:
+
+- `⏳ still running — re-arm: <command>` — not a result. Run that same command again with `Bash(run_in_background: true, timeout: 7200000)`; never launch the run again.
+- `codex_rescue watch: STALE — …` — no result and no sign of life (troubleshooting.md "The watcher reported STALE").
+
+A watcher you re-armed after a reload (the session-start hook's list) may print a result you already had before the reload — it prints the finished report again every time it is run. Review it once.
+
+Then:
 
 1. If the report has 🔴 **changes outside the response file**, **report them to the user first** — the skill's premise broke, and that comes before the review. **Never revert them yourself** — the user decides.
    (`🧪 N item(s) left in the Codex workbench` is **normal** — investigation traces in `.scratch/`, not a violation. `🧹 old records cleaned up …` is **normal** too — old records unrelated to this run were cleaned; relay it in one line. `⚠️ … items could not be deleted` is retried next time; mention it only if the same item keeps appearing.)
@@ -83,7 +90,7 @@ Don't write a new request; this reruns an existing one. (`_followup<N>_` and `_r
 1. Read that path. If it doesn't exist, list similar names in `docs/codex_rescue/` and stop.
 2. Read frontmatter `response_path`.
 3. **The response exists** ⇒ read it, review and report (as §9).
-4. **Not yet** ⇒ rerun it (preflight.md, then consult.md step 8). If `.log/<stamp>_stderr.log` exists, read it first — **understand the last failure and don't repeat it.**
+4. **Not yet** ⇒ first check it isn't still running: if `.log/.<stamp>.lock` exists, or `.log/<stamp>_launch.out` exists without `.log/<stamp>_launch.exit`, **don't rerun** — watch it with `node "${CLAUDE_SKILL_DIR}/scripts/wait-run.mjs" --root <project root> --stamp <stamp>` (SKILL.md §3 step 2). Otherwise rerun it (preflight.md, then consult.md step 8 — the detached launch). If `.log/<stamp>_stderr.log` or `.log/<stamp>_launch.err` exists, read it first — **understand the last failure and don't repeat it.** Relaunching the same request replaces its old `_launch.*` files.
 5. Don't dump the request into the chat — the file is canonical.
 
 RESUME of a `mode: edit` request carries EDIT's risk — the EDIT gate applies.
@@ -141,9 +148,11 @@ Codex runs with `-s workspace-write` (it needs it to save the response), so it *
 
 ## Failure — exit code 11 is the only automatic fallback
 
+The code is `send.sh`'s: the watcher's `finished — … · send.sh exit <code>` line (the watcher exits with it too), or the launcher's exit code when it printed `send.sh ended right away`. The launcher's own refusals (bad launcher arguments, the same stamp already running) also exit 2 and say so.
+
 | Code | What happened | Action |
 |---|---|---|
-| **11** | couldn't load the required `lib/*.mjs` | ✅ **the only safe automatic fallback.** The check runs **before** the server starts and no module top level sends `turn/start`, so Codex provably didn't start. Retry once with `CR_LIVE_STEER=0` and **say in one line that you fell back** |
+| **11** | couldn't load the required `lib/*.mjs` | ✅ **the only safe automatic fallback.** The check runs **before** the server starts and no module top level sends `turn/start`, so Codex provably didn't start. Retry once with `CR_LIVE_STEER=0` (a new detached launch, SKILL.md §3) and **say in one line that you fell back** |
 | **10** | failure before `turn/start` — **or sent, outcome unknown** | 🔴 **no automatic fallback** |
 | **20** | failure mid-turn — **can also happen before the turn starts** | 🔴 **no automatic fallback** |
 | **21 · 22** | `turn/completed` not `completed` / turn limit | 🔴 **no automatic fallback** — the turn really ran |

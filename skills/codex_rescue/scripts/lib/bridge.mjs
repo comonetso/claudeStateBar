@@ -489,6 +489,42 @@ export function readTokenUsage(notification) {
     return pickUsage(tu && (tu.total || tu));
 }
 
+// 본 턴 id 는 알림에서 직접 읽는다. ctx 의 폴백으로 외부 턴을 본 턴으로 만들지 않는다.
+export function notificationOwnership(notification, ctx = {}) {
+    const method = String((notification && notification.method) || '');
+    const p = (notification && notification.params) || {};
+    const turnId = firstString(p.turnId, p.turn && p.turn.id);
+    const threadId = firstString(p.threadId, p.thread && p.thread.id);
+    // thread/status/changed 는 턴 id 없이 온다(실측) — 스레드 id 로만 가른다. 승인·입력 대기
+    // 신호가 여기 실리고, 실행을 끝내는 알림이 아니라 본 스레드 것이면 살려도 안전하다.
+    const turnScoped = !!turnId || /^(turn|item)\//.test(method)
+        || method === 'thread/tokenUsage/updated';
+    if (turnScoped) {
+        if (!turnId) return 'unknown';
+        if (!ctx.turnId) return 'pending';
+        if (turnId !== ctx.turnId || (threadId && threadId !== ctx.threadId)) return 'external';
+        return 'owned';
+    }
+    if (threadId) {
+        if (!ctx.threadId) return 'pending';
+        if (threadId !== ctx.threadId) return 'external';
+    }
+    return 'global';
+}
+
+// 하위 스레드의 생명주기는 본 턴의 시작·종료와 다른 type 으로만 남긴다.
+export function makeSubagentEvent(notification, ctx) {
+    if (notificationOwnership(notification, ctx) !== 'external') return null;
+    const p = notification.params || {};
+    const threadId = firstString(p.threadId, p.thread && p.thread.id);
+    const turnId = firstString(p.turnId, p.turn && p.turn.id);
+    if (!threadId || threadId === ctx.threadId || !turnId) return null;
+    const type = notification.method === 'turn/started' ? 'subagent.started'
+        : notification.method === 'turn/completed' ? 'subagent.completed' : null;
+    return type ? { type, thread_id: threadId, turn_id: turnId,
+        status: firstString(p.turn && p.turn.status, p.status) || 'unknown' } : null;
+}
+
 /**
  * app-server 알림 하나를 exec 호환 이벤트로 바꾼다.
  *
@@ -514,6 +550,10 @@ export function toExecEvent(notification, ctx) {
 
     const p = (notification.params && typeof notification.params === 'object') ? notification.params : {};
     const c = (ctx && typeof ctx === 'object') ? ctx : {};
+    if (Object.prototype.hasOwnProperty.call(c, 'turnId')) {
+        const ownership = notificationOwnership(notification, c);
+        if (ownership !== 'owned' && ownership !== 'global') return null;
+    }
     // 알림에 실려 온 값이 항상 우선이다. ctx 는 그게 없을 때만 쓰는 폴백이다.
     const turnId = firstString(p.turnId, p.turn && p.turn.id, c.turnId);
 
@@ -599,27 +639,28 @@ export function toExecEvent(notification, ctx) {
         }
 
         case 'thread/tokenUsage/updated': {
-            // 🔴 이벤트로 내보내지 않는다. 대신 ctx 에 최신값을 쌓아 두고 turn.completed 에 싣는다.
+            // ctx 에 최신값을 쌓아 두고 turn.completed 에 싣는다. 그리고 2026-10-01 부터는
+            // 진행 중 표시용으로 `token_usage` 한 줄도 그때그때 내보낸다(사용자 결정 — 패널이
+            // 실행 중 카드에도 누적 토큰을 실시간으로 적는다).
             //
-            // 그래야 하는 이유: app-server 의 `turn/completed` 알림 params 에는 **usage 가 없다**
+            // ctx 에 쌓는 이유: app-server 의 `turn/completed` 알림 params 에는 **usage 가 없다**
             // (실측 원문 확인: threadId 와 turn{id,status,startedAt,completedAt,durationMs} 뿐).
-            // exec 는 turn.completed 에 usage 를 실어 보냈고 패널도 거기서만 읽는다. 여기서
-            // 안 받아 두면 토큰 표시가 통째로 사라진다.
+            // exec 는 turn.completed 에 usage 를 실어 보냈다. 여기서 안 받아 두면 완료 줄의 토큰이 빠진다.
             //
-            // 중간값을 그때그때 이벤트로 내지 않는 이유:
+            // 중간값을 `turn.completed` 나 notice 로 내면 안 되는 이유는 그대로다:
             //  · turn.completed 를 미리 내면 패널이 실행을 끝난 것으로 그린다 — 절대 안 된다.
-            //  · 새 type 은 파서가 모르니 안 보인다.
             //  · notice 로 내면 긴 턴에서 노란 줄이 계속 쌓인다(실측 58초 턴에 4회).
-            // 즉 화면 표시는 exec 와 동일하게 "완료 시 한 번"으로 유지하고, 값만 잃지 않게 한다.
+            // 그래서 **exec 에 없던 별도 type** 으로 낸다. 확장 1.17.2 부터 이 type 을 읽는다.
+            // 그보다 옛 확장은 모르는 type 으로 세고 넘어간다(execEvents 는 unknown type 에 던지지 않는다).
+            // send.sh 의 사후 판독(thread_id 추출·`turn.failed|error` 한도 판정)은 이 줄과 겹치는 키가 없다.
+            // 값은 스레드 누적이다(되묻기 턴에도 1턴부터 더한 값) — turn.completed 의 usage 와 같은 뜻.
             const usage = readTokenUsage(notification);
-            if (usage) {
-                c.tokenUsage = usage;
-                // 컨텍스트 창 크기는 exec 에 없던 값이라 패널이 쓰지 않는다. 그래도 runtime 상태나
-                // 향후 표시에 쓸 수 있게 ctx 에는 남겨 둔다(파일로는 안 나간다).
-                const w = p.tokenUsage && p.tokenUsage.modelContextWindow;
-                if (typeof w === 'number' && w > 0) c.modelContextWindow = w;
-            }
-            return null;
+            if (!usage) return null;
+            c.tokenUsage = usage;
+            // 컨텍스트 창 크기는 exec 에 없던 값이라 패널이 쓰지 않는다. ctx 에만 남긴다.
+            const w = p.tokenUsage && p.tokenUsage.modelContextWindow;
+            if (typeof w === 'number' && w > 0) c.modelContextWindow = w;
+            return { type: 'token_usage', usage };
         }
 
         default:

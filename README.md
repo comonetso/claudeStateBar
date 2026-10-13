@@ -283,7 +283,7 @@ mid-turn. The result is therefore a `_response_` document, and you can ask follo
 the old way and the dedicated review command runs instead, without interruptions or follow-ups.
 
 The bridge ships with the skill under `scripts/`. The plugin includes it, and so does the manual
-file list in the [install instructions](docs/codex-rescue-guide.md#0-installation). Without it the flag
+file list in the [install instructions](docs/codex-rescue-guide.md#0-installing). Without it the flag
 refuses to start rather than falling back quietly, so you always know which path you are on.
 
 🔴 **Steering needs Node 20 or newer.** The bridge uses Node's global `WebSocket`: 22 and 24 have it,

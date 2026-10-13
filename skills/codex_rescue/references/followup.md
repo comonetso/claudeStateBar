@@ -3,18 +3,23 @@
 Only when results.md §10 says so, or when the user asks ("ask again", "push back on that"), and only for a case that has a response file.
 
 ```
-Bash(run_in_background: true):
-  CR_CONFIRMED=1 CR_LIVE_STEER=1 bash "${CLAUDE_SKILL_DIR}/send.sh" --followup docs/codex_rescue/<stamp>_followup<N>_<slug>.md
+① Bash (synchronous — returns within seconds):
+  CR_CONFIRMED=1 CR_LIVE_STEER=1 node "${CLAUDE_SKILL_DIR}/scripts/launch.mjs" --bash "$BASH" --followup docs/codex_rescue/<stamp>_followup<N>_<slug>.md
+② Bash(run_in_background: true, timeout: 7200000):
+  <the watch command ① printed, exactly as printed — it carries --turn <N>>
 ```
 
+Same detached launch as turn 1 (SKILL.md §3). The command time limit (30 minutes by default, 2 hours at most) ends only the watcher, never the turn. If the watcher ends with `⏳ still running — re-arm: <command>`, run that same command again; never launch the turn again. If ① says `send.sh ended right away`, nothing is running — that output is `send.sh`'s refusal (wrong `turn:`, the EDIT gate, …). This turn's launch files are `.log/<stamp>_t<N>_launch.*`.
+
 - 🔴 **Never drop `CR_LIVE_STEER=1`** — same reason as turn 1: without it the old `codex exec resume` runs and nothing can be passed in mid-turn. Drop it only when the user asked for "the old way".
+- The Codex conversation of a case older than `logDays` (default 7 days) may already be deleted by the automatic cleanup, or by the panel's clean-now (consult.md "Run logs"). Then the thread can't be resumed and that case can't be followed up — if the resume fails, say so to the user. The cleanup that runs at the start of this follow-up leaves the conversation being resumed out of its automatic deletion.
 - Do §2-1 (preflight.md) before sending — model · reasoning · depth, every turn. Prefix `CR_MODEL` / `CR_EFFORT` only for values other than Codex's config, and put the chosen depth's section into the follow-up file (template below).
 - Write the follow-up file first (template below). `turn:` is the response's `turns` + 1 — `send.sh` refuses a wrong value.
 - 🔴 **Never pass the follow-up text as an argument.** Write it in the file.
 - Codex only **reads** in this turn (read-only is fixed). `send.sh` appends the turn to the response document.
 - 🔴 **Never run a follow-up file through the request path** (as a RESUME). Both point to the same `response_path`, so every check passes, Codex runs with workspace-write and **overwrites the whole response document** — turn 1 and your review with it, N turns of conversation at once. `send.sh` blocks it both ways, but never send it that way.
 - **Exception — more edits on an EDIT case.** Only when the original request is `mode: edit` and the follow-up frontmatter has **`edit: yes`** does Codex continue the same conversation and edit code.
-  - 🔴 **The EDIT gate applies every turn.** Turn 1's approval doesn't carry over — confirm with the user again and send `CR_CONFIRMED=1 CR_ALLOW_EDIT=1 CR_LIVE_STEER=1 bash … --followup <file>`. Without `CR_ALLOW_EDIT`, `send.sh` refuses
+  - 🔴 **The EDIT gate applies every turn.** Turn 1's approval doesn't carry over — confirm with the user again and launch `CR_CONFIRMED=1 CR_ALLOW_EDIT=1 CR_LIVE_STEER=1 node … --followup <file>`. Without `CR_ALLOW_EDIT`, `send.sh` refuses
   - Under "이번 턴에 묻는 것", write **what to fix** (target files, expected behaviour)
   - Partial saves go to a per-turn edit record `docs/codex_rescue/<stamp>_edit<N>_<slug>.md`; `send.sh` still appends to the response document and moves the edit record under that turn at the end
   - Afterwards **check the actual changes yourself with `git diff`**, then review (same as a turn-1 EDIT)

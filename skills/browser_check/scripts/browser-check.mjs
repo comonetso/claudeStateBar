@@ -10,6 +10,10 @@
  *                                               one-shot Aside repl call: kit/head.js + body, 50 s guard, single-flight lock,
  *                                               @@IMG lines → files, everything else redacted → stdout JSON
  *   node browser-check.mjs unlock               doctor-style stale lock reclaim (never on the hot path)
+ *   node browser-check.mjs launch-flags [--apply | --undo] [--json]
+ *                                               Windows: does the running Aside have the three flags transport C needs while
+ *                                               its windows are covered or minimized? --apply adds them to the Aside shortcuts
+ *                                               (old arguments saved), --undo puts them back. Never restarts Aside.
  *   node browser-check.mjs cdp <script.mjs> [--out <dir>] [--url <target-url>]
  *                                               transport C: connect (unix socket on a server / loopback TCP locally),
  *                                               import the script and call its default export (client, helpers) — the
@@ -41,11 +45,14 @@ if (cmd === 'setup') {
   // First run: look the machine over and write the private config (never overwrites). See scripts/lib/setup.mjs.
   const { setup } = await import('./lib/setup.mjs');
   const r = await setup({ configFile: configPath(), remoteHost: opt('--remote-host', null) });
+  const lf = await import('./lib/launch-flags.mjs');
+  r.launchFlags = await lf.check().catch((e) => ({ supported: true, error: String(e && e.message || e) }));
   if (flag('--json')) { console.log(JSON.stringify(r, null, 1)); process.exit(r.status === 'created' || r.status === 'exists' ? 0 : 1); }
   console.log(`setup        ${r.status} ${r.path || ''}`);
   for (const n of r.notes || []) console.log('   ' + n);
   for (const c of r.candidates || []) console.log(`   candidate: ${c.name} (${c.state}) — rerun with --remote-host "${c.name}"`);
   for (const t of r.todo || []) console.log('!  ' + t);
+  if (lf.warningFor(r.launchFlags)) console.log('!  ' + lf.warningFor(r.launchFlags));
   if (r.errors && r.errors.length) for (const e of r.errors) console.log('!  written config: ' + e);
   process.exit(r.status === 'created' || r.status === 'exists' ? 0 : 1);
 }
@@ -54,12 +61,29 @@ if (cmd === 'doctor' || cmd === undefined) {
   const report = { config: { path: cfgRes.path, ok: cfgRes.ok, errors: cfgRes.errors } };
   if (cfgRes.ok) report.capabilities = await probe(cfgRes.config);
   if (!cfgRes.ok && cfgRes.errors.includes('config file not found')) report.next = 'run `browser-check.mjs setup` — it looks this machine over and writes the config';
+  const lf = await import('./lib/launch-flags.mjs');
+  report.launchFlags = await lf.check().catch((e) => ({ supported: true, error: String(e && e.message || e) }));
   if (flag('--json')) { console.log(JSON.stringify(report, null, 1)); process.exit(cfgRes.ok ? 0 : 1); }
   console.log(`config       ${cfgRes.ok ? 'ok' : 'INVALID'} ${cfgRes.path || ''}`);
   for (const e of cfgRes.errors) console.log('!  ' + e);
   if (report.next) console.log('→  ' + report.next);
   if (report.capabilities) console.log(table(report.capabilities));
+  if (lf.warningFor(report.launchFlags)) console.log('!  ' + lf.warningFor(report.launchFlags));
   process.exit(cfgRes.ok ? 0 : 1);
+}
+
+if (cmd === 'launch-flags') {
+  const lf = await import('./lib/launch-flags.mjs');
+  const r = flag('--apply') ? await lf.fix({ dataDir }) : flag('--undo') ? await lf.undo({ dataDir }) : await lf.check();
+  if (flag('--json') || !r.supported) { console.log(JSON.stringify(r, null, 1)); process.exit(0); }
+  if ('running' in r) console.log(`running Aside  ${!r.running ? 'not running' : r.missing.length ? 'missing ' + r.missing.join(' ') : 'flags on'}`);
+  for (const s of r.shortcuts || []) console.log(`shortcut       ${s.missing.length ? 'missing' : 'ok     '} ${s.path}`);
+  for (const c of r.changed || []) console.log(`changed        ${c.path}`);
+  for (const c of r.restored || []) console.log(`restored       ${c.path}`);
+  for (const f of r.failed || []) console.log(`!  failed ${f.path}: ${f.why}`);
+  if (r.note) console.log('   ' + r.note);
+  if ((r.changed && r.changed.length) || (r.restored && r.restored.length)) console.log('→  ' + r.restart);
+  process.exit(r.failed && r.failed.length ? 1 : 0);
 }
 
 if (cmd === 'unlock') {

@@ -139,6 +139,37 @@ entry before moving the new files in, so the file the restore had kept was delet
 now left alone when it still holds files: nothing is moved, and a notice asks you to restore or delete
 that entry first. An entry holding only its record file is replaced as before.
 
+Two plugins were updated on 2026-10-14 (codex-rescue 1.17.3, browser-check 0.1.5). codex_rescue used
+to run Codex inside one of Claude's own background commands, which Claude ends after 30 minutes by
+default and 2 hours at most, and which a window reload ends too, so a long run went down with its
+command; one was cut off exactly at the 2-hour mark. Every run except ping-pong now starts detached
+from Claude's command and is followed by a separate watch command, so the time limit and a reload end
+only the watcher. The watcher stops by itself after 110 minutes and Claude starts it again; the run is
+never started twice. A new session-start hook tells Claude, after a reload, a resumed conversation or a
+compaction, which runs of that conversation it has not received the result of yet, so it can watch them
+again; with nothing to pick up it prints nothing. A Codex turn that started sub-agents could be taken as
+finished when a sub-agent's turn ended, cutting the answer short; only the main turn's own
+notifications end it now. A run stopped by a signal records which signal, how long it had run and
+whether that falls within 15 seconds of Claude's 30-minute or 2-hour limit, and keeps Codex's stderr,
+which used to be deleted with the run's temporary folder. The release is also the plugin side of the
+Codex tab changes described above: the retention file, the cleanup of the Codex conversations
+codex_rescue started, the usage figures behind Clean up, the record of which conversation started each
+run, the running token count and batch names.
+
+browser_check's direct CDP connection (transport C) was documented as stalling whenever the PC's Aside
+window was covered. Measured again on Windows, it stalls only once every Aside window is covered, and an
+Aside started with `--disable-backgrounding-occluded-windows` and
+`--disable-features=CalculateNativeWinOcclusion` keeps capturing even then. A minimized window stopped
+it with or without those two; `--enable-features=CDPScreenshotNewSurface`, Chromium's screenshot path
+that copies a fresh surface instead of waiting for the next presented frame, let captures and real
+clicks and key presses through while minimized in a test browser. A new `launch-flags` command (Windows
+only) checks whether the running Aside has all three flags; `--apply` adds them to the Aside shortcuts after saving their old
+arguments, and `--undo` puts those back. It never restarts Aside, so the flags take effect once Aside is
+fully closed and started again from a shortcut, and Claude runs `--apply` only with the user's OK.
+Aside's own Start-menu shortcuts can't be written by the user and are reported as failed; a shortcut
+pinned to the taskbar or made by the user takes the flags. `doctor` and `setup` print a one-line warning
+when the running Aside lacks them.
+
 ## [1.17.1] - 2026-09-30
 
 Sub-agents launched with the Agent tool are now handled the same way as workflows. The orange dot

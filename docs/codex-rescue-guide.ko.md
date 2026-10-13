@@ -88,11 +88,12 @@ claude plugin update codex-rescue@comonetso
 
 ```bash
 D=~/.claude/skills/codex_rescue
-mkdir -p $D/scripts/lib $D/prompts $D/.claude-plugin
+mkdir -p $D/scripts/lib $D/prompts $D/references $D/.claude-plugin
 BASE=https://raw.githubusercontent.com/comonetso/claudeStateBar/main/skills/codex_rescue
 for f in SKILL.md send.sh prompts/review_rubric.md .claude-plugin/plugin.json \
-         scripts/codex-status.mjs scripts/live-consult.mjs \
-         scripts/lib/appserver.mjs scripts/lib/bridge.mjs scripts/lib/runtime.mjs; do
+         references/{chat,consult,followup,help,preflight,request-template,results,review,steer,troubleshooting}.md \
+         scripts/{launch,wait-run,live-consult,codex-status,cleanup-logs,prune-codex-sessions,set-thread-name}.mjs \
+         scripts/lib/{appserver,bridge,runtime,codex-sessions,thread-name}.mjs; do
   curl -fsSL "$BASE/$f" -o $D/$f
 done
 chmod +x $D/send.sh
@@ -101,12 +102,17 @@ chmod +x $D/send.sh
 전부 받으십시오. 빠지는 게 있으면 기능이 멈춥니다.
 
 - `prompts/review_rubric.md` — 리뷰 판정 기준입니다. 없으면 **리뷰가 시작을 거부합니다**
+- `references/` — `SKILL.md` 가 Claude 에게 읽으라고 하는 모드별 지시문입니다(1.17.1 이상). 없으면
+  Claude 가 고른 모드를 어떤 순서로 돌릴지 모릅니다
+- `scripts/launch.mjs` 와 `scripts/wait-run.mjs` — 실행을 떼어서 띄우고 지켜봅니다(1.17.3 이상, §2).
+  없으면 핑퐁 말고는 아무것도 돌지 않습니다
 - `scripts/codex-status.mjs` — 실행 전에 한도와 모델을 조회합니다(§2-0)
 - `scripts/live-consult.mjs` 와 `lib/` — 실행 중 끼어들기(§2-3)
 - `.claude-plugin/plugin.json` — 이 폴더를 Claude Code가 플러그인으로도 인식하게 하는 설명 파일입니다
 
 레포를 통째로 받았다면 `skills/codex_rescue/` 를 `~/.claude/skills/` 로 복사해도 됩니다.
-이렇게 설치해도 위의 전환 권유 알림은 뜹니다.
+이렇게 설치해도 위의 전환 권유 알림은 뜹니다. 어느 쪽이든 창을 다시 불러온 뒤 실행을 다시 이어 주는
+대화 시작 훅(§2)은 없습니다. 그 훅은 플러그인으로 설치했을 때만 들어갑니다.
 
 ### 🔴 설치 전에 알아둘 것
 
@@ -154,7 +160,21 @@ Claude가 Codex를 직접 부르고, 끝나면 알아서 받아 검토합니다.
 **도는 동안 다른 일을 시켜도 됩니다.** 작은 요청은 1~3분이면 끝나지만 범위가 넓으면
 20분까지도 갑니다. 어느 쪽이든 그 사이 멈춰 있지 않습니다.
 
-⚠️ 단 **세션을 닫으면 자동 인식이 끊깁니다.** 결과 파일은 남으니 다음에 그 경로만 주면 이어서 봅니다.
+⚠️ 단 **세션을 닫으면 자동 인식이 끊깁니다.** 그 대화를 다시 이어 열면 아래 훅이 다시 이어 줍니다.
+그렇지 않더라도 결과 파일은 남으니 다음에 그 경로만 주면 이어서 봅니다.
+
+### 오래 걸려도 끊기지 않습니다 (1.17.3)
+
+예전에는 Claude 가 자기 백그라운드 명령 안에서 Codex 를 돌렸는데, Claude 는 그 명령을 기본 30분,
+길어야 2시간이면 끝냅니다. 그래서 시간을 넘긴 실행이나 창 다시 불러오기에 Codex 도 명령과 함께
+끊겼습니다. 2시간 정각에 끊긴 실행도 있었습니다. 1.17.3부터는 Claude 가 실행을 자기 명령과 떼어서
+띄우고, 따로 건 감시 명령으로 지켜봅니다. 시간 제한과 창 다시 불러오기는 이제 감시 명령만 끝내고
+실행은 건드리지 않습니다. 감시 명령은 110분이 되면 스스로 끝나고 Claude 가 다시 겁니다. 실행 자체를
+두 번 띄우지는 않습니다.
+
+플러그인에는 대화 시작 훅도 함께 들어갑니다. 창을 다시 불러오거나 대화를 이어 열거나 압축한 뒤, 그
+대화가 띄운 실행 가운데 Claude 가 아직 결과를 받지 못한 것을 Claude 에게 알려 줍니다. Claude 는
+감시를 다시 걸고 그 사실을 한 줄로 말씀드립니다. 알릴 것이 없으면 훅은 아무것도 출력하지 않습니다.
 
 ---
 
@@ -511,6 +531,17 @@ claudeStateBar 확장을 쓰신다면 직접 지울 수도 있습니다.
   (그릴 기록이 없으니) 요청서·응답은 그대로 열립니다. 원시 기록을 지운 실행, 그리고 동료가
   커밋한 문서를 git으로 받아온 경우가 여기 해당합니다. 실행 모드(`READONLY` 같은 표시)는
   붙지 않습니다 — 그 값은 지워진 상태 파일에 있었고, 지어내지 않습니다.
+- **제목 아래 모델·추론 수준·토큰** (확장 1.17.2 이상) — 카드 제목 아래 작은 줄에 그 실행이 쓴 모델과
+  추론 수준, 토큰이 나옵니다. 토큰은 캐시된 입력까지 더한 대화 누적값입니다. 플러그인 1.17.3 이상에서
+  끼어들기 경로로 도는 실행은 모델을 부를 때마다 숫자가 갱신되고, 그 밖에는 실행이 끝날 때 나타납니다.
+- **함께 띄운 실행은 한 카드로 묶입니다** (확장 1.17.2 이상·플러그인 1.17.3 이상) — Claude 가 두 건
+  이상을 한 번에 띄우면 같은 묶음 이름(`CR_GROUP`, §9)을 붙이고, 패널은 그 실행들을 묶음 카드 하나에
+  넣어 몇 건이 끝났는지, 실패가 있는지, 토큰 합계를 보여 줍니다. 되묻기는 원래 실행의 묶음에 남습니다.
+  다른 Claude 대화가 띄운 실행은 이름이 같아도 섞이지 않습니다.
+- **이 창의 대화가 다른 곳에서 띄운 실행** (확장 1.17.2 이상·플러그인 1.17.3 이상) — 플러그인이 어느
+  Claude 대화가 어느 폴더에서 실행을 띄웠는지 `~/.claude/codex_rescue/runs/` 에 적어 두므로, 이 창의
+  대화가 다른 저장소나 저장소 밖 폴더, 하위 폴더에서 띄운 실행도 목록에 나옵니다. 카드에는 그 폴더
+  이름 칩이 붙습니다. 다른 대화가 다른 곳에서 띄운 실행은 나오지 않습니다.
 
 **Remote-SSH로 연 워크스페이스에서도 보입니다** — 서버에서 돌린 실행이 그대로 목록에 뜹니다.
 확장 **1.9.2 이상**이 필요합니다. **확장 자체는 서버에 깔지 않아도 됩니다** — 로컬에서 돌면서
@@ -604,7 +635,8 @@ claudeStateBar 확장을 쓰신다면 직접 지울 수도 있습니다.
   "main 기준으로 인증 위주로 리뷰해"처럼 둘을 같이 주면 범위가 덜 정확하게 들어갑니다.
   지금 기본 리뷰는 요청서에 둘을 함께 적으므로 이 제약이 없습니다
 - **진행 패널은 작업 영역 폴더 바로 아래 `docs/codex_rescue/` 만 봅니다.** 하위 폴더에서 돌린 실행은
-  패널에 안 뜹니다. 기록은 그 하위 폴더에 정상적으로 남습니다
+  패널에 안 뜹니다. 기록은 그 하위 폴더에 정상적으로 남습니다. 다만 확장 1.17.2와 플러그인 1.17.3
+  이상이면 이 창의 Claude 대화가 띄운 실행은 그래도 목록에 나옵니다(§5)
 - **답이 왔다고 다 성공은 아닙니다** — Codex가 "파일을 못 읽었다"고 답하는 경우가 있습니다.
   Claude가 내용까지 확인하지만, 답이 이상하면 로그를 보라고 하면 됩니다
 - **`error` 로 표시되는 게 다 오류는 아닙니다** — CLI 안내 메시지가 같은 채널로 옵니다.
@@ -654,7 +686,8 @@ claudeStateBar 확장을 쓰신다면 직접 지울 수도 있습니다.
 | **"review rubric file not found"** (예전 버전은 "리뷰 기준 파일이 없다") | `prompts/review_rubric.md` 를 안 받은 것입니다. 플러그인으로 설치하거나 §0의 목록대로 다시 받으십시오 |
 | **"pre-run confirmation was skipped"** (예전 버전은 "실행 전 확인을 안 했다") | 실행 전 확인(§2-0)을 거치지 않은 것입니다. Claude가 물어서 답을 받은 뒤에 붙입니다. 직접 `send.sh` 를 돌린다면 `CR_CONFIRMED=1` 을 붙이십시오 |
 | **도중에 한도로 끊겼다** | 응답 문서에 `status: partial` 이 붙어 있으면 중간본입니다(§4). 한도가 풀린 뒤 "다시 물어봐"로 이어갑니다 |
-| 하위 폴더에서 돌린 실행이 패널에 없다 | 패널은 작업 영역 폴더 바로 아래 `docs/codex_rescue/` 만 봅니다. 기록은 하위 폴더에 있습니다 |
+| **Claude 가 실행이 멈췄다고(`STALE`) 알린다** | 감시 명령(1.17.3, §2)이 끝났다는 표시 없이 실행의 살아 있다는 신호가 30초 넘게 바뀌지 않은 것을 두 번 연달아 본 것입니다. 작업 관리자 종료, 충돌, 절전처럼 강제로 끝났을 가능성이 큽니다. Claude 는 스스로 다시 돌리지 않으니, 더 기다릴지 다시 돌릴지 말씀해 주십시오 |
+| 하위 폴더에서 돌린 실행이 패널에 없다 | 패널은 작업 영역 폴더 바로 아래 `docs/codex_rescue/` 만 봅니다. 기록은 하위 폴더에 있습니다. 확장 1.17.2와 플러그인 1.17.3 이상이면 이 창의 대화가 거기서 띄운 실행도 목록에 나옵니다(§5) |
 
 ---
 
@@ -671,6 +704,7 @@ claudeStateBar 확장을 쓰신다면 직접 지울 수도 있습니다.
 | `CR_DRYRUN=1` | Codex를 실행하지 않고 조립된 명령만 출력. 단 로그·작업 디렉터리와 그 안의 `.gitignore`는 미리 만들어질 수 있습니다 |
 | `CR_WIN_SANDBOX=<모드>` | Windows 샌드박스 구현 방식. 기본 `unelevated` (에러 1332 회피용). 빈 값으로 두면 `config.toml` 설정을 그대로 씁니다 |
 | `CR_NETWORK=false` | 네트워크 차단 (기본은 **허용**, 조회 전용) — 2026-08-25 신설 |
+| `CR_GROUP=<이름>` | 함께 띄운 실행의 묶음 이름 (1.17.3 신설). Claude 가 한 번에 띄우는 실행마다 같은 이름을 붙이고, 한 건만 띄울 때는 붙이지 않습니다. 진행 패널은 같은 Claude 대화에서 같은 이름으로 띄운 실행을 묶음 카드 하나로 보여 줍니다. 되묻기는 원래 실행의 묶음을 그대로 이어 씁니다 |
 | `CR_CONSULT_MAX_TURN=<n>` | 되묻기 턴 상한. 기본 **11** — 사용자가 직접 대화로 결론에 도달한 실측 턴 수입니다 |
 | `CR_CHAT_LIMIT=<초>` | 핑퐁 시간 상한. 기본 **60** (예전 120). 탐색을 열려면 이 값을 **함께 명시**해야 합니다 |
 | `CR_CHAT_LOOK_MAX=<바이트>` | 핑퐁에 실어 보낼 자료의 총 크기 상한. 기본 65536 |

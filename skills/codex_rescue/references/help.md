@@ -11,11 +11,13 @@ codex_rescue — get a second view from Codex when Claude is stuck (fully automa
 
 [Round trip]
           1. Claude → writes docs/codex_rescue/<stamp>_request_<slug>.md
-          2. Claude → runs send.sh in the background (calls Codex)
+          2. Claude → starts send.sh detached from my own command (calls Codex) and watches it in the background
           3. Codex  → reads the request, analyzes → saves <stamp>_response_<slug>.md
                       (if saving is blocked, the script recovers the final message with -o and saves it)
           4. Claude → wakes up automatically when Codex ends, reads and reviews the response → reports what to apply
           You can keep giving me other work while it runs.
+          ★ A long run isn't cut by my 2-hour command limit or by reloading the window — only my watcher is,
+            and I re-attach to it (after a reload or compaction, automatically).
           ★ You can also interject while it runs — see [Interject].
 
 [Safety]  Codex doesn't change code (except in edit mode) — that would break my context.
@@ -91,6 +93,7 @@ codex_rescue — get a second view from Codex when Claude is stuck (fully automa
           CR_ALLOW_EDIT=1      unlock edit (after approval)   CR_DRYRUN=1   check without running
           CR_LIVE_STEER=1      interject path (default for analyze · review · fix · follow-up; without it, the old way)
           CR_CONFIRMED=1       marks that the pre-run check was answered (runs are refused without it)
+          CR_GROUP=<name>      group name for runs started together (one group card in the progress panel)
 ```
 
 ## All environment variables (reference — print only if asked)
@@ -105,8 +108,9 @@ codex_rescue — get a second view from Codex when Claude is stuck (fully automa
 | `CR_WIN_SANDBOX` | Windows sandbox mode override |
 | `CR_NETWORK` | network allowed by default under workspace-write; `false` blocks it (proxy-based on Windows — troubleshooting.md) |
 | `CR_DRYRUN=1` | check everything without running Codex |
+| `CR_GROUP=<name>` | runs started together share it; the progress panel groups runs with the same name from the same Claude conversation. A follow-up keeps its run's group |
 | `CR_CONSULT_MAX_TURN` | follow-up turn limit, default 11 |
 | `CR_CHAT_LIMIT` | CHAT time limit in seconds, default 60; required with `--explore` |
 | `CR_CHAT_LOOK_MAX` | CHAT `--look` total size in bytes, default 65536 |
-| `CR_KEEP_DAYS` | days to keep old `.log/` and `.scratch/` entries, default 7; `0` = off |
+| `CR_KEEP_DAYS` | only when explicitly set, overrides both retention periods for this call (`0` = off). A set `CR_KEEP_DAYS` that is not a whole number of days, empty included, stops the cleanup with an argument error: nothing is cleaned, `_usage.json` is not rewritten and no Codex conversation cleanup starts (one line on stderr). Otherwise reads `<home>/.claude/codex_rescue/settings.json` via Node `os.homedir()` (ignores `CLAUDE_CONFIG_DIR`): `{"scratchDays":1,"logDays":7}`. Missing file/keys use these defaults; each `0` disables that target. Only nonnegative integers are valid; malformed settings skip all cleanup with one warning, even with an override. Unknown keys are ignored. The plugin only reads settings; it never creates or edits them. `logDays` also covers the Codex conversations codex_rescue's live-steering runs created on this machine (any project; CHAT and runs on the old `codex exec` route are recorded by Codex as `codex_exec`, can't be told apart from other tools' conversations, and are never cleaned or counted): after each run's cleanup, a detached `scripts/prune-codex-sessions.mjs` deletes the ones older than `logDays` in the background with Codex's official `codex delete --force` (one at a time per machine; result in `<home>/.claude/codex_rescue/codex-prune.log`). The conversation a follow-up resumes is left out, a conversation touched again since the scan is skipped, and a single delete that takes over 2 minutes is abandoned for that conversation only. Conversations other tools created and the trash are never cleaned automatically. Each run also rewrites the usage file `docs/codex_rescue/.log/_usage.json`. Clean now: `node "${CLAUDE_SKILL_DIR}/scripts/cleanup-logs.mjs" --dir docs/codex_rescue --now "scratch,log,trash,codex"` previews; add `--yes` to delete; `--lang en|ko` picks its output language (the panel passes its own). Runs in progress and runs whose result Claude has not received yet keep their files (see consult.md "Run logs") |
 | `CR_TIMEOUT` | removed (didn't work on Windows); the script refuses it |

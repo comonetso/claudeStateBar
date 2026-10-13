@@ -95,11 +95,12 @@ Use this only where plugins aren't an option. To update, you have to run it agai
 
 ```bash
 D=~/.claude/skills/codex_rescue
-mkdir -p $D/scripts/lib $D/prompts $D/.claude-plugin
+mkdir -p $D/scripts/lib $D/prompts $D/references $D/.claude-plugin
 BASE=https://raw.githubusercontent.com/comonetso/claudeStateBar/main/skills/codex_rescue
 for f in SKILL.md send.sh prompts/review_rubric.md .claude-plugin/plugin.json \
-         scripts/codex-status.mjs scripts/live-consult.mjs \
-         scripts/lib/appserver.mjs scripts/lib/bridge.mjs scripts/lib/runtime.mjs; do
+         references/{chat,consult,followup,help,preflight,request-template,results,review,steer,troubleshooting}.md \
+         scripts/{launch,wait-run,live-consult,codex-status,cleanup-logs,prune-codex-sessions,set-thread-name}.mjs \
+         scripts/lib/{appserver,bridge,runtime,codex-sessions,thread-name}.mjs; do
   curl -fsSL "$BASE/$f" -o $D/$f
 done
 chmod +x $D/send.sh
@@ -108,12 +109,17 @@ chmod +x $D/send.sh
 Fetch all of them. A missing file stops a feature.
 
 - `prompts/review_rubric.md` — the review criteria. Without it **a review refuses to start**
+- `references/` — the per-mode instructions `SKILL.md` sends Claude to (1.17.1 and later). Without
+  them Claude has no procedure for the mode it picked
+- `scripts/launch.mjs` and `scripts/wait-run.mjs` — start a run detached and watch it (1.17.3 and
+  later, §2). Without them nothing but ping-pong runs
 - `scripts/codex-status.mjs` — looks up limits and models before a run (§2-0)
 - `scripts/live-consult.mjs` and `lib/` — cutting in while Codex works (§2-3)
 - `.claude-plugin/plugin.json` — the manifest that lets Claude Code also recognize this folder as a plugin
 
 If you cloned the repo, copying `skills/codex_rescue/` into `~/.claude/skills/` works too.
-The switch notice above still appears for an install made this way.
+The switch notice above still appears for an install made this way. Either way the session-start
+hook that picks runs up again after a reload (§2) is not there; it comes only with the plugin.
 
 ### 🔴 Read this before installing
 
@@ -168,8 +174,23 @@ paste, and no "it's done" to report.
 **You can keep working while it runs.** A small request takes 1–3 minutes; a broad one can run
 20. Either way nothing blocks.
 
-⚠️ Closing the session breaks the automatic pickup. The result files remain, so pointing
-Claude at the path next time resumes where it left off.
+⚠️ Closing the session breaks the automatic pickup. Resuming that conversation brings it back
+(below); otherwise the result files remain, so pointing Claude at the path next time resumes where
+it left off.
+
+### Long runs keep going (1.17.3)
+
+Claude used to run Codex inside one of its own background commands, and Claude ends those after 30
+minutes by default and 2 hours at most. A run that went past the limit, or a window reload, took
+Codex down with the command; one run was cut off exactly at the 2-hour mark. From 1.17.3 Claude
+starts the run detached from its own command and follows it with a separate watch command. The
+time limit and a reload now end only the watch command, never the run. The watch command stops by
+itself after 110 minutes and Claude starts it again; the run itself is never started a second time.
+
+The plugin also adds a session-start hook. After a window reload, a resumed conversation or a
+compaction, it tells Claude which runs that conversation started whose result it has not received
+yet, and Claude watches them again and says so in one line. When there is nothing to pick up, the
+hook prints nothing.
 
 ---
 
@@ -560,6 +581,21 @@ States progress `starting → running → finalizing → done / failed / stopped
   list — nothing to build one from — but the request and response open as usual. That covers runs
   whose raw logs you purged, and documents a teammate committed that you pulled in. No mode chip
   is shown: that value lived in the deleted status file, and guessing it would be worse.
+- **Model, effort and tokens under the title** (extension 1.17.2+) — a small line under each
+  card's title shows the model and reasoning effort the run used and its tokens, the thread's
+  running total with cached input included. With plugin 1.17.3 or later a run on the
+  live-steering route updates the count after every model call; otherwise it appears when the run
+  ends.
+- **Runs started together share one card** (extension 1.17.2+, plugin 1.17.3+) — when Claude
+  starts two or more runs at once it gives them the same batch name (`CR_GROUP`, §9), and the panel
+  puts them in one group card that shows how many are done, any failures and their tokens together.
+  A follow-up stays in its run's batch. Runs from another Claude conversation never join, even
+  under the same name.
+- **Runs this window's conversations started elsewhere** (extension 1.17.2+, plugin 1.17.3+) — the
+  plugin records which Claude conversation started each run and in which folder, under
+  `~/.claude/codex_rescue/runs/`, so a run one of this window's conversations started in another
+  repository, a folder outside any repository or a subfolder is listed too, with the folder's name
+  on a chip. Runs that other conversations started elsewhere stay out.
 
 **It works in a Remote-SSH workspace too** — runs you started on the server show up in the same
 list. This needs extension **1.9.2 or later**. **The extension itself doesn't go on the server** — it
@@ -665,7 +701,8 @@ recommended for everyday use.
   request, so it doesn't have this limit
 - **The progress panel only reads `docs/codex_rescue/` directly under the workspace folder.** A run
   started from a subfolder doesn't appear there, though its record is written normally in that
-  subfolder
+  subfolder. Extension 1.17.2 with plugin 1.17.3 lists it anyway when one of this window's Claude
+  conversations started it (§5)
 - **An answer arriving isn't the same as an answer succeeding** — Codex sometimes replies
   "I couldn't read the file". Claude checks the content, but if a reply looks off, ask for the log
 - **Not everything labelled `error` is one** — CLI advisories arrive on the same channel.
@@ -715,7 +752,8 @@ recommended for everyday use.
 | **Review criteria file missing** | `prompts/review_rubric.md` wasn't fetched. Install the plugin, or re-fetch with the full list in §0 |
 | **Refused because the pre-run check wasn't done** | The run skipped the question in §2-0. Claude adds the mark after you answer; if you run `send.sh` yourself, add `CR_CONFIRMED=1` |
 | **Cut off by a usage limit** | If the response document says `status: partial`, it is a partial answer (§4). Say "ask again" once the limit resets |
-| A run started from a subfolder isn't in the panel | The panel only reads `docs/codex_rescue/` directly under the workspace folder. The record is in the subfolder |
+| **Claude reports the run as stalled (`STALE`)** | The watch command (1.17.3, §2) saw no exit mark and no change in the run's sign of life for over 30 seconds, twice in a row. The run was probably killed hard (Task Manager, a crash, the machine sleeping). Claude doesn't rerun it on its own; tell it whether to keep waiting or run it again |
+| A run started from a subfolder isn't in the panel | The panel only reads `docs/codex_rescue/` directly under the workspace folder. The record is in the subfolder. Extension 1.17.2 with plugin 1.17.3 also lists runs this window's own conversations started there (§5) |
 
 ---
 
@@ -732,6 +770,7 @@ recommended for everyday use.
 | `CR_DRYRUN=1` | Print the assembled command without running Codex. The log/scratch directories and their `.gitignore` may still be created |
 | `CR_WIN_SANDBOX=<mode>` | Windows sandbox implementation. Defaults to `unelevated` (the error-1332 workaround); leave it empty to keep whatever `config.toml` says |
 | `CR_NETWORK=false` | Block network access (default is **allowed**, read-only) — new 2026-08-25 |
+| `CR_GROUP=<name>` | Batch name for runs started together (new in 1.17.3). Claude puts the same name on every run it starts at once, never on a single run, and the progress panel shows runs with the same name from the same Claude conversation as one group card. A follow-up keeps its run's batch |
 | `CR_CONSULT_MAX_TURN=<n>` | Cap on push-back turns. Default **11** — the measured turn count at which a direct conversation reached its conclusion |
 | `CR_CHAT_LIMIT=<seconds>` | Ping-pong time limit. Default **60** (was 120). Opening exploration requires setting this **explicitly** |
 | `CR_CHAT_LOOK_MAX=<bytes>` | Cap on the total size of material shipped inline in ping-pong. Default 65536 |

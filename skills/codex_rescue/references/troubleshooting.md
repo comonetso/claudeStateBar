@@ -61,6 +61,26 @@ The plumbing worked but Codex couldn't write the file — the sandbox issue abov
 
 The response file is byte-identical to before the run: **Codex wrote nothing this run; the file is an older result.** Don't take it for this run's, and don't overwrite or delete it — ask the user.
 
+## The watcher reported `STALE`
+
+`codex_rescue watch: STALE — <stamp>` means `send.sh` has not finished (no `.log/<stamp>[_t<N>]_launch.exit`) and its sign of life — `.log/<stamp>_heartbeat`, else the lock `.log/.<stamp>.lock`, else `_status.json` — hasn't changed for over 30 seconds, seen twice in a row (the same 30 seconds the progress panel uses for "not responding"). The run was probably killed hard (Task Manager, `kill -9`, a crash, the machine sleeping); a hard kill skips `send.sh`'s signal handler, so the status still says `running` and the lock stays. Rarely it is alive but stalled — the heartbeat only starts after the pre-run file snapshot, so a very slow snapshot can look like this.
+
+- Tell the user, with the paths the watcher printed (`_status.json`, `_events.jsonl`, `_launch.err`). **Don't rerun it yourself** — rerunning is the user's call.
+- If the user wants to keep waiting, run the same watch command again.
+- If the user wants it run again, check that no `codex` process is left for it, then delete the lock `.log/.<stamp>.lock` and launch again (results.md "RESUME"). Until then the launcher refuses the stamp as "already running".
+- The session-start hook does not list a run the watcher already reported as `STALE` again — the user has been told once. If that run later finishes after all (an exit mark appears), the hook lists it once as "finished after the watcher reported it stalled — result not received yet"; watch it and hand the result over.
+
+## Re-arming after a reload, resume or compaction
+
+A window reload or a context compaction ends your background watcher, but not the detached run. When a session starts, resumes, is cleared or compacted, the plugin's `SessionStart` hook (`scripts/reattach.mjs`) reads this conversation's run ledger (`<home>/.claude/codex_rescue/runs/<session id>/`) and lists every run whose latest launch has no exit mark and no `_reported` mark, or has an exit mark but no `_reported` mark or a `_reported` that says `stale` (the result never reached you). For each, run the watch command it gives with `Bash(run_in_background: true, timeout: 7200000)` and handle the result by results.md. It never relaunches anything. Runs started before the launcher existed (no `_launch.*` files) are not listed. The hook prints nothing when there is nothing to re-arm, and stays silent on any error — if you expected a run in the list, re-arm it by hand: `node "${CLAUDE_SKILL_DIR}/scripts/wait-run.mjs" --root <project root> --stamp <stamp> [--turn <N>]`.
+
+## The launcher refused, or returned right away
+
+- `send.sh ended right away — … exit <code>. Nothing is running.` — `send.sh` stopped before starting (no `CR_CONFIRMED`, the EDIT gate, a bad request or follow-up file, not a git repository for a review). The launcher shows its stderr and stdout as they are and exits with its code. Fix what it says and launch again — there is nothing to watch.
+- `the same stamp (<stamp>) is already running` — the lock `.log/.<stamp>.lock` exists. If it really runs, watch it with the printed command. If it is left over from a killed run (old lock mtime, no `codex` process), see "The watcher reported STALE" above.
+- `bash not found` — pass `--bash "$BASH"` from the bash you are running (on Windows Git Bash, `cygpath -w "$BASH"` also works).
+- `send.sh has not taken its lock after 30s` — it was started but is still checking (a slow disk); watch it as usual.
+
 ## Network on Windows
 
 The Windows (unelevated) sandbox blocks the network through **proxy environment variables**. Programs that ignore proxies (e.g. Node's default `https`) still get through with `CR_NETWORK=false` — **never treat the network block as a security boundary.** Also, `curl.exe` may fail HTTPS inside the sandbox (`SEC_E_NO_CREDENTIALS`) even when the network is open; judge with plain http or node instead.

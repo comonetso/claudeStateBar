@@ -1,0 +1,15 @@
+{
+  "description": "codex_rescue: when a session starts, resumes, is cleared or compacted, tell Claude which detached Codex runs of this conversation still need their watcher re-armed (no output when there are none)",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/reattach.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}
