@@ -1,0 +1,19 @@
+{
+  "name": "peer-mail",
+  "private": true,
+  "version": "0.0.0",
+  "files": [
+    "paseo-plugin.json",
+    "index.server.ts",
+    "server/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "^0.11.0-beta.3",
+    "@types/node": "^20.19.43",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  }
+}

@@ -130,7 +130,18 @@ export function ProjectsList(props: {
         const i = saved.indexOf(pinKey(e));
         return i < 0 ? saved.length : i;
       };
-      return items.sort((a, b) => rank(a) - rank(b) || (fileRank.get(a) ?? 0) - (fileRank.get(b) ?? 0));
+      // 고정한 것은 원래 카테고리 안에서도 끌어 놓은 순서와 상관없이 맨 위, 고정 순서대로(10-13 리규형님 "즐겨찾기를 하면
+      // 순서와 상관없이 해당 카테에서 최상단"). 활성 묶음은 대화를 열고 닫는 순서를 지키려고 그대로 둔다
+      const pinFirst = g !== ACTIVE_GROUP;
+      return items.sort((a, b) => {
+        if (pinFirst) {
+          const pa = pins.has(pinKey(a));
+          const pb = pins.has(pinKey(b));
+          if (pa !== pb) return pa ? -1 : 1;
+          if (pa && pb) return pinRank(a) - pinRank(b);
+        }
+        return rank(a) - rank(b) || (fileRank.get(a) ?? 0) - (fileRank.get(b) ?? 0);
+      });
     };
     return order.map((g) => ({ name: g, items: sortIn(g, map.get(g) ?? []) }));
   }, [entries, filter, pins, pinOrder, live, index, orders, categories, fileRank, member]);

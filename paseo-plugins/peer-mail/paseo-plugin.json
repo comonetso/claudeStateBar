@@ -1,0 +1,6 @@
+{
+  "id": "peer-mail",
+  "requirements": {
+    "paseo": ">=0.11.1"
+  }
+}
