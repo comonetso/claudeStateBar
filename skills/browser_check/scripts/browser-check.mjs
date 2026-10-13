@@ -11,8 +11,8 @@
  *                                               @@IMG lines → files, everything else redacted → stdout JSON
  *   node browser-check.mjs unlock               doctor-style stale lock reclaim (never on the hot path)
  *   node browser-check.mjs launch-flags [--apply | --undo] [--json]
- *                                               Windows: are Aside's occlusion flags on (transport C keeps capturing while
- *                                               every Aside window is covered)? --apply adds them to the Aside shortcuts
+ *                                               Windows: does the running Aside have the three flags transport C needs while
+ *                                               its windows are covered or minimized? --apply adds them to the Aside shortcuts
  *                                               (old arguments saved), --undo puts them back. Never restarts Aside.
  *   node browser-check.mjs cdp <script.mjs> [--out <dir>] [--url <target-url>]
  *                                               transport C: connect (unix socket on a server / loopback TCP locally),

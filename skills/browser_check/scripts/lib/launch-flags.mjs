@@ -1,8 +1,11 @@
 /*
  * Aside launch flags for transport C on Windows (owner decision 2026-10-14 — "a plugin feature, not a hand-edited
- * shortcut"). Chromium stops painting a window that Windows reports as fully covered, so C's captures time out while
- * every Aside window is covered. Two launch flags turn that occlusion tracking off (measured 2026-10-14: every Aside
- * window covered → captures kept working). They do NOT help a minimized window — nothing here claims that.
+ * shortcut"). Measured 2026-10-14 on Windows with a colour change before every capture:
+ *   - every Aside window covered → captures time out; --disable-backgrounding-occluded-windows and
+ *     --disable-features=CalculateNativeWinOcclusion turn the occlusion tracking off and captures keep working
+ *   - the window minimized → captures and input time out with or without those two; --enable-features=
+ *     CDPScreenshotNewSurface (Chromium's screenshot path that copies a fresh surface instead of waiting for the next
+ *     presented frame) made captures and real clicks/keys go through while minimized (isolated test browser)
  *
  *   check()            the running Aside's main process: are the flags on? + the Aside shortcuts and their flags (read-only)
  *   fix({ dataDir })   add the missing flags to every Aside shortcut, saving the old arguments first; Aside itself is
@@ -21,51 +24,60 @@ const execFileP = promisify(execFile);
 
 export const OCCLUSION_FLAG = '--disable-backgrounding-occluded-windows';
 export const OCCLUSION_FEATURE = 'CalculateNativeWinOcclusion';
+export const SCREENSHOT_FEATURE = 'CDPScreenshotNewSurface';
+// feature-list switches and the feature each must carry (Chromium keeps only the last copy of a switch it sees)
+const FEATURE_NEEDS = [['--disable-features', OCCLUSION_FEATURE], ['--enable-features', SCREENSHOT_FEATURE]];
 
-/** Values of every --disable-features switch on a command line (Chromium keeps only the last one it sees). */
-function disabledFeatures(line) {
+const switchRe = (sw) => new RegExp(sw + '(?:=|\\s+)("([^"]*)"|(\\S+))', 'g');
+const valuesOf = (m) => String(m[2] !== undefined ? m[2] : m[3]).split(',').map((x) => x.trim()).filter(Boolean);
+
+/** Values of every copy of a feature-list switch. */
+function featureValues(line, sw) {
   const out = [];
-  const re = /--disable-features(?:=|\s+)("([^"]*)"|(\S+))/g;
+  const re = switchRe(sw);
   let m;
-  while ((m = re.exec(line))) out.push(...String(m[2] !== undefined ? m[2] : m[3]).split(',').map((s) => s.trim()).filter(Boolean));
+  while ((m = re.exec(line))) out.push(...valuesOf(m));
   return out;
 }
 
-function lastDisabledFeatures(line) {
-  const re = /--disable-features(?:=|\s+)("([^"]*)"|(\S+))/g;
+/** Values of the last copy only — the one Chromium uses. */
+function lastFeatureValues(line, sw) {
+  const re = switchRe(sw);
   let m, last = null;
-  while ((m = re.exec(line))) last = String(m[2] !== undefined ? m[2] : m[3]);
-  return last === null ? null : last.split(',').map((s) => s.trim()).filter(Boolean);
+  while ((m = re.exec(line))) last = valuesOf(m);
+  return last;
 }
 
-/** Which of the two flags a command line (or shortcut arguments) lacks. Pure. */
+/** Which of the three flags a command line (or shortcut arguments) lacks. Pure. */
 export function missingFlags(line) {
   const s = String(line || '');
   const missing = [];
   if (!new RegExp('(^|\\s)' + OCCLUSION_FLAG + '(\\s|$|=)').test(s)) missing.push(OCCLUSION_FLAG);
-  const last = lastDisabledFeatures(s);
-  if (!last || !last.includes(OCCLUSION_FEATURE)) missing.push('--disable-features=' + OCCLUSION_FEATURE);
+  for (const [sw, feature] of FEATURE_NEEDS) {
+    const last = lastFeatureValues(s, sw);
+    if (!last || !last.includes(feature)) missing.push(sw + '=' + feature);
+  }
   return missing;
 }
 
 /**
- * Shortcut arguments with the missing flags added. An existing --disable-features list is extended in place (a
- * second --disable-features switch would replace the first). Pure; returns the same string when nothing is missing.
+ * Shortcut arguments with the missing flags added. An existing feature list is extended in place (a second copy
+ * of the switch would replace the first). Pure; returns the same string when nothing is missing.
  */
 export function addFlags(args) {
   let s = String(args || '').trim();
   const missing = missingFlags(s);
   if (!missing.length) return s;
   if (missing.includes(OCCLUSION_FLAG)) s = (s ? s + ' ' : '') + OCCLUSION_FLAG;
-  if (missing.some((f) => f.startsWith('--disable-features'))) {
-    const all = disabledFeatures(s);
+  for (const [sw, feature] of FEATURE_NEEDS) {
+    if (!missing.includes(sw + '=' + feature)) continue;
+    const all = featureValues(s, sw);
     if (all.length) {
-      // fold every --disable-features switch into one list that also carries ours
-      const merged = [...new Set([...all, OCCLUSION_FEATURE])].join(',');
-      s = s.replace(/\s*--disable-features(?:=|\s+)("[^"]*"|\S+)/g, '').trim();
-      s = (s ? s + ' ' : '') + '--disable-features=' + merged;
+      // fold every copy of the switch into one list that also carries ours
+      s = s.replace(new RegExp('\\s*' + sw + '(?:=|\\s+)("[^"]*"|\\S+)', 'g'), '').trim();
+      s = (s ? s + ' ' : '') + sw + '=' + [...new Set([...all, feature])].join(',');
     } else {
-      s = (s ? s + ' ' : '') + '--disable-features=' + OCCLUSION_FEATURE;
+      s = (s ? s + ' ' : '') + sw + '=' + feature;
     }
   }
   return s;
@@ -167,5 +179,5 @@ export async function undo({ dataDir }) {
 /** One warning line for doctor/setup, or null. */
 export function warningFor(c) {
   if (!c || !c.supported || !c.running || !c.missing || !c.missing.length) return null;
-  return 'Aside runs without ' + c.missing.join(' ') + ' — transport C stops capturing while every Aside window is covered. `browser-check.mjs launch-flags --apply` adds them to the Aside shortcuts (ask the user first).';
+  return 'Aside runs without ' + c.missing.join(' ') + ' — transport C stops capturing while every Aside window is covered or the window is minimized. `browser-check.mjs launch-flags --apply` adds them to the Aside shortcuts (ask the user first).';
 }
