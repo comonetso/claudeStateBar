@@ -40,9 +40,8 @@ const PLUGIN_ID = 'peer-req@comonetso';
 // awaiting_user 는 막지 않는다 — "다시 확인" 으로 받는 쪽의 최신 결과를 가져오는 길이다
 const BLOCKED = ['held', 'refused', 'expired', 'completed', 'conflict', 'wrong_target'];
 
-function shq(s) {
-  return "'" + String(s).replace(/'/g, "'\\''") + "'";
-}
+const shq = util.shq;
+const ssh = util.ssh;
 
 // 무인 세션용 규칙. 열린 세션용 머리말(renderHeader)의 "스킬을 불러라·ACK 를 보내라·대상 검증" 은
 // 실행기가 대신 하므로 뺀다 — 넣으면 무인 세션이 "스킬이 없다" 를 답에 섞는다(2026-09-19 실측).
@@ -159,13 +158,7 @@ function runLocal(o) {
 
 // ─────────── 다른 머신 (SSH) ───────────
 // Windows 의 ssh 는 파이프 입력의 끝(EOF)을 서버에 전하지 못한다(실측). 그래서 stdin 은 쓰지 않고
-// 파일은 scp 로 올리고, 원격 명령은 인자로만 준다.
-// host 앞에 '--' 를 둬서 별칭이 옵션으로 읽히지 않게 한다(주소록 검증과 이중 방어 · 1차 리뷰 P1).
-
-// LogLevel=ERROR — 접속 경고문(예: post-quantum 안내)이 오류 메시지를 덮지 않게 한다
-function ssh(host, cmd) {
-  return util.runExe('ssh', ['-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR', '--', host, 'bash -lc ' + shq(cmd)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
-}
+// 파일은 scp 로 올리고, 원격 명령은 인자로만 준다(util.ssh).
 
 // 로컬 경로는 파일 이름만 넘긴다(cwd 로 그 폴더에 서서). Windows 의 'C:\…' 를 scp 가 원격 호스트 'C' 로 읽지 않게 한다.
 function scpUp(host, local, remote) {

@@ -13,7 +13,10 @@
 // 서브커맨드
 //   doctor                                   주소록·선언·짝 후보·RC 설정 점검 + 같은 머신 짝 주소록과 교차 대조. 아무것도 쓰거나 보내지 않는다
 //   discover                                 이 머신에 떠 있는 세션과 각자의 폴더·주소록(self) 목록. 아무것도 쓰지 않는다
-//   prepare  --to <짝|그룹> --intent <i> --body-file <f> --agents-file <f> [--request-id <id>] [--pick "<이름>"]
+//   prepare  --to <짝|그룹> --intent <i> --body-file <f> --agents-file <f> [--request-id <id>] [--pick "<이름>"|"paseo:<대화 번호>"] [--via rc|paseo]
+//            목록(Remote Control·같은 머신)에 짝 세션이 없으면 Paseo 통로를 찾아본다 — 그 대상은 transport:'paseo' 로 나온다
+//   deliver  --id <id> --to <짝> [--timeout <초>] [--no-collect]   Paseo 통로 전송: 상대가 쉴 때 넣고, 그 턴이 끝나면 답을 가져온다
+//   collect  [--id <id>]                     Paseo 통로로 보낸 요청의 ACK·결과를 짝 저장소 기록에서 가져온다(다른 머신은 SSH 로 읽기만)
 //   record   --id <id> --to <짝> --event <type> [--detail <text>]   (받는 쪽은 --event reported 만)
 //   bind     --to <짝> --session-id <sid>    사용자가 알려 준 같은 머신 세션을 기록한다
 //   forget   --to <짝>                        기록한 세션을 지운다
@@ -42,6 +45,7 @@ const state = require('./lib/state.cjs');
 const sessions = require('./lib/sessions.cjs');
 const ingest = require('./lib/ingest.cjs');
 const unattended = require('./lib/unattended.cjs');
+const paseo = require('./lib/paseo.cjs');
 
 function UsageError(message) {
   this.message = message;
@@ -137,6 +141,8 @@ function cmdDoctor(args, cwd) {
     state_dir: util.stateDir(),
     node: process.version,
     registry: { readable: reg.readable, reason: reg.reason || null, live_sessions: reg.sessions.length },
+    // Paseo 통로 — 목록에 짝이 없을 때 쓴다. this_conversation 이 있으면 이 대화가 Paseo 대화다(Remote Control 꺼짐)
+    paseo: { cli: paseo.findCli(), this_conversation: process.env.PASEO_AGENT_ID || null },
     peers: [],
   };
   if (b.found && b.ok) {
@@ -161,6 +167,8 @@ function cmdDoctor(args, cwd) {
         row.remembered = titles[p.endpoint_id] || null;
         row.host_alias = p.location.host_alias || null;
       }
+      const pm = paseo.readMemory(p.endpoint_id);
+      row.paseo_remembered = pm && pm.agent_id ? pm : null;
       report.peers.push(row);
     });
     report.problem_count = problems;
@@ -255,6 +263,9 @@ function resolvePicked(o) {
 
 // prepared 이벤트에 남길 "고른 세션" — 확인(ACK) 뒤 기억하거나, WRONG_TARGET 이면 지울 근거
 function routeOf(r) {
+  if (r.transport === 'paseo') {
+    return { transport: 'paseo', same_machine: r.same_machine, via: r.via, send_to: r.send_to, host: r.paseo.host, agent_id: r.paseo.agent_id, name: r.paseo.name, remember: !!r.remember, source: r.source || 'auto' };
+  }
   const source = r.via === 'user_pick' ? 'user' : r.via === 'remembered_ref' ? 'ref' : r.via === 'rc_title' ? 'rc_title' : r.via === 'remembered' ? 'title' : 'auto';
   if (r.same_machine) return { same_machine: true, via: r.via, send_to: r.send_to, session_id: r.session_id || null, name: r.row ? r.row.name : r.send_to, bind: !!r.bind, source: source };
   return { same_machine: false, via: r.via, send_to: r.send_to, title: r.row ? r.row.name : null, ref: r.row ? r.row.ref : null, remember: !!r.remember, source: source };
@@ -322,15 +333,36 @@ function cmdPrepare(args, cwd) {
   const registry = sessions.readRegistry();
   const pick = opt(args, 'pick');
   if (pick && aliases.length !== 1) throw new UsageError('--pick works only when sending to a single peer');
+  const via = opt(args, 'via');
+  if (via && ['rc', 'paseo'].indexOf(via) === -1) throw new UsageError('--via must be rc or paseo');
+  const pickPaseo = !!pick && pick.indexOf(paseo.PREFIX) === 0;
   // 그룹으로 보낼 때 앞 짝에게 배정한 세션 — 기억은 ACK 뒤라 기록에 아직 없으니 여기서 넘겨 준다
-  const claimed = { refs: {}, sessions: {} };
+  const claimed = { refs: {}, sessions: {}, paseo: {} };
   const results = aliases.map((alias) => {
-    const r = pick
-      ? resolvePicked({ book: book, alias: alias, agents: agents, registry: registry, pick: pick })
-      : sessions.resolvePeer({ book: book, alias: alias, agents: agents, selfSessionId: selfSessionId, registry: registry, claimed: claimed });
+    let r;
+    if (via === 'paseo' || pickPaseo) {
+      r = paseo.resolve({ book: book, alias: alias, pick: pickPaseo ? pick : null, claimed: claimed });
+    } else {
+      r = pick
+        ? resolvePicked({ book: book, alias: alias, agents: agents, registry: registry, pick: pick })
+        : sessions.resolvePeer({ book: book, alias: alias, agents: agents, selfSessionId: selfSessionId, registry: registry, claimed: claimed });
+      // 목록에 짝 세션이 없다 — Paseo 통로를 찾아본다(2026-10-13). Remote Control 로 보이는 짝은 지금처럼 그 길로 간다.
+      //   unlisted: 짝 폴더에 떠 있는 세션은 있는데 목록에 없다 — 일하는 중인 Paseo 대화가 그렇다(프로세스는 있고 Remote Control 은 꺼짐).
+      //   그때 Paseo 에도 없으면 원래 물음(ask)을 그대로 돌려준다.
+      if (!pick && via !== 'rc' && (r.status === 'unreachable' || r.no_session_in_root || r.unlisted)) {
+        const pr = paseo.resolve({ book: book, alias: alias, claimed: claimed });
+        if (pr.status === 'ready' || (pr.status === 'ask' && !r.unlisted)) {
+          const why = 'not found in the session list (' + r.reason + ') — using Paseo';
+          r = Object.assign({}, pr, { note: pr.note ? why + ' · ' + pr.note : why });
+        } else {
+          r = Object.assign({}, r, { paseo_reason: pr.reason });
+        }
+      }
+    }
     if (r.status === 'ready') {
       if (r.row && r.row.ref && !r.same_machine) claimed.refs[r.row.ref] = alias;
       if (r.session_id) claimed.sessions[r.session_id] = alias;
+      if (r.paseo) claimed.paseo[r.paseo.agent_id] = alias;
       const peer = peers[alias];
       const env = envl.makeRequest({
         requestId: requestId,
@@ -339,19 +371,26 @@ function cmdPrepare(args, cwd) {
         recipient: { endpoint_id: peer.endpoint_id, root: peer.location.root, session_id: r.session_id || null },
         intent: intent,
         body: body,
+        transport: r.transport === 'paseo' ? 'paseo' : null,
       });
       const file = store.writeText(dir, 'outbox', util.fileKey(alias) + '.txt', envl.renderMessage(env));
       // 고른 세션은 여기서 기억하지 않는다 — route 로 적어 두고, 상대가 받았다고 답하면 ingest 가 기억한다.
       // WRONG_TARGET 이 오면 같은 route 로 그 세션을 후보에서 빼거나(다른 머신) 기록을 지운다(같은 머신).
       const route = routeOf(r);
       // remote_title: 0.1.x 가 읽던 필드 — 적어 둔 세션으로 보낸 다른 머신 시도에만
-      const learned = !r.same_machine && r.via !== 'rc_title' && r.row ? r.row.name : null;
+      const learned = r.transport !== 'paseo' && !r.same_machine && r.via !== 'rc_title' && r.row ? r.row.name : null;
       store.appendEvent(dir, { type: 'prepared', recipient: alias, attempt_id: env.attempt_id, detail: 'via=' + r.via + ' to=' + r.send_to, remote_title: learned, route: route });
-      const willRemember = !!(route.same_machine ? route.bind : route.remember);
-      return { alias: alias, status: 'ready', send_to: r.send_to, via: r.via, message_file: file, attempt_id: env.attempt_id, same_machine: r.same_machine, remember_after_ack: willRemember, note: r.note || null };
+      const willRemember = !!(route.transport === 'paseo' ? route.remember : route.same_machine ? route.bind : route.remember);
+      const out = { alias: alias, status: 'ready', send_to: r.send_to, via: r.via, message_file: file, attempt_id: env.attempt_id, same_machine: r.same_machine, remember_after_ack: willRemember, note: r.note || null };
+      if (r.transport === 'paseo') {
+        out.transport = 'paseo';
+        out.paseo = r.paseo;
+        out.instruction = 'do not SendMessage — run deliver --id ' + requestId + ' --to ' + alias + ' in the background (it waits until the peer conversation is free, sends, waits for that turn, then collects the reply)';
+      }
+      return out;
     }
-    if (r.status === 'unreachable') store.appendEvent(dir, { type: 'unreachable', recipient: alias, detail: r.reason });
-    return { alias: alias, status: r.status, reason: r.reason, note: r.note || null, candidates: r.candidates || [], same_machine: r.same_machine };
+    if (r.status === 'unreachable') store.appendEvent(dir, { type: 'unreachable', recipient: alias, detail: r.reason + (r.paseo_reason ? ' · Paseo: ' + r.paseo_reason : '') });
+    return { alias: alias, status: r.status, reason: r.reason, note: r.note || null, candidates: r.candidates || [], same_machine: r.same_machine, transport: r.transport || null, paseo_reason: r.paseo_reason || null };
   });
   print({
     request_id: requestId,
@@ -412,7 +451,7 @@ function cmdForget(args, cwd) {
   const peer = ab.peersOf(book)[alias];
   if (!peer) throw new UsageError('no peer "' + alias + '" in the address book');
   const same = util.sameMachine(peer.machine_id, book.self.machine_id);
-  print({ ok: true, alias: alias, same_machine: same, removed: same ? sessions.forget(peer.endpoint_id) : sessions.forgetTitle(peer.endpoint_id) });
+  print({ ok: true, alias: alias, same_machine: same, removed: same ? sessions.forget(peer.endpoint_id) : sessions.forgetTitle(peer.endpoint_id), removed_paseo: paseo.forgetMemory(peer.endpoint_id) });
 }
 
 function cmdHere(args, cwd) {
@@ -446,11 +485,13 @@ function targetMismatch(b, root, env) {
   return out;
 }
 
+// Paseo 로 들어온 요청은 회신 주소가 없다 — 받는 쪽은 기록만 남기고, 보낸 쪽이 그 기록을 읽어 간다
+const PASEO_NOTHING_TO_SEND = 'this request came through Paseo — there is no address to reply to. Send nothing (no SendMessage); the sending session collects the acknowledgement and result from these records';
+
 function cmdReceive(args, cwd) {
   const ctx = receiveContext(cwd);
   const b = ctx.b;
   const root = ctx.root;
-  const from = opt(args, 'from');
   let env;
   try {
     env = envl.extractEnvelope(readFileArg(args, 'message-file'));
@@ -461,6 +502,9 @@ function cmdReceive(args, cwd) {
   const problems = envl.checkEnvelope(env);
   if (problems.length) return print({ verdict: 'invalid', problems: problems, request_id: env && env.request_id });
   if (env.type !== 'request') return print({ verdict: 'not_a_request', type: env.type, hint: 'replies (ack, result) are recorded with ingest. Do not reply' });
+  const viaPaseo = envl.viaPaseo(env);
+  // Paseo 로 들어온 요청은 from 이 없다 — 기록에 통로를 남겨 reply 가 "보내지 마라" 를 알게 한다
+  const from = opt(args, 'from') || (viaPaseo ? paseo.PREFIX + env.sender_endpoint : null);
 
   const mismatch = targetMismatch(b, root, env);
   if (mismatch.length) {
@@ -469,14 +513,22 @@ function cmdReceive(args, cwd) {
     const ack = envl.makeReply({ type: 'ack', request: env, responder: responder, status: 'wrong_target', body: 'WRONG_TARGET — ' + mismatch.join(' / ') });
     const f = path.join(util.stateDir(), 'wrong_target', env.request_id + '-' + env.attempt_id + '.txt');
     util.writeFileAtomic(f, envl.renderMessage(ack));
-    return print({ verdict: 'wrong_target', request_id: env.request_id, mismatch: mismatch, reply_file: f, reply_to: from, instruction: 'SendMessage the contents of this file to the from address and do not investigate' });
+    return print({
+      verdict: 'wrong_target',
+      request_id: env.request_id,
+      mismatch: mismatch,
+      reply_file: f,
+      reply_to: from,
+      transport: viaPaseo ? 'paseo' : null,
+      instruction: viaPaseo ? 'do not investigate. ' + PASEO_NOTHING_TO_SEND + '. Tell the user a peer_req request meant for another target arrived' : 'SendMessage the contents of this file to the from address and do not investigate',
+    });
   }
 
   const responder = b.book.self.endpoint_id;
   store.applyCommitPolicy(root, ab.recordsCommitted(b.book));
   const dir = store.requestDir(root, env.request_id);
   const made = store.createRequestRecord(dir, { direction: 'inbound', request_id: env.request_id, envelope: env, from: from, received_at: util.nowIso() });
-  const base = { request_id: env.request_id, short_id: util.shortId(env.request_id), intent: env.intent, intent_label: envl.INTENTS[env.intent].label, sender_endpoint: env.sender_endpoint, from: from, body: env.body, record_dir: dir };
+  const base = { request_id: env.request_id, short_id: util.shortId(env.request_id), intent: env.intent, intent_label: envl.INTENTS[env.intent].label, sender_endpoint: env.sender_endpoint, from: from, transport: viaPaseo ? 'paseo' : null, body: env.body, record_dir: dir };
 
   if (!made.created && !made.existing) {
     // 다른 처리가 막 같은 요청을 게시하는 중이다(하드링크를 못 쓰는 파일시스템) — 처리하지 않고 알린다
@@ -488,13 +540,13 @@ function cmdReceive(args, cwd) {
       const ack = envl.makeReply({ type: 'ack', request: env, responder: responder, status: 'conflict', body: 'CONFLICT — a different body arrived with the same request_id. Not handling it.' });
       store.appendEvent(dir, { type: 'conflict', recipient: 'self', attempt_id: env.attempt_id, detail: 'new body ' + env.body_sha256.slice(0, 12) + ' ≠ ' + String(prev.body_sha256).slice(0, 12) });
       const f = store.writeText(dir, 'outbox', 'ack-conflict-' + env.attempt_id + '.txt', envl.renderMessage(ack));
-      return print(Object.assign({}, base, { verdict: 'conflict', reply_file: f, instruction: 'send the contents of this file to from and do not handle the request' }));
+      return print(Object.assign({}, base, { verdict: 'conflict', reply_file: f, instruction: viaPaseo ? 'do not handle the request. ' + PASEO_NOTHING_TO_SEND : 'send the contents of this file to from and do not handle the request' }));
     }
     store.appendEvent(dir, { type: 'duplicate', recipient: 'self', attempt_id: env.attempt_id, detail: from ? 'from=' + from : null });
     const st = state.fold(store.listEvents(dir)).self;
     const ack = envl.makeReply({ type: 'ack', request: env, responder: responder, status: 'duplicate', body: 'Already received. Current state: ' + (st ? st.state : 'unknown') + '. Not running it again.' });
     const f = store.writeText(dir, 'outbox', 'ack-duplicate-' + env.attempt_id + '.txt', envl.renderMessage(ack));
-    return print(Object.assign({}, base, { verdict: 'duplicate', state: st, reply_file: f, result_file: store.resultMessageFile(dir), instruction: 'do not run it again. Send reply_file, and result_file too if there is one' }));
+    return print(Object.assign({}, base, { verdict: 'duplicate', state: st, reply_file: f, result_file: store.resultMessageFile(dir), instruction: viaPaseo ? 'do not run it again. ' + PASEO_NOTHING_TO_SEND : 'do not run it again. Send reply_file, and result_file too if there is one' }));
   }
 
   store.appendEvent(dir, { type: 'received', recipient: 'self', attempt_id: env.attempt_id, detail: from ? 'from=' + from : null });
@@ -505,7 +557,8 @@ function cmdReceive(args, cwd) {
     notice: 'check only the impact on this repository and report it with reply --status completed. Do not fix anything',
     change_request: 'do not start investigating or fixing. Immediately make the result with reply --status awaiting_user ("Received; waiting for the user on this side") and tell the user',
   }[env.intent];
-  print(Object.assign({}, base, { verdict: 'new', reply_file: f, instruction: 'first send reply_file to from (ACK). Then: ' + next }));
+  const first = viaPaseo ? 'do not send the ACK (' + PASEO_NOTHING_TO_SEND + '). Then: ' : 'first send reply_file to from (ACK). Then: ';
+  print(Object.assign({}, base, { verdict: 'new', reply_file: f, instruction: first + next }));
 }
 
 // ───────────────────────── reply (받는 쪽 결과) ─────────────────────────
@@ -520,6 +573,7 @@ function replyInstruction(replyTo) {
   if (String(replyTo || '').indexOf('unattended:') === 0) {
     return 'this request came by the unattended path — there is nowhere to SendMessage. The result stays in this record and the sender collects it with an unattended recheck';
   }
+  if (String(replyTo || '').indexOf(paseo.PREFIX) === 0) return PASEO_NOTHING_TO_SEND;
   return 'SendMessage the contents of reply_file to reply_to. If that fails, reroute';
 }
 
@@ -576,6 +630,9 @@ function cmdReroute(args, cwd) {
   // 같은 머신에서 온 요청인가는 **처음 받은 주소**로 가른다. 한 번 다시 찾은 뒤의 답장 주소는 세션 이름이라
   // 'uds:' 로 시작하지 않는다 — 그걸로 가르면 두 번째 reroute 가 늘 "다른 머신" 으로 끝났다(C04).
   const first = String(rec.from || '');
+  if (first.indexOf(paseo.PREFIX) === 0) {
+    return print({ status: 'not_needed', reason: PASEO_NOTHING_TO_SEND, record_dir: dir, instruction: 'do not send. The result is kept in the records of this repository' });
+  }
   if (first.indexOf('uds:') !== 0) {
     return print({ status: 'unreachable', reason: 'this request came from another machine. Remote Control addresses are not searched again — the result is kept in the records of this repository', reply_to: currentReplyTo(dir, rec) || first, record_dir: dir });
   }
@@ -638,6 +695,118 @@ function cmdUnattended(args, cwd) {
   const r = unattended.runUnattended({ root: ctx.root, book: book, requestId: need(args, 'id'), alias: need(args, 'to'), peerScript: __filename });
   print(r);
   if (!r.ok) process.exitCode = 1;
+}
+
+// ───────────────────────── deliver · collect (Paseo 통로 · 2026-10-13) ─────────────────────────
+// lib/paseo.cjs 머리말 참고. 요약:
+//   · Paseo 의 send 는 일하는 중인 대화를 끊고, 권한 확인 대기도 치운다 → 쉬고 있을 때만 넣는다
+//   · 받는 쪽은 아무것도 보내지 않는다 → 그 턴이 끝나길 기다렸다가 짝 저장소 기록에서 가져온다
+
+function lastPrepared(dir, alias) {
+  const evs = store.listEvents(dir).filter((e) => e.type === 'prepared' && e.recipient === alias);
+  return evs.length ? evs[evs.length - 1] : null;
+}
+
+// 가져온 응답 — 사용자에게 알릴 만큼만
+function brief(p) {
+  return { request_id: p.request_id, alias: p.alias, type: p.type, status: p.status, accepted: p.accepted, body: p.type === 'result' ? p.body : undefined, result_file: p.result_file || null, promoted: p.promoted || null, wrong_title: p.wrong_title || null, forgot_local: !!p.forgot_local };
+}
+
+// 한 요청의 응답을 가져온다 — 같은 머신은 짝 기록을 바로, 다른 머신은 SSH 로 읽기만
+function collectOne(ctx, book, id) {
+  const local = syncIfPossible(ctx.b, ctx.root).filter((p) => p.request_id === id);
+  const remote = ingest.collectRemote(ctx.root, book, id);
+  return { pulled: local.concat(remote.pulled).map(brief), checked: remote.checked, errors: remote.errors };
+}
+
+function cmdDeliver(args, cwd) {
+  const ctx = repoContext(cwd);
+  const book = requireBook(ctx.b);
+  const id = need(args, 'id');
+  const alias = need(args, 'to');
+  const dir = store.requestDir(ctx.root, id);
+  const rec = store.readRequestRecord(dir);
+  if (!rec || rec.direction !== 'outbound') throw new UsageError('no sent record for ' + id);
+  if (!rec.targets[alias]) throw new UsageError(alias + ' is not a recipient of ' + id);
+  const ev = lastPrepared(dir, alias);
+  if (!ev || !ev.route || ev.route.transport !== 'paseo') throw new UsageError('the last prepare for ' + alias + ' did not choose the Paseo path — prepare again (or send it with SendMessage)');
+  const route = ev.route;
+  // 주소록이 그사이 바뀌었으면 보내지 않는다 — 같은 요청이 다른 곳으로 새지 않게
+  const peer = ab.peersOf(book)[alias];
+  const h = peer ? paseo.hostFor(book, peer) : { error: 'no peer ' + alias + ' in the address book' };
+  if (h.error) throw new UsageError(h.error);
+  if (h.host !== route.host || !peer || peer.location.root !== rec.targets[alias].root) throw new UsageError('the address book entry for ' + alias + ' changed since prepare — prepare again');
+  const file = path.join(dir, 'outbox', util.fileKey(alias) + '.txt');
+  if (!fs.existsSync(file)) throw new UsageError('message file missing: ' + file);
+  const env = envl.extractEnvelope(fs.readFileSync(file, 'utf8'));
+  if (env.attempt_id !== ev.attempt_id || !envl.viaPaseo(env)) throw new UsageError('the message file does not match the last prepare — prepare again');
+  const timeout = opt(args, 'timeout');
+  if (timeout && !/^\d+$/.test(timeout)) throw new UsageError('--timeout is a number of seconds');
+  const agent = route.agent_id;
+  const target = { agent_id: agent, host: route.host, name: route.name || null };
+  const out = (extra) => print(Object.assign({ request_id: id, short_id: util.shortId(id), alias: alias, paseo: target }, extra));
+  // 넣지 못했으면 기록하지 않는다 — failed 는 종결이라 같은 시도로 다시 넣어도 상태가 앞으로 가지 않는다.
+  // 상태는 prepared 로 남고, deliver 를 다시 부르면 된다
+  const failed = (msg) => {
+    process.exitCode = 1;
+    return out({ ok: false, delivered: false, error: msg, instruction: 'nothing was sent — fix the cause and run deliver again' });
+  };
+
+  // 이 시도를 이미 넣었으면 다시 넣지 않는다 — 응답만 가져온다
+  const st = state.fold(store.listEvents(dir))[alias];
+  const already = !!(st && st.attempt_id === ev.attempt_id && st.state !== 'prepared');
+
+  let waitedBeforeSend = false;
+  if (!already) {
+    // 1) 그 대화가 말을 받을 수 있을 때까지 — 일하는 중이면 끝나길 기다린다. 권한 확인 대기면 넣지 않는다
+    for (;;) {
+      const i = paseo.inspect(route.host, agent);
+      if (!i.ok) return failed(i.error);
+      const a = i.json || {};
+      if (a.Archived) return failed('the peer Paseo conversation was archived — prepare again');
+      if (Array.isArray(a.PendingPermissions) && a.PendingPermissions.length > 0) {
+        return out({ ok: false, delivered: false, waiting: 'permission', reason: 'the peer conversation is waiting for its user to answer a permission prompt. Sending now would clear that prompt, so nothing was sent — run deliver again later' });
+      }
+      if (a.Status !== 'running' && a.Status !== 'initializing') break;
+      if (args['no-wait']) return out({ ok: false, delivered: false, waiting: 'busy', reason: 'the peer conversation is working (' + a.Status + ') — nothing was sent' });
+      const w = paseo.wait(route.host, agent, timeout);
+      if (!w.ok) return failed(w.error);
+      const ws = w.json && w.json.status;
+      if (ws === 'timeout') return out({ ok: false, delivered: false, waiting: 'timeout', reason: 'the peer conversation was still working when --timeout ran out — nothing was sent' });
+      if (ws === 'permission') return out({ ok: false, delivered: false, waiting: 'permission', reason: 'the peer conversation is waiting for its user to answer a permission prompt — nothing was sent' });
+      waitedBeforeSend = true;
+    }
+    // 2) 넣는다
+    const s = paseo.send(route.host, agent, file);
+    if (!s.ok) return failed(s.error);
+    store.appendEvent(dir, { type: 'transport_accepted', recipient: alias, attempt_id: ev.attempt_id, detail: 'via=paseo agent=' + agent + (route.host ? ' host=' + route.host : '') });
+  }
+  if (args['no-collect']) return out({ ok: true, delivered: !already, already_delivered: already, waited_before_send: waitedBeforeSend, instruction: 'collect later with collect --id ' + id });
+
+  // 3) 그 턴이 끝나길 기다렸다가 응답을 가져온다
+  const w2 = paseo.wait(route.host, agent, timeout);
+  const turn = w2.ok ? w2.json && w2.json.status : 'unknown';
+  const c = collectOne(ctx, book, id);
+  const now = state.fold(store.listEvents(dir))[alias] || null;
+  const hasRecord = c.checked.some((x) => x.request_id === id && x.recipient_has_record) || c.pulled.length > 0 || (now && now.state !== 'transport_accepted' && now.state !== 'prepared');
+  let note = null;
+  if (turn === 'permission') note = 'the peer conversation stopped at a permission prompt for its user — what it recorded so far was collected; run collect again later';
+  else if (turn === 'timeout') note = '--timeout ran out before the peer finished — run collect later';
+  else if (!hasRecord) note = 'the peer finished its turn but left no peer_req record for this request — it may not have the plugin, may have judged it WRONG_TARGET, or may not have followed the Receive procedure. Look at that conversation in Paseo';
+  out({ ok: true, delivered: !already, already_delivered: already, waited_before_send: waitedBeforeSend, turn: turn, pulled: c.pulled, collect_errors: c.errors, state: now, note: note, instruction: 'report as in "Receive a reply" (quote the peer answer verbatim). Do not reply to the peer' });
+}
+
+function cmdCollect(args, cwd) {
+  const ctx = repoContext(cwd);
+  const book = requireBook(ctx.b);
+  const id = opt(args, 'id');
+  if (id) {
+    const c = collectOne(ctx, book, id);
+    return print({ ok: true, request_id: id, pulled: c.pulled, checked: c.checked, errors: c.errors, state: state.fold(store.listEvents(store.requestDir(ctx.root, id))) });
+  }
+  const local = syncIfPossible(ctx.b, ctx.root);
+  const remote = ingest.collectRemote(ctx.root, book, null);
+  print({ ok: true, pulled: local.concat(remote.pulled).map(brief), checked: remote.checked, errors: remote.errors });
 }
 
 // ───────────────────────── status · inbox ─────────────────────────
@@ -716,6 +885,8 @@ const COMMANDS = {
   ingest: cmdIngest,
   sync: cmdSync,
   unattended: cmdUnattended,
+  deliver: cmdDeliver,
+  collect: cmdCollect,
   status: cmdStatus,
   inbox: cmdInbox,
 };

@@ -226,15 +226,46 @@ function safeEnv(env) {
 function runExe(name, args, opts) {
   const exe = findOnPath(name);
   if (!exe) return { status: null, stdout: '', stderr: '', error: { code: 'ENOENT', message: name + ' not found in PATH' } };
+  return runAt(exe, args, opts);
+}
+
+// cmd.exe 가 따옴표 안에서도 바꿔 읽는 글자 — % 는 환경변수로 펼쳐지고 " 는 따옴표를 닫는다
+const CMD_UNSAFE_RE = /["%\r\n]/;
+
+// 절대 경로로 정해진 실행 파일을 돈다 — PATH 에 없는 실행 파일(예: Paseo 앱에 딸린 paseo.cmd)에 쓴다.
+function runAt(exe, args, opts) {
   const o = Object.assign({}, opts || {});
   o.env = safeEnv(o.env);
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(exe)) {
-    // .cmd·.bat 은 cmd.exe 를 거쳐야 한다. 인자는 호출하는 쪽이 공백·따옴표 없는 고정값만 넘긴다.
+    // .cmd·.bat 은 cmd.exe 를 거쳐야 한다. 인자마다 따옴표로 감싸고, 따옴표 안에서도 바뀌는 글자는 거부한다.
+    const bad = [exe].concat(args).filter((a) => CMD_UNSAFE_RE.test(String(a)));
+    if (bad.length) return { status: null, stdout: '', stderr: '', error: { code: 'EUNSAFEARG', message: 'an argument contains a character cmd.exe would rewrite (" % or a line break): ' + bad[0] } };
     const line = '"' + ['"' + exe + '"'].concat(args.map((a) => '"' + a + '"')).join(' ') + '"';
     o.windowsVerbatimArguments = true;
     return childProcess.spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', line], o);
   }
   return childProcess.spawnSync(exe, args, o);
+}
+
+function isFile(f) {
+  try {
+    return fs.statSync(f).isFile();
+  } catch (e) {
+    return false;
+  }
+}
+
+// 셸 한 겹용 작은따옴표 감싸기(원격 bash 에 넘길 때)
+function shq(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+// 다른 머신에서 명령 하나 — 무인 경로·Paseo 경로가 함께 쓴다.
+// Windows 의 ssh 는 파이프 입력의 끝(EOF)을 서버에 전하지 못한다(실측). 그래서 stdin 은 쓰지 않고 명령은 인자로만 준다.
+// host 앞에 '--' 를 둬서 별칭이 옵션으로 읽히지 않게 한다(주소록 검증과 이중 방어 · 1차 리뷰 P1).
+// LogLevel=ERROR — 접속 경고문(예: post-quantum 안내)이 오류 메시지를 덮지 않게 한다
+function ssh(host, cmd) {
+  return runExe('ssh', ['-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR', '--', host, 'bash -lc ' + shq(cmd)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
 }
 
 function readJson(file, fallback) {
@@ -291,6 +322,10 @@ module.exports = {
   rmTree,
   findOnPath,
   runExe,
+  runAt,
+  isFile,
+  shq,
+  ssh,
   readJson,
   claudeHome,
   stateDir,

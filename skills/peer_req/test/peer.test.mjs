@@ -192,14 +192,19 @@ test('C1 제목은 정확히 같거나 " · 숫자" 만 허용한다 (부분 일
 
 // ───────────── 전체 왕복 (두 저장소) ─────────────
 
+// 목록에 짝이 없으면 prepare 가 Paseo 통로를 찾아본다(2026-10-13). 시험이 이 기기의 진짜 Paseo 를 부르지 않게
+// 기본은 없는 경로를 준다(→ "paseo 없음"). Paseo 시험은 가짜 CLI 를 넘긴다.
+const NO_PASEO = path.join(os.tmpdir(), 'peerreq-no-paseo', 'paseo-missing.cjs');
+const hermetic = (env) => ({ ...process.env, PEER_REQ_PASEO_CLI: NO_PASEO, PASEO_AGENT_ID: '', ...env });
+
 function cli(args, { cwd, env }) {
-  const out = execFileSync(process.execPath, [PEER, ...args], { cwd, env: { ...process.env, ...env }, encoding: 'utf8' });
+  const out = execFileSync(process.execPath, [PEER, ...args], { cwd, env: hermetic(env), encoding: 'utf8' });
   return JSON.parse(out);
 }
 
 function cliFail(args, { cwd, env }) {
   try {
-    execFileSync(process.execPath, [PEER, ...args], { cwd, env: { ...process.env, ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync(process.execPath, [PEER, ...args], { cwd, env: hermetic(env), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
     return { code: e.status, out: JSON.parse(e.stdout) };
   }
@@ -1226,4 +1231,219 @@ test('리뷰9 같은 PC 에서 사용자가 목록에서 고른 세션도 받았
   fs.writeFileSync(ackFile, renderMessage(makeReply({ type: 'ack', request: req, responder: 'pc.b', status: 'received' })));
   cli(['ingest', '--message-file', ackFile], { cwd: A, env });
   assert.equal(JSON.parse(fs.readFileSync(declaredFile, 'utf8')).session_id, 'sid-b2');
+});
+
+// ───────────── Paseo 통로 (2026-10-13) ─────────────
+// Paseo 대화는 Remote Control 이 꺼져 있어 목록에 안 보인다. 가짜 paseo CLI 로 그 통로를 시험한다.
+
+const FAKE_PASEO = path.join(HERE, 'fixtures', 'fake-paseo.cjs');
+const { REMOTE_SNAPSHOT, viewsFromSnapshot } = require('../scripts/lib/ingest.cjs');
+
+function paseoPair(o = {}) {
+  const home = tmp('home');
+  const state = tmp('state');
+  const A = tmp('repoA');
+  const B = tmp('repoB');
+  fs.mkdirSync(path.join(home, 'sessions')); // 떠 있는 세션 없음 — 쉬는 Paseo 대화는 프로세스가 없다
+  const peerB = { endpoint_id: 'pc.b', machine_id: o.remote ? 'srv' : 'm1', location: { root: fwd(B) } };
+  if (o.hostAlias) peerB.location.host_alias = o.hostAlias;
+  fs.writeFileSync(path.join(A, '.peer_req.json'), JSON.stringify({ schema_version: 1, self: { endpoint_id: 'pc.a', machine_id: 'm1', root: fwd(A) }, peers: { b: peerB } }));
+  fs.writeFileSync(path.join(B, '.peer_req.json'), JSON.stringify({ schema_version: 1, self: { endpoint_id: 'pc.b', machine_id: o.remote ? 'srv' : 'm1', root: fwd(B) } }));
+  const agentsFile = path.join(A, 'agents.txt');
+  fs.writeFileSync(agentsFile, 'This session is repoa-11 [000001] — x\n');
+  const bodyFile = path.join(A, 'body.txt');
+  fs.writeFileSync(bodyFile, 'Aside 창이 전부 가려졌었나?');
+  const agentB = Object.assign({ id: 'aaaaaaaa-1111-2222-3333-444444444444', shortId: 'aaaaaaa', cwd: B, status: 'idle', name: 'B chat' }, o.agent || {});
+  const envB = { CLAUDE_CONFIG_DIR: home, PEER_REQ_STATE: state, CLAUDE_CODE_SESSION_ID: 'sid-b' };
+  const fake = path.join(tmp('fake'), 'state.json');
+  const hostKey = o.hostAlias ? 'ssh://' + o.hostAlias : 'local';
+  fs.writeFileSync(fake, JSON.stringify({ agents: { [hostKey]: [agentB].concat(o.more || []) }, onSend: { [agentB.id]: { peer: PEER, cwd: B, env: envB, status: o.replyStatus === undefined ? 'completed' : o.replyStatus, answer: 'answer-b: 전부 가려졌다' } }, unreachable: o.unreachable || {} }));
+  const envA = { CLAUDE_CONFIG_DIR: home, PEER_REQ_STATE: state, CLAUDE_CODE_SESSION_ID: 'sid-a', PEER_REQ_PASEO_CLI: FAKE_PASEO, FAKE_PASEO_STATE: fake };
+  const readFake = () => JSON.parse(fs.readFileSync(fake, 'utf8'));
+  const prep = (extra) => cli(['prepare', '--to', 'b', '--intent', 'query', '--body-file', bodyFile, '--agents-file', agentsFile].concat(extra || []), { cwd: A, env: envA });
+  return { home, state, A, B, agentB, envA, envB, fake, readFake, prep, agentsFile };
+}
+
+test('Paseo 왕복: 목록에 짝이 없으면 짝 폴더의 Paseo 대화로 넣고, 받는 쪽은 아무것도 보내지 않고, 보낸 쪽이 기록에서 답을 가져온다', () => {
+  const t = paseoPair();
+  const p = t.prep();
+  const tg = p.targets[0];
+  assert.equal(tg.status, 'ready');
+  assert.equal(tg.transport, 'paseo');
+  assert.equal(tg.via, 'paseo_only_candidate');
+  assert.equal(tg.send_to, 'paseo:' + t.agentB.id);
+  assert.match(tg.instruction, /deliver/);
+  const text = fs.readFileSync(tg.message_file, 'utf8');
+  const env = extractEnvelope(text);
+  assert.equal(env.transport, 'paseo');
+  assert.equal(env.header_version, HEADER_VERSION);
+  assert.equal(env.header_sha256, headerHash('query', 'paseo'));
+  assert.equal(env.recipient_session_id, undefined);
+  assert.match(text, /delivered through Paseo/);
+
+  const d = cli(['deliver', '--id', p.request_id, '--to', 'b'], { cwd: t.A, env: t.envA });
+  assert.equal(d.ok, true);
+  assert.equal(d.delivered, true);
+  assert.equal(d.waited_before_send, false);
+  assert.equal(d.state.state, 'completed');
+  assert.ok(d.pulled.some((x) => x.type === 'result' && x.body.includes('answer-b')));
+  const f = t.readFake();
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].no_wait, true);
+  // 받는 쪽 — from 이 없어도 Paseo 통로로 기록하고, 아무것도 보내지 말라고 안내한다
+  assert.equal(f.received[0].verdict, 'new');
+  assert.equal(f.received[0].from, 'paseo:pc.a');
+  assert.equal(f.received[0].transport, 'paseo');
+  assert.match(f.received[0].instruction, /Send nothing/);
+  assert.match(f.replied.instruction, /Send nothing/);
+  // 받았다는 답이 온 뒤에 그 대화를 기억한다
+  assert.equal(JSON.parse(fs.readFileSync(path.join(t.state, 'paseo_agents', 'pc.b.json'), 'utf8')).agent_id, t.agentB.id);
+  // 같은 시도를 다시 deliver 해도 다시 넣지 않는다
+  const d2 = cli(['deliver', '--id', p.request_id, '--to', 'b'], { cwd: t.A, env: t.envA });
+  assert.equal(d2.already_delivered, true);
+  assert.equal(t.readFake().sent.length, 1);
+  // 같은 폴더에 대화가 하나 더 생겨도 기억한 대화로 간다
+  const st = t.readFake();
+  st.agents.local.push({ id: 'bbbbbbbb-1111-2222-3333-444444444444', cwd: t.B, status: 'idle' });
+  fs.writeFileSync(t.fake, JSON.stringify(st));
+  const p2 = t.prep();
+  assert.equal(p2.targets[0].via, 'remembered_paseo');
+  assert.equal(p2.targets[0].send_to, 'paseo:' + t.agentB.id);
+  // forget 은 Paseo 기억도 지운다 → 다시 묻는다
+  assert.equal(cli(['forget', '--to', 'b'], { cwd: t.A, env: t.envA }).removed_paseo, true);
+  assert.equal(t.prep().targets[0].status, 'ask');
+});
+
+test('Paseo: 상대가 일하는 중이면 끝나길 기다렸다 넣고, 권한 확인을 기다리면 넣지 않는다(넣으면 그 확인을 치운다)', () => {
+  const t = paseoPair({ agent: { statusSeq: ['running', 'idle'] } });
+  const p = t.prep();
+  const d = cli(['deliver', '--id', p.request_id, '--to', 'b'], { cwd: t.A, env: t.envA });
+  assert.equal(d.delivered, true);
+  assert.equal(d.waited_before_send, true);
+  const calls = t.readFake().calls.map((c) => c.cmd);
+  assert.ok(calls.indexOf('wait') < calls.indexOf('send'), 'wait before send: ' + calls.join(','));
+
+  const t2 = paseoPair({ agent: { pending: [{ id: 'perm-1' }] } });
+  const p2 = t2.prep();
+  const d2 = cli(['deliver', '--id', p2.request_id, '--to', 'b'], { cwd: t2.A, env: t2.envA });
+  assert.equal(d2.ok, false);
+  assert.equal(d2.waiting, 'permission');
+  assert.equal(t2.readFake().sent.length, 0);
+  // 넣지 않았으니 상태는 prepared 그대로 — 나중에 deliver 를 다시 부르면 된다
+  assert.equal(cli(['status', '--id', p2.request_id], { cwd: t2.A, env: t2.envA }).states.b.state, 'prepared');
+});
+
+test('Paseo: 짝 폴더에 대화가 둘이면 묻고, --pick paseo:<번호> 로 고른다 · --via rc 면 Paseo 로 넘어가지 않는다', () => {
+  const t = paseoPair({ more: [{ id: 'cccccccc-1111-2222-3333-444444444444', cwd: '', status: 'idle' }] });
+  const st = t.readFake();
+  st.agents.local[1].cwd = path.join(t.B, 'sub');
+  fs.writeFileSync(t.fake, JSON.stringify(st));
+  const p = t.prep();
+  assert.equal(p.targets[0].status, 'ask');
+  assert.equal(p.targets[0].transport, 'paseo');
+  assert.equal(p.targets[0].candidates.length, 2);
+  const p2 = cli(['prepare', '--request-id', p.request_id, '--to', 'b', '--agents-file', t.agentsFile, '--pick', 'paseo:cccccccc'], { cwd: t.A, env: t.envA });
+  assert.equal(p2.targets[0].status, 'ready');
+  assert.equal(p2.targets[0].paseo.agent_id, 'cccccccc-1111-2222-3333-444444444444');
+  const p3 = t.prep(['--via', 'rc']);
+  assert.notEqual(p3.targets[0].transport, 'paseo');
+});
+
+test('Paseo: 목록에 짝 세션이 보이면 지금처럼 그 길(Remote Control·같은 머신)로 보낸다', () => {
+  const t = paseoPair();
+  fs.writeFileSync(path.join(t.home, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'sid-b', cwd: t.B, name: 'repob-7f' }));
+  fs.writeFileSync(t.agentsFile, 'This session is repoa-11 [000001]\n  repob-7f [000002]  ·  interactive  ·  idle\n');
+  const p = t.prep();
+  assert.equal(p.targets[0].status, 'ready');
+  assert.equal(p.targets[0].via, 'auto');
+  assert.equal(p.targets[0].transport, undefined);
+  assert.equal((t.readFake().calls || []).length, 0);
+});
+
+test('Paseo: 짝 폴더에 떠 있지만 목록에 없는 세션(일하는 중인 Paseo 대화)이면 Paseo 로 넘어가고, Paseo 에도 없으면 원래대로 묻는다', () => {
+  const t = paseoPair();
+  fs.writeFileSync(path.join(t.home, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'sid-b', cwd: t.B, name: 'repob-paseo' }));
+  const p = t.prep();
+  assert.equal(p.targets[0].status, 'ready');
+  assert.equal(p.targets[0].transport, 'paseo');
+  const st = t.readFake();
+  st.agents.local = [];
+  fs.writeFileSync(t.fake, JSON.stringify(st));
+  const p2 = t.prep();
+  assert.equal(p2.targets[0].status, 'ask');
+  assert.notEqual(p2.targets[0].transport, 'paseo');
+  assert.match(p2.targets[0].reason, /ListAgents/);
+});
+
+test('Paseo: 다른 머신은 host_alias 로 그 기기 Paseo 를 찾고, 없거나 못 붙으면 사유를 알린다', () => {
+  const t = paseoPair({ remote: true, hostAlias: 'srv-1' });
+  const p = t.prep();
+  assert.equal(p.targets[0].status, 'ready');
+  assert.equal(p.targets[0].paseo.host, 'ssh://srv-1');
+  assert.ok(t.readFake().calls.every((c) => c.host === 'ssh://srv-1'));
+
+  const t2 = paseoPair({ remote: true });
+  const p2 = t2.prep();
+  assert.equal(p2.targets[0].status, 'unreachable');
+  assert.match(p2.targets[0].paseo_reason, /host_alias/);
+
+  const t3 = paseoPair({ remote: true, hostAlias: 'srv-1', unreachable: { 'ssh://srv-1': true } });
+  const p3 = t3.prep();
+  assert.equal(p3.targets[0].status, 'unreachable');
+  assert.match(p3.targets[0].paseo_reason, /could not list/);
+});
+
+test('Paseo: 원격 기록 읽기 스크립트로 받은 사본에서도 같은 규칙으로 ACK·결과를 가져온다', () => {
+  const t = paseoPair();
+  const p = t.prep();
+  cli(['record', '--id', p.request_id, '--to', 'b', '--event', 'transport_accepted'], { cwd: t.A, env: t.envA });
+  // 받는 쪽이 처리한 것처럼(다른 머신이면 이 기록이 SSH 너머에 있다)
+  const msg = path.join(t.B, 'in.txt');
+  fs.copyFileSync(p.targets[0].message_file, msg);
+  const r = cli(['receive', '--message-file', msg], { cwd: t.B, env: t.envB });
+  const ans = path.join(t.B, 'ans.txt');
+  fs.writeFileSync(ans, '원격 답');
+  cli(['reply', '--id', r.request_id, '--status', 'completed', '--body-file', ans], { cwd: t.B, env: t.envB });
+  // 원격에서 도는 스크립트를 그대로 돌려 사본을 만든다
+  const snap = JSON.parse(execFileSync(process.execPath, ['-e', REMOTE_SNAPSHOT, t.B, p.request_id, 'not-a-uuid'], { encoding: 'utf8' }));
+  assert.deepEqual(Object.keys(snap), [p.request_id]);
+  assert.equal(snap[p.request_id].direction, 'inbound');
+  assert.ok(snap[p.request_id].outbox['ack.txt']);
+  assert.ok(snap[p.request_id].outbox['result-final.txt']);
+  const views = viewsFromSnapshot(snap);
+  const { pullFrom } = require('../scripts/lib/ingest.cjs');
+  const prev = process.env.PEER_REQ_STATE;
+  process.env.PEER_REQ_STATE = t.state;
+  try {
+    const pulled = pullFrom(t.A, p.request_id, 'b', views[p.request_id], 'test');
+    assert.deepEqual(pulled.map((x) => x.status), ['received', 'completed']);
+  } finally {
+    if (prev === undefined) delete process.env.PEER_REQ_STATE;
+    else process.env.PEER_REQ_STATE = prev;
+  }
+  assert.equal(cli(['status', '--id', p.request_id], { cwd: t.A, env: t.envA }).states.b.state, 'completed');
+});
+
+test('Paseo 로 온 요청: 대상이 아니거나 중복이면 보내지 말라고 안내하고, reroute 는 할 일이 없다 · 모르는 통로는 거부한다', () => {
+  const t = paseoPair();
+  const p = t.prep();
+  const msg = path.join(t.B, 'in.txt');
+  fs.copyFileSync(p.targets[0].message_file, msg);
+  const N = tmp('nobook');
+  const w = cli(['receive', '--message-file', msg], { cwd: N, env: { PEER_REQ_STATE: tmp('state') } });
+  assert.equal(w.verdict, 'wrong_target');
+  assert.match(w.instruction, /Send nothing/);
+  cli(['receive', '--message-file', msg], { cwd: t.B, env: t.envB });
+  const dup = cli(['receive', '--message-file', msg], { cwd: t.B, env: t.envB });
+  assert.equal(dup.verdict, 'duplicate');
+  assert.match(dup.instruction, /Send nothing/);
+  const listB = path.join(t.B, 'agents.txt');
+  fs.writeFileSync(listB, 'This session is repob [000002]\n');
+  assert.equal(cli(['reroute', '--id', p.request_id, '--agents-file', listB], { cwd: t.B, env: t.envB }).status, 'not_needed');
+  // Remote Control 머리말은 그대로다(통로 칸 없음 = 지금까지와 같은 해시)
+  assert.equal(headerHash('query'), headerHash('query', undefined));
+  assert.notEqual(headerHash('query'), headerHash('query', 'paseo'));
+  const env = extractEnvelope(fs.readFileSync(msg, 'utf8'));
+  env.transport = 'carrier-pigeon';
+  assert.ok(checkEnvelope(env).some((x) => x.includes('transport')));
 });

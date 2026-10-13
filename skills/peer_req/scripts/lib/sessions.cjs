@@ -533,7 +533,8 @@ function resolvePeer(o) {
     if (hit.length === 1) {
       const t = toLocal(hit[0]);
       if (t) return make(Object.assign({ status: 'ready', via: 'declared', session_id: hit[0].sessionId }, t));
-      return make({ status: 'ask', reason: 'the recorded session (' + hit[0].name + ') does not match exactly one entry in the ListAgents list', candidates: asCandidates(hit) });
+      // unlisted — 떠 있는데 목록에 없다(Remote Control 이 꺼진 Paseo 대화 등). prepare 가 Paseo 통로를 찾아본다
+      return make({ status: 'ask', reason: 'the recorded session (' + hit[0].name + ') does not match exactly one entry in the ListAgents list', candidates: asCandidates(hit), unlisted: true });
     }
     if (hit.length > 1) return make({ status: 'ask', reason: 'several processes are running with the recorded session id', candidates: asCandidates(hit) });
     note = 'the recorded session (' + (dec.name_at_bind || dec.session_id) + ') is not running now';
@@ -543,10 +544,11 @@ function resolvePeer(o) {
   if (cands.length === 1) {
     const t = toLocal(cands[0]);
     if (t) return make(Object.assign({ status: 'ready', via: 'auto', session_id: cands[0].sessionId, bind: true, note: note }, t));
-    return make({ status: 'ask', reason: 'the candidate (' + cands[0].name + ') does not match exactly one entry in the ListAgents list', note: note, candidates: asCandidates(cands) });
+    return make({ status: 'ask', reason: 'the candidate (' + cands[0].name + ') does not match exactly one entry in the ListAgents list', note: note, candidates: asCandidates(cands), unlisted: true });
   }
   if (cands.length === 0) {
-    return make({ status: 'ask', reason: 'no session found running in the peer folder (' + peer.location.root + ')', note: note, candidates: asCandidates(live) });
+    // no_session_in_root — prepare 가 이걸 보고 Paseo 통로를 찾아본다(쉬는 Paseo 대화는 프로세스가 없어 여기 안 보인다)
+    return make({ status: 'ask', reason: 'no session found running in the peer folder (' + peer.location.root + ')', note: note, candidates: asCandidates(live), no_session_in_root: true });
   }
   return make({ status: 'ask', reason: cands.length + ' sessions are running in the peer folder', note: note, candidates: asCandidates(cands) });
 }
