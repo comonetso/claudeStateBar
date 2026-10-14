@@ -10,9 +10,10 @@ import { Pressable, Text, View } from "react-native";
 import { accountSwitch, accountsWait, type AccountKind } from "../shared/account";
 import { contextUsedTokens } from "./contextPill";
 
-// 입력창 위 "계정 바꾸기" 알약(리규형님 10-14 결정): 알약 줄에 두고 모든 화면에서 화살표 아이콘만 보인다. 원래 계정과 다르게
-// 바꿨을 때는 아이콘 색(주황)으로만 구분한다(리규형님 "화살표 쪽은 색깔만"). 계정 이름은 "팀·개인"이 아니라 이 기기 Paseo 공급자
+// 입력창 위 "Claude 공급자 바꾸기" 알약(리규형님 10-14 결정): 알약 줄에 두고 모든 화면에서 화살표 아이콘만 보인다. 처음 연 공급자와
+// 다르게 바꿨을 때는 아이콘 색(주황)으로만 구분한다(리규형님 "화살표 쪽은 색깔만"). 이름은 "팀·개인"이 아니라 이 기기 Paseo 공급자
 // 이름 그대로 — 확인 창과 마우스 도움말에 나온다(리규형님 "다른 사람들을 생각하면 프로바이더 이름을 그대로").
+// 문구도 "계정"이 아니라 "공급자를 바꾼다"로 쓴다(리규형님 10-14 — 개인 계정 여러 개를 공급자로 따로 등록하는 사람도 있다).
 // 누르면 한 번 더 묻는다 — 다시 뜬 뒤 첫 답에서 대화 전체를 그 계정으로 다시 읽어 한도를 쓰기 때문. 바꾸면 기록만 남기고,
 // 실행기가 Claude 를 끈 뒤 다음 말 때 새 계정으로 다시 띄운다(화면 기록은 건드리지 않는다 — 새로 고침은 폰을 멈추게 했다).
 // 위쪽 공급자 이름 칸은 건드리지 않는다(리규형님 "빨간 칸은 신경 쓰지 마"). 자동 넘김은 없다(10-10 결정) — 누를 때만 바뀐다.
@@ -65,7 +66,7 @@ function AccountDetail(props: PluginButtonContentProps) {
   if (!info) {
     return (
       <View style={{ padding: 12, minWidth: 240 }}>
-        <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>이 대화는 계정을 바꿀 수 없습니다.</Text>
+        <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>이 대화는 Claude 공급자를 바꿀 수 없습니다.</Text>
       </View>
     );
   }
@@ -101,23 +102,23 @@ function AccountDetail(props: PluginButtonContentProps) {
   );
   return (
     <View style={{ padding: 12, gap: 8, minWidth: 240, maxWidth: 340 }}>
-      <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>계정 바꾸기</Text>
+      <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>Claude 공급자 바꾸기</Text>
       <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
-        지금 {names[info.current]} 계정{info.current === info.base ? "(원래 계정)" : `(원래는 ${names[info.base]})`} → {names[to]} 계정
+        지금 {names[info.current]}{info.current === info.base ? "(원래 공급자)" : `(원래는 ${names[info.base]})`} → {names[to]}
       </Text>
       <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
-        이 대화의 Claude 를 끄고, 다음 말을 보낼 때 {names[to]} 계정으로 같은 대화를 이어 띄웁니다. 화면 기록은 그대로입니다. 그 첫 답에서 대화 전체
-        {tokens !== undefined ? `(약 ${tokens.toLocaleString()} 토큰)` : ""}를 그 계정으로 다시 읽어 그 계정 한도를 씁니다. 진행 중인 답변이 있으면 끊깁니다.
+        이 대화의 Claude 를 끄고, 다음 말을 보낼 때 {names[to]} 공급자로 같은 대화를 이어 띄웁니다. 화면 기록은 그대로입니다. 그 첫 답에서 대화 전체
+        {tokens !== undefined ? `(약 ${tokens.toLocaleString()} 토큰)` : ""}를 그 공급자로 다시 읽어 그 공급자 계정의 한도를 씁니다. 진행 중인 답변이 있으면 끊깁니다.
       </Text>
       {/* Paseo 는 쉬던 Claude 가 꺼지면 이유와 상관없이 실패 알림을 띄운다(claude/agent.js handleRuntimeExit — 종료 코드를 바꿔도 같다).
           막을 수 없어 미리 알린다(리규형님 10-14 "확인 창 문구만") */}
       <Text style={{ color: c.statusWarning, fontSize: 12 }}>
-        바꾸면 "Claude가 예기치 않게 멈췄다(Claude stopped unexpectedly)"는 오류가 한 번 뜹니다. 계정을 바꾸느라 끈 것이라 정상입니다.
+        바꾸면 "Claude가 예기치 않게 멈췄다(Claude stopped unexpectedly)"는 오류가 한 번 뜹니다. 공급자를 바꾸느라 끈 것이라 정상입니다.
       </Text>
       {error ? <Text style={{ color: c.statusDanger, fontSize: 12 }}>{error}</Text> : null}
       <View style={{ flexDirection: "row", gap: 8, justifyContent: "flex-end" }}>
         {button("취소", close, false)}
-        {button(busy ? "바꾸는 중…" : `${names[to]} 계정으로 바꾸기`, () => void press(), true)}
+        {button(busy ? "바꾸는 중…" : `${names[to]} 공급자로 바꾸기`, () => void press(), true)}
       </View>
     </View>
   );
@@ -151,7 +152,7 @@ export function createAccountPills(client: PluginClientContext, log: (message: s
       notify();
     }
     // 마우스 도움말(폰 제외 — Paseo 가 알약 이름을 풍선으로 띄운다)
-    const title = current !== base ? `계정: ${names[current]}(원래 ${names[base]}) — 눌러서 바꾸기` : `계정 바꾸기 — 지금 ${names[current]}`;
+    const title = current !== base ? `Claude 공급자: ${names[current]}(원래 ${names[base]}) — 눌러서 바꾸기` : `Claude 공급자 바꾸기 — 지금 ${names[current]}`;
     const known = pills.get(agentId);
     if (known) {
       if (known.title !== title) {

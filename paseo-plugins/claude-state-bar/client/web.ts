@@ -441,6 +441,7 @@ type MemoryState = Record<string, unknown>;
 type MemoryStore = {
   getState(): MemoryState;
   setState(state: MemoryState): void;
+  subscribe?(listener: (state: MemoryState) => void): () => void;
   persist: {
     hasHydrated(): boolean;
     getOptions(): {
@@ -558,6 +559,11 @@ function layoutSchema(): { safeParse(value: unknown): { success: boolean } } | n
 /** 배치는 저장 파일 대신 화면이 구독하는 메모리에서 읽고, 엄격한 앱 스키마를 통과한 변경만 한 번에 알린다. */
 export function readPaseoLayout(): MemoryState | null {
   return paseoMemoryStore("layout", "useWorkspaceLayoutStore", "workspace-layout-state")?.getState() ?? null;
+}
+/** 배치가 바뀔 때마다 부른다(작업 현황 단추 초록, 10-14). 이 판의 저장소를 못 찾으면 아무것도 안 한다 */
+export function watchPaseoLayout(listener: () => void): () => void {
+  const store = paseoMemoryStore("layout", "useWorkspaceLayoutStore", "workspace-layout-state");
+  return typeof store?.subscribe === "function" ? store.subscribe(() => listener()) : () => {};
 }
 export function updatePaseoLayout(patch: MemoryState): boolean {
   const store = paseoMemoryStore("layout", "useWorkspaceLayoutStore", "workspace-layout-state");

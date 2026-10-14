@@ -75,6 +75,8 @@ import { collectClaudeStats } from "./server/stats/claudeStats";
 import { claudeStats } from "./shared/stats";
 import { forgetAccount, providerFromDisk, switchAccount, waitAccounts } from "./server/account";
 import { accountSwitch, accountsWait } from "./shared/account";
+import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCode, waitLogin } from "./server/claudeLogin";
+import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(soundSettings);
@@ -286,14 +288,24 @@ export default function contribute(server: PluginServerContext) {
     const provider = (handle.current() as { provider?: string } | null)?.provider ?? providerFromDisk(agentId);
     return switchAccount(agentId, to, provider);
   });
+  // Claude 다시 로그인(10-14) — 로그인이 풀린 대화를 턴 끝에서 알아보고, 이 기기 데몬이 `claude auth login` 을 대신 띄운다. 팀원 데몬은 안 한다
+  server.handle(loginWait, async ({ rev }) => waitLogin(rev));
+  server.handle(loginStart, async ({ target }) => startLogin(target));
+  server.handle(loginCode, async ({ code }) => submitCode(code));
+  server.handle(loginCancel, async () => cancelLogin());
   const stopAccountHooks: Array<() => void> = [];
   if (!teamDaemon) {
     stopAccountHooks.push(server.on("agent.archived", ({ agent }) => {
       void forgetAccount(agent.id);
+      forgetLogin(agent.id);
+    }));
+    stopAccountHooks.push(server.on("agent.turn_ended", (event) => {
+      void onTurnEnded(event).catch((error: unknown) => console.log(`[claude-login] turn check failed: ${String(error)}`));
     }));
   }
   return () => {
     for (const stop of stopAccountHooks) stop();
+    stopLogin();
     void routerPromise?.then((value) => value.dispose(), () => {});
     stopProjectLabels();
     stopProjectsCopy();

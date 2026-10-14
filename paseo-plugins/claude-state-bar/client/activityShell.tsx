@@ -4,6 +4,7 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { TABS, isKindKey, isTabKey, type TabKey } from "./activityKinds";
+import { setActivityMounted } from "./activityVisible";
 import { BackgroundPanel } from "./bgPanel";
 import { CodexChatPanel } from "./chatPanel";
 import { CodexRunsPanel } from "./codexPanel";
@@ -83,6 +84,14 @@ export function ActivityPanel(props: PluginWorkspacePanelProps) {
     }),
     [c, scale],
   );
+
+  // 패널이 떠 있는 동안 머리줄 "작업 현황" 단추가 초록(10-14) — 배치를 못 읽는 판에서 쓰는 보조 신호다(activityVisible).
+  // 다른 칸 최대화로 가려져도(크기 0) 초록이어야 해서 크기는 보지 않는다
+  const mountKey = useMemo(() => Symbol("activity-panel"), []);
+  useEffect(() => {
+    setActivityMounted(workspaceId, mountKey, true);
+    return () => setActivityMounted(workspaceId, mountKey, false);
+  }, [workspaceId, mountKey]);
 
   const Pane = PANES[tab];
   return (

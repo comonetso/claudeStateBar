@@ -142,12 +142,12 @@ export function makeSpokenText(text: string, lang: TargetLang): string {
     .replace(/[|]/g, " ")
     .replace(/→|⇒|->|=>|←|⇐|<-/g, PAUSE)
     .replace(/([^\d\s])\1{3,}/gu, (_, char: string) => char.repeat(REPEATED_CHARS_MAX));
-  // 영어 이름 안 기호는 소리로 읽지 않고 띄운다(readaloud_text.py → "readaloud text py")
-  spoken = spoken.replace(/[A-Za-z][A-Za-z0-9_]*(?:[./\\-][A-Za-z0-9_]+)*/g, (token) => {
-    const named = token.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z])([A-Z][a-z])/g, "$1 $2").replace(/[._/\\-]+/g, " ");
-    // 대문자 두 글자 띄어 읽기는 한국어 음성만(원본 readaloud_text.py:571 — 영어 음성은 그대로 둔다)
-    return lang === "ko" ? named.replace(/\b[A-Z]{2}\b/g, (letters) => letters.split("").join(" ")) : named;
-  });
+  // 영어 이름 안 기호는 소리로 읽지 않고 띄운다(readaloud_text.py → "readaloud text py").
+  // 대문자 두 글자(PC·OK·DB)는 떼지 않고 그대로 넘긴다 — 원본 readaloud_text.py 의 "한국어 음성은 두 글자 대문자를 떼어 준다
+  // (VS → V S)"를 옮겼다가 "P C"·"O K"로 읽혀 리규형님이 어색하다고 해 없앴다(10-14)
+  spoken = spoken.replace(/[A-Za-z][A-Za-z0-9_]*(?:[./\\-][A-Za-z0-9_]+)*/g, (token) =>
+    token.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z])([A-Z][a-z])/g, "$1 $2").replace(/[._/\\-]+/g, " "),
+  );
   // 남은 기호 — 숫자 안 점·콜론·쉼표(1.5 · 19:41 · 1,000)와 %, 영어 낱말 안 작은따옴표, 문장 끝 부호만 둔다
   spoken = spoken
     .replace(/[•◦▪▫▸▹►▶●○■□◆◇★☆※]/g, " ") // 글머리·표시 기호

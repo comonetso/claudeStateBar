@@ -15,6 +15,7 @@ import { MainDeviceSection, VersionStatusSection } from "./versionStatus";
 import { FoldTitle, SectionTitle } from "./sectionTitle";
 import { playSoundUrl, readLocal, writeLocal } from "./web";
 import { hasWebGate, WebLoginSection } from "./webLoginSection";
+import { ClaudeLoginSection } from "./claudeLogin";
 
 /** Paseo 설정 안의 우리 항목 이름(10-07: "Claude 상태 소리" → 웹 로그인·소리를 칸으로 나눈 플러그인 설정 화면). */
 export const SETTINGS_TITLE = "Claude State Bar";
@@ -235,6 +236,8 @@ export function createSettingsScreen(onSaved: () => void, readOnly = false) {
         <Text style={styles.title}>{SETTINGS_TITLE}</Text>
         {/* 로그인·계정은 맨 위(10-09 리규형님) — 우리 로그인 서버를 거친 화면만. PC 앱처럼 안 거치면 "로그인 서버 없음" 안내라 원래 자리에 */}
         {webGate ? <WebLoginSection readOnly={readOnly} theme={theme} compact={layout.compact} t={t} /> : null}
+        {/* Claude 다시 로그인(10-14) — 기기마다 그 기기 데몬이 로그인한다. 대신 맡은 서버 화면에서도 서버 로그인은 된다 */}
+        <ClaudeLoginSection theme={theme} t={t} />
         {readOnly ? null : <MainDeviceSection theme={theme} t={t} />}
         <VersionStatusSection theme={theme} t={t} />
         {webGate ? null : <WebLoginSection readOnly={readOnly} theme={theme} compact={layout.compact} t={t} />}

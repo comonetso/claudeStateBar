@@ -33,8 +33,8 @@ export function baseOf(provider: string | null | undefined): AccountKind | null 
   return provider === TEAM_PROVIDER ? "team" : provider === PERSONAL_PROVIDER ? "personal" : null;
 }
 
-type ProviderConfig = { env?: Record<string, unknown>; label?: unknown };
-function readProviders(): Record<string, ProviderConfig> {
+export type ProviderConfig = { env?: Record<string, unknown>; label?: unknown; extends?: unknown; command?: unknown };
+export function readProviders(): Record<string, ProviderConfig> {
   try {
     const doc = JSON.parse(readFileSync(CONFIG, "utf8")) as { agents?: { providers?: Record<string, ProviderConfig> } };
     return doc.agents?.providers ?? {};
@@ -119,6 +119,14 @@ function bump(): void {
   for (const fn of [...waiters]) fn();
 }
 
+/** 이 대화를 다른 공급자로 바꿔 뒀으면 그 공급자 번호, 아니면 null(Claude 다시 로그인이 어느 로그인 파일인지 정할 때 쓴다) */
+export async function switchedProvider(agentId: string): Promise<string | null> {
+  await load();
+  const e = entries[agentId];
+  if (!e || e.to === e.base) return null;
+  return e.to === "team" ? TEAM_PROVIDER : PERSONAL_PROVIDER;
+}
+
 function snapshot() {
   const accounts: Record<string, AccountKind> = {};
   for (const [id, e] of Object.entries(entries)) if (e.to !== e.base) accounts[id] = e.to;
@@ -145,8 +153,8 @@ export async function waitAccounts(known: number | null) {
 export async function switchAccount(agentId: string, to: AccountKind, provider: string | null): Promise<{ ok: boolean; error?: string }> {
   await load();
   const base = baseOf(provider);
-  if (!base) return { ok: false, error: "Claude 대화가 아니라 계정을 바꿀 수 없습니다" };
-  if (!accountSupported()) return { ok: false, error: "이 기기에는 팀 계정 설정이 없습니다" };
+  if (!base) return { ok: false, error: "Claude 대화가 아니라 공급자를 바꿀 수 없습니다" };
+  if (!accountSupported()) return { ok: false, error: "이 기기 Paseo 설정에 바꿔 갈 Claude 공급자(claude-yeogiaen)가 없습니다" };
   if (to === base) delete entries[agentId];
   else entries[agentId] = { to, base, at: new Date().toISOString() };
   await save();

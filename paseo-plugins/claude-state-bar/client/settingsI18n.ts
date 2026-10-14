@@ -318,6 +318,25 @@ const ko = {
   loginChecking: "확인 중",
   loginSubmit: "바꾸기",
   loginReopen: "화면 다시 열기",
+  claudeLoginSection: "Claude 로그인",
+  claudeLoginIntro:
+    "Claude 로그인이 풀리면 대화가 \"Failed to authenticate\"·\"Not logged in\" 오류로 멈춥니다. 여기서 그 기기의 Claude 에 다시 로그인합니다. 로그인이 풀린 대화의 입력창 위에도 빨간 열쇠 알약이 뜹니다.",
+  claudeLoginNeeds: (n: number) => `로그인 풀림 — 멈춘 대화 ${n}개`,
+  claudeLoginButton: "다시 로그인",
+  claudeLoginTitle: (label: string) => `Claude 다시 로그인 — ${label}`,
+  claudeLoginPillIntro: "이 대화의 Claude 로그인이 풀렸습니다.",
+  claudeLoginGetLink: "로그인 링크 받기",
+  claudeLoginStarting: "링크 받는 중…",
+  claudeLoginSteps: "1. 링크를 열어 승인하세요(폰·PC 어느 브라우저든 됩니다). 2. 승인 뒤 나오는 코드를 아래에 붙여 넣고 로그인을 누르세요.",
+  claudeLoginOpen: "링크 열기",
+  claudeLoginCode: "승인 코드",
+  claudeLoginSubmit: "로그인",
+  claudeLoginSending: "로그인 중…",
+  claudeLoginCancel: "취소",
+  claudeLoginClose: "닫기",
+  claudeLoginDone: "로그인됐습니다. 멈춘 대화는 다음 말을 보내면 이어집니다.",
+  claudeLoginPill: "Claude 로그인 풀림 — 눌러서 다시 로그인",
+  claudeLoginPillLabel: "로그인",
 };
 
 export type SettingsText = typeof ko;
@@ -619,6 +638,25 @@ const en: SettingsText = {
   loginChecking: "Checking",
   loginSubmit: "Change",
   loginReopen: "Reopen screen",
+  claudeLoginSection: "Claude login",
+  claudeLoginIntro:
+    "When the Claude login lapses, chats stop with \"Failed to authenticate\" or \"Not logged in\". Log in to that device's Claude again here. A red key pill also appears above the composer of each stopped chat.",
+  claudeLoginNeeds: (n: number) => `Logged out — ${n} stopped chat${n === 1 ? "" : "s"}`,
+  claudeLoginButton: "Log in again",
+  claudeLoginTitle: (label: string) => `Log in to Claude again — ${label}`,
+  claudeLoginPillIntro: "This chat's Claude login has lapsed.",
+  claudeLoginGetLink: "Get login link",
+  claudeLoginStarting: "Getting link…",
+  claudeLoginSteps: "1. Open the link and approve it in any browser, phone or PC. 2. Paste the code shown after approval below and press Log in.",
+  claudeLoginOpen: "Open link",
+  claudeLoginCode: "Approval code",
+  claudeLoginSubmit: "Log in",
+  claudeLoginSending: "Logging in…",
+  claudeLoginCancel: "Cancel",
+  claudeLoginClose: "Close",
+  claudeLoginDone: "Logged in. A stopped chat continues when you send the next message.",
+  claudeLoginPill: "Claude logged out — press to log in again",
+  claudeLoginPillLabel: "Log in",
 };
 
 /** 지금 Paseo 언어의 사전. 설정 화면은 열릴 때 한 번 읽으면 충분하다(리규형님 10-08 — Paseo 언어를 바꾸면 다시 열 때 반영) */

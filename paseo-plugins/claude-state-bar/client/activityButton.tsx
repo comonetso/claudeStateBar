@@ -9,10 +9,11 @@ import { useEffect } from "react";
 import type { ActivityCounts } from "../shared/activity";
 import { ACTIVITY_PANEL_ID, KINDS } from "./activityKinds";
 import { mergeActivitySplit, openActivitySplit } from "./activitySplit";
+import { useActivityOpen } from "./activityVisible";
 import { clearMaximizedPane, paintMaximizedPane } from "./paneMaximized";
 import { releaseMaximizedPane } from "./paneMaxWatch";
 import { currentSettings } from "./sounds";
-import { currentWorkspaceFromUrl, isCompactWidth } from "./web";
+import { currentWorkspaceFromUrl, isCompactWidth, setStyleSheet } from "./web";
 
 /** paseo-plugin.json 의 id — Paseo 가 패널 탭에 이 이름을 붙인다 */
 const PLUGIN_ID = "claude-state-bar";
@@ -31,10 +32,24 @@ function summaryOf(c: ActivityCounts | null): string {
   return parts.length ? `${parts.join(" · ")} 진행 중` : "진행 중 없음";
 }
 
+// 작업 현황 패널이 열려 있는 동안(최대화로 가려져도) 단추 글자·아이콘을 초록으로(10-14 리규형님 "아이콘만으론 명시적이지 않다 — 글자 색을 초록으로").
+// 단추 등록에는 글자 색이 없어 화면 스타일로 칠한다. Paseo 0.11.1 은 플러그인 머리줄 단추의 접근성 이름을 단추 설명(title)
+// 그대로 단다(PASEO_UPDATE_CHECK 26번) — 열린 동안만 설명 앞에 표식을 붙이고 그 이름으로 시작하는 단추만 칠한다.
+// 웹·데스크톱만(setStyleSheet). 판이 올라 접근성 이름이 바뀌면 초록 글자만 안 나온다(아이콘 초록은 그대로)
+const OPEN_TITLE = "작업 현황 (열려 있음)";
+const OPEN_STYLE_ID = "claude-state-bar-activity-open";
+const OPEN_BUTTON = `[aria-label^="${OPEN_TITLE}"]`;
+let paintedOpen: string | null = null;
+function paintActivityOpen(green: string): void {
+  if (paintedOpen === green) return;
+  paintedOpen = green;
+  setStyleSheet(OPEN_STYLE_ID, `${OPEN_BUTTON},${OPEN_BUTTON} *{color:${green} !important}${OPEN_BUTTON} svg,${OPEN_BUTTON} svg *{stroke:${green} !important}`);
+}
+
 /** 단추 글자: 돌고 있으면 합계, 아니면 이름만(글자 칸이 160px 라 종류별로는 못 넣는다) */
-function presentation(c: ActivityCounts | null): Pick<PluginButton, "label" | "title"> {
+function presentation(c: ActivityCounts | null, open = false): Pick<PluginButton, "label" | "title"> {
   const n = c ? totalOf(c) : 0;
-  return { label: n > 0 ? `진행 중 ${n}` : "작업 현황", title: `작업 현황 — ${summaryOf(c)}` };
+  return { label: n > 0 ? `진행 중 ${n}` : "작업 현황", title: `${open ? OPEN_TITLE : "작업 현황"} — ${summaryOf(c)}` };
 }
 
 /**
@@ -48,8 +63,8 @@ export function createActivityButtons(client: PluginClientContext, log: (message
   let disposed = false;
   let release: (() => void) | undefined;
 
-  const present = (workspaceId: string, counts: ActivityCounts | null) => {
-    const next = presentation(counts);
+  const present = (workspaceId: string, counts: ActivityCounts | null, open: boolean) => {
+    const next = presentation(counts, open);
     const key = `${next.label}\n${next.title}`;
     if (shown.get(workspaceId) === key) return;
     shown.set(workspaceId, key);
@@ -59,10 +74,13 @@ export function createActivityButtons(client: PluginClientContext, log: (message
   function ActivityIcon({ workspaceId, size, color, theme }: PluginButtonIconProps) {
     const counts = useCounts(workspaceId);
     const running = counts ? totalOf(counts) > 0 : false;
-    useEffect(() => present(workspaceId, counts), [workspaceId, counts]);
+    // 작업 현황 패널이 열려 있으면 늘 초록 — 대화 칸을 최대화해 가려져도(10-14 리규형님). 돌고 있으면서 열려 있으면 도는 아이콘을 초록으로
+    const open = useActivityOpen(workspaceId);
+    useEffect(() => present(workspaceId, counts, open), [workspaceId, counts, open]);
     // 칸 최대화 단추 주황(10-08) — 테마는 화면 부품만 받아서, 작업 공간 화면에 늘 있는 이 단추가 테마가 바뀔 때마다 칠한다
     useEffect(() => paintMaximizedPane(theme), [theme]);
-    return <Icon name={running ? "LoaderCircle" : "Activity"} size={size} color={running ? RUNNING_COLOR : color} />;
+    useEffect(() => paintActivityOpen(theme.colors.statusSuccess), [theme]);
+    return <Icon name={running ? "LoaderCircle" : "Activity"} size={size} color={open ? theme.colors.statusSuccess : running ? RUNNING_COLOR : color} />;
   }
 
   // 누르면 작업 현황 패널을 바로 연다(작은 창은 두 번 떠 보였다 — 리규형님 10-05). 돌고 있는 갈래가 있으면 그 탭으로.
@@ -163,5 +181,7 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     for (const id of [...registrations.keys()]) drop(id);
     leading?.dispose?.();
     clearMaximizedPane();
+    paintedOpen = null;
+    setStyleSheet(OPEN_STYLE_ID, null);
   };
 }

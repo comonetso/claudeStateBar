@@ -20,6 +20,19 @@ export function pluginPanelTabId(pluginId: string, panelId: string): string {
   return `plugin_workspace_${pluginId.length}_${pluginId}_${panelId.length}_${panelId}`;
 }
 
+/** 이 작업 공간 배치의 어느 칸에든 이 패널 탭이 있으면 true(최대화로 가려진 칸 포함). 배치를 못 읽으면 null(이 판을 모른다) */
+export function layoutHasPanel(workspaceId: string, pluginId: string, panelId: string): boolean | null {
+  const state = readPaseoLayout() as State | null;
+  if (!state) return null;
+  const tabId = pluginPanelTabId(pluginId, panelId);
+  const has = (n: Node): boolean => (n.kind === "pane" ? n.pane.tabIds.includes(tabId) : n.group.children.some(has));
+  // 배치 열쇠는 "서버:작업 공간" — 단추는 작업 공간 번호만 알아 끝으로 찾는다(작업 공간 번호는 서버마다 다르다)
+  for (const [key, layout] of Object.entries(state.layoutByWorkspace ?? {})) {
+    if (key.endsWith(`:${workspaceId}`) && layout?.root && has(layout.root)) return true;
+  }
+  return false;
+}
+
 function newPaneId(): string {
   const uuid = typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `pane_${uuid}`;

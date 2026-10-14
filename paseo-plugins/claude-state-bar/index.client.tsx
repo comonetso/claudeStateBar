@@ -7,6 +7,7 @@ import { ActivityPanel } from "./client/activityShell";
 import { createChimeWatcher } from "./client/chime";
 import { createContextPills } from "./client/contextPill";
 import { createAccountPills } from "./client/accountPill";
+import { createLoginPills } from "./client/claudeLogin";
 import { createJudge } from "./client/judge";
 import { createThinkingFoldPills } from "./client/thinkingFoldPill";
 import { startHeaderTitles } from "./client/headerTitles";
@@ -230,8 +231,10 @@ export default function contribute(client: PluginClientContext) {
   const listPills = createComposerMarkdown(client, log);
   // 대화마다 입력창 위 오른쪽 "생각 상자 모두 접기·펼치기" 알약(10-08)
   const foldPills = createThinkingFoldPills(client, log);
-  // 대화마다 입력창 위 "계정 바꾸기" 알약(10-14 — 팀·개인 계정을 같은 창에서 바꾼다)
+  // 대화마다 입력창 위 "Claude 공급자 바꾸기" 알약(10-14 — 같은 창에서 Claude 공급자를 바꾼다)
   const accountPills = createAccountPills(client, log);
+  // 로그인이 풀린 대화 입력창 위 빨간 열쇠 알약 + 설정 화면 칸용 기기별 로그인 기능(10-14 — Claude 다시 로그인)
+  const loginPills = createLoginPills(client, log);
 
   void (async () => {
     try {
@@ -247,6 +250,7 @@ export default function contribute(client: PluginClientContext) {
         listPills.observe(entry.agent);
         foldPills.observe(entry.agent);
         accountPills.observe(entry.agent);
+        loginPills.observe(entry.agent);
       }
       const stop = client.paseo.agents.subscribe((update) => {
         if (update.kind === "remove") {
@@ -256,6 +260,7 @@ export default function contribute(client: PluginClientContext) {
           listPills.remove(update.agentId);
           foldPills.remove(update.agentId);
           accountPills.remove(update.agentId);
+          loginPills.remove(update.agentId);
           return;
         }
         if (update.kind !== "upsert") return;
@@ -265,6 +270,7 @@ export default function contribute(client: PluginClientContext) {
         listPills.observe(update.agent);
         foldPills.observe(update.agent);
         accountPills.observe(update.agent);
+        loginPills.observe(update.agent);
       });
       // 재연결 때 오는 새 목록은 기준으로만 다시 잡는다(끊긴 사이 바뀐 것으로 소리를 내지 않는다 — Codex 검토 10-05:
       // 첫 목록과 그 뒤 변경만 들어 재연결 목록을 버리던 것)
@@ -280,6 +286,7 @@ export default function contribute(client: PluginClientContext) {
             listPills.observe(entry.agent);
             foldPills.observe(entry.agent);
             accountPills.observe(entry.agent);
+            loginPills.observe(entry.agent);
           }
         },
         update: () => {},
@@ -304,6 +311,7 @@ export default function contribute(client: PluginClientContext) {
     listPills.dispose();
     foldPills.dispose();
     accountPills.dispose();
+    loginPills.dispose();
     for (const cleanup of cleanups.reverse()) cleanup();
   };
 }

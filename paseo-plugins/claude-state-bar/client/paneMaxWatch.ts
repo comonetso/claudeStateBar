@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import { currentWorkspaceFromUrl, lastLayoutAppliedAt, onUserInput, readSession, writeSession } from "./web";
+import { currentWorkspaceFromUrl, lastLayoutAppliedAt, onUserInput, readSession, watchLocation, writeSession } from "./web";
 
 // 이 플러그인은 DOM 타입을 쓰지 않는다 — 쓰는 것만 선언한다(web.ts 와 같은 방식)
 type El = {
@@ -34,19 +34,23 @@ declare const MutationObserver:
 // 최대화 중에는 그 칸의 단추가 testID workspace-restore-pane 이다(paneMaximized.ts 와 같은 표식). 웹·데스크톱만.
 // 10-09 기록 정리: 리규형님 화면에서 진짜 풀린 것은 전부 새로 읽힌 직후(after-reload)였다.
 //
-// 되살리기: 최대화 중에 "몇 번째 칸 / 칸 몇 개"를 탭 저장소에 적어 두고, 페이지가 새로 읽힌 뒤 같은 작업 공간에서 칸 단추가
-// 그만큼 그려지면 그 순서의 최대화 단추를 대신 누른다(RN-web 단추는 click 에도 onPress 를 부른다 — 0.11.1 PressResponder onClick).
-// 최대화 중에도 다른 칸은 크기 0 으로 숨겨질 뿐 남아 있어(split-group-child-hidden) 순서를 셀 수 있다.
-//  - 칸 수가 그때와 다르면 누르지 않는다(엉뚱한 칸 방지) · 직접 "창 복원"으로 푼 것은 표식을 지워 되살리지 않는다
-//  - 탭 저장소라 탭을 닫으면 기억도 사라진다 · 플러그인만 다시 읽힌 것·다른 작업 공간에 다녀온 것은 기록만 한다
-//  - 기다리는 끝은 원래 "새로 읽혀 풀림" 판정 시점(두 번째 표본)이다 — 그때까지 칸 수가 안 맞으면 이유만 적고 그만둔다
+// 되살리기: 최대화 중에 작업 공간마다 "몇 번째 칸 / 칸 몇 개"를 탭 저장소에 적어 두고, 그 작업 공간으로 돌아오거나 페이지가
+// 새로 읽힌 뒤 칸 단추가 그만큼 그려지면 그 순서의 최대화 단추를 대신 누른다(RN-web 단추는 click 에도 onPress 를 부른다 —
+// 0.11.1 PressResponder onClick). 최대화 중에도 다른 칸은 크기 0 으로 숨겨질 뿐 남아 있어(split-group-child-hidden) 순서를 셀 수 있다.
+// 10-14 리규형님: Paseo 는 최대화를 화면 전체에 하나만 두고 다른 작업 공간으로 가면 지워서, 예전에 작업 현황으로 나눠 둔
+// 프로젝트(Admin DEV)에 돌아가면 나뉜 화면이 드러나 매번 다시 최대화해야 했다 → 다른 작업 공간에 다녀온 것도 되살린다
+// (예전엔 기록만). 기억은 그 탭·앱 창이 열린 동안만(리규형님 결정 — 탭마다 따로라 섞이지 않는다).
+//  - 칸 수가 그때와 다르면 누르지 않는다(엉뚱한 칸 방지) · 직접 "창 복원"으로 푼 곳(작업 현황 단추가 푼 것 포함)은 표식을 지워 되살리지 않는다
+//  - 주소가 바뀌었고 그 작업 공간에 표식이 있을 때만 화면 변화를 잠깐 지켜본다 · 두 번째 표본까지 칸 수가 안 맞으면 이유만 적고 그만둔다
 
 const RESTORE = '[data-testid="workspace-restore-pane"]';
 const MAXIMIZE = '[data-testid="workspace-maximize-pane"]';
 const RESTORE_ID = "workspace-restore-pane";
 const MAXIMIZE_ID = "workspace-maximize-pane";
-/** 최대화 중이던 작업 공간·칸(이 탭에만) — 페이지가 새로 읽혀도 남아서 "새로 읽혀 풀림"을 알아보고 되살린다 */
+/** 옛 판의 표식(작업 공간 하나뿐) — 읽어서 아래로 옮기고 지운다 */
 const MARK_KEY = "claude-state-bar:pane-max";
+/** 작업 공간마다 최대화했던 칸(이 탭에만, 10-14) — 다른 작업 공간에 다녀오거나 페이지가 새로 읽혀도 남아서 돌아오면 되살린다 */
+const MARKS_KEY = "claude-state-bar:pane-max-by-ws";
 /** 이 탭의 무작위 번호(새로 읽혀도 남음) — 같은 브라우저의 탭들이 대표 화면 번호를 같이 써서 기록만으로는 어느 탭인지 몰랐다(10-09) */
 const TAB_KEY = "claude-state-bar:tab-id";
 /** 표본 간격 — 기록용으로 고른 값이고 동작 규칙이 아니다(되살리기는 이 표본을 기다리지 않고 칸이 그려지는 즉시 누른다) */
@@ -104,76 +108,104 @@ export function startPaneMaxWatch(log: (message: string) => void, screenLabel: (
   let sameWsSamples = 0;
   let leftAt = 0;
 
-  const readMark = (): Mark | null => {
+  const short = (ws: string) => ws.split("/").pop()?.slice(0, 8);
+  /** 작업 공간별 표식. 옛 판이 남긴 표식 하나가 있으면 한 번 옮기고 지운다 */
+  const readMarks = (): Record<string, Mark> => {
+    const out: Record<string, Mark> = {};
     try {
-      const v = JSON.parse(readSession(MARK_KEY) ?? "null") as Mark | null;
-      return v && typeof v.ws === "string" && typeof v.at === "number" ? v : null;
+      const v = JSON.parse(readSession(MARKS_KEY) ?? "null") as Record<string, Mark> | null;
+      if (v && typeof v === "object") for (const [ws, m] of Object.entries(v)) if (m && typeof m.at === "number") out[ws] = { ...m, ws };
     } catch {
-      return null;
+      /* 깨진 값은 버린다 */
     }
+    try {
+      const old = JSON.parse(readSession(MARK_KEY) ?? "null") as Mark | null;
+      if (old && typeof old.ws === "string" && typeof old.at === "number") {
+        out[old.ws] ??= old;
+        writeSession(MARKS_KEY, JSON.stringify(out));
+      }
+      if (readSession(MARK_KEY) !== null) writeSession(MARK_KEY, null);
+    } catch {
+      /* 깨진 옛 값은 버린다 */
+    }
+    return out;
+  };
+  const markOf = (ws: string): Mark | null => readMarks()[ws] ?? null;
+  const setMark = (ws: string, mark: Mark | null) => {
+    const all = readMarks();
+    if (mark) all[ws] = mark;
+    else delete all[ws];
+    writeSession(MARKS_KEY, Object.keys(all).length ? JSON.stringify(all) : null);
   };
   const wsKey = () => {
     const w = currentWorkspaceFromUrl();
     return w ? `${w.serverId}/${w.workspaceId}` : null;
   };
-  const report = (how: string, mark: Mark | null) => {
+  /** 기록만 한다(표식은 부른 쪽이 정한다) */
+  const report = (how: string, mark: Mark | null, ws: string = prevWs ?? wsKey() ?? "?") => {
     const discarded = document.wasDiscarded === true;
-    const ws = prevWs ?? wsKey() ?? "?";
     log(
-      `pane max lost: how=${how} ws=${ws.split("/").pop()?.slice(0, 8)} maxAge=${secondsAgo(mark?.at ?? 0)} ` +
+      `pane max lost: how=${how} ws=${short(ws)} maxAge=${secondsAgo(mark?.at ?? 0)} ` +
         `lastInput=${secondsAgo(lastInput)} restoreClick=${secondsAgo(lastRestoreClick)} ` +
         `hiddenFor=${Math.round(lastHiddenFor / 1000)}s shownAgo=${secondsAgo(lastShownAt)} visible=${document.visibilityState} ` +
         `layoutApply=${secondsAgo(lastLayoutAppliedAt())} pageAge=${secondsAgo(pageStart)} markFromOlderPage=${mark ? mark.at < pageStart : "-"} ` +
         `discarded=${discarded} online=${typeof navigator !== "undefined" ? navigator.onLine : "?"} netChange=${secondsAgo(lastNetChange)} ` +
         `away=${secondsAgo(leftAt)} panes=${document.querySelectorAll(MAXIMIZE).length} screen="${screenLabel()}" tab=${tabId()}`,
     );
-    writeSession(MARK_KEY, null);
   };
 
-  // ── 되살리기: 이 페이지보다 먼저 적힌 표식이 있을 때만 칸이 그려지는 것을 지켜본다
+  // ── 되살리기: 주소가 바뀌었거나 페이지가 새로 읽혔는데 그 작업 공간에 표식이 있으면, 칸이 다 그려질 때까지만 화면 변화를 본다
   let observer: { disconnect(): void } | null = null;
+  /** 되살릴 작업 공간 — 없으면 null */
+  let pending: string | null = null;
   /** 대신 누른 시각 — 다음 표본에서 정말 최대화됐는지 적는다 */
   let restoredAt = 0;
   const stopRestore = () => {
     observer?.disconnect();
     observer = null;
   };
-  const startMark = readMark();
+  /** 지금 보이는 칸 중 최대화된 것이 있는가(뒤에 남은 다른 화면 단추는 뺀다) */
+  const maximizedNow = () => paneButtons().some((b) => b.getAttribute?.("data-testid") === RESTORE_ID);
   /** 되살릴 수 있으면 누르고 true. 아직 아니면 false(지켜보기는 계속) */
   const tryRestore = (): boolean => {
-    // 화면이 바뀔 때마다 불리므로 가벼운 것(주소)부터 본다
     const ws = wsKey();
-    if (!ws || ws !== startMark?.ws) return false;
-    const mark = readMark();
-    if (!mark || mark.at >= pageStart || typeof mark.index !== "number" || typeof mark.count !== "number") {
-      stopRestore();
+    if (!pending || ws !== pending) return false;
+    const mark = markOf(ws);
+    if (!mark || typeof mark.index !== "number" || typeof mark.count !== "number" || maximizedNow()) {
+      // 표식이 없거나 이미 최대화돼 있다(직접 눌렀거나 Paseo 가 되살림) — 할 일 없음
+      pending = null;
       return false;
     }
-    if (document.querySelector(RESTORE) !== null) {
-      // 이미 최대화돼 있다(직접 눌렀거나 Paseo 가 되살림) — 할 일 없음
-      stopRestore();
-      return false;
-    }
-    if (ws !== mark.ws) return false;
     const buttons = paneButtons();
     if (buttons.length !== mark.count) return false;
     const target = buttons[mark.index];
     if (target?.getAttribute?.("data-testid") !== MAXIMIZE_ID || typeof target.click !== "function") return false;
-    // 먼저 표식을 지운다(report) — 같은 페이지에 다른 판 인스턴스가 있어도 두 번 눌려 다시 풀리지 않게
-    report("after-reload", mark);
+    pending = null;
+    const how = mark.at < pageStart ? "after-reload" : "after-return";
+    // 새로 읽혀 풀린 것은 원인 기록을 계속 남긴다(10-09 "원인부터 기록"). 다른 작업 공간에 다녀온 것은 Paseo 가 늘 지우는 것이라 적지 않는다
+    if (how === "after-reload") report(how, mark, ws);
     target.click();
     restoredAt = Date.now();
-    log(`pane max restored: pane ${mark.index + 1}/${mark.count} ws=${ws.split("/").pop()?.slice(0, 8)} pageAge=${secondsAgo(pageStart)} tab=${tabId()}`);
-    stopRestore();
+    log(`pane max restored (${how}): pane ${mark.index + 1}/${mark.count} ws=${short(ws)} pageAge=${secondsAgo(pageStart)} tab=${tabId()}`);
     return true;
   };
-  if (startMark && startMark.at < pageStart && typeof startMark.index === "number" && typeof MutationObserver !== "undefined" && document.body) {
+  const arm = () => {
+    const ws = wsKey();
+    pending = ws && markOf(ws) ? ws : null;
+    if (!pending || tryRestore() || !pending) {
+      stopRestore();
+      return;
+    }
+    if (observer || typeof MutationObserver === "undefined" || !document.body) return;
     const o = new MutationObserver(() => {
-      tryRestore();
+      if (pending) tryRestore();
+      if (!pending) stopRestore();
     });
     o.observe(document.body, { childList: true, subtree: true });
     observer = o;
-  }
+  };
+  const stopLocation = watchLocation(arm);
+  arm();
 
   const sample = () => {
     const ws = wsKey();
@@ -193,36 +225,37 @@ export function startPaneMaxWatch(log: (message: string) => void, screenLabel: (
       if (!max) log(`pane max restore did not take (pressed ${secondsAgo(restoredAt)} ago)`);
       restoredAt = 0;
     }
-    const mark = readMark();
+    const mark = markOf(ws);
     if (max) {
       const buttons = paneButtons();
       const index = buttons.findIndex((b) => b.getAttribute?.("data-testid") === RESTORE_ID);
       const next: Mark = {
         ws,
-        at: mark && mark.ws === ws && mark.index === index ? mark.at : Date.now(),
+        at: mark && mark.index === index ? mark.at : Date.now(),
         ...(index >= 0 ? { index, count: buttons.length } : {}),
       };
-      if (!mark || mark.ws !== ws || mark.index !== next.index || mark.count !== next.count) writeSession(MARK_KEY, JSON.stringify(next));
+      if (!mark || mark.index !== next.index || mark.count !== next.count) setMark(ws, next);
       leftAt = 0;
-      stopRestore();
+      if (pending === ws) {
+        pending = null;
+        stopRestore();
+      }
     } else if (prevMax && ws === prevWs) {
-      // 같은 작업 공간에서 풀림 — 직접 "창 복원"을 누른 것(플러그인이 대신 누른 것 포함)이면 기록하지 않는다
-      if (Date.now() - Math.max(lastRestoreClick, pluginRestoreAt) <= SAMPLE_MS * 2) writeSession(MARK_KEY, null);
-      else report("same-workspace", mark);
+      // 같은 작업 공간에서 풀림 — 직접 "창 복원"을 누른 것(작업 현황 단추가 대신 누른 것 포함)이면 기록하지 않는다.
+      // 어느 쪽이든 이 작업 공간 기억은 지운다(일부러 나눈 화면으로 본 것 — 돌아와도 되살리지 않는다)
+      if (Date.now() - Math.max(lastRestoreClick, pluginRestoreAt) > SAMPLE_MS * 2) report("same-workspace", mark, ws);
+      setMark(ws, null);
     } else if (prevMax && ws !== prevWs) {
-      // 최대화한 채 다른 화면으로 — 돌아왔을 때 본다(표식은 남겨 둔다)
+      // 최대화한 채 다른 작업 공간으로 — 앞 작업 공간 표식은 남겨 둔다(돌아오면 arm 이 되살린다)
       leftAt = Date.now();
-    } else if (mark && ws === mark.ws && sameWsSamples >= 1) {
-      // 돌아왔거나 새로 읽혔는데 두 번 연속 최대화가 없다(화면이 그려지기 전 한 번은 넘긴다)
-      if (mark.at < pageStart && tryRestore()) {
-        // 되살렸다 — tryRestore 가 기록했다
-      } else {
-        const why =
-          mark.at < pageStart && typeof mark.index === "number" && typeof mark.count === "number"
-            ? ` (not restored: panes now ${paneButtons().length}, was ${mark.count})`
-            : "";
-        report(mark.at < pageStart ? "after-reload" : mark.at < pluginStart ? "after-plugin-reload" : "after-return", mark);
+    } else if (mark && pending === ws && sameWsSamples >= 1) {
+      // 돌아왔거나 새로 읽혔는데 두 표본이 지나도 못 되살렸다(화면이 그려지기 전 한 번은 넘긴다)
+      if (!tryRestore()) {
+        const why = typeof mark.index === "number" && typeof mark.count === "number" ? ` (not restored: panes now ${paneButtons().length}, was ${mark.count})` : "";
+        report(mark.at < pageStart ? "after-reload" : mark.at < pluginStart ? "after-plugin-reload" : "after-return", mark, ws);
         if (why) log(`pane max${why}`);
+        setMark(ws, null);
+        pending = null;
         stopRestore();
       }
     }
@@ -254,6 +287,7 @@ export function startPaneMaxWatch(log: (message: string) => void, screenLabel: (
   return () => {
     clearInterval(timer);
     stopRestore();
+    stopLocation();
     stopInput();
     document.removeEventListener("visibilitychange", onVisibility);
     document.removeEventListener("pointerdown", onClick, true);

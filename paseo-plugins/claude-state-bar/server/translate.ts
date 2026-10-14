@@ -123,11 +123,18 @@ async function translateOnce(texts: string[], key: string, lang: TargetLang, pro
     return { translations, error: controller.signal.aborted ? "번역 시간 초과" : "번역 요청 또는 응답 실패" };
   } finally { clearTimeout(timer); }
 }
+/** Anthropic 은 큰 묶음을 이만큼씩 나눠 동시에 보낸다(10-14 리규형님 결정). Haiku 5.5 는 번역문 길이에 비례해 느려(10문단 4.5초,
+ *  운영에서 6~10문단 묶음의 8% 가 10초 상한 실패) 5문단 2.5초 실측으로 고른 크기다. effort·생각 끄기로는 안 빨라졌고 Sonnet 5.5 는
+ *  추론 빼내기 방지 검사(reasoning_extraction)로 거의 다 거절했다(docs tests-261014 translate_*_compare). 다른 공급자는 나누지 않는다 */
+const ANTHROPIC_CHUNK = 5;
 export async function translateTexts(texts: string[], requestLang: TargetLang = "ko"): Promise<TranslationResult> {
   const started = Date.now();
   let result: TranslationResult = { translations: texts.map(() => null) };
+  // 어느 단계에서 실패했는지 — 예전엔 어떤 오류든 "음성 공급자 설정을 읽지 못했습니다"로 덮어 원인을 가렸다(10-14)
+  let stage = "설정 읽기";
   try {
     const settings = readSpeechSettings(requestLang).settings;
+    stage = "번역 준비";
     const { lang, translate: provider } = settings;
     result = { ...result, provider, lang };
     if (texts.length > 20) return result = { ...result, error: "번역은 최대 20문단까지 가능합니다" };
@@ -136,20 +143,27 @@ export async function translateTexts(texts: string[], requestLang: TargetLang = 
     const needed = [...new Set(texts.filter((text) => needs(text) && !cache.has(id(text))))];
     const fresh = needed.filter((text) => !pending.has(id(text)));
     if (fresh.length) {
+      stage = "키 읽기";
       const keys = readGoogleKeys();
       const key = provider === "google" ? keys.gemini : keys[provider];
       if (!key) return result = { ...result, translations: texts.map((text) => needs(text) ? cache.get(id(text)) ?? null : null), error: `${provider} 번역 키가 없습니다` };
-      const batch = translateBatch(fresh, key, lang, provider);
-      fresh.forEach((text, index) => {
-        const job = batch.then((reply) => {
-          const translation = reply.translations[index];
-          if (translation !== null) remember(provider, lang, text, translation);
-          return { translation, ...(reply.error ? { error: reply.error } : {}) };
+      stage = "번역 요청";
+      const size = provider === "anthropic" ? ANTHROPIC_CHUNK : fresh.length;
+      for (let start = 0; start < fresh.length; start += size) {
+        const part = fresh.slice(start, start + size);
+        const batch = translateBatch(part, key, lang, provider);
+        part.forEach((text, index) => {
+          const job = batch.then((reply) => {
+            const translation = reply.translations[index];
+            if (translation !== null) remember(provider, lang, text, translation);
+            return { translation, ...(reply.error ? { error: reply.error } : {}) };
+          });
+          pending.set(id(text), job);
+          void job.finally(() => { if (pending.get(id(text)) === job) pending.delete(id(text)); });
         });
-        pending.set(id(text), job);
-        void job.finally(() => { if (pending.get(id(text)) === job) pending.delete(id(text)); });
-      });
+      }
     }
+    stage = "번역 결과 처리";
     const replies = await Promise.all(texts.map(async (text): Promise<ParagraphResult> => {
       if (!needs(text)) return { translation: null };
       const cached = cache.get(id(text));
@@ -157,8 +171,12 @@ export async function translateTexts(texts: string[], requestLang: TargetLang = 
     }));
     const error = replies.find((reply) => reply.error)?.error;
     return result = { translations: replies.map((reply) => reply.translation), provider, lang, ...(error ? { error } : {}) };
-  } catch {
-    return result = { ...result, error: "음성 공급자 설정을 읽지 못했습니다" };
+  } catch (error) {
+    // 설정 읽기 실패는 그 문구(speech.ts — 고정 글)를 그대로, 그 밖은 단계와 오류 종류만(오류 글에 키가 섞일 수 있어 내용은 안 싣는다)
+    // instanceof Error 는 다른 실행 공간에서 만든 오류를 놓쳐 모양으로 본다
+    const e = error as { message?: unknown; name?: unknown } | null;
+    const message = stage === "설정 읽기" && typeof e?.message === "string" ? e.message : `번역 처리 중 오류(${stage} · ${typeof e?.name === "string" ? e.name : typeof error})`;
+    return result = { ...result, error: message };
   } finally {
     console.log(`[translate] ${result.provider ?? "설정오류"} ${result.lang ?? requestLang} ${texts.length}문단 · ${Date.now() - started}ms · ${result.error ? `실패(${result.error})` : "완료"}`);
   }
