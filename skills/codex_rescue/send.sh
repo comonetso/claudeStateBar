@@ -1464,7 +1464,18 @@ RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-rescue-${STAMP}.XXXXXX") \
 # heartbeat 자식이 남으면 고아가 되어 계속 파일을 만진다. 반드시 같이 정리한다.
 # 변수들이 아직 정의되기 전에 EXIT 가 걸릴 수 있으므로 전부 `${x:-}` 로 방어한다(set -u).
 cleanup() {
+  local rc=$?
   [ -n "${HB_PID:-}" ] && kill "$HB_PID" 2>/dev/null
+  # 🔴 status 를 running 으로 쓴 뒤 정상 끝(맨 아래 최종 기록)·신호(handle_signal) 말고 다른 길로 나가면 — 대개 die —
+  #    여기서 failed 로 닫는다 (2026-10-14). 예전엔 finalizing 에서 멈춘 채 heartbeat 만 지워져, 패널이 영원히
+  #    "응답 없음"이었다(서버 실측 2026-10-14). RUN_DIR 을 지우기 전에 stderr·최종 메시지도 .log 로 옮긴다 —
+  #    안 옮기면 Codex 가 이미 낸 답이 RUN_DIR 과 함께 사라진다.
+  if [ "${STATUS_OPEN:-0}" = 1 ]; then
+    STATUS_OPEN=0
+    [ -n "${ERR_DEST:-}" ] && [ -f "${ERRLOG:-}" ] && cp -f -- "$ERRLOG" "$ERR_DEST" 2>/dev/null
+    [ -n "${LAST_DEST:-}" ] && [ -s "${LASTMSG:-}" ] && cp -f -- "$LASTMSG" "$LAST_DEST" 2>/dev/null
+    write_status failed "\"$(date -u "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)\"" "${RC:-null}" "${TEE_RC:-null}" "\"exit_code\":$rc" 2>/dev/null
+  fi
   rm -rf -- "$RUN_DIR" 2>/dev/null
   rm -f -- "$LOCK" 2>/dev/null
   [ -n "${HEARTBEAT:-}" ] && rm -f -- "$HEARTBEAT" 2>/dev/null
@@ -1488,6 +1499,7 @@ handle_signal() {
       || echo "codex_rescue: could not preserve stderr: $err_dest" >&2
   fi
   [ -n "${HB_PID:-}" ] && kill "$HB_PID" 2>/dev/null
+  STATUS_OPEN=0   # interrupted 를 여기서 쓴다 — cleanup 이 failed 로 덮지 않게
   [ -n "${STATUS:-}" ] && write_status interrupted "\"$received_at\"" null null \
     "\"termination_signal\":\"$signal\",\"elapsed_ms\":$elapsed_ms,\"received_at\":\"$received_at\",\"limit_match\":$limit_match,\"exit_code\":130" 2>/dev/null
   cleanup
@@ -1585,10 +1597,29 @@ export CR_GROUP="$GROUP" CR_GROUP_SESSION="$GROUP_SESSION"
 # `-name build` 등에 `-type d` 를 붙인다. 안 붙이면 같은 이름의 **일반 파일**까지 prune 된다.
 # 제외 영역 안의 변경은 잡지 못한다 — 성능을 위한 의도된 절충이며, 보고에 함께 공개한다.
 PRUNED=".git node_modules .venv .dart_tool .gradle build .next __pycache__ docs/codex_rescue/.log"
+# 🔴 훑는 사이 사라진 경로(ENOENT)는 실패로 보지 않는다 (2026-10-14).
+#    Codex 의 리눅스 샌드박스는 명령을 돌릴 때마다 작업 폴더 맨 위에 빈 `.agents`·`.aws`·`.codex` 를
+#    만들었다 지운다(서버 실측). 같은 저장소에서 여러 건이 동시에 돌면 find 가 그 사라지는 순간을 밟아
+#    종료 코드 1 을 내고, 그 한 줄이 실행 전체를 죽였다(서버 실측 2026-10-14 — 실행 전 1건 · 실행 후 1건).
+#    GNU 의 -ignore_readdir_race 는 맥 find 에 없어서 쓰지 않는다. 오류 문구를 영어로 받으려고 find 만
+#    LC_ALL=C 로 돌린다 — -print 는 로캘과 무관하게 이름을 그대로 낸다. 다른 오류(권한 등)는 그대로 실패다.
+# 추가 조건(-newer 등)은 인자로 받아 -print 앞에 붙인다.
+# SCAN 은 파이프·$( ) 안(하위 셸)에서 돌아 변수로는 밖에 못 알린다 — 사라진 경로는 파일에 쌓는다.
+SCAN_ERR="$RUN_DIR/scan.err"
+SCAN_VANISHED_LOG="$RUN_DIR/scan.vanished"
 SCAN() {
-  find . \( -type d \( -name .git -o -name node_modules -o -name .venv -o -name .dart_tool \
+  local rc=0
+  LC_ALL=C find . \( -type d \( -name .git -o -name node_modules -o -name .venv -o -name .dart_tool \
             -o -name .gradle -o -name build -o -name .next -o -name __pycache__ \
-            -o -path ./docs/codex_rescue/.log \) -prune \) -o -type f -print
+            -o -path ./docs/codex_rescue/.log \) -prune \) -o -type f "$@" -print 2>"$SCAN_ERR" || rc=$?
+  if [ "$rc" != 0 ]; then
+    if [ ! -s "$SCAN_ERR" ] || grep -v ': No such file or directory$' "$SCAN_ERR" | grep -q .; then
+      cat -- "$SCAN_ERR" >&2 2>/dev/null
+      return "$rc"
+    fi
+    cat -- "$SCAN_ERR" >> "$SCAN_VANISHED_LOG" 2>/dev/null
+  fi
+  return 0
 }
 
 IS_GIT=0
@@ -2137,6 +2168,7 @@ PARENT_PID=$$
 #    이 순서를 지키면 "status 는 live 인데 heartbeat 가 없다" = 비정상 이라고 단정할 수 있다.
 : > "$HEARTBEAT" 2>/dev/null
 write_status running
+STATUS_OPEN=1   # 이제부터 어디서 끝나든 status 를 끝 상태로 닫아야 한다 — cleanup 참조
 ( while kill -0 "$PARENT_PID" 2>/dev/null; do : > "$HEARTBEAT" 2>/dev/null; sleep 5; done ) &
 HB_PID=$!
 
@@ -2258,15 +2290,16 @@ fi
 write_status finalizing null "$RC" "$TEE_RC"
 
 # ── 변경 감지 (로그를 workspace 로 복사하기 **전에** 한다) ──────
-TOUCHED=$(find . \( -type d \( -name .git -o -name node_modules -o -name .venv -o -name .dart_tool \
-                   -o -name .gradle -o -name build -o -name .next -o -name __pycache__ \
-                   -o -path ./docs/codex_rescue/.log \) -prune \) -o \
-                -type f -newer "$MARKER" -print) \
-  || die "post-run scan failed — changes cannot be judged. Codex already ran, so check $RUN_DIR directly"
+# 🔴 실행 뒤 훑기가 실패해도 멈추지 않는다 (2026-10-14 사용자 결정). Codex 는 이미 끝났고 멈춘다고 한 일이
+#    되돌려지지 않는다. 예전엔 여기서 die 해서 응답 회수·기록 보존을 통째로 건너뛰었고, status 가 finalizing 에
+#    갇혀 패널이 영원히 "응답 없음"이었다. 이제는 판정을 "모름"으로 두고 보고에서 직접 확인하라고 크게 알린다.
+#    (실행 **전** 훑기는 그대로 멈춘다 — 그때는 Codex 가 아직 시작하지 않아 잃는 것이 없다.)
+SCAN_FAILED=""
+TOUCHED=$(SCAN -newer "$MARKER") || SCAN_FAILED="$SCAN_FAILED modified-files"
 TOUCHED=$(printf '%s\n' "$TOUCHED" | LC_ALL=C sort | sed 's|^\./||')
 
 AFTER="$RUN_DIR/after.list"
-SCAN | LC_ALL=C sort > "$AFTER" || die "post-run listing snapshot failed — deletions cannot be judged"
+SCAN | LC_ALL=C sort > "$AFTER" || SCAN_FAILED="$SCAN_FAILED file-list"
 DELETED=$(LC_ALL=C comm -23 "$BEFORE" "$AFTER" | sed 's|^\./||' \
           | grep -v '^docs/codex_rescue/\.scratch/' || true)
 
@@ -2275,6 +2308,8 @@ DELETED=$(LC_ALL=C comm -23 "$BEFORE" "$AFTER" | sed 's|^\./||' \
 #    (`cp -p`, `touch -r`, hard link, 압축 해제의 타임스탬프 보존). before/after 목록이
 #    이미 있으므로 비용은 0 이다.
 ADDED=$(LC_ALL=C comm -13 "$BEFORE" "$AFTER" | sed 's|^\./||')
+# 훑기가 하나라도 실패했으면 목록이 반쯤 찬 것이다 — 거짓 "삭제"·"추가"를 내지 않게 모두 비운다.
+[ -n "$SCAN_FAILED" ] && { TOUCHED=""; DELETED=""; ADDED=""; }
 
 # 정상 산출물(검증된 응답 경로 + Codex 작업 폴더)을 제외한다. 남은 것이 전제를 깬 변경이다.
 # `--` 로 선행 `-` 경로에도 안전하게.
@@ -2669,7 +2704,17 @@ case "$AUTHOR" in
 esac
 
 echo
-if [ -n "$STRAY" ] || [ -n "$DELETED" ]; then
+if [ -n "$SCAN_FAILED" ]; then
+  echo "🔴🔴 the post-run scan failed (${SCAN_FAILED# }) — **whether anything besides the response file changed is unknown.**"
+  echo "   The find error is in this run's stderr. Codex had already finished, so the response was still collected."
+  if [ "$IS_GIT" = 1 ]; then
+    echo "   → check git status and git diff yourself, then report to the user."
+  else
+    echo "   → not a git repository, so there is no diff — tell the user that changes could not be checked."
+  fi
+  [ "$MODE" = edit ] && echo "   🔴 this was an EDIT run — the list of edits cannot be shown here. Read the actual changes before reviewing."
+  echo "   🔴 **Do not revert on your own.** Whether to revert or keep is the decision of the user."
+elif [ -n "$STRAY" ] || [ -n "$DELETED" ]; then
   echo "🔴🔴 changes other than the response file detected — you must report them to the user"
   [ -n "$STRAY" ]   && { echo "   [created / modified]"; printf '%s\n' "$STRAY"   | sed 's/^/     /'; }
   [ -n "$DELETED" ] && { echo "   [deleted]";      printf '%s\n' "$DELETED" | sed 's/^/     /'; }
@@ -2695,6 +2740,10 @@ if [ -n "$SCRATCH_MADE" ]; then
   printf '%s\n' "$SCRATCH_MADE" | sed 's/^/     /'
 fi
 echo "   (not watched: $PRUNED — changes inside it, and create-then-delete or restored mtimes, are not caught)"
+if [ -s "$SCAN_VANISHED_LOG" ]; then
+  echo "   (ignored: $(wc -l < "$SCAN_VANISHED_LOG" | tr -d ' ') path(s) vanished while scanning — e.g. the empty .agents / .aws / .codex"
+  echo "    folders the Codex sandbox creates and removes around each command; another run in the same folder can cause this)"
+fi
 case "$SANDBOX" in
   *danger-full-access*)
     echo
@@ -2815,6 +2864,8 @@ case "$AUTHOR" in none|stale) FINAL_STATE=failed ;; esac
 # 후처리까지 전부 끝난 지금이 진짜 종료 시점이다 — 여기서 heartbeat 를 멈추고,
 # 그다음 최종 status 를 쓴다. 순서가 반대면 판독기가 "terminal 인데 heartbeat 가 계속 뛴다"를 본다.
 kill "${HB_PID:-}" 2>/dev/null; HB_PID=""
-write_status "$FINAL_STATE" "\"$(date -u "+%Y-%m-%dT%H:%M:%SZ")\"" "$RC" "$TEE_RC"
+STATUS_OPEN=0   # 끝 상태를 여기서 쓴다 — EXIT trap 이 failed 로 덮지 않게
+write_status "$FINAL_STATE" "\"$(date -u "+%Y-%m-%dT%H:%M:%SZ")\"" "$RC" "$TEE_RC" \
+  "$([ -n "$SCAN_FAILED" ] && printf '"change_detection":"failed"')"
 
 exit $RC
