@@ -55,7 +55,9 @@ export function createSoundRouter(coordinatorId: string, file = soundDataFile("s
     if (s && s.seenAt !== Number.NEGATIVE_INFINITY) screens.set(screenId, { ...s, seenAt: now() });
   };
   const choose = (projectKey: string | null) => {
-    const all = [...screens.values()].filter(live);
+    // 음소거한 화면(폰 앱 단추)은 후보가 아니다 — 그 화면이 초록이어도 다른 화면이 울린다(리규형님 10-15 "다른 화면으로 넘긴다").
+    // 이미 그 화면에 배정한 소리도 가져가는 순간(take) 다시 골라 넘어간다
+    const all = [...screens.values()].filter((s) => live(s) && !s.muted);
     const green = projectKey === null ? [] : all.filter((s) => s.projectKey === projectKey);
     return (green.length ? green : all).sort((a, b) => b.useOrder - a.useOrder || a.screenId.localeCompare(b.screenId))[0]?.screenId;
   };

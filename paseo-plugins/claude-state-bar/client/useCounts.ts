@@ -5,8 +5,8 @@ import { readSession, writeSession } from "./web";
 
 // 작업 공간 폴더에서 돌고 있는 수(확장 activityCounts) — 머리줄 단추와 작업 현황 탭 숫자가 같이 쓴다.
 // 확장 탭과 같은 간격: 무언가 돌고 있으면 2초, 아니면 상태바 기본 새로 고침 30초
-const LIVE_POLL_MS = 2000;
-const IDLE_POLL_MS = 30000;
+export const LIVE_POLL_MS = 2000;
+export const IDLE_POLL_MS = 30000;
 
 export const totalOf = (c: ActivityCounts) => c.workflows + c.background + c.codexRuns + c.codexChats;
 

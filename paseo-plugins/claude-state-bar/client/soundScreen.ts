@@ -3,6 +3,7 @@ import { currentProjectKey, hostIndexOf, norm, type HostIndex } from "./projects
 import { projectsManager, projectsWait, type ProjectEntry } from "../shared/projects";
 import { SOUND_PAGE_SIZE, SOUND_RETRY_MS, SOUND_USE_COALESCE_MS } from "../shared/soundClaim";
 import { currentWorkspaceFromUrl, watchLocation } from "./web";
+import { shellMuted, watchShellMute } from "./shellMute";
 import { getPaseoClient } from "@getpaseo/plugin/client";
 import type { RoutedSoundEvent, SoundScreenState } from "../shared/soundClaim";
 
@@ -11,18 +12,26 @@ type Hub = {
   resolve?: (serverId: string, directory: string) => string | null;
   listeners: Set<() => void>; originListeners: Set<() => void>; origins: Map<string, PluginClientContext>; reported: Set<string>;
   useTimer?: ReturnType<typeof setTimeout>; usePending?: boolean;
+  /** 음소거가 바뀌면 PC 에 화면 상태를 다시 보내게 걸어 뒀나(10-15) — 옛 판 hub 에는 없다 */
+  muteWired?: boolean;
 };
 function hub(): Hub {
   const g = globalThis as Record<string, unknown>;
-  return (g.__claudeStateBar_soundScreen_v2 ??= {
+  const h = (g.__claudeStateBar_soundScreen_v2 ??= {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
     stateSeq: 0, userUseSeq: 0, projectKey: null, listeners: new Set(), originListeners: new Set(), origins: new Map(), reported: new Set(),
   }) as Hub;
+  // 폰 앱 음소거가 바뀌면 사용 순서는 그대로 두고 화면 상태만 바로 다시 보낸다 — 음소거한 화면은 PC 가 소리 후보에서 뺀다
+  if (!h.muteWired) {
+    h.muteWired = true;
+    watchShellMute(() => { for (const f of h.listeners) f(); });
+  }
+  return h;
 }
 export function screenId(): string { return hub().id; }
 export function screenProject(): string | null { return hub().projectKey; }
 export function screenSnapshot(): SoundScreenState {
-  const h = hub(); return { screenId: h.id, stateSeq: ++h.stateSeq, userUseSeq: h.userUseSeq, projectKey: h.projectKey };
+  const h = hub(); return { screenId: h.id, stateSeq: ++h.stateSeq, userUseSeq: h.userUseSeq, projectKey: h.projectKey, ...(shellMuted() ? { muted: true } : {}) };
 }
 const bumpUse = (h: Hub) => { h.userUseSeq++; for (const f of h.listeners) f(); };
 /** 사람이 이 화면을 썼다 — 1초(SOUND_USE_COALESCE_MS) 안의 입력은 처음은 바로, 나머지는 1초 끝에 한 번으로 모아 알린다
@@ -49,6 +58,8 @@ export function registerSoundOrigin(serverId: string, client: PluginClientContex
   return () => { if (hub().origins.get(serverId) === client) { hub().origins.delete(serverId); for (const f of hub().originListeners) f(); } };
 }
 export function soundOrigin(serverId: string): PluginClientContext | undefined { return hub().origins.get(serverId); }
+/** 기기 연결이 붙거나 빠질 때 알린다 — 프로젝트 목록 숫자(projectCounts)가 늦게 붙은 서버를 바로 읽으려고. 소리 판정과 무관 */
+export function watchSoundOrigins(listener: () => void): () => void { hub().originListeners.add(listener); return () => { hub().originListeners.delete(listener); }; }
 
 // 목록 컴포넌트와 동일한 공개 hooks/함수를 쓴다. 제목, 목록 편집/렌더링 코드는 변경하지 않는다.
 export function publishSoundProjects(entries: ProjectEntry[], index: HostIndex, current: { serverId: string; directory: string } | null): void {

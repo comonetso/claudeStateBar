@@ -4,6 +4,7 @@ import { currentWorkspaceFromUrl, lastLayoutAppliedAt, onUserInput, readSession,
 // 이 플러그인은 DOM 타입을 쓰지 않는다 — 쓰는 것만 선언한다(web.ts 와 같은 방식)
 type El = {
   closest?(selector: string): El | null;
+  querySelectorAll?(selector: string): ArrayLike<El>;
   getAttribute?(name: string): string | null;
   getClientRects?(): { length: number };
   click?(): void;
@@ -64,6 +65,36 @@ const secondsAgo = (t: number) => (t > 0 ? `${Math.round((Date.now() - t) / 1000
 /** 플러그인이 일부러 최대화를 푼 시각 — 사람이 "창 복원"을 누른 것과 같이 다룬다(기록하지 않고 표식을 지워 되살리지 않음) */
 let pluginRestoreAt = 0;
 
+/** 지금 작업 공간 열쇠(되살리기 표식과 같은 모양) */
+function currentWsKey(): string | null {
+  const w = currentWorkspaceFromUrl();
+  return w ? `${w.serverId}/${w.workspaceId}` : null;
+}
+/**
+ * 이 작업 공간의 최대화 기억을 바로 지운다 — 창 복원(사람·작업 현황 단추)으로 푸는 그 순간에. 예전엔 2초 표본이 "풀렸다"를 볼 때
+ * 지웠는데, 작업 현황 단추가 풀고 탭을 열며 주소가 바뀌자 그 사이에 되살리기가 기억을 보고 다시 최대화해 버렸다(10-15 리규형님
+ * "전체 화면에서 작업 현황을 눌러도 아무 반응이 없다" — 기록에 같은 작업 공간 되살리기가 1초 간격으로 세 번)
+ */
+function forgetMark(ws: string | null): void {
+  if (!ws) return;
+  try {
+    const all = JSON.parse(readSession(MARKS_KEY) ?? "null") as Record<string, Mark> | null;
+    if (all && typeof all === "object" && ws in all) {
+      delete all[ws];
+      writeSession(MARKS_KEY, Object.keys(all).length ? JSON.stringify(all) : null);
+    }
+  } catch {
+    writeSession(MARKS_KEY, null); // 깨진 값은 버린다(readMarks 와 같게)
+  }
+  // 옛 판 표식에 같은 작업 공간이 남아 있으면 다음 readMarks 가 다시 옮겨 와 되살아난다
+  try {
+    const old = JSON.parse(readSession(MARK_KEY) ?? "null") as Mark | null;
+    if (old?.ws === ws) writeSession(MARK_KEY, null);
+  } catch {
+    writeSession(MARK_KEY, null);
+  }
+}
+
 /**
  * 최대화돼 있으면 푼다(그 칸의 "창 복원" 단추를 대신 누름 — RN-web 단추는 click 에도 onPress). 풀었으면 true.
  * 10-09 리규형님: 작업 현황 칸을 연 뒤 채팅 탭을 최대화하면 작업 현황이 가려지고, 그때 작업 현황 단추를 눌러도 이미 열려 있어
@@ -71,9 +102,11 @@ let pluginRestoreAt = 0;
  */
 export function releaseMaximizedPane(): boolean {
   if (Platform.OS !== "web" || typeof document === "undefined") return false;
-  const restore = document.querySelector(RESTORE) as { click?: () => void } | null;
+  // 지금 보이는 작업 공간 화면의 것만 — 숨겨진 다른 작업 공간 화면에도 "창 복원" 단추가 남아 있다(10-14 Aside 실측)
+  const restore = paneButtons().find((b) => b.getAttribute?.("data-testid") === RESTORE_ID) ?? null;
   if (typeof restore?.click !== "function") return false;
   pluginRestoreAt = Date.now();
+  forgetMark(currentWsKey());
   restore.click();
   return true;
 }
@@ -87,8 +120,16 @@ function tabId(): string {
   return readSession(TAB_KEY) ?? "-";
 }
 
-/** 지금 화면의 칸 단추들(최대화·창 복원) — 문서 순서 = 칸 순서. 뒤에 남은 다른 화면 것(상자가 없는 것)은 뺀다 */
+const DECK = '[data-testid^="workspace-deck-entry"]';
+/**
+ * 지금 화면의 칸 단추들(최대화·창 복원) — 문서 순서 = 칸 순서. 뒤에 남은 다른 작업 공간 화면(display:none 이라 상자가 없다)은 뺀다.
+ * 🔴 지금 보이는 작업 공간 화면 안의 단추는 **최대화로 크기 0 이 된 칸 것까지** 센다(10-14 리규형님 "화면분할 안 고쳐졌잖아"):
+ *    예전엔 상자 있는 단추만 세서, 최대화 중엔 [작업 현황 | 대화] 가 "칸 1개 중 첫째"로 적히고 돌아와 나뉜 화면에선 2개라
+ *    칸 수가 영영 안 맞아 되살리지 못했다. 보이는 작업 공간 화면이 딱 하나일 때만 이렇게 세고, 아니면 예전 방식(상자 있는 것만)
+ */
 function paneButtons(): El[] {
+  const decks = Array.from(document.querySelectorAll(DECK) as unknown as ArrayLike<El>).filter((d) => (d.getClientRects?.().length ?? 1) > 0);
+  if (decks.length === 1 && typeof decks[0].querySelectorAll === "function") return Array.from(decks[0].querySelectorAll(`${MAXIMIZE},${RESTORE}`));
   return Array.from(document.querySelectorAll(`${MAXIMIZE},${RESTORE}`)).filter((b) => (b.getClientRects?.().length ?? 1) > 0);
 }
 
@@ -218,7 +259,8 @@ export function startPaneMaxWatch(log: (message: string) => void, screenLabel: (
       sameWsSamples = 0;
       return;
     }
-    const max = document.querySelector(RESTORE) !== null;
+    // 지금 보이는 작업 공간 화면 안에서만 본다 — 숨겨진 다른 작업 공간 화면에 남은 "창 복원" 단추로 최대화라 오판하던 것(10-14)
+    const max = maximizedNow();
     sameWsSamples = ws === prevWs ? sameWsSamples + 1 : 0;
     if (restoredAt) {
       // 대신 누른 뒤 첫 표본 — 단추가 반응하지 않았으면 남긴다(Paseo 단추 구조가 바뀐 신호)
@@ -274,7 +316,12 @@ export function startPaneMaxWatch(log: (message: string) => void, screenLabel: (
     lastNetChange = Date.now();
   };
   const onClick = (event: DocEvent) => {
-    if (event.target?.closest?.(RESTORE)) lastRestoreClick = Date.now();
+    if (!event.target?.closest?.(RESTORE)) return;
+    lastRestoreClick = Date.now();
+    // 직접 푼 곳은 되살리지 않는다 — 누르는 그 순간 기억을 지운다(위 forgetMark)
+    forgetMark(wsKey());
+    pending = null;
+    stopRestore();
   };
   const stopInput = onUserInput(() => {
     lastInput = Date.now();

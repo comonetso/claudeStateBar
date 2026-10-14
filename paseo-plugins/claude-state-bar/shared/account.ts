@@ -6,6 +6,8 @@ import { z } from "zod";
 // 그래서 공급자는 그대로 두고, 대화를 다시 띄울 때 Claude 가 쓰는 계정 값(PC 는 계정 폴더, 서버는 팀 토큰)만 플러그인이 바꿔 넣는다.
 // 같은 Claude 대화 기록을 그대로 이어 쓰므로 맥락이 유지된다(10-14 실측). Codex 같은 다른 공급자로는 못 넘긴다(기록 형식이 다르다).
 
+/** 팀 공급자 한도 원천 번호(server/teamUsage) — 사용량 칸이 이 카드는 이름을 줄이지 않는다 */
+export const TEAM_USAGE_SOURCE_ID = "claude-state-bar-team";
 export const accountKind = z.enum(["team", "personal"]);
 export type AccountKind = z.infer<typeof accountKind>;
 

@@ -21,6 +21,7 @@ import {
   type Live,
   type ProjectsData,
 } from "./projectsData";
+import { countsTotal, useProjectCounts, type ProjectTarget } from "./projectCounts";
 import { StatusIndicator } from "./statusIndicator";
 import { isTeamMember } from "./teamMode";
 import { lineColor, UiInput } from "./ui";
@@ -95,6 +96,23 @@ export function ProjectsList(props: {
   const categories = useMemo(() => orderedCategories(entries, orders[CATEGORY_ORDER_KEY] ?? []), [entries, orders]);
   const catNumber = useMemo(() => new Map(categories.map((name, i) => [name, i + 1] as const)), [categories]);
   const member = isTeamMember();
+  // 이름 옆 작업 현황 숫자(10-14 리규형님) — 활성(열린 대화가 있는) 프로젝트만 그 기기에 묻는다. 같은 프로젝트가 고정·활성·원래
+  // 묶음에 여러 줄로 나와도 한 번만 읽는다
+  const countTargets = useMemo(() => {
+    const out: ProjectTarget[] = [];
+    const seen = new Set<string>();
+    for (const e of entries) {
+      if ((member && !e.enabled) || e.missing) continue;
+      const serverId = serverOf(e, index);
+      if (!serverId || !liveOf(e, serverId, live)) continue;
+      const key = pinKey(e);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, serverId, directory: e.path });
+    }
+    return out;
+  }, [entries, index, live, member]);
+  const projectCounts = useProjectCounts(countTargets);
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const map = new Map<string, ProjectEntry[]>();
@@ -280,6 +298,9 @@ export function ProjectsList(props: {
                     pinKey(e) === currentKey ? c.statusSuccess : e.missing ? c.foregroundMuted : !known ? c.statusWarning : c.foreground;
                   const key = pinKey(e);
                   const pinned = pins.has(key);
+                  // 셋 다 0 이면 숨긴다(10-14 리규형님). Codex = 실행 + 핑퐁 채팅
+                  const work = alive ? projectCounts.get(key) : undefined;
+                  const workText = work && countsTotal(work) > 0 ? `(${work.subagents}, ${work.background}, ${work.codex})` : null;
                   // 고정·활성은 여러 카테고리가 섞여 소속이 안 보인다 → 카테고리 번호를 이름 앞 작은 배지로(10-09 리규형님 결정 —
                   // 카테고리 이름을 통째로 붙이면 좁은 칸에서 프로젝트 이름이 잘린다). 10-11부터 번호는 카테고리 순서(끌어 옮긴 순서)이고
                   // 카테고리 없음은 배지 없음. 마우스를 올리면 카테고리 이름도 뜬다. 원래 카테고리 묶음 안 줄은 그대로
@@ -315,6 +336,15 @@ export function ProjectsList(props: {
                             {e.name}
                           </Text>
                           {alive && alive.open > 1 ? <Text style={{ flexShrink: 0, color: c.foregroundMuted, fontSize: fs(10) }}>{alive.open}</Text> : null}
+                          {workText && work ? (
+                            <Text
+                              ref={(node: unknown) => setHoverTitle(node, `서브에이전트 ${work.subagents} · 백그라운드 ${work.background} · Codex ${work.codex}`)}
+                              accessibilityLabel={`작업 현황: 서브에이전트 ${work.subagents}개, 백그라운드 ${work.background}개, Codex ${work.codex}개`}
+                              style={{ flexShrink: 0, color: c.foregroundMuted, fontSize: fs(10) }}
+                            >
+                              {workText}
+                            </Text>
+                          ) : null}
                           {sideText ? (
                             <Text style={{ flexShrink: 0, marginLeft: 4, color: c.foregroundMuted, fontSize: fs(11) }} numberOfLines={1}>
                               {sideText}

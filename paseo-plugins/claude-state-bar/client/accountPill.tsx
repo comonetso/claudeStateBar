@@ -102,9 +102,9 @@ function AccountDetail(props: PluginButtonContentProps) {
   );
   return (
     <View style={{ padding: 12, gap: 8, minWidth: 240, maxWidth: 340 }}>
-      <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>Claude 공급자 바꾸기</Text>
-      <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
-        지금 {names[info.current]}{info.current === info.base ? "(원래 공급자)" : `(원래는 ${names[info.base]})`} → {names[to]}
+      {/* 폰은 이 위에 알약 이름("Claude 공급자")을 창 제목으로 한 줄 그린다 — 그 아래 어디서 어디로만(리규형님 10-15) */}
+      <Text style={{ color: c.foreground, fontSize: 14, fontWeight: "600" }}>
+        {names[info.current]} → {names[to]}
       </Text>
       <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
         이 대화의 Claude 를 끄고, 다음 말을 보낼 때 {names[to]} 공급자로 같은 대화를 이어 띄웁니다. 화면 기록은 그대로입니다. 그 첫 답에서 대화 전체
@@ -151,8 +151,9 @@ export function createAccountPills(client: PluginClientContext, log: (message: s
       infos.set(agentId, { base, current, names });
       notify();
     }
-    // 마우스 도움말(폰 제외 — Paseo 가 알약 이름을 풍선으로 띄운다)
-    const title = current !== base ? `Claude 공급자: ${names[current]}(원래 ${names[base]}) — 눌러서 바꾸기` : `Claude 공급자 바꾸기 — 지금 ${names[current]}`;
+    // 알약 이름 = PC 마우스 도움말 · 폰 아래 창 제목(한 줄로 잘린다). 어디서 어디로는 창 첫 줄에 쓴다 — "원래 ~" 는 빼라(리규형님 10-15
+    // "'Claude 공급자' 하고 밑으로 'Claude → Claude'")
+    const title = "Claude 공급자";
     const known = pills.get(agentId);
     if (known) {
       if (known.title !== title) {

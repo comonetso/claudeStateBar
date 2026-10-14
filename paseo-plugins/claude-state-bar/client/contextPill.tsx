@@ -86,7 +86,7 @@ export function createContextPills(client: PluginClientContext, log: (message: s
   // 넓은 화면은 "컨텍스트 59%". 알약에는 숫자 글자(pctText)를 기억해 두고 화면 폭이 바뀌면 다시 그린다
   const shown = (pct: string) => (isCompactWidth() ? `${pct}%` : `컨텍스트 ${pct}%`);
   const stopWidth = watchCompactWidth(() => {
-    for (const p of pills.values()) p.reg.update({ label: shown(p.label) });
+    for (const p of pills.values()) if (p.label) p.reg.update({ label: shown(p.label) });
   });
   // 진단: 대화마다 한 번만 "붙였다/왜 건너뛰었다"를 남긴다(10-05 알약이 안 보인다는 보고 — 원인 확인용)
   const told = new Set<string>();
@@ -102,11 +102,34 @@ export function createContextPills(client: PluginClientContext, log: (message: s
     if (latest.delete(agentId)) for (const fn of listeners) fn();
   };
 
+  // 🔴 알약 줄 순서 = 등록 순서다(Paseo PluginComposerPills 가 등록 순서대로 그리고, 접기 알약의 margin-left:auto 부터 오른쪽).
+  //    사용량이 와야 등록하면 첫 응답 전에 본 대화(PC 재부팅·새 대화 직후)는 목록·접기·⇄ 뒤 — 오른쪽 — 로 밀렸다(10-14 리규형님
+  //    "왜 컨텍스트 위치가 틀리지"). 그래서 사용량이 없어도 숨긴 채(visible:false — Paseo 가 안 그린다) 먼저 등록해 자리를 잡는다.
+  //    숨긴 알약은 label 이 "" 로 남아 있다
+  const register = (agent: AgentLike & { workspaceId: string }, label: string, title: string) => {
+    try {
+      const reg = client.addComposerPill({
+        id: "context",
+        workspaceId: agent.workspaceId,
+        agentId: agent.id,
+        button: { title, icon: ContextIcon, label: shown(label || "—"), visible: label !== "", behavior: { kind: "popover", Content: ContextDetail } },
+      });
+      pills.set(agent.id, { reg, label });
+      tell(agent.id, label ? `added ws=${agent.workspaceId} ${shown(label)}` : `reserved hidden ws=${agent.workspaceId}`);
+    } catch (error) {
+      log(`context pill ${agent.id}: ${String(error)}`);
+    }
+  };
+
   const observe = (agent: AgentLike) => {
     if (agent.archivedAt) return drop(agent.id);
-    const pct = percentOf(agent.lastUsage);
-    if (pct === undefined) return tell(agent.id, `no usage yet (used=${agent.lastUsage?.contextWindowUsedTokens ?? "-"} max=${agent.lastUsage?.contextWindowMaxTokens ?? "-"})`);
     if (!agent.workspaceId) return tell(agent.id, "no workspaceId");
+    const known = pills.get(agent.id);
+    const pct = percentOf(agent.lastUsage);
+    if (pct === undefined) {
+      if (!known) register({ ...agent, workspaceId: agent.workspaceId }, "", "컨텍스트 사용량");
+      return tell(agent.id, `no usage yet (used=${agent.lastUsage?.contextWindowUsedTokens ?? "-"} max=${agent.lastUsage?.contextWindowMaxTokens ?? "-"})`);
+    }
     const prev = latest.get(agent.id);
     if (prev?.usage?.contextWindowUsedTokens !== agent.lastUsage?.contextWindowUsedTokens || prev?.usage?.contextWindowMaxTokens !== agent.lastUsage?.contextWindowMaxTokens || prev?.model !== (agent.model ?? null)) {
       latest.set(agent.id, { usage: agent.lastUsage, model: agent.model ?? null });
@@ -114,26 +137,16 @@ export function createContextPills(client: PluginClientContext, log: (message: s
     }
     const label = pctText(pct);
     const title = `컨텍스트 사용량 ${pct.toFixed(1)}%`;
-    const known = pills.get(agent.id);
     if (known) {
       if (known.label !== label) {
+        const wasHidden = known.label === "";
         known.label = label;
-        known.reg.update({ label: shown(label), title });
+        known.reg.update(wasHidden ? { label: shown(label), title, visible: true } : { label: shown(label), title });
+        if (wasHidden) tell(agent.id, `shown ${shown(label)}`);
       }
       return;
     }
-    try {
-      const reg = client.addComposerPill({
-        id: "context",
-        workspaceId: agent.workspaceId,
-        agentId: agent.id,
-        button: { title, icon: ContextIcon, label: shown(label), behavior: { kind: "popover", Content: ContextDetail } },
-      });
-      pills.set(agent.id, { reg, label });
-      tell(agent.id, `added ws=${agent.workspaceId} ${shown(label)}`);
-    } catch (error) {
-      log(`context pill ${agent.id}: ${String(error)}`);
-    }
+    register({ ...agent, workspaceId: agent.workspaceId }, label, title);
   };
 
   return {

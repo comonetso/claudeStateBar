@@ -77,6 +77,7 @@ import { forgetAccount, providerFromDisk, switchAccount, waitAccounts } from "./
 import { accountSwitch, accountsWait } from "./shared/account";
 import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCode, waitLogin } from "./server/claudeLogin";
 import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
+import { teamUsageSource } from "./server/teamUsage";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(soundSettings);
@@ -84,6 +85,15 @@ export default function contribute(server: PluginServerContext) {
     const state = await settings.read();
     return state.status === "ready" ? state.values : DEFAULT_SETTINGS;
   };
+
+  // 팀 공급자 한도를 사용량 목록에 늘 올린다(10-15 — server/teamUsage). 이 기능이 없는 옛 데몬에선 건너뛴다
+  if (typeof (server as { registerUsageSource?: unknown }).registerUsageSource === "function") {
+    try {
+      server.registerUsageSource(teamUsageSource());
+    } catch (error) {
+      console.log(`[team-usage] register failed: ${String(error)}`);
+    }
+  }
 
   const readSound = createSoundReader(readSettings);
   server.handle(soundDataV2, readSound);

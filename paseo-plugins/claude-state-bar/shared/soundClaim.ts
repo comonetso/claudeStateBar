@@ -27,6 +27,8 @@ export const SOUND_LEDGER_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 export const screenSchema = z.object({
   screenId: z.string().min(1), stateSeq: z.number().int().nonnegative(),
   userUseSeq: z.number().int().nonnegative(), projectKey: z.string().nullable(),
+  // 폰 앱(PaseoShell) 음소거 단추 — 켜져 있으면 이 화면은 소리 후보에서 빠지고 다른 화면이 울린다(리규형님 10-15). 옛 화면은 안 보낸다
+  muted: z.boolean().optional(),
 });
 export const eventSchema = z.object({
   eventId: z.string().min(1), originHostId: z.string().min(1), agentId: z.string(),

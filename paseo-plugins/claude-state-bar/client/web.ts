@@ -1,6 +1,7 @@
 import { Linking, Platform } from "react-native";
 import type { Edit } from "./markdownList";
 import type { AudioFile, ThinkingAudio } from "./thinkingPlayer";
+import { shellMuted, watchShellMute } from "./shellMute";
 
 // This plugin typechecks without the DOM library. Declare only what this module uses.
 declare const window: {
@@ -35,6 +36,7 @@ declare class Audio {
   src: string;
   playbackRate: number;
   preservesPitch: boolean;
+  muted: boolean;
   onended: (() => void) | null;
   onerror: (() => void) | null;
   error: { message?: string; code: number } | null;
@@ -55,7 +57,11 @@ export async function openExternal(url: string): Promise<void> {
 // 데스크톱(Electron)·웹 앱에서만 소리를 낸다. 휴대폰 앱은 아무것도 하지 않는다.
 export async function playSoundUrl(url: string): Promise<boolean> {
   if (Platform.OS !== "web") return false;
-  await new Audio(url).play();
+  const audio = new Audio(url);
+  // 폰 앱 음소거 중이면 소리 없이(10-15). 끝남 소리는 PC 가 음소거 화면을 후보에서 빼 다른 화면으로 넘기니, 이건 넘기기 직전에
+  // 받은 것까지 막는 안전장치다
+  audio.muted = shellMuted();
+  await audio.play();
   return true;
 }
 
@@ -1011,6 +1017,10 @@ export function createThinkingAudio(): ThinkingAudio {
   let audio: Audio | undefined;
   let url: string | undefined;
   let generation = 0;
+  // 폰 앱 음소거 중엔 소리만 끈다 — 읽기(형광펜·진행)는 그대로 가고, 풀면 그 자리부터 들린다(10-15)
+  watchShellMute(() => {
+    if (audio) audio.muted = shellMuted();
+  });
   const release = () => {
     if (url) URL.revokeObjectURL(url);
     url = undefined;
@@ -1033,6 +1043,7 @@ export function createThinkingAudio(): ThinkingAudio {
       load(file);
       audio.playbackRate = rate;
       audio.preservesPitch = true;
+      audio.muted = shellMuted();
       audio.onended = () => { if (generation === token) ended(); };
       audio.onerror = () => { if (generation === token) error(audio?.error?.message || `오디오 오류 ${audio?.error?.code ?? ""}`); };
       await audio.play();
@@ -1188,8 +1199,9 @@ export function watchTabTitle(titleOf: (workspaceId: string) => string | null): 
 // 넓은 화면은 두 줄 글이 같으면 아래 줄을 안 그리고 좁은 화면은 늘 그린다 → "아래 줄이 있고 위 줄과 글이 같다" = 좁은 화면.
 // 글은 React 가 만든 글 조각의 값만 바꾼다 — 조각을 갈아 끼우면 React 가 다음에 옛 조각을 고쳐 화면에 안 나온다.
 // React 가 글을 다시 쓰면 감시가 다시 바꾼다. 폰 원본 앱(웹 화면이 아님)에는 해당 없음
+type MutationLike = { type: string; target: unknown; attributeName?: string | null; addedNodes: ArrayLike<unknown> };
 declare class MutationObserver {
-  constructor(callback: (records: { addedNodes: ArrayLike<unknown> }[]) => void);
+  constructor(callback: (records: MutationLike[]) => void);
   observe(target: unknown, options: { childList?: boolean; subtree?: boolean; characterData?: boolean; attributes?: boolean; attributeFilter?: string[] }): void;
   disconnect(): void;
 }
@@ -1675,6 +1687,8 @@ type ReadEl = NodeLike & {
   removeAttribute(name: string): void;
   querySelector(selector: string): ReadEl | null;
   querySelectorAll(selector: string): ArrayLike<ReadEl>;
+  closest?(selector: string): ReadEl | null;
+  contains?(node: ReadEl): boolean;
   appendChild(node: ReadEl): void;
   insertBefore(node: ReadEl, before: ReadEl | null): void;
   compareDocumentPosition(node: ReadEl): number;
@@ -1693,7 +1707,7 @@ const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turn
 const READ_MARK = "data-csb-turn-read";
 // v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
 const READ_SHEET = "claude-state-bar-turn-read-v6";
-const TURN_READ_VERSION = 12; // 9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13)
+const TURN_READ_VERSION = 15; // 9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리)
 /** 읽는 중 스피커·컨트롤러 재생 단추 색 — Paseo 테마의 밝은 녹색(상태 점 색) */
 const READ_GREEN = "var(--colors-status-dot-success, #35c264)";
 const READ_ICONS: Record<string, string> = {
@@ -1704,23 +1718,73 @@ const READ_ICONS: Record<string, string> = {
   Square: '<rect x="3" y="3" width="18" height="18" rx="2"/>',
   SkipForward: '<path d="m5 4 9 8-9 8V4Z"/><path d="M19 5v14"/>',
 };
+// ── 한 번의 화면 검사(apply) 안에서만 쓰는 탐색 결과 공유(10-14 Codex 261014_214612 5.1·5.2) ──
+// 폰 버벅임의 주범이 같은 요소의 fiber 를 루트까지 수백 단계씩 되풀이해 오르던 것이었다(원본 프로파일 10초 중 말 읽기 3.8초).
+// 결과는 그 검사가 끝나면 버린다 — 다음 프레임에는 React 의 current/alternate·props 가 바뀌어 있을 수 있다. 검사 밖(클릭해서
+// 읽기 시작 등)에서는 예전처럼 매번 새로 읽는다. null 결과도 그 검사 안에서만 기억한다
+type TimelineRow = { root: ReadEl; stream: string; kind: string; id: string };
+type ReadScan = {
+  fibers: WeakMap<ReadEl, ReadFiber | null>;
+  streams: WeakMap<ReadEl, string | null>;
+  rows: WeakMap<ReadEl, TimelineRow | null>;
+  groups: WeakMap<ReadEl, SpeechGroup | null>;
+  messages?: ReadEl[];
+  byId?: Map<string, Map<string, ReadEl>>;
+};
+let readScan: ReadScan | null = null;
+function inReadScan<T>(run: () => T): T {
+  const previous = readScan;
+  readScan = { fibers: new WeakMap(), streams: new WeakMap(), rows: new WeakMap(), groups: new WeakMap() };
+  try {
+    return run();
+  } finally {
+    readScan = previous;
+  }
+}
+function once<K extends object, V>(cache: WeakMap<K, V> | undefined, key: K, read: () => V): V {
+  if (!cache) return read();
+  if (cache.has(key)) return cache.get(key) as V;
+  const value = read();
+  cache.set(key, value);
+  return value;
+}
+/** 화면의 Claude 말 블록 — 한 검사 안에서는 한 번만 찾는다 */
+function scanMessages(): ReadEl[] {
+  const read = () => Array.from(document.querySelectorAll('[data-testid="assistant-message"]') as unknown as ArrayLike<ReadEl>);
+  return readScan ? (readScan.messages ??= read()) : read();
+}
 function readFiber(el: ReadEl): ReadFiber | null {
+  return once(readScan?.fibers, el, () => readFiberUncached(el));
+}
+function readFiberUncached(el: ReadEl): ReadFiber | null {
   const key = Object.keys(el).find((k) => k.startsWith("__reactFiber$"));
   if (!key) return null;
   const fiber = (el as unknown as Record<string, unknown>)[key] as ReadFiber;
   // DOM 의 fiber 는 이전 커밋 쪽일 수도 있다. root.current 로 현재 쪽을 고른다.
   let root = fiber;
-  const seen = new Set<ReadFiber>();
-  while (root.return && !seen.has(root)) { seen.add(root); root = root.return; }
+  for (let fast: ReadFiber | null | undefined = fiber; root.return; ) {
+    root = root.return;
+    fast = fast?.return?.return;
+    if (fast === root) break;
+  }
   return root.stateNode?.current && root.stateNode.current !== root ? fiber.alternate ?? null : fiber;
 }
-function readProps(el: ReadEl, match: (props: Record<string, unknown>) => boolean): Record<string, unknown> | null {
-  const seen = new Set<ReadFiber>();
-  for (let f = readFiber(el); f && !seen.has(f); f = f.return ?? null) {
-    seen.add(f);
+/**
+ * fiber 를 루트 쪽으로 오르며 처음 맞는 props. 빙빙 도는 고리는 한 칸·두 칸씩 가는 둘이 만나면 멈춘다 — 지나간 것을 모아 두지
+ * 않는다(10-15 폰 실측: 말 137개에서 오를 때마다 만든 Set 이 20초에 55MB 쓰레기 → 메모리 1.1GB·아래 창 버벅임)
+ */
+function firstProps(start: ReadFiber | null, match: (props: Record<string, unknown>) => boolean): Record<string, unknown> | null {
+  for (let f = start, fast = start; f; ) {
     if (f.memoizedProps && match(f.memoizedProps)) return f.memoizedProps;
+    f = f.return ?? null;
+    fast = fast?.return?.return ?? null;
+    if (f && f === fast) return null;
   }
   return null;
+}
+function readProps(el: ReadEl, match: (props: Record<string, unknown>) => boolean): Record<string, unknown> | null {
+  // 판 13 은 검사 안에서 요소마다 루트까지 props 목록을 모아 두었다 — 시간은 22% 줄었지만 쓰레기가 커서(10-15) 판 15 부터 바로 오른다
+  return firstProps(readFiber(el), match);
 }
 function messageProps(el: ReadEl): Record<string, unknown> | null {
   return readProps(el, (p) => typeof p.message === "string" && typeof p.serverId === "string");
@@ -1875,13 +1939,19 @@ type SpeechGroup = { first: ReadEl; last: ReadEl; messages: ReadEl[] };
  * 판정돼 스피커를 지웠다 붙였다 했고 글이 떨렸다(10-09 리규형님 "졸라 떨린다", 실측 4초에 판정 60번 바뀜)
  */
 function streamKey(el: ReadEl): string | null {
+  return once(readScan?.streams, el, () => streamKeyUncached(el));
+}
+function streamKeyUncached(el: ReadEl): string | null {
   const p = streamProps(el);
   if (!p) return null;
   const serverId = typeof p.serverId === "string" ? p.serverId : (p.context as { serverId?: string } | undefined)?.serverId;
   return `${p.agentId as string}|${serverId ?? ""}`;
 }
 /** 4873 de → We: 각 타임라인 항목은 itemId·gapBelow를 가진 자기 행이다. */
-function timelineRow(el: ReadEl): { root: ReadEl; stream: string; kind: string; id: string } | null {
+function timelineRow(el: ReadEl): TimelineRow | null {
+  return once(readScan?.rows, el, () => timelineRowUncached(el));
+}
+function timelineRowUncached(el: ReadEl): TimelineRow | null {
   const rowProps = readProps(el, (p) => typeof p.itemId === "string" && "gapBelow" in p);
   if (!rowProps) return null;
   type Item = { id?: string; kind?: string };
@@ -1936,6 +2006,16 @@ function adjacentSpeech(row: ReadEl, direction: "previousElementSibling" | "next
 }
 /** 같은 대화 칸에서 이어진 Claude 말 행만 한 묶음. 도구·플러그인·사용자·압축·꼬리 줄에서 끊긴다. */
 function speechGroup(el: ReadEl): SpeechGroup | null {
+  const cache = readScan?.groups;
+  if (!cache) return speechGroupUncached(el);
+  if (cache.has(el)) return cache.get(el) ?? null;
+  const group = speechGroupUncached(el);
+  // 한 묶음의 말 블록은 어느 것으로 물어도 같은 묶음이다 — 묶음에 든 블록 모두에 기억해 둔다
+  if (group) for (const message of group.messages) cache.set(message, group);
+  else cache.set(el, null);
+  return group;
+}
+function speechGroupUncached(el: ReadEl): SpeechGroup | null {
   const row = speechRow(el);
   if (!row) return null;
   const messages = speechRowMessages(row.root, row.stream);
@@ -1956,6 +2036,31 @@ function speechGroup(el: ReadEl): SpeechGroup | null {
   }
   return { first: messages[0], last: messages[messages.length - 1], messages };
 }
+/**
+ * 꼬리 줄 번호(stream + 항목 번호)의 말 블록 — 화면 순서상 처음 맞는 것(예전 전체 훑기와 같은 결과). 검사 안에서는 한 번 만든
+ * 색인을 쓴다(10-14 Codex 5.2 — 꼬리 줄마다 화면의 말을 처음부터 다시 훑어 꼬리 줄 수 × 말 수로 커지던 것)
+ */
+function footerMessage(stream: string, itemId: string): ReadEl | null {
+  const scan = readScan;
+  if (!scan) {
+    for (const message of scanMessages()) {
+      const row = speechRow(message);
+      if (row?.stream === stream && row.id === itemId) return message;
+    }
+    return null;
+  }
+  if (!scan.byId) {
+    scan.byId = new Map();
+    for (const message of scanMessages()) {
+      const row = speechRow(message);
+      if (!row) continue;
+      let ids = scan.byId.get(row.stream);
+      if (!ids) scan.byId.set(row.stream, (ids = new Map()));
+      if (!ids.has(row.id)) ids.set(row.id, message); // 처음 맞는 것 유지
+    }
+  }
+  return scan.byId.get(stream)?.get(itemId) ?? null;
+}
 /** 4873 de / 4959 I: 꼬리 줄은 마지막 도구 뒤에도 놓인다. 자기 말 번호로 화면의 말만 찾는다. */
 function lastSpeech(copy: ReadEl): SpeechGroup | null {
   const stream = streamKey(copy);
@@ -1965,13 +2070,9 @@ function lastSpeech(copy: ReadEl): SpeechGroup | null {
     (typeof (p.host as Footer | undefined)?.itemId === "string" && Array.isArray((p.host as Footer).items)));
   const footer = (props?.layoutItem as { completedFooter?: Footer } | undefined)?.completedFooter ?? props?.host as Footer | undefined;
   if (footer?.itemId) {
-    const messages = document.querySelectorAll('[data-testid="assistant-message"]') as unknown as ArrayLike<ReadEl>;
-    for (let i = 0; i < messages.length; i++) {
-      const row = speechRow(messages[i]);
-      if (row?.stream === stream && row.id === footer.itemId) return speechGroup(messages[i]);
-    }
+    const message = footerMessage(stream, footer.itemId);
     // 자기 말이 가상 목록 밖이면 앞선 다른 턴을 대신 읽지 않는다.
-    return null;
+    return message ? speechGroup(message) : null;
   }
   // 번호가 없는 옛 판만 바로 이웃한 말로 확인한다. 복사 글·대화 전체를 대체로 쓰지 않는다.
   const messages = copy.parentElement ? adjacentSpeech(copy.parentElement, "previousElementSibling", stream) : [];
@@ -2020,6 +2121,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
     const records = new Map<ReadEl, ReadRecord>();
     let live = true;
     let queued = false;
+    // 지난 검사의 말 블록·복사 단추 — 화면 변화가 이것들과 관계있을 때만 검사를 깨운다(아래 relevant)
+    let watched: ReadEl[] = [];
     // 화면 탐색 실패는 그릴 때마다 되풀이된다 — 같은 이유는 한 번만 서버 기록으로 보낸다
     let lastScanError = "";
     const owner = (hostId: string) => [...hub.users.values()].filter((get) => get.csbVersion === TURN_READ_VERSION).map((get) => get()).find((b) => b.hostId === hostId && b.enabled);
@@ -2144,6 +2247,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       queued = false;
       if (!live) return;
       try {
+        // 한 번의 검사 안에서만 탐색 결과를 공유한다(위 inReadScan — 끝나면 버림)
+        inReadScan(() => {
         const wanted = new Set<ReadEl>();
         const lastWithFooter = new Set<ReadEl>();
         const copies = new Set(Array.from(document.querySelectorAll('[role="button"][aria-label]') as unknown as ArrayLike<ReadEl>).filter((el) => TURN_COPY_LABELS.has(el.getAttribute("aria-label") ?? "")));
@@ -2166,7 +2271,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           if (row.lastElementChild !== r.button && row.lastElementChild !== r.spin && row.lastElementChild !== r.err) row.appendChild(r.button);
           speaker(r, b);
         }
-        const messages = document.querySelectorAll('[data-testid="assistant-message"]') as unknown as ArrayLike<ReadEl>;
+        const messages = scanMessages();
+        watched = [...copies, ...messages];
         const visited = new Set<ReadEl>();
         for (let i = 0; i < messages.length; i++) {
           if (visited.has(messages[i])) continue;
@@ -2199,6 +2305,7 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           if (playing?.target === r.anchor && typeof playing.index === "number") lit = r.blocks?.[playing.index] ?? null;
         }
         paintReading(lit);
+        });
       } catch (error) {
         const reason = `화면 탐색 실패: ${String(error)}`;
         if (reason !== lastScanError) {
@@ -2216,7 +2323,29 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       if (frame) frame(() => apply());
       else void Promise.resolve().then(apply);
     };
-    const observer = new MutationObserver(refresh);
+    // 말·복사 단추와 관계없는 화면 변화로는 검사를 깨우지 않는다(10-15 폰 실측: Paseo 의 작업 중 깜빡임 투명도·아래 창 여백이
+    // 3초에 47번 깨워 말 59개에서 한 번 35ms — 조용할 때도 폰 CPU 28%). 줄 추가·삭제, 이름표 바뀜, 문서 맨 위(테마), 말·복사
+    // 단추를 품거나 그 안에 있는 요소의 변화는 그대로 깨운다. 우리 단추 안 아이콘·이름표 바뀜만 뺀다(Codex 261014_214612 5.4)
+    const relevant = (list: MutationLike[]) => {
+      const seen = new Set<ReadEl>();
+      for (const m of list) {
+        const target = m.target as ReadEl;
+        if (m.type === "childList") {
+          if (target.closest?.(`[${READ_MARK}]`)) continue;
+          return true;
+        }
+        if (m.attributeName === "aria-label") return true;
+        const el = m.type === "characterData" ? target.parentElement : target;
+        if (!el || seen.has(el)) continue;
+        seen.add(el);
+        if (el === (document.documentElement as unknown) || el === (document.body as unknown)) return true;
+        if (el.closest?.(`[${READ_MARK}]`)) continue;
+        if (el.closest?.('[data-testid="assistant-message"]')) return true;
+        for (const x of watched) if (x === el || x.contains?.(el) || el.contains?.(x)) return true;
+      }
+      return false;
+    };
+    const observer = new MutationObserver((list) => { if (relevant(list)) refresh(); });
     observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["aria-label", "class", "style", "stroke", "width", "height"] });
     hub.refresh = refresh;
     hub.stop = () => {
