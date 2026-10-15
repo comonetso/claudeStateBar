@@ -8,7 +8,7 @@ import {
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect } from "react";
 import { View } from "react-native";
-import { availableProviders, clampPct, shortName, shownWindows, summaryLabel, UsageTable, useUsage, type Usage } from "./usageFooter";
+import { availableProviders, shortName, shownWindows, summaryLabel, UsageTable, useUsage, windowName, windowPctText, type Usage } from "./usageFooter";
 import { hideButtonTooltip, setStyleSheet } from "./web";
 
 // 작업 공간 머리줄 "사용량" 단추(리규형님 10-06 결정): 작업 현황 단추 왼쪽에 "Claude 1·31 │ Codex 13"(계정마다 Paseo 가
@@ -32,12 +32,8 @@ const WIDTH_CSS = `[aria-label^="${TITLE_PREFIX}"]{max-width:none !important}`;
 function presentation(usage: Usage | null): Pick<PluginButton, "label" | "title"> {
   const providers = availableProviders(usage);
   if (!providers.length) return { label: "사용량", title: `${TITLE_PREFIX}읽는 중` };
-  const pct = (n: number | null | undefined) => {
-    const v = clampPct(n);
-    return v === null ? "—" : `${Math.round(v)}%`;
-  };
   const label = summaryLabel(providers);
-  const detail = providers.map((p) => `${shortName(p)} ${shownWindows(p).map((w) => `${w.shortLabel || w.label} ${pct(w.usedPct)}`).join(" · ")}`).join(" │ ");
+  const detail = providers.map((p) => `${shortName(p)} ${shownWindows(p).map((w) => `${windowName(w)} ${windowPctText(w)}`).join(" · ")}`).join(" │ ");
   return { label, title: `${TITLE_PREFIX}${detail}` };
 }
 

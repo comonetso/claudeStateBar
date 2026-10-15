@@ -23,14 +23,15 @@ const KNOWN = {
   'cdp.remote': ['transport', 'socketPath', 'tcpEndpoint'],
   'cdp.local': ['endpoint', 'daemonEndpoint'],
   artifacts: ['dir', 'retentionDays', 'storeRawProtocol', 'storeScreenshots'],
-  'sites[]': ['match', 'login', 'diag', 'darkReader', 'deepL', 'allowDataMutation', 'authPathPrefixes'],
+  'sites[]': ['match', 'login', 'diag', 'darkReader', 'deepL', 'allowDataMutation', 'authPathPrefixes', 'borrow', 'guardWrites', 'writeAllow'],
+  'sites[].borrow': ['sameWindowAs'],
 };
 
 const DEFAULTS = {
   aside: { enabled: true, maxConcurrent: 1, evaluateTimeoutMs: 25000, callTimeoutMs: 50000 },
   cdp: { enabled: true, policyProfile: 'safe-v1', connectTimeoutMs: 1000, commandTimeoutMs: 10000, remote: { transport: 'unix' } },
   artifacts: { retentionDays: 7, storeRawProtocol: false, storeScreenshots: true },
-  site: { login: 'none', diag: 'none', darkReader: 'must-be-off-warn', deepL: 'hide-and-report', allowDataMutation: false, authPathPrefixes: [] },
+  site: { login: 'none', diag: 'none', darkReader: 'must-be-off-warn', deepL: 'hide-and-report', allowDataMutation: false, authPathPrefixes: [], guardWrites: false, writeAllow: [] },
 };
 
 export function configPath() {
@@ -97,6 +98,12 @@ export function validate(raw) {
       if (!s.match) errors.push(`sites[${i}].match is required`);
       const site = { ...DEFAULTS.site, ...s };
       for (const k of ['login', 'diag', 'darkReader', 'deepL']) checkEnum('sites[].' + k, site[k], errors);
+      if (s.borrow !== undefined) {
+        if (!s.borrow || typeof s.borrow !== 'object' || Array.isArray(s.borrow)) errors.push(`sites[${i}].borrow must be an object`);
+        else { checkKeys(s.borrow, 'sites[].borrow', errors); if (s.borrow.sameWindowAs !== undefined && (typeof s.borrow.sameWindowAs !== 'string' || !s.borrow.sameWindowAs)) errors.push(`sites[${i}].borrow.sameWindowAs must be a non-empty string`); }
+      }
+      if (s.guardWrites !== undefined && typeof s.guardWrites !== 'boolean') errors.push(`sites[${i}].guardWrites must be true or false`);
+      if (s.writeAllow !== undefined && (!Array.isArray(s.writeAllow) || s.writeAllow.some((p) => typeof p !== 'string' || !p))) errors.push(`sites[${i}].writeAllow must be an array of paths or URLs`);
       cfg.sites.push(site);
     });
   }

@@ -18,6 +18,14 @@
  *                                               transport C: connect (unix socket on a server / loopback TCP locally),
  *                                               import the script and call its default export (client, helpers) — the
  *                                               script gets a policy-gated CdpClient; every owned target is closed in finally
+ *        [--borrow <url-pattern> [--same-window-as <url-pattern>] [--borrow-target <targetId>] [--user-approved] [--no-prep]]
+ *                                               opt-in: attach to one of the user's tabs instead (never created, raised or
+ *                                               closed; helpers.borrowed) — lent by config sites[].borrow or --user-approved
+ *        [--guard-writes [--allow-write <path>]…]
+ *                                               opt-in: fail the borrowed tab's non-GET requests except the allowed paths
+ *                                               (self-tested first; helpers.guard) — also on with sites[].guardWrites
+ *   node browser-check.mjs tabs [--match <url-pattern>] [--same-window-as <url-pattern>] [--json]
+ *                                               transport C, read-only: page tabs with their window ids
  *
  * The persistent Aside session driver lives in scripts/session/*. See README for what is still unmeasured.
  */
@@ -36,7 +44,20 @@ const cmd = args[0];
 const flag = (n) => args.includes(n);
 const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
 
+const optAll = (n) => args.flatMap((a, i) => (a === n && args[i + 1] ? [args[i + 1]] : []));
+
 function die(msg, code = 2) { console.error('[browser-check] ' + msg); process.exit(code); }
+
+/** Open transport C the way the config says (unix socket on a server, loopback TCP locally). */
+async function connectC(cfg, extra) {
+  const { connectUnix } = await import('./lib/cdp-unix.mjs');
+  const { connectTcp } = await import('./lib/cdp-tcp.mjs');
+  const opts = { connectTimeoutMs: cfg.cdp.connectTimeoutMs, commandTimeoutMs: cfg.cdp.commandTimeoutMs, log: (m) => process.stderr.write('[cdp] ' + m + '\n'), ...extra };
+  if (cfg.mode !== 'local' && cfg.cdp.remote.transport === 'unix' && cfg.cdp.remote.socketPath) return { client: await connectUnix(cfg.cdp.remote.socketPath, opts), how: 'C unix' };
+  if (cfg.mode !== 'remote' && cfg.cdp.local.endpoint) return { client: await connectTcp(cfg.cdp.local.endpoint, opts), how: 'C tcp-local' };
+  if (cfg.cdp.remote.transport === 'tcp' && cfg.cdp.remote.tcpEndpoint) return { client: await connectTcp(cfg.cdp.remote.tcpEndpoint, opts), how: 'C tcp (test-only)' };
+  die('no C transport configured (cdp.remote.socketPath or cdp.local.endpoint)');
+}
 
 const cfgRes = load();
 const dataDir = process.env.CLAUDE_PLUGIN_DATA || (cfgRes.path ? dirname(cfgRes.path) : null);
@@ -61,6 +82,8 @@ if (cmd === 'doctor' || cmd === undefined) {
   const report = { config: { path: cfgRes.path, ok: cfgRes.ok, errors: cfgRes.errors } };
   if (cfgRes.ok) report.capabilities = await probe(cfgRes.config);
   if (!cfgRes.ok && cfgRes.errors.includes('config file not found')) report.next = 'run `browser-check.mjs setup` — it looks this machine over and writes the config';
+  // Shells that are not a Claude Code plugin hook/skill (workflow agents, cron, plain ssh) have no CLAUDE_PLUGIN_DATA.
+  if (!cfgRes.path) report.next = 'this shell has no CLAUDE_PLUGIN_DATA — set CLAUDE_PLUGIN_DATA=<claude config dir>/plugins/data/browser-check-comonetso (or BROWSER_CHECK_CONFIG=<that dir>/config.json) and run again';
   const lf = await import('./lib/launch-flags.mjs');
   report.launchFlags = await lf.check().catch((e) => ({ supported: true, error: String(e && e.message || e) }));
   if (flag('--json')) { console.log(JSON.stringify(report, null, 1)); process.exit(cfgRes.ok ? 0 : 1); }
@@ -133,25 +156,45 @@ if (cmd === 'run') {
     process.exit(status === 'ok' ? 0 : 1);
   });
   child.on('error', (e) => { clearInterval(hb); release(dataDir); die('spawn failed: ' + e.message, 1); });
+} else if (cmd === 'tabs') {
+  // Read-only: the browser's page tabs and their windows (Target.getTargets + Browser.getWindowForTarget). Attaches to nothing.
+  if (!cfgRes.ok) die('config invalid: ' + cfgRes.errors.join('; '));
+  const { urlMatches } = await import('./lib/policy.mjs');
+  let client = null;
+  try {
+    const c = await connectC(cfgRes.config, {}); client = c.client;
+    let tabs = await client.listTabs();
+    const m = opt('--match', null); const w = opt('--same-window-as', null);
+    if (w) { const wins = new Set(tabs.filter((t) => urlMatches(w, t.url)).map((t) => t.windowId)); tabs = tabs.filter((t) => wins.has(t.windowId)); }
+    if (m) tabs = tabs.filter((t) => urlMatches(m, t.url));
+    tabs = tabs.map((t) => ({ ...t, url: redactUrl(t.url), title: redactText(t.title || '') }));
+    if (flag('--json')) console.log(JSON.stringify({ status: 'ok', transport: c.how, tabs }, null, 1));
+    else for (const t of tabs) console.log(`window ${t.windowId ?? '?'}${t.windowState ? ' (' + t.windowState + ')' : ''}  ${t.targetId}  ${t.url}  ${t.title}`);
+  } catch (e) {
+    console.log(JSON.stringify({ status: 'error', error: String(e && e.message || e).slice(0, 400) }, null, 1));
+    process.exitCode = 1;
+  } finally { if (client) await client.dispose(); }
 } else if (cmd === 'cdp') {
   if (!cfgRes.ok) die('config invalid: ' + cfgRes.errors.join('; '));
   const cfg = cfgRes.config;
   const scriptPath = args[1];
-  if (!scriptPath) die('usage: cdp <script.mjs> [--out <dir>] [--url <target-url>]');
+  if (!scriptPath) die('usage: cdp <script.mjs> [--out <dir>] [--url <target-url>] [--borrow <url-pattern> [--same-window-as <url-pattern>] [--borrow-target <targetId>] [--user-approved] [--no-prep]] [--guard-writes] [--allow-write <path>]…');
   const outDir = opt('--out', dataDir ? join(dataDir, 'artifacts', new Date().toISOString().replace(/[:.]/g, '-')) : null);
   if (!outDir) die('no --out and no data dir');
   mkdirSync(outDir, { recursive: true });
-  const { connectUnix } = await import('./lib/cdp-unix.mjs');
-  const { connectTcp } = await import('./lib/cdp-tcp.mjs');
   const { redact, redactUrl } = await import('./lib/redact.mjs');
-  const opts = { connectTimeoutMs: cfg.cdp.connectTimeoutMs, commandTimeoutMs: cfg.cdp.commandTimeoutMs, log: (m) => process.stderr.write('[cdp] ' + m + '\n') };
+  const { urlMatches } = await import('./lib/policy.mjs');
+  // A tab may be lent only if the owner said so for this site in the config, or approved it for this run.
+  const borrowGate = (url) => {
+    const s = siteFor(cfg, url);
+    if (s.borrow) return { ok: true, by: 'config' };
+    if (flag('--user-approved')) return { ok: true, by: 'user-approved' };
+    return { ok: false, why: 'this site is not lent in the config (sites[].borrow) and the run has no --user-approved — ask the user before borrowing their tab' };
+  };
   let client = null; let how = null;
   const started = Date.now();
   try {
-    if (cfg.mode !== 'local' && cfg.cdp.remote.transport === 'unix' && cfg.cdp.remote.socketPath) { client = await connectUnix(cfg.cdp.remote.socketPath, opts); how = 'C unix'; }
-    else if (cfg.mode !== 'remote' && cfg.cdp.local.endpoint) { client = await connectTcp(cfg.cdp.local.endpoint, opts); how = 'C tcp-local'; }
-    else if (cfg.cdp.remote.transport === 'tcp' && cfg.cdp.remote.tcpEndpoint) { client = await connectTcp(cfg.cdp.remote.tcpEndpoint, opts); how = 'C tcp (test-only)'; }
-    else die('no C transport configured (cdp.remote.socketPath or cdp.local.endpoint)');
+    ({ client, how } = await connectC(cfg, { borrowGate }));
     // A bare Windows path ("C:\…") is not a valid ESM specifier; a file:// URL works on every OS
     const mod = await import(pathToFileURL(resolve(scriptPath)).href);
     if (typeof mod.default !== 'function') die('script must export default async (client, helpers) => result');
@@ -160,9 +203,28 @@ if (cmd === 'run') {
       url: opt('--url', null),
       saveImage: (name, buf) => { const f = join(outDir, name); writeFileSync(f, buf); return f; },
       redact, redactUrl,
+      borrowed: null, guard: null,
     };
+    let site = null;
+    const pattern = opt('--borrow', null);
+    // Option mistakes are refused before anything is borrowed (die() exits without the finally that gives the tab back).
+    if (flag('--guard-writes') && !pattern) die('--guard-writes needs --borrow (for an own or isolated tab call client.guardWrites(sessionId, { allow }) in the script)');
+    if (optAll('--allow-write').length && !flag('--guard-writes') && !pattern) die('--allow-write needs --guard-writes');
+    if (pattern) {
+      let sameWindowAs = opt('--same-window-as', null);
+      if (!sameWindowAs) { const t = (await client.listTabs()).find((x) => urlMatches(pattern, x.url)); const s = t && siteFor(cfg, t.url); if (s && s.borrow && s.borrow.sameWindowAs) sameWindowAs = s.borrow.sameWindowAs; }
+      helpers.borrowed = await client.borrowTab({ match: pattern, sameWindowAs, targetId: opt('--borrow-target', undefined), prep: !flag('--no-prep') });
+      site = siteFor(cfg, client.borrowed.get(helpers.borrowed.targetId).url);
+    }
+    const allow = [...((site && site.writeAllow) || []), ...optAll('--allow-write')];
+    if (flag('--guard-writes') || (site && site.guardWrites)) helpers.guard = await client.guardWrites(helpers.borrowed.sessionId, { allow });
+    else if (optAll('--allow-write').length) throw new Error('--allow-write needs --guard-writes (or sites[].guardWrites) — nothing was run; the tab was given back');
     const result = await mod.default(client, helpers);
     const out = { status: 'ok', transport: how, browser: client.browser, ms: Date.now() - started, out: outDir, result: redact(result === undefined ? null : result) };
+    if (helpers.borrowed) {
+      out.borrowed = { ...helpers.borrowed, guard: helpers.guard ? { selfTest: helpers.guard.selfTest, allow: helpers.guard.allow, ...helpers.guard.summary() } : null };
+      out.borrowed.released = await client.releaseTab(helpers.borrowed.targetId);
+    }
     writeFileSync(join(outDir, 'result.json'), JSON.stringify(out, null, 1));
     console.log(JSON.stringify(out, null, 1));
   } catch (e) {

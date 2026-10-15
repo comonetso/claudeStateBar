@@ -75,7 +75,17 @@
           "darkReader": { "type": "string", "enum": ["must-be-off-warn", "tolerate", "lock-silently"], "default": "must-be-off-warn" },
           "deepL": { "type": "string", "enum": ["hide-and-report", "tolerate"], "default": "hide-and-report" },
           "allowDataMutation": { "type": "boolean", "default": false },
-          "authPathPrefixes": { "type": "array", "items": { "type": "string" }, "description": "request paths the plugin must never call via repl fetch (login/refresh/logout)" }
+          "authPathPrefixes": { "type": "array", "items": { "type": "string" }, "description": "request paths the plugin must never call via repl fetch (login/refresh/logout)" },
+          "borrow": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "the owner lends an existing tab of this site to transport C (cdp --borrow). Without it a run needs --user-approved. The tab is never created, raised or closed.",
+            "properties": {
+              "sameWindowAs": { "type": "string", "description": "only a tab in the same window as a tab matching this URL pattern, e.g. the site's tab in the JANDI window" }
+            }
+          },
+          "guardWrites": { "type": "boolean", "default": false, "description": "on C, fail every non-GET/HEAD/OPTIONS request from a borrowed tab of this site except writeAllow (self-tested before use)" },
+          "writeAllow": { "type": "array", "items": { "type": "string" }, "description": "write requests the guard lets through (keep-alive / auth refresh): a path matches on any origin, a full URL on origin+path; trailing * = prefix" }
         }
       }
     }

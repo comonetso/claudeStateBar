@@ -296,7 +296,7 @@ export class ThinkingController {
     this.autoExpand = on;
     if (!on) return;
     for (const box of this.boxes.values()) {
-      if (!box.said && box.phase === "streaming" && this.autoHosts.has(box.hostId)) this.autoOpen(box);
+      if (!box.said && box.phase === "streaming" && this.autoHosts.has(box.hostId)) { this.autoOpen(box); this.translateMore(box); }
     }
     this.notify();
   }
@@ -328,13 +328,13 @@ export class ThinkingController {
     return box.screenText?.(index) ?? (box.original ? paragraph.src : this.shown(box, paragraph));
   }
 
-  toggleOpen(box: ThinkingBoxState): void { box.open = !box.open; this.notify(); }
+  toggleOpen(box: ThinkingBoxState): void { box.open = !box.open; this.translateMore(box); this.notify(); }
   /** 새 상자가 펼친 채로 시작하는가 — 입력창 위 "모두 접기·펼치기" 알약이 정한다(10-08, thinkingFold) */
   openByDefault = true;
   /** 지금 있는 상자 전부와 앞으로 생길 상자를 접거나 펼친다 */
   setAllOpen(open: boolean): void {
     this.openByDefault = open;
-    for (const box of this.boxes.values()) box.open = open;
+    for (const box of this.boxes.values()) { box.open = open; if (open) this.translateMore(box); }
     this.notify();
   }
   toggleMaximized(box: ThinkingBoxState): void { box.maximized = !box.maximized; this.notify(); }
@@ -346,6 +346,7 @@ export class ThinkingController {
     if (box.open && box.maximized) return;
     box.open = true;
     box.maximized = true;
+    this.translateMore(box);
     this.notify();
   }
   /** 데몬이 알려 준 꺼낼 자리(10-09). 한 번 찾은 자리는 글이 늘어도 그대로다(앞 칸은 이미 끝났다) */
@@ -395,6 +396,10 @@ export class ThinkingController {
     box.translatedLang = lang;
     box.translatedProvider = provider;
     if (!this.showsTranslation(box) || box.suspended || box.busy || !box.rpc) return;
+    // 접힌 상자는 번역을 보내지 않는다(10-15 리규형님 — "모두 접기"든 하나만 접었든, 안 보이는 글을 번역하는 건 무의미).
+    // 펼치는 순간 다시 부른다(toggleOpen·setAllOpen·expand·autoOpen). 읽는 중인 상자는 접혀 있어도 계속(번역을 기다려 읽는다).
+    // 이미 보낸 번역은 비용이 나갔으니 접어도 받아 둔다
+    if (!box.open && this.run?.box !== box) return;
     const texts = [...new Set(splitParagraphs(boxText(box), boxPhase(box)).filter((p) => p.done && needsTranslation(p.src, lang) && !box.translations.has(p.src)).map((p) => p.src))].slice(0, 20);
     if (!texts.length) return;
     const epoch = box.epoch;

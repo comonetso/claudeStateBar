@@ -37,38 +37,48 @@ type Window = Provider["windows"][number];
 /**
  * 사용량 — 1분마다 데몬에 묻는다. 왼쪽 아래 표와 오른쪽 위 사용량 단추(usageButton)가 같이 쓴다.
  * 소리 담당 호스트(이 PC)가 공급자로 올라와 있으면 그 데몬에 묻는다 — 서버 작업 공간의 단추도 같은 숫자를 보이게(10-06).
- * 아직 안 올라왔으면 이 호스트 데몬에 묻는다
+ * 아직 안 올라왔으면 이 호스트 데몬에 묻는다.
+ * 묻기는 화면 전체에 하나만 돈다(10-15). 두 칸이 따로 1분씩 물으니 데몬이 새 값을 받은 직후 한쪽만 바뀌어
+ * 리셋 직후 위 4%·아래 74% 처럼 달라 보였다 — 이제 한 번 받은 값을 모두가 같이 그린다
  */
-export function useUsage(): { usage: Usage | null; error: string | null } {
+type UsageSnap = { usage: Usage | null; error: string | null };
+let usageSnap: UsageSnap = { usage: null, error: null };
+const usageSubs = new Set<(s: UsageSnap) => void>();
+let usageStop: (() => void) | null = null;
+
+function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
+  let alive = true;
+  let generation = 0;
+  const publish = (next: UsageSnap) => { usageSnap = next; for (const fn of usageSubs) fn(next); };
+  const load = async () => {
+    const mine = ++generation;
+    try {
+      const fromProvider = (uiProvider() ?? soundProvider())?.usage;
+      const next = fromProvider ? await fromProvider() : await paseo.providers.listUsage();
+      if (alive && mine === generation) publish({ usage: next, error: null });
+    } catch (e) {
+      if (alive && mine === generation) publish({ usage: usageSnap.usage, error: String(e) });
+    }
+  };
+  void load();
+  const off = onUiRole(() => { publish({ usage: null, error: null }); void load(); });
+  const timer = setInterval(() => void load(), POLL_MS);
+  return () => { alive = false; clearInterval(timer); off(); };
+}
+
+export function useUsage(): UsageSnap {
   const paseo = usePaseo();
-  const [usage, setUsage] = useState<Usage | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [snap, setSnap] = useState<UsageSnap>(usageSnap);
   useEffect(() => {
-    let alive = true;
-    let generation = 0;
-    const load = async () => {
-      const mine = ++generation;
-      try {
-        const fromProvider = (uiProvider() ?? soundProvider())?.usage;
-        const next = fromProvider ? await fromProvider() : await paseo.providers.listUsage();
-        if (alive && mine === generation) {
-          setUsage(next);
-          setError(null);
-        }
-      } catch (e) {
-        if (alive && mine === generation) setError(String(e));
-      }
-    };
-    void load();
-    const off = onUiRole(() => { setUsage(null); setError(null); void load(); });
-    const timer = setInterval(() => void load(), POLL_MS);
+    usageSubs.add(setSnap);
+    setSnap(usageSnap);
+    if (!usageStop) usageStop = startUsagePoll(paseo);
     return () => {
-      alive = false;
-      clearInterval(timer);
-      off();
+      usageSubs.delete(setSnap);
+      if (!usageSubs.size && usageStop) { usageStop(); usageStop = null; }
     };
   }, [paseo]);
-  return { usage, error };
+  return snap;
 }
 
 /** 보일 계정 — 사용량을 읽을 수 있고 창이 하나라도 있는 것 */
@@ -83,12 +93,33 @@ export const clampPct = (n: number | null | undefined): number | null => (typeof
 /** 요약 한 줄 — 숫자마다 % 를 붙인다(리규형님 10-07: 숫자만으로는 직관적이지 않다) — "Claude 3%·31% │ Codex 13%".
  *  상단 사용량 단추 글자와 접힌 왼쪽 아래 줄이 같이 쓴다 */
 export function summaryLabel(providers: Provider[]): string {
-  const pct = (n: number | null | undefined) => {
-    const v = clampPct(n);
-    return v === null ? "—" : `${Math.round(v)}%`;
-  };
-  return providers.map((p) => `${shortName(p)} ${shownWindows(p).map((w) => pct(w.usedPct)).join("·")}`).join(" │ ");
+  const now = Date.now();
+  return providers.map((p) => `${shortName(p)} ${shownWindows(p).map((w) => windowPctText(w, now)).join("·")}`).join(" │ ");
 }
+
+/** 창 이름 — Paseo 가 주는 짧은 이름 그대로, 단 모델별 주간 창 "wk Fable" 은 "wkF" 로(리규형님 10-15: 이것만 길어 칸이
+ *  어긋나 보인다). 다른 모델의 주간 창도 같은 규칙(첫 글자). 표·단추 설명이 같이 쓴다 */
+export function windowName(w: Window): string {
+  const name = w.shortLabel || w.label;
+  const m = /^wk\s+(\S)/i.exec(name);
+  return m ? `wk${m[1].toUpperCase()}` : name;
+}
+
+/** 창 하나의 퍼센트 글자 — "74%" · 값 없음 "—" · 리셋 지난 옛 값 "리셋됨". 요약 줄과 단추 설명이 같이 쓴다 */
+export function windowPctText(w: Window, now: number = Date.now()): string {
+  if (resetPassed(w, now)) return RESET_PASSED;
+  const v = clampPct(w.usedPct);
+  return v === null ? "—" : `${Math.round(v)}%`;
+}
+
+// 리셋 시각이 지났는데 받은 값이 그 전 것일 때(10-15 리규형님 결정). 데몬이 바깥 조회 결과를 5분 기억하고
+// (UsageSourceRegistry ttlMs 300000), 플러그인에는 그 기억을 건너뛰는 통로가 없다 — 그래서 리셋 직후 길어야 5분은
+// 옛 퍼센트(예: 74%)가 남는다. 틀린 숫자 대신 이 글자를 보이고, 새 값이 오면(리셋 시각이 앞으로 바뀌면) 저절로 숫자로 돌아간다
+const RESET_PASSED = "리셋됨";
+const resetPassed = (w: Window, now: number): boolean => {
+  const t = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
+  return Number.isFinite(t) && t <= now;
+};
 
 /** 끝나는 시각 — 24시간 안이면 "18:29", 넘으면 "10/10 14:59" */
 function resetText(iso: string | null | undefined, now: number): string {
@@ -160,13 +191,13 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
             <View style={{ flexDirection: "row", gap: 6 }}>
               {column("label", (w) => (
                 <Text style={{ color: c.foregroundMuted, fontSize: ui - 1 }} numberOfLines={1}>
-                  {w.shortLabel || w.label}
+                  {windowName(w)}
                 </Text>
               ))}
               {column(
                 "bar",
                 (w) => {
-                  const pct = clampPct(w.usedPct);
+                  const pct = resetPassed(w, now) ? null : clampPct(w.usedPct);
                   return (
                     <View style={{ height: 6, borderRadius: 3, backgroundColor: c.surface2, overflow: "hidden" }}>
                       {pct !== null ? <View style={{ width: `${pct}%`, height: 6, backgroundColor: toneColor(w) }} /> : null}
@@ -178,6 +209,7 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
               {column(
                 "pct",
                 (w) => {
+                  if (resetPassed(w, now)) return <Text style={{ color: c.foregroundMuted, fontSize: ui - 1, textAlign: "right" }}>{RESET_PASSED}</Text>;
                   const pct = clampPct(w.usedPct);
                   return <Text style={{ color: c.foreground, fontSize: ui - 1, textAlign: "right" }}>{pct !== null ? `${Math.round(pct)}%` : "—"}</Text>;
                 },
@@ -186,8 +218,8 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
               {column(
                 "left",
                 (w) => (
-                  <Text style={{ color: c.foreground, fontSize: ui - 2, textAlign: "right" }} numberOfLines={1}>
-                    {leftText(w.resetsAt, now)}
+                  <Text style={{ color: resetPassed(w, now) ? c.foregroundMuted : c.foreground, fontSize: ui - 2, textAlign: "right" }} numberOfLines={1}>
+                    {resetPassed(w, now) ? "새 값 받는 중" : leftText(w.resetsAt, now)}
                   </Text>
                 ),
                 { alignItems: "flex-end" },
@@ -196,7 +228,7 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
                 "reset",
                 (w) => (
                   <Text style={{ color: c.foregroundMuted, fontSize: ui - 2, textAlign: "right" }} numberOfLines={1}>
-                    {resetText(w.resetsAt, now)}
+                    {resetPassed(w, now) ? "" : resetText(w.resetsAt, now)}
                   </Text>
                 ),
                 { alignItems: "flex-end" },

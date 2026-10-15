@@ -23,6 +23,13 @@ export const CDP_DENY = [
 ];
 /** Target.* is denied on B entirely; on C only these three are allowed and only for a target this run created. */
 export const CDP_TARGET_ALLOW_C = ['Target.createTarget', 'Target.attachToTarget', 'Target.closeTarget'];
+/**
+ * Read-only lookups allowed on C even though Target.* / Browser.* are otherwise denied: the tab list and which window a
+ * tab is in. They change nothing and are what borrowTab() needs to find "the Mesa tab in the JANDI window".
+ */
+export const CDP_READ_ALLOW_C = ['Target.getTargets', 'Browser.getWindowForTarget'];
+/** Never sent to a borrowed tab or an isolated window: they would pull the user's window to the front or close it. */
+export const BORROWED_DENY = ['Page.bringToFront', 'Page.close', 'Page.crash', 'Target.activateTarget', 'Target.closeTarget'];
 
 /** Keys/selectors the automation must never press or click. */
 export const INPUT_DENY = {
@@ -56,7 +63,9 @@ export function decide(task, approval) {
   return { allow: false, cls, why: cls === 'auth-sensitive' ? 'login/credentials are human-only' : 'user tabs and browser-global operations are forbidden' };
 }
 
-export function cdpAllowed(method, transport, params, ownedTargets) {
+/** borrowedTargets: tabs the user lent this run (see CdpClient.borrowTab) — only attachToTarget may name them. */
+export function cdpAllowed(method, transport, params, ownedTargets, borrowedTargets) {
+  if (transport === 'C' && CDP_READ_ALLOW_C.includes(method)) return { ok: true };
   if (CDP_DENY.some((re) => re.test(method))) return { ok: false, why: 'denied method' };
   if (method === 'Page.captureScreenshot' && params && params.fromSurface === false) return { ok: false, why: 'fromSurface:false captures the user screen' };
   if (method.startsWith('Target.')) {
@@ -64,10 +73,41 @@ export function cdpAllowed(method, transport, params, ownedTargets) {
     if (!CDP_TARGET_ALLOW_C.includes(method)) return { ok: false, why: 'Target method not in C allow-list' };
     if (method !== 'Target.createTarget') {
       const id = params && params.targetId;
-      if (!id || !ownedTargets || !ownedTargets.has(id)) return { ok: false, why: 'target not owned by this run' };
+      const lent = method === 'Target.attachToTarget' && borrowedTargets && borrowedTargets.has(id);
+      if (!id || (!lent && (!ownedTargets || !ownedTargets.has(id)))) return { ok: false, why: 'target not owned by this run' };
     }
   }
   return { ok: true };
+}
+
+/** Methods a write guard lets through untouched. */
+export const SAFE_HTTP_METHODS = ['GET', 'HEAD', 'OPTIONS'];
+
+/**
+ * Does a write request pass the guard's allow-list? Entries are exact; a trailing `*` makes one a prefix.
+ * "/api/v1/auth/refresh" matches that path on any origin; "https://host:port/path" matches origin+path. Query and hash
+ * are never compared.
+ */
+export function writeAllowed(allow, url) {
+  let u; try { u = new URL(url); } catch { return false; }
+  const full = u.origin + u.pathname;
+  return (allow || []).some((a) => {
+    const s = String(a); const pre = s.endsWith('*'); const p = pre ? s.slice(0, -1) : s;
+    const subject = /^https?:\/\//i.test(p) ? full : u.pathname;
+    return pre ? subject.startsWith(p) : subject === p;
+  });
+}
+
+/**
+ * URL pattern for picking tabs. With `*` it is a glob over origin+path; without, a substring of origin+path
+ * ("mesa.example.invalid:8443"). Query and hash are never looked at, so a link that merely mentions a host can't match.
+ */
+export function urlMatches(pattern, url) {
+  if (!pattern) return false;
+  let subject; try { const u = new URL(url); subject = u.origin + u.pathname; } catch { return false; }
+  const p = String(pattern);
+  if (!p.includes('*')) return subject.includes(p);
+  return new RegExp('^' + p.replace(/[.+^${}()|[\]\\?]/g, '\\$&').replace(/\*/g, '.*') + '$').test(subject);
 }
 
 export function keyAllowed(combo) {
