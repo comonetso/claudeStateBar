@@ -8,7 +8,7 @@ import type { ExtImportField, extSettingsImport } from "../shared/extSettings";
 // VS Code 확장 설정 가져오기(리규형님 10-08 결정) — 이 기기 VS Code 사용자 설정 파일에서 확장 claudeContextBar.* 값을 읽어
 // 플러그인 소리 설정 칸에 맞는 것만 돌려준다. 파일은 읽기만 한다(고치지 않는다). 저장은 화면에서 사용자가 [저장]을 눌러야 된다.
 // 범위·형식 판정은 플러그인 스키마(shared/settings settingsSchema)를 그대로 쓴다 — 확장 정의(package.json
-// contributes.configuration)와 대조: 소리 크기 50~300·대기 100~5000 은 같고, 경고·위험 기준은 확장에 범위가 없어 플러그인
+// contributes.configuration)와 대조: 소리 크기는 플러그인 50~1000(10-15 부터 — 확장 정의 50~5000 중 1000 넘는 값은 건너뛴다)·대기 100~5000 은 같고, 경고·위험 기준은 확장에 범위가 없어 플러그인
 // 1~100 에 맞는 것만 받는다. 크기·대기는 플러그인이 정수만 받는다(확장은 소수도 받아 반올림해 쓴다) — 소수는 채우지 않는다.
 
 type ImportResult = RpcOutput<typeof extSettingsImport>;

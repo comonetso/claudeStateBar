@@ -277,6 +277,7 @@ export class CdpClient {
     try {
       const a = await this.send('Target.attachToTarget', { targetId: t.targetId, flatten: true });
       entry.sessionId = a.sessionId;
+      await this._firstAnswer(a.sessionId, t);
       if (prep) {
         await this.send('Page.enable', {}, a.sessionId);
         const s = await this.send('Page.addScriptToEvaluateOnNewDocument', { source: BORROW_PREP_ON_NEW_DOC }, a.sessionId);
@@ -289,6 +290,25 @@ export class CdpClient {
       throw e;
     }
     return this._borrowInfo(t.targetId);
+  }
+
+  /**
+   * One read-only command right after attaching, with or without prep, so a lent tab that does not answer fails here
+   * with a clear code instead of a bare "cdp timeout Page.enable" in the prep or the script's first command.
+   * Seen 2026-10-15 on a tab in a minimized window (Page.enable and Runtime.evaluate both timed out while Target.* still
+   * answered). The cause is not confirmed: a page frozen with Page.setWebLifecycleState still answers in tests, so
+   * nothing here tries to wake it, and the tab is never reloaded or raised.
+   */
+  async _firstAnswer(sessionId, t) {
+    try {
+      await this.send('Runtime.evaluate', { expression: 'document.visibilityState', returnByValue: true }, sessionId);
+    } catch (e) {
+      if (!/^cdp timeout /.test(String(e && e.message))) throw e;
+      const state = t.windowState || 'unknown';
+      throw Object.assign(new Error('borrowTab: the lent tab did not answer a read-only first command within ' + this.commandTimeoutMs + ' ms (its window is ' + state + '). ' +
+        'A tab in a minimized window, or one left unseen for a long time, can stop answering. Ask the person to restore that window and click the tab once, then run again — it is not reloaded, raised or closed from here.'),
+      { code: 'tab-unresponsive', windowState: t.windowState || null });
+    }
   }
 
   _borrowInfo(targetId) { const b = this.borrowed.get(targetId); return { targetId, sessionId: b.sessionId, windowId: b.windowId, url: redactUrl(b.url), injected: b.injected }; }

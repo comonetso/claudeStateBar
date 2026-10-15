@@ -245,7 +245,8 @@ export async function startLogin(targetId: string): Promise<{ ok: boolean; url?:
     child.stderr?.on("data", onData);
   });
   const first = await waitFor(Promise.race([gotUrl, exit.then(() => null)]), WAIT_MS);
-  if (typeof first === "string") {
+  // 시간이 넘으면 waitFor 가 "timeout" 글자를 돌려준다 — 링크로 받지 않는다(Codex 261015_224111: 링크 없이 성공처럼 "timeout" 을 띄웠다)
+  if (typeof first === "string" && first !== "timeout") {
     console.log(`[claude-login] ${t.id}: started — waiting for the code`);
     bump();
     return { ok: true, url: first };

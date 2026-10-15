@@ -40,8 +40,9 @@ const DISABLED_GROUP = "숨김";
 // 카테고리 묶음 머리끼리 끌어 옮길 때 쓰는 끌기 묶음 이름(프로젝트 줄 묶음 이름과 겹치지 않게)
 const CATEGORY_DRAG = ":category-headers";
 
-// 접은 묶음은 화면을 닫았다 열어도 그대로(앱이 켜져 있는 동안, 전체 화면과 칸이 함께). 숨김은 처음부터 접혀 있다
-const collapsed = new Set<string>([DISABLED_GROUP]);
+// 펼친 묶음 — 화면을 닫았다 열어도 그대로(앱이 켜져 있는 동안, 전체 화면과 칸이 함께). 처음엔 활성만 펼치고 나머지(고정·카테고리·
+// 숨김)는 접혀 있다 — "모두 접기"를 누른 모양과 같다(10-15 리규형님 "기본을 접힘으로 — 맨날 접어 놓으면 새로고침하면서 계속 펴져서")
+const expanded = new Set<string>([ACTIVE_GROUP]);
 
 export function ProjectsList(props: {
   theme: PluginTheme;
@@ -195,7 +196,7 @@ export function ProjectsList(props: {
   // (10-07 처음엔 전부 → 같은 날 고정·활성 빼고 → 10-12 리규형님 "작업할 때 제일 중요한 건 활성" — 고정도 접는다).
   // 나머지가 다 접혀 있으면 모두 펼치고(숨김 포함), 하나라도 펼쳐져 있으면 모두 접는다
   const foldable = groups.filter((g) => g.name !== ACTIVE_GROUP);
-  const allShut = foldable.length > 0 && foldable.every((g) => collapsed.has(g.name));
+  const allShut = foldable.length > 0 && foldable.every((g) => !expanded.has(g.name));
   const foldTitle = allShut ? "모두 펼치기" : "모두 접기";
   const foldAll = (
     <Pressable
@@ -204,8 +205,8 @@ export function ProjectsList(props: {
       ref={(node: unknown) => setHoverTitle(node, foldTitle)}
       onPress={() => {
         for (const g of foldable) {
-          if (allShut) collapsed.delete(g.name);
-          else collapsed.add(g.name);
+          if (allShut) expanded.add(g.name);
+          else expanded.delete(g.name);
         }
         bump((n) => n + 1);
       }}
@@ -257,7 +258,7 @@ export function ProjectsList(props: {
       {data?.error ? <Text style={{ color: c.statusDanger, fontSize: fs(12) }}>{data.error}</Text> : null}
       {data && !data.source ? <Text style={{ color: c.foregroundMuted, fontSize: fs(12) }}>프로젝트 목록 파일을 찾지 못했습니다.</Text> : null}
       {groups.map((g) => {
-        const shut = collapsed.has(g.name) && !filter.trim();
+        const shut = !expanded.has(g.name) && !filter.trim();
         const onDrop = g.name === PINNED_GROUP ? dropPin : dropIn(g.name, g.items.map(pinKey));
         // 카테고리 묶음 머리도 끌어 옮긴다(10-07 리규형님) — 고정·활성·카테고리 없음·숨김 머리는 자리 고정
         const movable = catNumber.has(g.name);
@@ -270,8 +271,8 @@ export function ProjectsList(props: {
               accessibilityRole="button"
               accessibilityState={{ expanded: !shut }}
               onPress={() => {
-                if (collapsed.has(g.name)) collapsed.delete(g.name);
-                else collapsed.add(g.name);
+                if (expanded.has(g.name)) expanded.delete(g.name);
+                else expanded.add(g.name);
                 bump((n) => n + 1);
               }}
               style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 4 }}
@@ -363,10 +364,21 @@ export function ProjectsList(props: {
                               고정 묶음에서(10-07 리규형님 "활성에서만 고정 해제 버튼 제거" · 10-13부터 고정한 줄도 원래 묶음에 남는다) */}
                           {/* 활성 줄 오른쪽 빈자리(핀이 없는 자리): Claude 가 질문을 올려 답을 기다리면 물음표(10-09 리규형님 "질문이
                               올라온 세션 표시, 활성 탭만"). 색은 Paseo "답을 기다림" 색(왼쪽 점 느낌표와 같은 주황) */}
+                          {/* 그 옆에 압축 명령어를 기다리는 대화가 있으면 안으로 모이는 화살표(10-15 리규형님 "질문지 올라올 때 ? 넣듯이"),
+                              같은 주황 — 데몬 푸시 판정(compactReady.ts)을 읽는다 */}
                           {g.name === ACTIVE_GROUP ? (
-                            alive && alive.asking > 0 ? (
-                              <View accessibilityLabel={`질문 대기 ${alive.asking}개`} style={{ flexShrink: 0 }}>
-                                <Icon name="MessageCircleQuestionMark" size={fs(13)} color={c.statusWarning} />
+                            alive && (alive.asking > 0 || alive.compacting > 0) ? (
+                              <View style={{ flexShrink: 0, flexDirection: "row", gap: 4 }}>
+                                {alive.asking > 0 ? (
+                                  <View accessibilityLabel={`질문 대기 ${alive.asking}개`}>
+                                    <Icon name="MessageCircleQuestionMark" size={fs(13)} color={c.statusWarning} />
+                                  </View>
+                                ) : null}
+                                {alive.compacting > 0 ? (
+                                  <View accessibilityLabel={`압축 준비 ${alive.compacting}개`}>
+                                    <Icon name="Shrink" size={fs(13)} color={c.statusWarning} />
+                                  </View>
+                                ) : null}
                               </View>
                             ) : null
                           ) : (

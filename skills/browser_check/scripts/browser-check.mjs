@@ -228,7 +228,7 @@ if (cmd === 'run') {
     writeFileSync(join(outDir, 'result.json'), JSON.stringify(out, null, 1));
     console.log(JSON.stringify(out, null, 1));
   } catch (e) {
-    const out = { status: 'error', transport: how, ms: Date.now() - started, error: String(e && e.message || e).slice(0, 400) };
+    const out = { status: 'error', transport: how, ms: Date.now() - started, ...(e && e.code ? { code: e.code } : {}), error: String(e && e.message || e).slice(0, 400) };
     console.log(JSON.stringify(out, null, 1));
     process.exitCode = 1;
   } finally {

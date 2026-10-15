@@ -179,5 +179,5 @@ export async function undo({ dataDir }) {
 /** One warning line for doctor/setup, or null. */
 export function warningFor(c) {
   if (!c || !c.supported || !c.running || !c.missing || !c.missing.length) return null;
-  return 'Aside runs without ' + c.missing.join(' ') + ' — transport C stops capturing while every Aside window is covered or the window is minimized. `browser-check.mjs launch-flags --apply` adds them to the Aside shortcuts (ask the user first).';
+  return 'Aside runs without ' + c.missing.join(' ') + ' — transport C stops capturing while every Aside window is covered or the window is minimized, and a tab borrowed from a minimized window has also stopped answering commands altogether (tab-unresponsive, 2026-10-15; cause not confirmed). `browser-check.mjs launch-flags --apply` adds them to the Aside shortcuts (ask the user first).';
 }

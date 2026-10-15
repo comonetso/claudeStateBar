@@ -2,8 +2,8 @@ import { onUiRole, uiProvider } from "./uiRole";
 import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { usePaseo } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useEffect, useState, type ReactNode } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Pressable, Text, View, type LayoutChangeEvent } from "react-native";
 import { soundProvider } from "./sounds";
 import { readAppFontSizes, readLocal, setNoTranslate, writeLocal } from "./web";
 import { isTeamUsageSource } from "../shared/account";
@@ -128,15 +128,14 @@ const resetPassed = (w: Window, now: number): boolean => {
   return Number.isFinite(t) && t <= now;
 };
 
-/** 끝나는 시각 — 24시간 안이면 "18:29", 넘으면 "10/10 14:59" */
-function resetText(iso: string | null | undefined, now: number): string {
+/** 끝나는 시각 — 늘 날짜까지 "10/10 14:59"(리규형님 10-15: 24시간 안이면 시각만 보이던 것을 모든 줄에 — 오늘·내일이 헷갈리지 않게) */
+function resetText(iso: string | null | undefined): string {
   if (!iso) return "";
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return "";
   const d = new Date(t);
   const p = (n: number) => String(n).padStart(2, "0");
-  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
-  return t - now < 86_400_000 ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+  return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** 남은 시간 — 큰 단위 둘까지: "2일 22시간" · "2시간 12분" · "12분". 지났으면 "곧" */
@@ -163,6 +162,19 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
   const now = Date.now();
   const providers = availableProviders(usage);
   const rowH = Math.round(ui * 1.45);
+  // 막대 말고 글자 칸의 폭은 모든 카드가 같이 쓴다(리규형님 10-15 "como 만 막대가 길다") — 카드마다 따로 줄을 그려서 오른쪽 글자가
+  // 짧은 카드일수록 막대가 남는 폭을 더 먹었다. 칸마다 카드별로 글자 묶음의 폭을 재고, 지금 있는 카드 중 가장 넓은 값을 모든 카드의
+  // 최소 폭으로 준다. 재는 것은 칸 안쪽 글자 묶음이라 글자가 짧아지면 폭도 다시 줄어든다
+  const widths = useRef(new Map<string, number>());
+  const [, remeasured] = useState(0);
+  const widthOf = (column: string) => Math.max(0, ...providers.map((p) => widths.current.get(`${column}|${p.providerId}`) ?? 0));
+  const onWidth = (column: string, providerId: string) => (e: LayoutChangeEvent) => {
+    const key = `${column}|${providerId}`;
+    const width = Math.ceil(e.nativeEvent.layout.width);
+    if (widths.current.get(key) === width) return;
+    widths.current.set(key, width);
+    remeasured((n) => n + 1);
+  };
 
   if (!usage)
     return error ? (
@@ -178,15 +190,20 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
       {providers.map((p, index) => {
         const rows = p.windows;
         const cell = { height: rowH, justifyContent: "center" } as const;
-        const column = (key: string, render: (w: Window) => ReactNode, style?: object) => (
-          <View key={key} style={style}>
-            {rows.map((w) => (
-              <View key={w.id} style={cell}>
-                {render(w)}
-              </View>
-            ))}
-          </View>
-        );
+        // align = 글자 칸이 붙는 쪽(모든 카드가 같은 폭) · "bar" = 막대 칸(남는 폭을 다 쓴다, 폭을 맞추지 않는다)
+        const column = (key: string, render: (w: Window) => ReactNode, align: "start" | "end" | "bar") => {
+          const cells = rows.map((w) => (
+            <View key={w.id} style={cell}>
+              {render(w)}
+            </View>
+          ));
+          if (align === "bar") return <View key={key} style={{ flex: 1, minWidth: ui * 2 }}>{cells}</View>;
+          return (
+            <View key={key} style={{ minWidth: widthOf(key), alignItems: align === "start" ? "flex-start" : "flex-end" }}>
+              <View onLayout={onWidth(key, p.providerId)}>{cells}</View>
+            </View>
+          );
+        };
         return (
           <View key={p.providerId} style={{ gap: 3 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -200,7 +217,7 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
                 <Text style={{ color: c.foregroundMuted, fontSize: ui - 1 }} numberOfLines={1}>
                   {windowName(w)}
                 </Text>
-              ))}
+              ), "start")}
               {column(
                 "bar",
                 (w) => {
@@ -211,7 +228,7 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
                     </View>
                   );
                 },
-                { flex: 1, minWidth: ui * 2 },
+                "bar",
               )}
               {column(
                 "pct",
@@ -220,7 +237,7 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
                   const pct = clampPct(w.usedPct);
                   return <Text style={{ color: c.foreground, fontSize: ui - 1, textAlign: "right" }}>{pct !== null ? `${Math.round(pct)}%` : "—"}</Text>;
                 },
-                { alignItems: "flex-end" },
+                "end",
               )}
               {column(
                 "left",
@@ -229,16 +246,16 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
                     {resetPassed(w, now) ? "새 값 받는 중" : leftText(w.resetsAt, now)}
                   </Text>
                 ),
-                { alignItems: "flex-end" },
+                "end",
               )}
               {column(
                 "reset",
                 (w) => (
                   <Text style={{ color: c.foregroundMuted, fontSize: ui - 2, textAlign: "right" }} numberOfLines={1}>
-                    {resetPassed(w, now) ? "" : resetText(w.resetsAt, now)}
+                    {resetPassed(w, now) ? "" : resetText(w.resetsAt)}
                   </Text>
                 ),
-                { alignItems: "flex-end" },
+                "end",
               )}
             </View>
           </View>

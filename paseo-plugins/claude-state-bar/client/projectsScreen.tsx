@@ -63,8 +63,11 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
   // 칸이 미리 골라 둔 대화(agentId)가 있으면 데몬에 묻지 않고 바로 연다(10-06 리규형님 결정 — 서버 프로젝트 1~2초).
   // 처리하는 동안은 목록 대신 "여는 중"만 보인다(목록이 잠깐 비쳤다 넘어가던 것, 10-06 리규형님)
   // 예전 목록 파일 열기 주소(editList)도 처리하지만, 새 사이드바 동작은 이 중간 화면을 거치지 않는다.
+  // 폰 알림을 누르면(10-15 pushShell.ts) 경로 없이 대화 번호(agentId)만 온다
   const routeReq =
-    params?.serverId && (params.openPath || params.editList) ? `${params.serverId}|${params.openPath ?? ""}|${params.editList ?? ""}|${params.n ?? ""}` : null;
+    params?.serverId && (params.openPath || params.editList || params.agentId)
+      ? `${params.serverId}|${params.openPath ?? ""}|${params.editList ?? ""}|${params.agentId ?? ""}|${params.n ?? ""}`
+      : null;
   const [routeDone, setRouteDone] = useState<string | null>(null);
   const routing = routeReq !== null && routeDone !== routeReq;
   useEffect(() => {
@@ -81,6 +84,11 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
     }
     if (params.agentId && navigation) {
       navigation.openAgent({ agentId: params.agentId, serverId: params.serverId });
+      setRouteDone(routeReq);
+      return;
+    }
+    if (!params.openPath) {
+      setNotice("이 앱 판에서는 화면에서 대화를 열 수 없습니다");
       setRouteDone(routeReq);
       return;
     }

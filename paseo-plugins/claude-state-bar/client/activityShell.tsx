@@ -11,7 +11,6 @@ import { CodexRunsPanel } from "./codexPanel";
 import { fontStep, scaled, useFontScale } from "./fontScale";
 import { onTabRequest, takeRequestedTab, useCounts } from "./useCounts";
 import { StatsPanel } from "./statsPanel";
-import { listenCtrlTab } from "./web";
 import { lineColor } from "./ui";
 import { WorkflowsPanel } from "./workflowPanel";
 
@@ -55,18 +54,9 @@ export function ActivityPanel(props: PluginWorkspacePanelProps) {
     lastTab.set(workspaceId, tab);
   }, [workspaceId, tab]);
 
-  // Ctrl+Tab · Ctrl+Shift+Tab: 다음·앞 탭(확장 media/activity.js 와 같은 키, 마지막으로 누른 곳이 이 패널일 때만)
+  // 패널 바깥 칸 표식 — 칸 최대화 단축키가 작업 현황 칸을 고르지 않게 쓴다(paneMaxWatch.ts). Ctrl+Tab 탭 넘기기는
+  // 10-16 리규형님 결정으로 없앴다(브라우저·Windows 가 그 키를 먼저 가져간다)
   const rootId = `csb-activity-${workspaceId}`;
-  useEffect(
-    () =>
-      listenCtrlTab(rootId, (backward) =>
-        setTab((cur) => {
-          const i = TABS.findIndex((k) => k.key === cur);
-          return TABS[(i + (backward ? TABS.length - 1 : 1)) % TABS.length].key;
-        }),
-      ),
-    [rootId],
-  );
 
   const c = theme.colors;
   const s = useMemo(

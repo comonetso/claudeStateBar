@@ -2,12 +2,13 @@ import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 
 // 기본값과 범위는 확장 설정(package.json contributes.configuration)과 같다.
-// 크기만 예외: 확장 정의는 50–5000 이지만 확장 코드(core/sound.ts getSoundGain)가 300 에서 자르므로,
-// 실제로 들리는 소리와 같게 50–300 으로 둔다.
+// 크기만 예외: 확장 정의는 50–5000 이고 확장 코드(core/sound.ts getSoundGain)는 300 에서 자른다. 플러그인은 처음엔 확장과 같게
+// 300 까지였다가 리규형님 10-15 "1000까지 할 수 있도록"으로 50–1000(데몬이 WAV 샘플을 키운다 — server/amplify). 300 을 넘기면
+// 원래 큰 소리는 파형 끝이 잘려 찌그러질 수 있다(설정 화면 안내에 적음)
 const sound = z.object({
   // 빈 값 = 기본 소리 파일
   file: z.string().default(""),
-  gain: z.number().int().min(50).max(300).default(100),
+  gain: z.number().int().min(50).max(1000).default(100),
 });
 
 export const settingsSchema = z.object({
@@ -44,6 +45,8 @@ export const settingsSchema = z.object({
   // 꺼져 있으면 아무 일도 안 한다) · 입력창 위 "모두 접기"를 눌러 둔 동안은 펼치지 않는다 · 한 번 펼친 상자는 다시 펼치지 않는다
   thinkingAutoTranslateExpand: z.boolean().default(true),
   ttsSpeedStep: z.union([z.literal(0.1), z.literal(0.25)]).default(0.25),
+  // 바꾼 단축키(10-16 리규형님) — 단축키 번호 → 조합 글. 없는 번호는 기본 키(shared/shortcuts.ts)
+  shortcuts: z.record(z.string(), z.string()).default({}),
 });
 
 export type SoundSettings = z.output<typeof settingsSchema>;

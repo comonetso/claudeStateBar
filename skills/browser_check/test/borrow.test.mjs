@@ -209,3 +209,27 @@ test('config: borrow / guardWrites / writeAllow are optional, validated, and old
   for (const bad of [{ borrow: true }, { borrow: { window: 'x' } }, { borrow: { sameWindowAs: '' } }, { guardWrites: 'yes' }, { writeAllow: '/x' }, { writeAllow: [''] }])
     assert.equal(validate({ ...base, sites: [{ match: 'https://mesa.example:*', ...bad }] }).ok, false, JSON.stringify(bad));
 });
+
+test('borrowTab: a lent tab that does not answer → tab-unresponsive with its window state; given back, never woken/reloaded/raised', async () => {
+  // Target.* and Browser.* answer; nothing on the tab's own session does (seen 2026-10-15 on a minimized window)
+  const ws = fakeBrowser((m) => {
+    if (m.sessionId) return undefined;
+    switch (m.method) {
+      case 'Target.getTargets': return { targetInfos: TABS };
+      case 'Browser.getWindowForTarget': return { windowId: WIN[m.params.targetId], bounds: { windowState: 'minimized' } };
+      case 'Target.attachToTarget': return { sessionId: 'S-' + m.params.targetId };
+      default: return {};
+    }
+  });
+  const c = new CdpClient(ws, { transport: 'C', commandTimeoutMs: 200, ...open });
+  for (const prep of [true, false]) {
+    await assert.rejects(c.borrowTab({ match: 'mesa.example:8443', sameWindowAs: 'jandi.example', prep }),
+      (e) => e.code === 'tab-unresponsive' && e.windowState === 'minimized' && /window is minimized/.test(e.message) && /restore that window/.test(e.message), 'prep=' + prep);
+    assert.equal(c.borrowed.size, 0, 'nothing stays borrowed');
+  }
+  const methods = ws.sent.map((m) => m.method);
+  assert.ok(!methods.includes('Page.enable'), 'prep does not start on a tab that does not answer');
+  for (const m of ['Page.reload', 'Page.bringToFront', 'Target.activateTarget', 'Target.closeTarget', 'Page.setWebLifecycleState', 'Target.createTarget'])
+    assert.ok(!methods.includes(m), m);
+  assert.equal(methods.filter((m) => m === 'Target.detachFromTarget').length, 2, 'each attempt gives the tab back');
+});

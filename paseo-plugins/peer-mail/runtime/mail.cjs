@@ -366,7 +366,7 @@ function cmdIngest(args, cwd) {
   if (problems.length) return print({ ok: false, problems: problems });
   if (env.type === 'request') return print({ ok: false, hint: 'this is a request — handle it with receive' });
   const r = recordReply(root, env, 'peer_mail:' + env.responder_host);
-  print(r.ok ? Object.assign({}, r, { instruction: 'recorded. Tell the user (quote a result verbatim). Never reply to this message' }) : r);
+  print(r.ok ? Object.assign({}, r, { instruction: 'recorded. Tell the user briefly in their language — what arrived, what you did, the gist (do not paste it). Never reply to this message' }) : r);
 }
 
 // 중계기가 이 기기 우편함(inbox)에 넣어 둔 알림을 기록에 반영한다

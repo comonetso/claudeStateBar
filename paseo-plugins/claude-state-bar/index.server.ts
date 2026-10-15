@@ -78,6 +78,8 @@ import { accountSwitch, accountsWait } from "./shared/account";
 import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCode, waitLogin } from "./server/claudeLogin";
 import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
 import { teamUsageSources } from "./server/teamUsage";
+import { createPush, registerPushToken } from "./server/push";
+import { pushCompactWait, pushRegister } from "./shared/push";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(soundSettings);
@@ -312,6 +314,27 @@ export default function contribute(server: PluginServerContext) {
     stopAccountHooks.push(server.on("agent.turn_ended", (event) => {
       void onTurnEnded(event).catch((error: unknown) => console.log(`[claude-login] turn check failed: ${String(error)}`));
     }));
+  }
+  // 폰 푸시(10-15 — 질문지·압축 준비만, 모든 대화). 폰 앱이 준 토큰을 화면이 맡기고, 이 데몬 대화의 일만 보낸다. 직원 데몬은 안 한다
+  server.handle(pushRegister, async ({ token }) => registerPushToken(token));
+  if (teamDaemon) server.handle(pushCompactWait, async () => ({ rev: 0, agentIds: [] }));
+  else {
+    const push = createPush();
+    server.handle(pushCompactWait, async ({ rev }) => push.waitCompact(rev));
+    const guard = (work: () => unknown) => {
+      try {
+        void Promise.resolve(work()).catch((error: unknown) => console.log(`[push] hook failed: ${String(error)}`));
+      } catch (error) {
+        console.log(`[push] hook failed: ${String(error)}`);
+      }
+    };
+    stopAccountHooks.push(
+      server.on("agent.permission_requested", (event, context) => guard(() => push.onPermissionRequested(event, context))),
+      server.on("agent.permission_resolved", (event) => guard(() => push.onPermissionResolved(event))),
+      server.on("agent.turn_started", (event) => guard(() => push.onTurnStarted(event))),
+      server.on("agent.turn_ended", (event, context) => guard(() => push.onTurnEnded(event, context))),
+      server.on("agent.archived", (event) => guard(() => push.onArchived(event))),
+    );
   }
   return () => {
     for (const stop of stopAccountHooks) stop();

@@ -1,0 +1,19 @@
+import { defineRpc } from "@getpaseo/plugin";
+import { z } from "zod";
+
+// 폰 푸시(10-15 리규형님 — 질문지·압축 준비만, 모든 대화). 폰 감싸기 앱(com.blueming.paseo)이 웹에 주는 FCM 토큰을
+// 화면 플러그인이 자기 데몬에 맡긴다. 데몬마다 자기 대화의 일만 보낸다
+export const pushRegister = defineRpc({
+  name: "push.register",
+  input: z.object({ token: z.string().min(1).max(4096) }),
+  // enabled = 이 데몬에 발송 키가 있어 실제로 보낼 수 있는지(직원 데몬·키 없는 기기는 false)
+  output: z.object({ ok: z.boolean(), enabled: z.boolean() }),
+});
+
+// 프로젝트 목록의 압축 준비 아이콘(10-15 리규형님 "질문지 올라올 때 ? 넣듯이") — 이 데몬에서 압축 명령어를 기다리는 대화.
+// 바뀌거나 25초가 지나면 답한다(rev 가 같으면 기다린다)
+export const pushCompactWait = defineRpc({
+  name: "push.compact_wait",
+  input: z.object({ rev: z.number().nullable() }),
+  output: z.object({ rev: z.number(), agentIds: z.array(z.string()) }),
+});

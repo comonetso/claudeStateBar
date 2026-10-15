@@ -7,8 +7,11 @@ import { setStyleSheet } from "./web";
 // 알약 단추는 testID subagents-track-header, 누르면 뜨는 목록은 subagents-track-header-panel(ComposerTrackPill) — 둘 다 숨긴다.
 // 웹·데스크톱만(setStyleSheet 이 폰 앱에선 아무것도 안 함). 점검표 25번
 
+// 좁은 화면(폰 모양)에서는 변경 줄 수 알약(testID composer-diff-stat-pill, "+38.7k -0")도 숨긴다(10-15 리규형님 "폰에서 디프로
+// 수정할 것도 아닌데 치우는 게 낫다, 너무 비좁아"). 폭 기준은 Paseo 의 좁은 화면 판정과 같은 720px 미만(web.ts COMPACT_MAX_WIDTH)
 const STYLE_ID = "claude-state-bar-hide-subagents-pill";
-const CSS = '[data-testid="subagents-track-header"],[data-testid="subagents-track-header-panel"]{display:none !important}';
+const CSS = '[data-testid="subagents-track-header"],[data-testid="subagents-track-header-panel"]{display:none !important}' +
+  '@media (max-width: 719.98px){[data-testid="composer-diff-stat-pill"]{display:none !important}}';
 
 /**
  * 숨김 스타일을 넣는다. 끊기 함수는 마지막에 넣은 쪽일 때만 스타일을 걷는다 — 플러그인을 다시 읽으면 옛 판 정리가 새 판보다 늦게

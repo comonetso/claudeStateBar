@@ -1,3 +1,4 @@
+import type { ShortcutId } from "../shared/shortcuts";
 import type { ExtImportField } from "../shared/extSettings";
 import type { SoundKind } from "../shared/sound";
 import { uiLanguage } from "./appLanguage";
@@ -142,7 +143,7 @@ const ko = {
   fold: { open: "펼치기", close: "접기" },
   soundFoldCloseLabel: "소리 설정 접기",
   soundIntro:
-    "이 PC 와 연결된 서버의 대화 소리가 모두 여기 설정을 따릅니다. 소리는 선택 상자에서 기본 소리·이 PC 의 시스템 소리 중에 고르거나 ‘직접 경로 입력’으로 파일을 지정하고, 크기는 50~300% 이며 WAV 파일만 키울 수 있습니다.",
+    "이 PC 와 연결된 서버의 대화 소리가 모두 여기 설정을 따릅니다. 소리는 선택 상자에서 기본 소리·이 PC 의 시스템 소리 중에 고르거나 ‘직접 경로 입력’으로 파일을 지정하고, 크기는 50~1000% 이며 WAV 파일만 키울 수 있습니다. 300% 를 넘기면 원래 큰 소리는 찌그러질 수 있습니다.",
   sounds: {
     completion: { title: "끝남", hint: "대화가 끝났을 때" },
     question: { title: "질문", hint: "질문 창이나 계획 승인 창이 떴을 때" },
@@ -338,6 +339,25 @@ const ko = {
   claudeLoginDone: "로그인됐습니다. 멈춘 대화는 다음 말을 보내면 이어집니다.",
   claudeLoginPill: "Claude 로그인 풀림 — 눌러서 다시 로그인",
   claudeLoginPillLabel: "로그인",
+  // 단축키 칸(10-16)
+  shortcutSection: "단축키",
+  shortcutIntro: "플러그인 단축키 모음입니다. [바꾸기]를 누르고 쓸 키를 누르면 기록되고(Esc 는 취소), 아래 [저장]을 눌러야 적용됩니다. PC 앱·웹·폰 화면이 같은 키를 씁니다.",
+  shortcutChange: "바꾸기",
+  shortcutRecording: "키를 누르세요 (Esc 취소)",
+  shortcutDefault: "기본값",
+  shortcutChanged: "바꿈",
+  shortcutWebOnly: "키 바꾸기는 키보드가 있는 웹·PC 앱 화면에서 합니다",
+  shortcutConflict: (a: string, b: string) => `"${a}" 와 "${b}" 의 키가 같습니다 — 하나를 바꿔야 저장됩니다`,
+  shortcutPaseoWarn: (labels: string) => `Paseo 단축키와 겹칩니다: ${labels} — 저장은 되지만 둘 중 하나가 안 먹을 수 있습니다`,
+  shortcutWhere: { desktop: " (PC 앱)", web: " (웹)", both: "" },
+  shortcutReserved: (name: string) => `"${name}" 에 고른 키는 입력창 목록 키(Shift+Enter·Tab·Backspace)라 쓸 수 없습니다 — 다른 키를 고르세요`,
+  shortcutNames: {
+    "projects-toggle": { title: "왼쪽 칸 전환", hint: "왼쪽 칸을 프로젝트 목록과 워크스페이스 목록 사이로 바꿉니다" },
+    "pane-max": { title: "칸 전체 화면", hint: "대화 칸 최대화를 켜고 끕니다(작업 현황 칸은 최대화하지 않습니다)" },
+    "activity-open": { title: "작업 현황 열기", hint: "지금 작업 공간의 작업 현황 패널을 엽니다" },
+    "read-slower": { title: "읽기 속도 늦추기", hint: "소리로 읽는 동안에만 — 한 칸 늦춥니다(Ctrl 과 같이 눌러도 됩니다)" },
+    "read-faster": { title: "읽기 속도 높이기", hint: "소리로 읽는 동안에만 — 한 칸 높입니다(Ctrl 과 같이 눌러도 됩니다)" },
+  } as Record<ShortcutId, { title: string; hint: string }>,
 };
 
 export type SettingsText = typeof ko;
@@ -468,7 +488,7 @@ const en: SettingsText = {
   fold: { open: "expand", close: "collapse" },
   soundFoldCloseLabel: "Collapse sound settings",
   soundIntro:
-    "Chat sounds from this PC and its connected servers all follow these settings. Pick the default sound or one of this PC's system sounds, or choose ‘Enter a path…’ for your own file. Volume is 50–300%, and only WAV files can be made louder.",
+    "Chat sounds from this PC and its connected servers all follow these settings. Pick the default sound or one of this PC's system sounds, or choose ‘Enter a path…’ for your own file. Volume is 50–1000%, and only WAV files can be made louder. Above 300%, sounds that are already loud may distort.",
   sounds: {
     completion: { title: "Done", hint: "When a chat finishes" },
     question: { title: "Question", hint: "When a question or plan approval prompt appears" },
@@ -659,6 +679,24 @@ const en: SettingsText = {
   claudeLoginDone: "Logged in. A stopped chat continues when you send the next message.",
   claudeLoginPill: "Claude logged out — press to log in again",
   claudeLoginPillLabel: "Log in",
+  shortcutSection: "Shortcuts",
+  shortcutIntro: "All plugin shortcuts. Press [Change] and then the key you want (Esc cancels); press [Save] below to apply. The PC app, web and phone screens use the same keys.",
+  shortcutChange: "Change",
+  shortcutRecording: "Press a key (Esc cancels)",
+  shortcutDefault: "Default",
+  shortcutChanged: "changed",
+  shortcutWebOnly: "Change keys on a web or PC app screen with a keyboard",
+  shortcutConflict: (a: string, b: string) => `"${a}" and "${b}" use the same key — change one to save`,
+  shortcutPaseoWarn: (labels: string) => `Same key as a Paseo shortcut: ${labels} — it saves, but one of the two may not work`,
+  shortcutWhere: { desktop: " (PC app)", web: " (web)", both: "" },
+  shortcutReserved: (name: string) => `"${name}" uses a composer list key (Shift+Enter, Tab, Backspace) — choose another key`,
+  shortcutNames: {
+    "projects-toggle": { title: "Switch left pane", hint: "Switches the left pane between the project list and the workspace list" },
+    "pane-max": { title: "Maximize pane", hint: "Toggles a maximized chat pane (never the activity pane)" },
+    "activity-open": { title: "Open activity", hint: "Opens the activity panel of the current workspace" },
+    "read-slower": { title: "Read slower", hint: "Only while reading aloud — one step slower (Ctrl may be held too)" },
+    "read-faster": { title: "Read faster", hint: "Only while reading aloud — one step faster (Ctrl may be held too)" },
+  },
 };
 
 /** 지금 Paseo 언어의 사전. 설정 화면은 열릴 때 한 번 읽으면 충분하다(리규형님 10-08 — Paseo 언어를 바꾸면 다시 열 때 반영) */

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listenGlobalKey, readLocal, setStyleSheet, writeLocal } from "./web";
+import { shortcutMatches } from "../shared/shortcuts";
 
 // 왼쪽 목록 칸에 프로젝트 목록을 보일지 워크스페이스 목록을 보일지(리규형님 10-06 결정):
 //   프로젝트 매니저는 왼쪽 목록 안 맨 위에 두고, 보이는 동안 워크스페이스 목록은 웹·데스크톱에서 가린다.
@@ -48,7 +49,7 @@ export function useProjectsMode(): ProjectsMode {
 /** 플러그인이 켜질 때 한 번 — 가리기를 지금 모드에 맞추고 단축키를 단다. 끌 때 가리기를 걷는다 */
 export function startProjectsMode(): () => void {
   apply();
-  const stopKey = listenGlobalKey((e) => e.code === "KeyB" && e.ctrl && e.shift && e.alt && !e.meta, toggleProjectsMode);
+  const stopKey = listenGlobalKey((e) => shortcutMatches("projects-toggle", e), toggleProjectsMode);
   return () => {
     stopKey();
     setStyleSheet(STYLE_ID, null);

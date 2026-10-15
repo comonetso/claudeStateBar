@@ -87,7 +87,8 @@ export function createSoundReader(readSettings: () => Promise<SoundSettings>) {
   return async ({ kind, file, gain }: RpcInput<typeof soundData>) => {
     const settings = await readSettings();
     const chosenFile = (file ?? settings[kind].file).trim();
-    const gainPercent = Math.max(50, Math.min(300, Math.round(gain ?? settings[kind].gain)));
+    // 상한은 설정과 같은 1000%(10-15 리규형님) — 그날 설정만 1000 으로 올리고 이 줄은 300 에 남아 300 을 넘겨도 안 커졌다(Codex 261015_224111)
+    const gainPercent = Math.max(50, Math.min(1000, Math.round(gain ?? settings[kind].gain)));
     // 리눅스 직원 기본음은 메모리에서 만든다. 윈도우 음원 복사·서버 파일 설치가 필요 없다.
     // 직접 정한 파일이 없을 때만 — 잘못 정한 경로를 조용히 기본음으로 바꾸지는 않는다.
     if (!chosenFile && process.platform === "linux" && isTeamDaemon()) {

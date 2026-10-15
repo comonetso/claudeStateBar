@@ -7,6 +7,7 @@ import { ActivityPanel } from "./client/activityShell";
 import { createChimeWatcher } from "./client/chime";
 import { createContextPills } from "./client/contextPill";
 import { createJumpPills } from "./client/jumpPill";
+import { createFollowPills } from "./client/followPill";
 import { createAccountPills } from "./client/accountPill";
 import { createLoginPills } from "./client/claudeLogin";
 import { createJudge } from "./client/judge";
@@ -25,6 +26,8 @@ import { startLayoutAutoPull, startLayoutSave, syncMenuItem } from "./client/lay
 import { startPaneMaxWatch, togglePaneMaximized } from "./client/paneMaxWatch";
 import { layoutLoad } from "./shared/layoutSync";
 import { registerThinking } from "./client/thinking";
+import { registerAskAnswer } from "./client/askAnswer";
+import { registerPeerMailCard } from "./client/peerMailCard";
 import { hideSubagentsPill } from "./client/hideSubagentsPill";
 import { createUsageButtons } from "./client/usageButton";
 import { UsageFooter } from "./client/usageFooter";
@@ -40,6 +43,9 @@ import { clientLog } from "./shared/log";
 import { DEFAULT_SETTINGS, settingsSchema, soundSettings, type SoundSettings } from "./shared/settings";
 import { hostInfo, soundDataV2, type SoundKind } from "./shared/sound";
 import { setTeamMember } from "./client/teamMode";
+import { startPushOpen, startPushToken } from "./client/pushShell";
+import { startCompactReady } from "./client/compactReady";
+import { setShortcutSource, shortcutMatches } from "./shared/shortcuts";
 
 const TAG = "[claude-state-bar]";
 
@@ -52,6 +58,9 @@ export default function contribute(client: PluginClientContext) {
     console.warn(`${TAG} ${message}`);
     void client.rpc(clientLog, { message }).catch(() => {});
   };
+
+  // 단축키는 설정 화면에서 바꾼 값(PC 설정)을 그때그때 읽는다(10-16) — 화면의 모든 키 처리가 이 표를 본다
+  setShortcutSource(() => currentSettings().shortcuts);
 
   const report = async (kind: SoundKind, agentId: string, nativeId: string) => {
     try {
@@ -77,8 +86,17 @@ export default function contribute(client: PluginClientContext) {
 
   // 생각 상자: 영어 → 한국어(끝난 문장부터) + 맨 아래로 따라가기(10-06). 호스트마다 그 호스트 대화의 생각을 그린다
   cleanups.push(registerThinking(client));
+  // 질문에 고른 답 보이기(10-15) — 1단계는 질문 도구 줄이 들어오는지·데이터 모양만 기록한다
+  cleanups.push(registerAskAnswer(client, log));
+  // 다른 대화에서 온 글(peer_mail)은 화면에서 한 줄로 접는다(10-16) — 처리 결과는 Claude 가 요약해 알린다
+  cleanups.push(registerPeerMailCard(client, log));
   // Paseo "하위 에이전트 N개" 알약 숨기기(10-09 리규형님 — 워크플로우·백그라운드는 우리 작업 현황 패널에서 본다)
   cleanups.push(hideSubagentsPill());
+  // 폰 푸시(10-15) — 폰 앱이 준 토큰을 호스트마다 자기 데몬에 맡긴다(데몬마다 자기 대화의 질문지·압축 준비를 보낸다)
+  cleanups.push(startPushToken(client, log));
+  // 프로젝트 목록 압축 준비 아이콘(10-15) — 호스트마다 자기 데몬의 "압축 명령어를 기다리는 대화"를 받아 화면 게시판에 올린다
+  // (10-16 이 줄이 빠져 아이콘이 한 번도 안 떴다 — 리규형님 "아이콘 오는 건 확인 못 했네" 로 찾음)
+  cleanups.push(startCompactReady(client, log));
 
   // 완료/질문 정착은 기존 화면 판정기로, 안정 번호·명령만인 차례는 발생 데몬 원본으로 확인한다.
   const judge = createJudge((kind, agentId, nativeId) => void report(kind, agentId, nativeId), log, currentSettings);
@@ -161,9 +179,11 @@ export default function contribute(client: PluginClientContext) {
           attached.push(client.addSidebarHeaderItem({ id: "projects", title: "프로젝트", Component: ProjectsSidebarItem }));
           attached.push(startProjectsMode());
           // Ctrl+Alt+Shift+F 칸 전체 화면 켜기·풀기 · Ctrl+Alt+Shift+W 작업 현황(10-15 리규형님) — B 와 같은 까닭으로 이 화면 담당 한 곳에서만
-          attached.push(listenGlobalKey((e) => e.code === "KeyF" && e.ctrl && e.shift && e.alt && !e.meta, () => void togglePaneMaximized()));
-          attached.push(listenGlobalKey((e) => e.code === "KeyW" && e.ctrl && e.shift && e.alt && !e.meta, () => void openActivityHere()));
+          attached.push(listenGlobalKey((e) => shortcutMatches("pane-max", e), () => void togglePaneMaximized()));
+          attached.push(listenGlobalKey((e) => shortcutMatches("activity-open", e), () => void openActivityHere()));
           attached.push(startDictationInsertOnly(log));
+          // 폰 알림을 누르면 그 대화로(10-15) — 한 번만 받아야 해서 프로젝트 관리 화면을 단 이 화면 담당 한 곳에서만
+          attached.push(startPushOpen(client, log));
 
           emitSharedSignal("settings");
           return stop;
@@ -232,7 +252,10 @@ export default function contribute(client: PluginClientContext) {
   // 대화마다 입력창 위 "직전 내 말로" 알약(10-15) — 컨텍스트 알약 바로 뒤
   const jumpPills = createJumpPills(client, log);
   // 턴 복사 옆·진행 중 말 아래 읽기 단추(웹·데스크톱, 10-09)
-  cleanups.push(createTurnReadButtons(client, log));
+  const turnRead = createTurnReadButtons(client, log);
+  cleanups.push(turnRead.dispose);
+  // 대화마다 입력창 위 "따라 읽기" 알약(10-15) — 켠 대화의 새 Claude 말을 문단이 끝나는 대로 읽는다(생각 상자 본문 제외)
+  const followPills = createFollowPills(client, log, turnRead.follow);
   // 대화마다 입력창 위 "목록" 알약 + 입력창 목록 이어쓰기·들여쓰기·내어쓰기 키(웹·데스크톱, 10-07)
   const listPills = createComposerMarkdown(client, log);
   // 대화마다 입력창 위 오른쪽 "생각 상자 모두 접기·펼치기" 알약(10-08)
@@ -254,6 +277,7 @@ export default function contribute(client: PluginClientContext) {
         watchChimes(entry.agent, true);
         pills.observe(entry.agent);
         jumpPills.observe(entry.agent);
+        followPills.observe(entry.agent);
         listPills.observe(entry.agent);
         foldPills.observe(entry.agent);
         accountPills.observe(entry.agent);
@@ -265,6 +289,7 @@ export default function contribute(client: PluginClientContext) {
           for (const [sessionId, agentId] of sessionToAgent) if (agentId === update.agentId) { chimeWatcher.remove(sessionId); sessionToAgent.delete(sessionId); }
           pills.remove(update.agentId);
           jumpPills.remove(update.agentId);
+          followPills.remove(update.agentId);
           listPills.remove(update.agentId);
           foldPills.remove(update.agentId);
           accountPills.remove(update.agentId);
@@ -276,6 +301,7 @@ export default function contribute(client: PluginClientContext) {
         watchChimes(update.agent);
         pills.observe(update.agent);
         jumpPills.observe(update.agent);
+        followPills.observe(update.agent);
         listPills.observe(update.agent);
         foldPills.observe(update.agent);
         accountPills.observe(update.agent);
@@ -293,6 +319,7 @@ export default function contribute(client: PluginClientContext) {
             watchChimes(entry.agent, true);
             pills.observe(entry.agent);
             jumpPills.observe(entry.agent);
+            followPills.observe(entry.agent);
             listPills.observe(entry.agent);
             foldPills.observe(entry.agent);
             accountPills.observe(entry.agent);
@@ -319,6 +346,7 @@ export default function contribute(client: PluginClientContext) {
     chimeWatcher.dispose();
     pills.dispose();
     jumpPills.dispose();
+    followPills.dispose();
     listPills.dispose();
     foldPills.dispose();
     accountPills.dispose();

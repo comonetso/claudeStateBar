@@ -101,7 +101,7 @@ function AccountDetail(props: PluginButtonContentProps) {
   );
   return (
     <View style={{ padding: 12, gap: 8, minWidth: 240, maxWidth: 340 }}>
-      {/* 폰은 이 위에 알약 이름("Claude 공급자")을 창 제목으로 한 줄 그린다 — 그 아래 어디서 어디로만(리규형님 10-15) */}
+      {/* 폰은 이 위에 알약 이름("Claude 공급자: 지금 공급자")을 창 제목으로 한 줄 그린다 — 그 아래 어디서 어디로만(리규형님 10-15) */}
       <Text style={{ color: c.foreground, fontSize: 14, fontWeight: "600" }}>
         {names[info.current]} → {names[to]}
       </Text>
@@ -159,8 +159,9 @@ export function createAccountPills(client: PluginClientContext, log: (message: s
       notify();
     }
     // 알약 이름 = PC 마우스 도움말 · 폰 아래 창 제목(한 줄로 잘린다). 어디서 어디로는 창 첫 줄에 쓴다 — "원래 ~" 는 빼라(리규형님 10-15
-    // "'Claude 공급자' 하고 밑으로 'Claude → Claude'")
-    const title = "Claude 공급자";
+    // "'Claude 공급자' 하고 밑으로 'Claude → Claude'"). 지금 도는 공급자 이름을 뒤에 붙인다(리규형님 10-15 저녁 "마우스 오버 시
+    // 명시적으로 현재 어떤 프로바이더로 돌고 있는지") — 바뀌면 아래에서 알약 이름도 다시 넣는다
+    const title = `Claude 공급자: ${names[current]}`;
     const known = pills.get(agentId);
     if (known) {
       if (known.title !== title) {

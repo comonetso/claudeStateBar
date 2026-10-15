@@ -1,8 +1,8 @@
 import { OFFLINE_NOTICE } from "../shared/offlineProjects";
 import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { SettingsSelect } from "@getpaseo/plugin/client/ui";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, Switch, Text, View } from "react-native";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Platform, Pressable, ScrollView, Switch, Text, View } from "react-native";
 import { buttonStyle, HelpTip, UiInput, UiSelect } from "./ui";
 import { SpeechProviders } from "./speechProviders";
 import { settingsSchema, soundSettings, type SoundSettings } from "../shared/settings";
@@ -13,7 +13,8 @@ import { announceOrders, announcePins } from "./projectsData";
 import { settingsText } from "./settingsI18n";
 import { MainDeviceSection, VersionStatusSection } from "./versionStatus";
 import { FoldTitle, SectionTitle } from "./sectionTitle";
-import { playSoundUrl, readLocal, writeLocal } from "./web";
+import { captureShortcutKey, playSoundUrl, readLocal, writeLocal } from "./web";
+import { RESERVED_COMBOS, SHORTCUTS, effectiveCombo, formatCombo, paseoConflicts, pluginConflict, reservedConflict, type ShortcutId } from "../shared/shortcuts";
 import { hasWebGate, WebLoginSection } from "./webLoginSection";
 import { ClaudeLoginSection } from "./claudeLogin";
 
@@ -40,6 +41,7 @@ type Draft = Record<SoundKind, { file: string; gain: string }> & {
   thinkingAutoTranslate: boolean;
   thinkingAutoTranslateExpand: boolean;
   ttsSpeedStep: 0.1 | 0.25;
+  shortcuts: Record<string, string>;
 };
 
 function toDraft(values: SoundSettings): Draft {
@@ -61,6 +63,7 @@ function toDraft(values: SoundSettings): Draft {
     thinkingAutoTranslate: values.thinkingAutoTranslate,
     thinkingAutoTranslateExpand: values.thinkingAutoTranslateExpand,
     ttsSpeedStep: values.ttsSpeedStep,
+    shortcuts: { ...(values.shortcuts ?? {}) },
   };
 }
 
@@ -83,6 +86,7 @@ function fromDraft(draft: Draft) {
     thinkingAutoTranslate: draft.thinkingAutoTranslate,
     thinkingAutoTranslateExpand: draft.thinkingAutoTranslateExpand,
     ttsSpeedStep: draft.ttsSpeedStep,
+    shortcuts: draft.shortcuts,
   });
 }
 
@@ -154,6 +158,11 @@ export function createSettingsScreen(onSaved: () => void, readOnly = false) {
     // "펼친 상태 기억"(10-08 결정)도 이 지시로 바꿨다 — 기억하지 않는다
     const [soundOpen, setSoundOpen] = useState(false);
     const [syncOpen, setSyncOpen] = useState(false);
+    // 단축키 칸(10-16) — 접혀서 시작 · recording = 키를 기다리는 단축키
+    const [shortcutOpen, setShortcutOpen] = useState(false);
+    const [recording, setRecording] = useState<ShortcutId | null>(null);
+    const stopCapture = useRef<(() => void) | null>(null);
+    useEffect(() => () => stopCapture.current?.(), []);
     const [speechOpen, setSpeechOpen] = useState(() => readLocal("claude-state-bar:speech-providers-open") === "1");
     // 받아쓰기 이름 힌트(10-10) — 이 PC 데몬 파일에 저장하고 데몬이 서버들에도 보낸다. saved = 마지막으로 읽거나 저장한 내용
     const hintsGetRpc = useRpc(sttHintsGet);
@@ -281,6 +290,20 @@ export function createSettingsScreen(onSaved: () => void, readOnly = false) {
       }
       if (parsed.data.warningPercent >= parsed.data.dangerPercent) {
         setMessage(t.warningBelowDanger);
+        return;
+      }
+      // 플러그인 단축키끼리 같은 키면 저장하지 않는다(10-16 리규형님)
+      const clash = pluginConflict(parsed.data.shortcuts);
+      if (clash) {
+        setShortcutOpen(true);
+        setMessage(t.shortcutConflict(t.shortcutNames[clash[0]].title, t.shortcutNames[clash[1]].title));
+        return;
+      }
+      // 입력창 목록 키(Shift+Enter·Tab·Backspace)는 다른 단축키로 못 쓴다(10-16)
+      const reserved = reservedConflict(parsed.data.shortcuts);
+      if (reserved) {
+        setShortcutOpen(true);
+        setMessage(t.shortcutReserved(t.shortcutNames[reserved].title));
         return;
       }
       if (state.status !== "ready" && state.status !== "invalid") return;
@@ -455,6 +478,77 @@ export function createSettingsScreen(onSaved: () => void, readOnly = false) {
           {hintsMessage ? <Text style={hintsMessage.bad ? styles.error : styles.text}>{hintsMessage.text}</Text> : null}
         </View>
         </>
+        ) : null}
+
+        {/* 단축키(10-16 리규형님 "플러그인의 모든 단축키 모아놓게" · 바꿀 수 있게 · 플러그인끼리 겹치면 막고 Paseo 와는 경고만).
+            키 기록은 키보드가 있는 웹·PC 앱만 — 폰은 목록만 */}
+        <FoldTitle icon="Keyboard" title={t.shortcutSection} theme={theme} open={shortcutOpen} onToggle={() => setShortcutOpen(!shortcutOpen)} labels={t.fold} />
+        {shortcutOpen ? (
+          <>
+            <Text style={styles.muted}>{Platform.OS === "web" ? t.shortcutIntro : t.shortcutWebOnly}</Text>
+            {(() => {
+              const clash = pluginConflict(draft.shortcuts);
+              const reset = (id: ShortcutId) =>
+                setDraft((d) => {
+                  if (!d) return d;
+                  const shortcuts = { ...d.shortcuts };
+                  delete shortcuts[id];
+                  return { ...d, shortcuts };
+                });
+              const record = (id: ShortcutId, defaultCombo: string) => {
+                stopCapture.current?.();
+                stopCapture.current = null;
+                if (recording === id) return setRecording(null);
+                setRecording(id);
+                stopCapture.current = captureShortcutKey((next) => {
+                  stopCapture.current = null;
+                  setRecording(null);
+                  if (!next) return;
+                  setDraft((d) => {
+                    if (!d) return d;
+                    const shortcuts = { ...d.shortcuts };
+                    if (next === defaultCombo) delete shortcuts[id];
+                    else shortcuts[id] = next;
+                    return { ...d, shortcuts };
+                  });
+                });
+              };
+              return SHORTCUTS.map(({ id, defaultCombo }) => {
+                const combo = effectiveCombo(id, draft.shortcuts);
+                const changed = combo !== defaultCombo;
+                const paseo = paseoConflicts(combo);
+                const name = t.shortcutNames[id];
+                return (
+                  <View key={id} style={styles.card}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <View style={{ flex: 1, minWidth: 160, gap: 2 }}>
+                        <Text style={styles.text}>{name.title}</Text>
+                        <Text style={styles.muted}>{name.hint}</Text>
+                      </View>
+                      <Text style={[styles.text, { fontWeight: "600" }]}>
+                        {recording === id ? t.shortcutRecording : formatCombo(combo) + (changed ? ` (${t.shortcutChanged})` : "")}
+                      </Text>
+                      {Platform.OS === "web" ? (
+                        <Pressable style={styles.button} disabled={readOnly} onPress={() => record(id, defaultCombo)} accessibilityRole="button" accessibilityLabel={`${name.title} ${t.shortcutChange}`}>
+                          <Text style={styles.buttonText}>{t.shortcutChange}</Text>
+                        </Pressable>
+                      ) : null}
+                      {changed ? (
+                        <Pressable style={styles.button} disabled={readOnly} onPress={() => reset(id)} accessibilityRole="button" accessibilityLabel={`${name.title} ${t.shortcutDefault}`}>
+                          <Text style={styles.buttonText}>{t.shortcutDefault}</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                    {clash?.includes(id) ? <Text style={styles.error}>{t.shortcutConflict(t.shortcutNames[clash[0]].title, t.shortcutNames[clash[1]].title)}</Text> : null}
+                    {RESERVED_COMBOS.includes(combo) ? <Text style={styles.error}>{t.shortcutReserved(name.title)}</Text> : null}
+                    {paseo.length ? (
+                      <Text style={{ color: theme.colors.statusWarning, fontSize: 13 }}>{t.shortcutPaseoWarn(paseo.map((p) => p.label + t.shortcutWhere[p.where]).join(", "))}</Text>
+                    ) : null}
+                  </View>
+                );
+              });
+            })()}
+          </>
         ) : null}
 
         {/* "소리" 제목을 누르면 아래 소리 항목 전부가 접히고 펼쳐진다(10-08). 삼각형은 다른 패널 접기와 같은 모양 */}

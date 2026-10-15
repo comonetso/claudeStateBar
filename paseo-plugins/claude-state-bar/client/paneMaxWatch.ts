@@ -132,9 +132,22 @@ export function togglePaneMaximized(): boolean {
     }
     return null;
   };
+  // 작업 현황 칸은 고르지 않는다(10-16 리규형님 "작업 현황 패널은 오로지 Ctrl+Alt+Shift+W 에만 반응해야") — 작업 현황을 눌러
+  // 입력 커서가 그 칸에 있으면 F 가 작업 현황을 최대화했다. 칸 = 단추에서 위로 올라가 그 단추 하나만 품은 가장 바깥 조상,
+  // 그 안에 작업 현황 패널 바깥 칸(activityShell.tsx nativeID csb-activity-…)이 보이면 작업 현황 칸
+  const paneOf = (button: El): El => {
+    let pane = button;
+    for (let n = button.parentElement ?? null; n && n !== document.body; n = n.parentElement ?? null) {
+      if (buttons.filter((b) => n?.contains?.(b)).length > 1) break;
+      pane = n;
+    }
+    return pane;
+  };
+  const showsActivity = (button: El) => Array.from(paneOf(button).querySelectorAll?.('[id^="csb-activity-"]') ?? []).some((e) => (e.getClientRects?.().length ?? 0) > 0);
+  const pick = (button: El | null) => (button && !showsActivity(button) ? button : null);
   const chat = Array.from(document.querySelectorAll('[data-testid="agent-chat-scroll"]')).find((e) => (e.getClientRects?.().length ?? 0) > 0);
-  const target = buttonOf(document.activeElement) ?? buttonOf(chat) ?? buttons[0];
-  if (typeof target.click !== "function") return false;
+  const target = pick(buttonOf(document.activeElement)) ?? pick(buttonOf(chat)) ?? buttons.find((b) => !showsActivity(b));
+  if (!target || typeof target.click !== "function") return false;
   target.click();
   return true;
 }

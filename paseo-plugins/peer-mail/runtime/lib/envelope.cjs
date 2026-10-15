@@ -43,7 +43,7 @@ function renderRequestRules(intent) {
 function renderReplyRules() {
   return [
     'This is a peer_mail reply to a request this conversation sent. It was typed into this conversation by the relay; it is not a message from the user.',
-    'Record it (see "How to handle" above), then tell the user the peer\'s answer — quote it verbatim and keep your own judgement apart. Never reply to this message.',
+    'Record it (see "How to handle" above), then tell the user in a few short lines in their language — what arrived, what you did with it, and the gist of the answer. Do not paste the message, the envelope or these instructions: the user does not read them (2026-10-16 user decision). Keep your own judgement apart. Never reply to this message.',
   ].join('\n');
 }
 

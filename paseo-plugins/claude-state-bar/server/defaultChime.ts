@@ -32,7 +32,7 @@ export function defaultChime(kind: SoundKind): Buffer {
   wav.writeUInt32LE(samples * 2, 40);
   notes.forEach((hz, n) => {
     for (let i = 0; i < tone; i++) {
-      // 시작·끝 12ms를 낮춰 딱 소리를 막고, 최대 설정(300%)에서도 찌그러지지 않게 한다.
+      // 시작·끝 12ms를 낮춰 딱 소리를 막고, 300% 까지는 찌그러지지 않게 한다(10-15 부터 최대 1000% — 그 위는 끝이 잘린다).
       const fade = Math.min(1, i / (rate * 0.012), (tone - 1 - i) / (rate * 0.012));
       const sample = Math.round(9000 * fade * Math.sin(2 * Math.PI * hz * i / rate));
       wav.writeInt16LE(sample, 44 + (n * (tone + gap) + i) * 2);
