@@ -18,7 +18,8 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { applyAccount, watchAccount } from "./account.mjs";
+import { applyAccount, HOME, watchAccount } from "./account.mjs";
+import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, takeHandoff } from "./rotation.mjs";
 
 const argv = process.argv.slice(2);
 let real = "claude";
@@ -27,10 +28,11 @@ if (argv[0] === "--real") {
   argv.splice(0, 2);
 }
 
-const LOG = join(homedir(), ".paseo", "claude-rc-relay.log");
+const LOG_DIR = process.env.PASEO_HOME || join(homedir(), ".paseo");
+const LOG = join(LOG_DIR, "claude-rc-relay.log");
 const log = (msg) => {
   try {
-    mkdirSync(join(homedir(), ".paseo"), { recursive: true });
+    mkdirSync(LOG_DIR, { recursive: true });
     appendFileSync(LOG, `${new Date().toISOString()} [${process.pid}] ${msg}\n`);
   } catch {
     /* 기록 실패는 중계에 영향을 주지 않는다 */
@@ -90,7 +92,7 @@ saveState({});
 const agentId = process.env.PASEO_AGENT_ID || null;
 const childEnv = { ...process.env };
 const account = ephemeral ? null : applyAccount(childEnv, agentId);
-if (account === "team" && process.platform === "win32" && childEnv.CLAUDE_CONFIG_DIR) {
+if (process.platform === "win32" && childEnv.CLAUDE_CONFIG_DIR) {
   const sync = spawnSync(process.execPath, [join(homedir(), ".local", "bin", "claude-team-sync.js"), "team"], {
     stdio: ["ignore", 2, 2],
     env: childEnv,
@@ -101,8 +103,14 @@ if (account === "team" && process.platform === "win32" && childEnv.CLAUDE_CONFIG
 if (account) log(`account ${account} (agent ${String(agentId).slice(0, 8)})`);
 // 어느 계정으로 띄우는지 남긴다(값은 안 남긴다) — 서버 팀 토큰은 claude auth status 에 안 보이고 대화 안 명령 창에도 안 넘어가서
 // 대화 안에서는 확인할 수 없었다(10-14). 계정 바꾸기가 의심될 때 이 줄로 본다
-if (!ephemeral) log(`auth (agent ${String(agentId).slice(0, 8)}): team token ${childEnv.CLAUDE_CODE_OAUTH_TOKEN ? "set" : "none"} · config dir ${childEnv.CLAUDE_CONFIG_DIR ? childEnv.CLAUDE_CONFIG_DIR.replace(/^.*[\\/]/, "") : "default"}`);
+if (!ephemeral) log(`auth (agent ${String(agentId).slice(0, 8)}): team token ${childEnv.CLAUDE_CODE_OAUTH_TOKEN ? "set" : "none"} · config dir ${childEnv.CLAUDE_CONFIG_DIR ? "set" : "default"}`);
 
+// 자동 전환으로 꺼졌다 다시 뜨는 거라면 꺼지기 전 백그라운드 작업 목록을 첫 사람 말 앞에 한 번 붙인다(10-15 리규형님, rotation.mjs saveHandoff)
+const handoff = ephemeral ? null : takeHandoff(HOME, agentId);
+const notice = handoff ? handoffNotice(handoff) : null;
+if (handoff) log(`rotation handoff (agent ${String(agentId).slice(0, 8)}) — notice on next message, tasks=${handoff.tasks?.length ?? 0}`);
+const rotation = createRotation({ real, env: childEnv, initialEnv: process.env, agentId, log, enabled: !ephemeral,
+  handoff: (info) => saveHandoff(HOME, agentId, info) });
 const child = spawn(real, argv, { stdio: ["pipe", "pipe", "inherit"], env: childEnv, windowsHide: true });
 // 켜져 있는 동안 이 대화의 계정 기록이 바뀌면 Claude 를 끈다 — 다음 말 때 Paseo 가 이 실행기를 다시 띄우며 새 계정이 적용된다
 const stopAccountWatch = ephemeral
@@ -115,18 +123,22 @@ const stopAccountWatch = ephemeral
         /* 이미 끝남 */
       }
     });
-child.on("exit", () => stopAccountWatch());
+child.on("exit", () => { stopAccountWatch(); rotation.stop(); });
 child.on("error", (e) => {
   log(`spawn failed: ${e.message}`);
   process.stderr.write(`claude-rc-relay: cannot start ${real}: ${e.message}\n`);
   process.exit(127);
 });
 
-// Paseo → claude: 바이트는 그대로 넘기고, 줄을 훑어 초기화 요청 번호만 기억한다
+// Paseo → claude: 바이트는 그대로 넘기고, 줄을 훑어 초기화 요청 번호만 기억한다.
+// 넘겨받은 안내가 있으면 첫 사람 말 줄에 붙인다(rotation.mjs noticeForwarder)
 let initId = null;
 let inBuf = "";
+const rotationInput = jsonLines(rotation.input);
+const forward = noticeForwarder(notice, (data) => child.stdin.write(data), () => log("rotation handoff notice added to the next message"));
 process.stdin.on("data", (chunk) => {
-  child.stdin.write(chunk);
+  rotationInput.write(chunk);
+  forward.write(chunk);
   if (initId) return;
   inBuf += chunk.toString("utf8");
   let nl;
@@ -146,7 +158,11 @@ process.stdin.on("data", (chunk) => {
     }
   }
 });
-process.stdin.on("end", () => child.stdin.end());
+process.stdin.on("end", () => {
+  rotationInput.end();
+  forward.end();
+  child.stdin.end();
+});
 child.stdin.on("error", () => {
   /* claude 가 먼저 끝나 파이프가 닫힌 경우 */
 });
@@ -161,6 +177,7 @@ const enable = (why) => {
   child.stdin.write(JSON.stringify({ type: "control_request", request_id: RC_ID, request: { subtype: "remote_control", enabled: true } }) + "\n");
 };
 const handleLine = (line) => {
+  try { rotation.observe(JSON.parse(line)); } catch { /* JSON 이 아닌 출력 */ }
   if (!sessionId) {
     const m = /"session_id":"([0-9a-f-]{36})"/.exec(line);
     if (m) {
@@ -270,7 +287,7 @@ child.stdout.on("end", () => {
   outBuf = "";
 });
 
-child.on("exit", (code, signal) => {
+child.on("close", (code, signal) => {
   log(`exit code=${code} signal=${signal}`);
   saveState({ exitedAt: new Date().toISOString() });
   process.exitCode = code ?? 1;

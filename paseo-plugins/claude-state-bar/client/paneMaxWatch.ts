@@ -8,9 +8,12 @@ type El = {
   getAttribute?(name: string): string | null;
   getClientRects?(): { length: number };
   click?(): void;
+  contains?(other: unknown): boolean;
+  parentElement?: El | null;
 };
 type DocEvent = { target?: El | null };
 declare const document: {
+  activeElement?: El | null;
   visibilityState?: string;
   wasDiscarded?: boolean;
   body?: unknown;
@@ -108,6 +111,31 @@ export function releaseMaximizedPane(): boolean {
   pluginRestoreAt = Date.now();
   forgetMark(currentWsKey());
   restore.click();
+  return true;
+}
+
+/**
+ * 단축키 Ctrl+Alt+Shift+F(10-15 리규형님 "채팅 전체 화면 전환"): 최대화 중이면 풀고(직접 "창 복원"을 누른 것과 같다 — 기억도 지움),
+ * 아니면 지금 쓰는 칸을 최대화한다. 지금 쓰는 칸 = 커서가 든 칸(입력창 등) → 없으면 보이는 대화 칸 → 없으면 첫 칸. 웹·데스크톱만
+ */
+export function togglePaneMaximized(): boolean {
+  if (Platform.OS !== "web" || typeof document === "undefined") return false;
+  if (releaseMaximizedPane()) return true;
+  const buttons = paneButtons().filter((b) => b.getAttribute?.("data-testid") === MAXIMIZE_ID);
+  if (!buttons.length) return false;
+  // el 에서 위로 올라가며 최대화 단추를 딱 하나 품은 첫 조상 = 그 칸
+  const buttonOf = (el: El | null | undefined): El | null => {
+    for (let n = el ?? null; n && n !== document.body; n = n.parentElement ?? null) {
+      const inside = buttons.filter((b) => n?.contains?.(b));
+      if (inside.length === 1) return inside[0];
+      if (inside.length > 1) return null;
+    }
+    return null;
+  };
+  const chat = Array.from(document.querySelectorAll('[data-testid="agent-chat-scroll"]')).find((e) => (e.getClientRects?.().length ?? 0) > 0);
+  const target = buttonOf(document.activeElement) ?? buttonOf(chat) ?? buttons[0];
+  if (typeof target.click !== "function") return false;
+  target.click();
   return true;
 }
 

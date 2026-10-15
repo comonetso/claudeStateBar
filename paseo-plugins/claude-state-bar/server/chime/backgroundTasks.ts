@@ -80,6 +80,21 @@ function tag(text: string, name: string): string | undefined {
 }
 
 /**
+ * Every task a notification is about. When Claude Code restarts it reports the tasks the old process
+ * left behind in ONE notification — several `<task-id>`s, one `<status>stopped</status>` and an internal
+ * marker id starting with `__orphan_summary` (Claude Code skips those the same way). Reading only the first
+ * id left the rest "running" for good (Mesa 2026-10-15: three of five killed commands stayed).
+ */
+export function noticeTaskIds(notice: string): string[] {
+    return [...notice.matchAll(/<task-id>([\s\S]*?)<\/task-id>/g)].map((m) => m[1].trim())
+        .filter((id) => id && !id.startsWith('__orphan_summary'));
+}
+
+/** A monitor that ended says so as an event, with no `<status>`: "[Monitor stopped…]", "[Monitor expired after …]",
+ *  "[Monitor timed out …]" — the wording in Claude Code 2.1.299. Mesa's expired monitor stayed "running" for 12 hours. */
+const MONITOR_END = /^\s*\[Monitor (stopped|expired after|timed out)\b/;
+
+/**
  * @param longCommandMs a foreground command that finished is kept only if it took at least this
  *   long. One still running is always kept, with no result yet — the caller decides by its age.
  */
@@ -208,27 +223,36 @@ export function parseBackgroundTasks(text: string, longCommandMs: number): BgTas
             at = timeOf(e.attachment.timestamp) || timeOf(e.timestamp);
         }
         if (!notice || !notice.trimStart().startsWith('<task-notification>')) continue;
-        const task = byId.get(tag(notice, 'task-id') ?? '');
-        if (!task) continue;   // a workflow, or a task this file never launched
         const status = tag(notice, 'status');
-        if (!status) {
-            const ev = tag(notice, 'event');
-            if (ev !== undefined) task.events.push(ev);
-            continue;
-        }
-        // The first ending stands. A workflow once had a `stopped` notice attached a day after it
-        // had completed, when Claude Code reopened the session (see workflowNotices.ts).
-        if (task.status !== 'running') continue;
-        task.status = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'stopped';
-        if (at) task.endedAt = at;
         const summary = tag(notice, 'summary');
-        if (summary) {
-            task.summary = summary;
-            const code = /exit code (\d+)/.exec(summary)?.[1];
-            if (code !== undefined) task.exitCode = Number(code);
+        for (const id of noticeTaskIds(notice)) {
+            const task = byId.get(id);
+            if (!task) continue;   // a workflow, or a task this file never launched
+            if (!status) {
+                const ev = tag(notice, 'event');
+                if (ev === undefined) continue;
+                task.events.push(ev);
+                // A monitor's last event says it ended; nothing else will.
+                if (task.status === 'running' && MONITOR_END.test(ev)) {
+                    task.status = 'stopped';
+                    if (at) task.endedAt = at;
+                    task.summary = ev;
+                }
+                continue;
+            }
+            // The first ending stands. A workflow once had a `stopped` notice attached a day after it
+            // had completed, when Claude Code reopened the session (see workflowNotices.ts).
+            if (task.status !== 'running') continue;
+            task.status = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'stopped';
+            if (at) task.endedAt = at;
+            if (summary) {
+                task.summary = summary;
+                const code = /exit code (\d+)/.exec(summary)?.[1];
+                if (code !== undefined) task.exitCode = Number(code);
+            }
+            const out = tag(notice, 'output-file');
+            if (out) task.outputFile = out;
         }
-        const out = tag(notice, 'output-file');
-        if (out) task.outputFile = out;
     }
     // Foreground commands still waiting for a result: Claude is blocked on them right now.
     for (const fg of foreground.values()) if (fg.startedAt) order.push(fg);

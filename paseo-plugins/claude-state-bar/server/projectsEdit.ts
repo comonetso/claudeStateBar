@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { renameRetry } from "./renameRetry";
 import { homedir } from "node:os";
 import { dirname, join, posix, win32 } from "node:path";
 import { CATEGORY_ORDER_KEY, UNTAGGED_GROUP, type ProjectsEditOp } from "../shared/projects";
@@ -62,7 +63,7 @@ function editList(change: (items: Item[]) => string | null): Promise<Result> {
     // 임시 파일에 다 쓴 뒤 바꿔 끼운다 — 쓰다 끊겨도 반쯤 쓴 파일이 남지 않는다
     const tmp = `${PROJECTS_FILE}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify(items, null, "\t"), "utf8");
-    await rename(tmp, PROJECTS_FILE);
+    await renameRetry(tmp, PROJECTS_FILE);
     return { ok: true };
   };
   const done = writing.then(run, run);

@@ -1,65 +1,92 @@
-// 같은 창 계정 바꾸기(10-14, claude-state-bar 의 계정 알약)를 실행기 쪽에서 맡는다 — 중계 실행기(relay.mjs)와 팀 실행기
-// (claude-team-launch/launch.mjs)가 같이 쓴다.
-//
-// 왜 실행기에서: 처음엔 플러그인이 대화 열기 훅으로 계정 값을 넣고 Paseo 새로 고침(paseo agent reload)으로 다시 띄웠다.
-// 그런데 그 새로 고침은 화면 기록을 지우고 Claude 대화 파일 전체를 처음부터 다시 흘려보낸다(Paseo 0.11.1 session.js
-// handleRefreshAgentRequest → rehydrateFromDisk:true) — 긴 대화에서 폰 앱이 그걸 다 받다 멈췄다(10-14 리규형님). Claude 프로그램만
-// 끄면 Paseo 는 다음 말 때 기록을 둔 채 같은 대화를 이어 띄우지만, 그때는 처음 열 때의 env 를 그대로 다시 써서 훅이 다시 불리지
-// 않는다(10-14 실측). 그래서 실행기가 켜질 때마다 기록 파일을 직접 읽어 계정을 정하고, 켜져 있는 동안 기록을 지켜보다
-// 자기 대화의 계정이 바뀌면 Claude 를 끈다. 다음 말이 오면 Paseo 가 실행기를 다시 띄우고, 그때 새 계정이 적용된다.
-//
-// 기록 = Paseo 홈의 plugin-data/claude-state-bar/accounts.json { entries: { <대화 번호>: { to, base } } } (플러그인 server/account 가 쓴다).
-// 대화 번호 = Paseo 가 실행기 env 에 넣어 주는 PASEO_AGENT_ID. 계정 값 = 이 기기 Paseo 설정의 팀 공급자(claude-yeogiaen) env
-// 그대로(PC 는 CLAUDE_CONFIG_DIR, 서버는 CLAUDE_CODE_OAUTH_TOKEN). 팀으로 = 그 값을 넣고, 개인으로 = 그 이름들을 지운다.
-
-import { mkdirSync, readFileSync, watch } from "node:fs";
+// 공급자 계정 값과 accounts.json 계약. 자동 전환 정책은 rotation.mjs 에만 둔다.
+import { mkdirSync, readFileSync, renameSync, rmdirSync, watch, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const HOME = process.env.PASEO_HOME || join(homedir(), ".paseo");
+export const HOME = process.env.PASEO_HOME || join(homedir(), ".paseo");
 const DIR = join(HOME, "plugin-data", "claude-state-bar");
-const FILE = join(DIR, "accounts.json");
-const TEAM_PROVIDER = "claude-yeogiaen";
+export const FILE = join(DIR, "accounts.json");
+export const ACCOUNT_KEYS = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"];
+export const normalizeProvider = (id) => typeof id !== "string" ? null
+  : id === "team" ? "claude-yeogiaen" : id === "personal" ? "claude" : id || null;
 
-const KINDS = new Set(["team", "personal"]);
-
-/** 이 대화를 원래 계정과 다른 계정으로 바꿔 둔 기록. 없거나 원래 계정이면 null */
+export function readProviders() {
+  try {
+    const doc = JSON.parse(readFileSync(join(HOME, "config.json"), "utf8"));
+    const configured = doc?.agents?.providers ?? {};
+    return Object.entries({ claude: {}, ...configured })
+      .filter(([id, p]) => p && (id === "claude" || p.extends === "claude"))
+      .map(([id, p]) => ({
+        id, label: typeof p.label === "string" && p.label.trim() ? p.label : id === "claude" ? "Claude" : id,
+        env: Object.fromEntries(ACCOUNT_KEYS.filter((k) => typeof p.env?.[k] === "string" && p.env[k]).map((k) => [k, p.env[k]])),
+      }));
+  } catch { return []; }
+}
+export const isTeamProvider = (p) => !!p && Object.keys(p.env).length > 0;
+export function providerForEnv(env, providers = readProviders()) {
+  const matches = providers.filter((p) => ACCOUNT_KEYS.every((k) => (env[k] || "") === (p.env[k] || "")));
+  return matches.length === 1 ? matches[0].id
+    : matches.every((p) => !isTeamProvider(p)) ? matches.find((p) => p.id === "claude")?.id ?? null : null;
+}
+function readDocument() {
+  try {
+    const doc = JSON.parse(readFileSync(FILE, "utf8"));
+    if (!doc || typeof doc.entries !== "object" || !doc.entries || Array.isArray(doc.entries)) throw Error("invalid accounts");
+    return doc;
+  } catch (e) {
+    if (e.code === "ENOENT") return { entries: {} };
+    throw e; // 손상된 기록을 빈 문서로 덮어쓰지 않는다.
+  }
+}
 export function accountEntry(agentId) {
   if (!agentId) return null;
   try {
-    const e = JSON.parse(readFileSync(FILE, "utf8"))?.entries?.[agentId];
-    return e && KINDS.has(e.to) && KINDS.has(e.base) && e.to !== e.base ? { to: e.to, base: e.base } : null;
-  } catch {
-    return null;
-  }
+    const e = readDocument().entries[agentId];
+    const to = normalizeProvider(e?.to), base = normalizeProvider(e?.base);
+    return to && base && to !== base ? { to, base } : null;
+  } catch { return null; }
 }
-
-/** 이 기기 Paseo 설정의 팀 공급자 env(빈 값 제외). 없으면 null */
-export function teamEnv() {
-  try {
-    const doc = JSON.parse(readFileSync(join(HOME, "config.json"), "utf8"));
-    const env = doc?.agents?.providers?.[TEAM_PROVIDER]?.env ?? {};
-    const out = {};
-    for (const [k, v] of Object.entries(env)) if (typeof v === "string" && v) out[k] = v;
-    return Object.keys(out).length ? out : null;
-  } catch {
-    return null;
-  }
+export function accountEnv(env, provider) {
+  const next = { ...env };
+  for (const key of ACCOUNT_KEYS) delete next[key];
+  Object.assign(next, provider.env);
+  return next;
 }
-
-/** 띄울 env 에 바꿔 둔 계정을 적용한다. 적용한 계정("team"|"personal") 또는 null(그대로) */
 export function applyAccount(env, agentId) {
   const e = accountEntry(agentId);
   if (!e) return null;
-  const team = teamEnv();
-  if (!team) return null;
-  if (e.to === "team") Object.assign(env, team);
-  else for (const k of Object.keys(team)) delete env[k];
-  return e.to;
+  const target = readProviders().find((p) => p.id === e.to);
+  if (!target) throw Error("account provider unavailable");
+  for (const key of ACCOUNT_KEYS) delete env[key];
+  Object.assign(env, target.env);
+  return target.id;
 }
 
-/** 이 대화의 계정 기록이 바뀌면 onChange 를 부른다(바뀔 때마다). 그만 지켜보는 함수를 돌려준다.
- *  폴더를 지켜본다 — 플러그인은 임시 파일에 쓴 뒤 바꿔 끼우고, Windows 는 파일 이름을 안 알려 줄 때가 있어 이벤트마다 다시 읽는다 */
+/** 플러그인과 같은 디렉터리 잠금 + 최신 문서 읽기 + 임시 파일 rename.
+ * 잠금 안에서 guard 를 다시 확인하여 탐침 중 수동 변경/새 입력을 덮어쓰지 않는다. */
+export async function writeAccount(agentId, to, base, guard = () => true) {
+  if (!agentId || !normalizeProvider(to) || !normalizeProvider(base)) return false;
+  mkdirSync(DIR, { recursive: true });
+  const lock = FILE + ".lock", deadline = Date.now() + 5000;
+  while (true) {
+    try { await mkdir(lock); break; }
+    catch (e) {
+      if (e.code !== "EEXIST" || Date.now() >= deadline) throw Error("account lock unavailable");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    if (!guard()) return false;
+    const doc = readDocument();
+    if (to === base) delete doc.entries[agentId];
+    else doc.entries[agentId] = { to, base, at: new Date().toISOString() };
+    const tmp = `${FILE}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(doc), { encoding: "utf8", mode: 0o600 });
+    renameSync(tmp, FILE);
+    return true;
+  } finally { rmdirSync(lock); }
+}
 export function watchAccount(agentId, onChange) {
   if (!agentId) return () => {};
   const key = () => JSON.stringify(accountEntry(agentId));
@@ -73,14 +100,6 @@ export function watchAccount(agentId, onChange) {
       onChange();
     });
     w.on("error", () => {});
-    return () => {
-      try {
-        w.close();
-      } catch {
-        /* 이미 닫힘 */
-      }
-    };
-  } catch {
-    return () => {};
-  }
+    return () => { try { w.close(); } catch { /* 이미 닫힘 */ } };
+  } catch { return () => {}; }
 }

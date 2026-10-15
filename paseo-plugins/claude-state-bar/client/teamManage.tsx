@@ -29,7 +29,7 @@ import { scaled, useFontScale } from "./fontScale";
 import { type HostIndex, type ProjectsData } from "./projectsData";
 import { ProjectsEditor, type EditScope } from "./projectsManage";
 import { FIELD_WIDTH, lineColor, UiButton, UiInput } from "./ui";
-import { setHoverTitle, setNoTranslate } from "./web";
+import { copyText, setHoverTitle, setNoTranslate } from "./web";
 
 // 팀원 관리(10-11 리규형님: "먼저 팀원관리 프로토타입을 제시하고, 내가 검토 후 수정").
 // 팀원 = 회사 팀원(외부인 아님). 팀원을 추가할 때 ① 서버(다중) ② 그 팀원에 맞는 글로벌 스킬·명령어를 고른다
@@ -61,18 +61,6 @@ function serverState(m: TeamMember): { text: string; warn: boolean } {
   if (!m.applied.length) return { text: "서버에 아직 없음", warn: true };
   if (m.dirty) return { text: `반영이 끝나지 않음 · ${m.applied.join(", ")}`, warn: true };
   return { text: `서버 반영됨 · ${m.applied.join(", ")}`, warn: false };
-}
-
-/** 브라우저 클립보드에 넣는다 — 못 쓰는 곳(폰 앱 등)이면 false(글자를 눌러 직접 고르게 둔다) */
-async function copyText(text: string): Promise<boolean> {
-  const nav = (globalThis as { navigator?: { clipboard?: { writeText?: (t: string) => Promise<void> } } }).navigator;
-  if (!nav?.clipboard?.writeText) return false;
-  try {
-    await nav.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** 서버 작업 진행 줄 — 진행 중·실패면 펼치고, 성공으로 끝나면 한 줄로 접는다(눌러 펼치기) */

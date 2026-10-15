@@ -6,7 +6,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { soundProvider } from "./sounds";
 import { readAppFontSizes, readLocal, setNoTranslate, writeLocal } from "./web";
-import { TEAM_USAGE_SOURCE_ID } from "../shared/account";
+import { isTeamUsageSource } from "../shared/account";
 
 // 왼쪽 목록 칸 맨 아래에 Claude·Codex 사용량을 둔다(리규형님 10-05 결정 — Paseo 자체 "사용량" 줄은 눌러야 보인다).
 // 10-09 부터 처음엔 접혀 요약 한 줄만 보이고, 올리고 내린 것을 기억한다(아래 UsageFooter).
@@ -81,14 +81,21 @@ export function useUsage(): UsageSnap {
   return snap;
 }
 
+/** 카드 순서(리규형님 10-15 "Claude → Claude (como) → Claude (hrg) → Codex"): 개인 Claude → 팀 Claude(이름순) → 그 밖은 받은 순서.
+ *  데몬은 원천을 등록한 순서(개인 Claude → Codex → 팀)로 주므로 여기서 맞춘다 — 사용량 칸·접힌 줄 요약·위쪽 단추가 모두 이 함수를 거친다 */
+const usageRank = (p: Provider): number => (isTeamUsageSource(p.providerId) ? 1 : /^claude/i.test(p.providerId) ? 0 : 2);
 /** 보일 계정 — 사용량을 읽을 수 있고 창이 하나라도 있는 것 */
-export const availableProviders = (usage: Usage | null): Provider[] => (usage?.providers ?? []).filter((p) => p.status === "available" && p.windows.length);
+export const availableProviders = (usage: Usage | null): Provider[] => (usage?.providers ?? [])
+  .filter((p) => p.status === "available" && p.windows.length)
+  .map((p, index) => ({ p, index, rank: usageRank(p) }))
+  .sort((a, b) => a.rank - b.rank || (a.rank === 1 ? a.p.displayName.localeCompare(b.p.displayName) : 0) || a.index - b.index)
+  .map(({ p }) => p);
 /** 보일 창 — Paseo 가 요약에 쓰라고 표시한 것(summary)만, 없으면 전부 */
 export const shownWindows = (p: Provider): Window[] => (p.windows.some((w) => w.summary) ? p.windows.filter((w) => w.summary) : p.windows);
 /** 계정 이름에서 뒤의 "(메일 주소)"를 뗀 짧은 이름 — "Claude (a@b.com)" → "Claude". 팀 공급자 카드는 메일 없이 공급자 이름
  *  그대로("Claude (como)")라 떼면 개인 카드와 같은 "Claude" 가 된다 → 그대로 둔다(10-15) */
 export const shortName = (p: Provider): string =>
-  p.providerId === TEAM_USAGE_SOURCE_ID ? p.displayName : p.displayName.replace(/\s*\([^)]*\)\s*$/, "") || p.providerId;
+  isTeamUsageSource(p.providerId) ? p.displayName : p.displayName.replace(/\s*\([^)]*\)\s*$/, "") || p.providerId;
 export const clampPct = (n: number | null | undefined): number | null => (typeof n === "number" ? Math.max(0, Math.min(100, n)) : null);
 /** 요약 한 줄 — 숫자마다 % 를 붙인다(리규형님 10-07: 숫자만으로는 직관적이지 않다) — "Claude 3%·31% │ Codex 13%".
  *  상단 사용량 단추 글자와 접힌 왼쪽 아래 줄이 같이 쓴다 */

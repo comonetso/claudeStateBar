@@ -16,19 +16,16 @@ import { contextUsedTokens } from "./contextPill";
 // 문구도 "계정"이 아니라 "공급자를 바꾼다"로 쓴다(리규형님 10-14 — 개인 계정 여러 개를 공급자로 따로 등록하는 사람도 있다).
 // 누르면 한 번 더 묻는다 — 다시 뜬 뒤 첫 답에서 대화 전체를 그 계정으로 다시 읽어 한도를 쓰기 때문. 바꾸면 기록만 남기고,
 // 실행기가 Claude 를 끈 뒤 다음 말 때 새 계정으로 다시 띄운다(화면 기록은 건드리지 않는다 — 새로 고침은 폰을 멈추게 했다).
-// 위쪽 공급자 이름 칸은 건드리지 않는다(리규형님 "빨간 칸은 신경 쓰지 마"). 자동 넘김은 없다(10-10 결정) — 누를 때만 바뀐다.
+// 위쪽 공급자 이름 칸은 건드리지 않는다. 전용 실행기의 자동 전환 기록도 같은 알약에 반영한다.
 // 기기마다 그 기기 플러그인이 자기 대화에 붙인다(바꾸기·다시 띄우기는 그 기기 데몬이 한다 — server/account).
 
-const TEAM_PROVIDER = "claude-yeogiaen";
-const PERSONAL_PROVIDER = "claude";
 type AgentLike = { id: string; workspaceId?: string | null; archivedAt?: string | null; provider?: string | null };
-type Names = { team: string; personal: string };
+type Names = Record<string, string>;
 type Info = { base: AccountKind; current: AccountKind; names: Names };
 
 // 옛 서버(이름을 보내지 않음)일 때만 쓰는 이름 — 공급자 번호 그대로
-const FALLBACK_NAMES: Names = { team: TEAM_PROVIDER, personal: "Claude" };
-const baseOf = (provider: string | null | undefined): AccountKind | null =>
-  provider === TEAM_PROVIDER ? "team" : provider === PERSONAL_PROVIDER ? "personal" : null;
+const FALLBACK_NAMES: Names = { "claude-yeogiaen": "claude-yeogiaen", claude: "Claude" };
+const providerId = (id: string) => id === "team" ? "claude-yeogiaen" : id === "personal" ? "claude" : id;
 // 알약 글자는 폭 없는 공백 한 글자 — Paseo 는 빈 글자 알약을 거절한다(thinkingFoldPill 과 같다). 화면엔 아이콘만 남는다
 const ICON_ONLY = "​";
 
@@ -63,6 +60,7 @@ function AccountDetail(props: PluginButtonContentProps) {
   const info = useInfo(agentId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
   if (!info) {
     return (
       <View style={{ padding: 12, minWidth: 240 }}>
@@ -71,11 +69,12 @@ function AccountDetail(props: PluginButtonContentProps) {
     );
   }
   const { names } = info;
-  const to: AccountKind = info.current === "team" ? "personal" : "team";
+  const candidates = Object.keys(names).filter((id) => id !== info.current);
+  const to = selected && candidates.includes(selected) ? selected : candidates[0];
   const tokens = contextUsedTokens(agentId);
   const press = async () => {
     const run = switchers.get(agentId);
-    if (!run || busy) return;
+    if (!run || busy || !to) return;
     setBusy(true);
     setError(null);
     const r = await run(to).catch((e: unknown) => ({ ok: false, error: String(e) }));
@@ -106,6 +105,13 @@ function AccountDetail(props: PluginButtonContentProps) {
       <Text style={{ color: c.foreground, fontSize: 14, fontWeight: "600" }}>
         {names[info.current]} → {names[to]}
       </Text>
+      {candidates.length > 1 ? <View style={{ gap: 6 }}>
+        {candidates.map((id) => <Pressable key={id} accessibilityRole="radio" accessibilityState={{ checked: to === id, disabled: busy }}
+          disabled={busy} onPress={() => setSelected(id)}
+          style={{ padding: 8, borderWidth: 1, borderRadius: 6, borderColor: to === id ? c.accent : c.border }}>
+          <Text style={{ color: c.foreground, fontSize: 12 }}>{names[info.current]} → {names[id]}</Text>
+        </Pressable>)}
+      </View> : null}
       <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
         이 대화의 Claude 를 끄고, 다음 말을 보낼 때 {names[to]} 공급자로 같은 대화를 이어 띄웁니다. 화면 기록은 그대로입니다. 그 첫 답에서 대화 전체
         {tokens !== undefined ? `(약 ${tokens.toLocaleString()} 토큰)` : ""}를 그 공급자로 다시 읽어 그 공급자 계정의 한도를 씁니다. 진행 중인 답변이 있으면 끊깁니다.
@@ -143,9 +149,10 @@ export function createAccountPills(client: PluginClientContext, log: (message: s
 
   const sync = (agentId: string) => {
     const agent = agents.get(agentId);
-    const base = baseOf(agent?.provider);
+    const base = agent?.provider && Object.prototype.hasOwnProperty.call(names, agent.provider) ? agent.provider : null;
     if (!agent || agent.archivedAt || !agent.workspaceId || !base || !supported) return remove(agentId);
-    const current = accounts[agentId] ?? base;
+    const current = providerId(accounts[agentId] ?? base);
+    if (!Object.prototype.hasOwnProperty.call(names, current)) return remove(agentId);
     const prev = infos.get(agentId);
     if (prev?.base !== base || prev?.current !== current || prev?.names !== names) {
       infos.set(agentId, { base, current, names });
@@ -190,7 +197,10 @@ export function createAccountPills(client: PluginClientContext, log: (message: s
         supported = r.supported;
         accounts = r.accounts;
         // 이름이 그대로면 같은 객체를 둔다 — 대화마다 다시 그리지 않게
-        if (r.names && (r.names.team !== names.team || r.names.personal !== names.personal)) names = r.names;
+        if (r.names) {
+          const next = Object.fromEntries(Object.entries(r.names).map(([id, label]) => [providerId(id), label]));
+          if (JSON.stringify(next) !== JSON.stringify(names)) names = next;
+        }
         for (const id of agents.keys()) sync(id);
       } catch (error) {
         log(`account wait: ${String(error)}`);

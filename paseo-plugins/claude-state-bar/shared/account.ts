@@ -8,7 +8,10 @@ import { z } from "zod";
 
 /** 팀 공급자 한도 원천 번호(server/teamUsage) — 사용량 칸이 이 카드는 이름을 줄이지 않는다 */
 export const TEAM_USAGE_SOURCE_ID = "claude-state-bar-team";
-export const accountKind = z.enum(["team", "personal"]);
+export const teamUsageSourceId = (provider: string) => `${TEAM_USAGE_SOURCE_ID}-${provider}`;
+export const isTeamUsageSource = (id: string) => id === TEAM_USAGE_SOURCE_ID || id.startsWith(TEAM_USAGE_SOURCE_ID + "-");
+// 값은 이 기기의 Claude 공급자 번호. 옛 team/personal 입력은 서버에서 정규화한다.
+export const accountKind = z.string().min(1);
 export type AccountKind = z.infer<typeof accountKind>;
 
 /** 이 기기에서 계정을 바꾼 대화 목록이 바뀔 때까지 기다린다(길어도 25초). 지금 아는 번호를 보내면, 다르면 바로 답한다.
@@ -22,7 +25,7 @@ export const accountsWait = defineRpc({
     rev: z.number(),
     supported: z.boolean(),
     accounts: z.record(z.string(), accountKind),
-    names: z.object({ team: z.string(), personal: z.string() }).optional(),
+    names: z.record(z.string(), z.string()).optional(),
   }),
 });
 

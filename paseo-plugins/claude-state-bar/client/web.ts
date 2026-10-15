@@ -324,6 +324,39 @@ let draggingGroup: string | null = null;
  * 가르고 그 쪽에 선을 그린다. 같은 group 의 줄에만 놓인다(한 프로젝트가 활성과 태그 묶음에 함께 보여서).
  * ref 는 그릴 때마다 불리므로 리스너는 처음 한 번만 달고 key·group·onDrop 만 새로 바꾼다.
  */
+/** 브라우저 클립보드에 넣는다 — 못 쓰는 곳(폰 앱 등)이면 false(글자를 눌러 직접 고르게 둔다). 팀원 관리·프로젝트 메뉴가 쓴다 */
+export async function copyText(text: string): Promise<boolean> {
+  const nav = (globalThis as { navigator?: { clipboard?: { writeText?: (t: string) => Promise<void> } } }).navigator;
+  if (!nav?.clipboard?.writeText) return false;
+  try {
+    await nav.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type MenuNode = {
+  __csbMenu?: (x: number, y: number) => void;
+  addEventListener(type: string, fn: (e: { clientX: number; clientY: number; preventDefault(): void; stopPropagation(): void }) => void): void;
+};
+/**
+ * 오른쪽 클릭 메뉴(10-15 리규형님 — 프로젝트 이름 복사·바꾸기). 안드로이드 크롬은 길게 누르면 같은 contextmenu 를 낸다.
+ * 브라우저 메뉴는 막는다. ref 마다 불려도 듣기는 한 번, 할 일은 마지막에 준 것
+ */
+export function setContextMenu(node: unknown, open: (x: number, y: number) => void): void {
+  if (!isWeb() || !node) return;
+  const el = node as MenuNode;
+  const first = !el.__csbMenu;
+  el.__csbMenu = open;
+  if (!first) return;
+  el.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    el.__csbMenu?.(e.clientX, e.clientY);
+  });
+}
+
 export function setDraggableRow(node: unknown, key: string, group: string, color: string, onDrop: (from: string, to: string, after: boolean) => void): void {
   if (!isWeb() || !node) return;
   const el = node as DragRowNode;
@@ -1577,8 +1610,9 @@ export function hideButtonTooltip(titlePrefix: string): () => void {
 // ── 대화의 턴·말 읽기(10-09) — Paseo 본문은 그대로 두고 웹 단추만 덧붙인다 ──
 type SpeedKeyBinding = { active: boolean; adjust(direction: -1 | 1): void };
 type SpeedKeyHub = { version: number; users: Map<object, () => SpeedKeyBinding>; stop: (() => void) | null };
-const SPEED_KEYS_VERSION = 1;
-/** 같은 페이지의 호스트·옛 판이 남아도 키 듣기는 하나. 가장 나중에 등록한 읽기 중 재생기 하나만 조절한다. */
+const SPEED_KEYS_VERSION = 2;
+/** 같은 페이지의 호스트·옛 판이 남아도 키 듣기는 하나. 가장 나중에 등록한 읽기 중 재생기 하나만 조절한다.
+ *  키 = `<`·`>`(Shift+쉼표·마침표). 10-15 리규형님: Ctrl 없이도 — 읽는 중에만 가로채므로 그동안만 입력창에 < > 가 안 쳐진다. Ctrl 과 함께도 된다 */
 export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
   if (!isWeb()) return () => {};
   const g = globalThis as Record<string, unknown>;
@@ -1588,7 +1622,7 @@ export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
   hub.users.set(token, binding);
   if (!hub.stop) {
     const onKey = (event: KeyEventLike) => {
-      if (!event.ctrlKey || event.altKey || event.metaKey || (event.key !== "<" && event.key !== ">")) return;
+      if (event.isComposing || event.altKey || event.metaKey || (event.key !== "<" && event.key !== ">")) return;
       const active = [...hub.users.values()].reverse().map((get) => get()).find((b) => b.active);
       if (!active) return;
       active.adjust(event.key === "<" ? -1 : 1);
@@ -1706,8 +1740,21 @@ type ReadFiber = {
 const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turno", "Copier l’échange", "ターンをコピー", "턴 복사", "Скопировать ответ", "复制回合"]);
 const READ_MARK = "data-csb-turn-read";
 // v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
-const READ_SHEET = "claude-state-bar-turn-read-v6";
-const TURN_READ_VERSION = 15; // 9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리)
+// v7(10-15): 턴 끝난 시각·내 말 시각 항상 보이기 규칙이 붙었다 — 판이 오르면 이름도 바꿔 옛 판이 지우는 스타일과 겹치지 않게
+const READ_SHEET = "claude-state-bar-turn-read-v7";
+const TURN_READ_VERSION = 16; // 9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
+/**
+ * 꼬리 줄 "작업 시간" 단추의 이름표에서 끝난 시각만 — 0.11.1 AssistantTurnFooter(모듈 4880 Ue)는 작업 시간과 끝난 시각이 둘 다
+ * 있을 때 이름표를 `${작업 시간}, ended ${시각}` 으로 만든다("ended" 는 번역 없는 고정 글). 시각은 Paseo formatMessageTimestamp
+ * 그대로(오늘이면 "오후 2:17", 이번 주면 요일, 그 전이면 날짜) — 10-15 리규형님 "Paseo 가 숨겨 둔 모양 그대로"
+ */
+export function endedTimeOf(label: string | null): string | null {
+  if (!label) return null;
+  const at = label.lastIndexOf(ENDED_SEP);
+  const time = at < 0 ? "" : label.slice(at + ENDED_SEP.length).trim();
+  return time || null;
+}
+const ENDED_SEP = ", ended ";
 /** 읽는 중 스피커·컨트롤러 재생 단추 색 — Paseo 테마의 밝은 녹색(상태 점 색) */
 const READ_GREEN = "var(--colors-status-dot-success, #35c264)";
 const READ_ICONS: Record<string, string> = {
@@ -2146,7 +2193,16 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       `[${READ_MARK}="spin"]{display:inline-block;flex-shrink:0;align-self:center;width:12px;height:12px;margin:0 2px;box-sizing:border-box;border:2px solid ${READ_GREEN};border-right-color:transparent;border-radius:50%;animation:csb-read-spin .8s linear infinite}` +
       `[${READ_MARK}="error"]{align-self:center;margin-left:4px;font-size:12px;color:#e5534b}` +
       `@keyframes csb-read-spin{to{transform:rotate(360deg)}}` +
-      `::highlight(${READ_HIGHLIGHT}){background-color:rgba(255, 226, 0, 0.3)}`);
+      `::highlight(${READ_HIGHLIGHT}){background-color:rgba(255, 226, 0, 0.3)}` +
+      // 턴 끝난 시각(10-15 리규형님 "턴이 끝나는 시점에서 시간을 적어줘"): 작업 시간 단추 바로 뒤에 "· 오후 2:17".
+      // 시각을 붙인 단추는 마우스 올림(웹)·누름(폰 3초)으로 글자를 시각으로 바꾸던 동작을 막는다 — 안 막으면 "오후 2:17 · 오후 2:17"
+      `[${READ_MARK}="time"]{flex-shrink:0;align-self:center;white-space:nowrap}` +
+      `[role="button"][aria-label*="${ENDED_SEP}"]:has(+ [${READ_MARK}="time"]){pointer-events:none}` +
+      // 내 말 보낸 시각을 늘 보인다(10-15 리규형님 결정) — Paseo 는 그 줄(시각·되감기·복사)을 마우스를 올릴 때만 보인다
+      // (0.11.1 trailingRowHidden opacity 0 + pointerEvents none). 줄은 늘 보이고, 숨김 상태(react-native-web pointer-events:none
+      // 묶음 r-633pao)일 때는 시각 말고 단추만 감춘다 — 단추가 보이는 때·눌리는 때는 Paseo 그대로
+      `[data-testid="user-message-trailing-row"]{opacity:1!important}` +
+      `[data-testid="user-message-trailing-row"].r-633pao>:not([data-testid="user-message-timestamp"]){visibility:hidden}`);
     const button = (name: string, icon: string, action: () => void, size = String((readAppFontSizes().content ?? 15) - 1)) => {
       const el = readNode("button", "button");
       el.setAttribute("type", "button");
@@ -2198,6 +2254,30 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       if (r.look !== look) { r.look = look; r.button.style.cssText = look; }
       const size = r.anchor.querySelector("svg")?.getAttribute("width") ?? "14";
       readIcon(r.button, "Volume2", size);
+    };
+    // 꼬리 줄 → 끝난 시각 글자(10-15). 작업 시간 단추 바로 뒤, 스피커보다 앞
+    const times = new Map<ReadEl, ReadEl>();
+    /** 꼬리 줄에 끝난 시각을 붙이거나 고친다. 붙일 것이 없으면(작업 시간이나 시각 하나뿐) 걷고 false */
+    const paintEnded = (row: ReadEl): boolean => {
+      let label: ReadEl | null = null;
+      for (let c = row.firstElementChild; c && !label; c = c.nextElementSibling) if (c.getAttribute("role") === "button" && endedTimeOf(c.getAttribute("aria-label"))) label = c;
+      const time = label ? endedTimeOf(label.getAttribute("aria-label")) : null;
+      let span = times.get(row);
+      if (!label || !time) {
+        if (span) { span.remove(); times.delete(row); }
+        return false;
+      }
+      if (!span) { span = readNode("span", "time"); times.set(row, span); }
+      const text = `· ${time}`;
+      if (span.textContent !== text) span.textContent = text;
+      // 색·크기·글꼴은 작업 시간 글자 그대로(Paseo labelOverlay — foregroundMuted · 13px)
+      let glyph: ReadEl = label;
+      while (glyph.lastElementChild) glyph = glyph.lastElementChild;
+      const style = window.getComputedStyle(glyph) as unknown as Record<string, string>;
+      const look = `color:${style.color};font-size:${style.fontSize};font-family:${style.fontFamily};line-height:${style.lineHeight}`;
+      if (span.getAttribute("data-csb-look") !== look) { span.setAttribute("data-csb-look", look); span.style.cssText = look; }
+      if (label.nextSibling !== span) row.insertBefore(span, label.nextSibling);
+      return true;
     };
     const make = (anchor: ReadEl, hostId: string, kind: ReadRecord["kind"], row: ReadEl) => {
       const size = kind === "turn" ? anchor.querySelector("svg")?.getAttribute("width") ?? "14" : String((readAppFontSizes().content ?? 15) - 1);
@@ -2254,10 +2334,13 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
         const copies = new Set(Array.from(document.querySelectorAll('[role="button"][aria-label]') as unknown as ArrayLike<ReadEl>).filter((el) => TURN_COPY_LABELS.has(el.getAttribute("aria-label") ?? "")));
         // 복사 직후 '복사됨' 이름표여도 기존 꼬리 줄 단추는 유지한다.
         for (const r of records.values()) if (r.kind === "turn" && r.anchor.isConnected) copies.add(r.anchor);
+        const timeRows = new Set<ReadEl>();
         for (const copy of copies) {
           const row = copy.parentElement;
           const hostId = footerHost(copy);
           if (!row || !hostId || !footerProps(copy) || window.getComputedStyle(row).flexDirection !== "row") continue;
+          // 끝난 시각은 읽기 기능과 따로 — 읽기가 꺼진 호스트의 꼬리 줄에도 붙인다
+          if (paintEnded(row)) timeRows.add(row);
           const b = owner(hostId);
           if (!b) continue;
           const last = lastSpeech(copy);
@@ -2271,6 +2354,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           if (row.lastElementChild !== r.button && row.lastElementChild !== r.spin && row.lastElementChild !== r.err) row.appendChild(r.button);
           speaker(r, b);
         }
+        // 복사 직후 "복사됨" 이름표라 이번 검사에서 못 찾은 꼬리 줄도 끝난 시각 단추가 남아 있으면 그대로 둔다
+        for (const row of [...times.keys()]) if (!timeRows.has(row) && (!row.isConnected || !paintEnded(row))) { times.get(row)?.remove(); times.delete(row); }
         const messages = scanMessages();
         watched = [...copies, ...messages];
         const visited = new Set<ReadEl>();
@@ -2352,6 +2437,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       live = false;
       observer.disconnect();
       for (const r of records.values()) remove(r);
+      for (const span of times.values()) span.remove();
+      times.clear();
       paintReading(null);
       setStyleSheet(READ_SHEET, null);
     };
@@ -2368,6 +2455,89 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       else hub.refresh?.();
     },
   };
+}
+
+// ── 직전 내 말로(10-15 리규형님 "나의 턴을 찾으려면 스크롤을 엄청 올려도 구분이 안 된다 — 바로 직전 나의 발화로 올라가는 알약") ──
+// Paseo 0.11.1 의 대화 개요(ChatOutlineRail, 모듈 4955 — 대화 칸 왼쪽 가장자리 눈금)가 내 말 목록·이동 함수를 이미 가진다:
+// props {prompts: [{seq, timestamp, preview}], activePrompt: {getActiveSeq()}, onJumpToPrompt(seq)}. 이동 함수는 아직 안 불러온 옛
+// 기록이면 서버에서 그 구간을 가져와 옮기고, 내 말을 대화 칸 위 8px 자리에 맞춘다(10-15 실측). 목록·이동은 화면 폭과 상관없이
+// 살아 있다(918px 미만이면 눈금만 숨김 → 폰에서도 쓴다). Paseo 설정 "대화 개요"가 꺼져 있거나 서버가 내 말 목록을 모르면 목록이
+// 비어 있다 — 그때는 화면에 그려진 내 말 중에서만 찾는다
+type JumpEl = ReadEl & { getBoundingClientRect(): { top: number }; scrollTop: number };
+type JumpRail = { prompts: { seq: number }[]; activePrompt?: { getActiveSeq?: () => number | null }; onJumpToPrompt: (seq: number) => void };
+/** 화면에 그려진 내 말 하나 — seq 는 Paseo 기록 번호(모르면 null), top 은 화면 위치 */
+export type JumpUser = { seq: number | null; top: number };
+/**
+ * 누를 때마다 한 칸 더 위의 내 말(10-15 리규형님 결정). 기준은 대화 칸의 위 가장자리(top):
+ *  - 머리가 그 위로 넘어간(잘렸거나 다 지나간) 내 말이 화면에 있으면 그중 가장 가까운 것
+ *  - 없으면 화면에 머리가 보이는 첫 내 말의 바로 앞 내 말(방금 이동해 맨 위에 와 있으면 이것 — 한 칸 위로)
+ *  - 화면에 내 말이 하나도 없으면(긴 턴 한가운데) Paseo 가 읽는 위치로 정한 내 말, 그것도 없으면 마지막 내 말
+ * Paseo 의 "읽는 위치" 값은 이동 직후 한동안 옛 값이라(10-15 실측: 60번으로 옮긴 직후에도 1) 화면 위치를 먼저 본다.
+ * 돌려주는 것: {seq} 그 번호로 이동 · {index} users 의 그 내 말로 스크롤(번호를 모를 때) · null 더 위에 내 말 없음
+ */
+export function pickJumpTarget(users: readonly JumpUser[], top: number, prompts: readonly number[], active: number | null): { seq: number } | { index: number } | null {
+  const order = users.map((u, index) => ({ ...u, index })).sort((a, b) => a.top - b.top);
+  const seqs = [...prompts].sort((a, b) => a - b);
+  let above: (typeof order)[number] | undefined;
+  for (const u of order) if (u.top < top) above = u;
+  if (above) return above.seq !== null && seqs.length ? { seq: above.seq } : { index: above.index };
+  if (order.length) {
+    const first = order[0].seq;
+    if (first === null || !seqs.length) return null;
+    const before = seqs.filter((s) => s < first);
+    return before.length ? { seq: before[before.length - 1] } : null;
+  }
+  if (!seqs.length) return null;
+  return { seq: active !== null && seqs.includes(active) ? active : seqs[seqs.length - 1] };
+}
+/** 화면에서 이 대화의 칸(스크롤 영역)을 찾는다 — 칸이 여러 개면 대화 번호가 맞는 것 */
+function chatScrollOf(agentId: string): JumpEl | null {
+  const all = document.querySelectorAll('[data-testid="agent-chat-scroll"]') as unknown as ArrayLike<JumpEl>;
+  for (let i = 0; i < all.length; i++) {
+    if (readProps(all[i], (p) => typeof p.agentId === "string")?.agentId === agentId) return all[i];
+  }
+  return null;
+}
+/** 대화 칸 근처 fiber 에서 대화 개요 props — 스크롤 영역에서 위로 오르며 형제 쪽을 본다(실측 4칸 위) */
+function outlineOf(scroll: JumpEl): JumpRail | null {
+  const isRail = (p: Record<string, unknown> | undefined): p is Record<string, unknown> & JumpRail =>
+    !!p && Array.isArray(p.prompts) && typeof p.onJumpToPrompt === "function";
+  type Walk = ReadFiber & { child?: Walk | null; sibling?: Walk | null; return?: Walk | null };
+  let f = readFiber(scroll) as Walk | null;
+  for (let up = 0; f && up < 40; up++, f = f.return ?? null) {
+    for (let c = f.return?.child ?? null; c; c = c.sibling ?? null) if (isRail(c.memoizedProps)) return c.memoizedProps;
+  }
+  return null;
+}
+/** 알약을 누르면 — 이 대화 칸에서 한 칸 위 내 말로. 무엇을 했는지 한 줄을 돌려준다(기록용) */
+export function jumpToPreviousUserMessage(agentId: string): string {
+  if (!isWeb()) return "웹 화면이 아님";
+  const scroll = chatScrollOf(agentId);
+  if (!scroll) return "대화 칸을 화면에서 찾지 못함";
+  const top = scroll.getBoundingClientRect().top;
+  const els = Array.from(scroll.querySelectorAll('[data-testid="user-message"]') as unknown as ArrayLike<JumpEl>);
+  const users: JumpUser[] = els.map((el) => {
+    // 내 말 행의 항목(layoutItem.item 또는 0.11.1 liveHead 의 item) 번호 — 실측 9칸 위
+    const props = readProps(el, (p) => ((p.layoutItem as { item?: { kind?: string } } | undefined)?.item ?? p.item as { kind?: string } | undefined)?.kind === "user_message");
+    const item = ((props?.layoutItem as { item?: unknown } | undefined)?.item ?? props?.item) as { timelineCursor?: { seq?: unknown } } | undefined;
+    const seq = item?.timelineCursor?.seq;
+    return { seq: typeof seq === "number" ? seq : null, top: el.getBoundingClientRect().top };
+  });
+  const rail = outlineOf(scroll);
+  const prompts = rail ? rail.prompts.map((p) => p.seq).filter((s): s is number => typeof s === "number") : [];
+  const active = rail?.activePrompt?.getActiveSeq?.() ?? null;
+  const target = pickJumpTarget(users, top, prompts, typeof active === "number" ? active : null);
+  if (!target) return `더 위에 내 말 없음(화면 ${users.length}개·목록 ${prompts.length}개)`;
+  if ("seq" in target && rail) {
+    rail.onJumpToPrompt(target.seq);
+    return `대화 개요로 ${target.seq}번 내 말`;
+  }
+  if ("index" in target) {
+    // 번호를 모르면 화면의 그 말로 직접 — 위 8px 는 Paseo 의 이동 자리(PROMPT_JUMP_TOP_INSET_PX)와 같게
+    scroll.scrollTop += els[target.index].getBoundingClientRect().top - top - 8;
+    return "화면의 내 말로 스크롤";
+  }
+  return "대화 개요를 찾지 못함";
 }
 
 /**

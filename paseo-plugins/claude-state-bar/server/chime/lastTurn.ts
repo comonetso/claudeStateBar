@@ -44,6 +44,46 @@ function textOf(content: unknown): string {
   return "";
 }
 
+// 방금 끝난 차례가 압축 전 체크포인트(start_compact) 보고로 끝났는지 — 그러면 끝남 대신 "압축 준비" 소리(리규형님 10-15: 60% 에서 자동으로
+// 체크포인트를 만들고, 다른 일을 하다가도 소리로 알아차려 명령어를 복사하러 온다). 표식 = start_compact SKILL.md 보고의 복사용 명령어 줄
+// "/compact 세션로그 <경로> 가 이 세션의 정본이다…" 가 줄 맨 앞에 있는 답(본문에 인용만 한 답은 안 친다). 보고 첫 줄은 Claude 가
+// 풀어 쓰기도 해서("✅ 체크포인트를 저장했습니다." — 10-15 실제 기록) 표식으로 쓰지 않는다. 명령어 줄은 복사용이라 그대로 나온다
+const CHECKPOINT_COMMAND = /^\/compact 세션로그 \S+ 가 이 세션의 정본이다/m;
+export function isCheckpointReport(text: string): boolean {
+  return CHECKPOINT_COMMAND.test(text);
+}
+export async function lastTurnCheckpointReady(sessionId: string): Promise<boolean> {
+  const file = await locateSession(sessionId);
+  if (!file) return false;
+  const text = await readTail(file);
+  return !!text && turnEndsWithCheckpoint(text);
+}
+/** 대화 기록 끝(jsonl 글)을 거꾸로 읽어 마지막 차례가 체크포인트 보고로 끝났는지 */
+export function turnEndsWithCheckpoint(text: string): boolean {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let o: { type?: string; isSidechain?: boolean; isMeta?: boolean; message?: { content?: unknown } };
+    try {
+      o = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (o.isSidechain) continue;
+    if (o.type === "assistant") {
+      // 답은 블록마다 줄이 따로다 — 글이 든 마지막 줄 하나만 본다(그 뒤에 도구를 불렀으면 보고로 끝난 차례가 아니다)
+      const content = o.message?.content;
+      if (Array.isArray(content) && content.some((b) => (b as { type?: string })?.type === "tool_use")) return false;
+      const said = textOf(content);
+      if (said.trim()) return isCheckpointReport(said);
+      continue;
+    }
+    if (o.type === "user" && !o.isMeta && !isToolResultOnly(o.message?.content)) return false;
+  }
+  return false;
+}
+
 export async function lastTurnCommandOnly(sessionId: string): Promise<boolean> {
   const file = await locateSession(sessionId);
   if (!file) return false;

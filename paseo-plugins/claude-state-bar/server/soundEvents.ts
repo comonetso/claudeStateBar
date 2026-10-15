@@ -2,7 +2,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { SOUND_PAGE_SIZE, type RoutedSoundEvent } from "../shared/soundClaim";
 import type { SoundKind } from "../shared/sound";
 import { hostIdentity } from "./layoutSync";
-import { lastTurnCommandOnly } from "./chime/lastTurn";
+import { lastTurnCheckpointReady, lastTurnCommandOnly } from "./chime/lastTurn";
 import { SoundJournal, soundDataFile } from "./soundJournal";
 
 // 서버 0.10.3 의 플러그인 묶기(paseo-plugin-server-runtime-boundary)는 @getpaseo/client 를 직접 가져오면 빌드를 거절한다
@@ -58,13 +58,18 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
     const latest = [...page.entries].sort((x, y) => y.seqEnd - x.seqEnd).find((e) => e.turnId);
     return latest?.turnId ? JSON.stringify([a.lastUserMessageAt, latest.turnId]) : null;
   };
+  // Claude 대화(개인 claude 와 팀 공급자 claude-…)만 대화 기록을 읽어 차례 끝을 가린다
+  const claudeSession = (a: PaseoAgent) => (/^claude/.test(a.provider) && a.persistence?.sessionId) || null;
+  // 압축 준비(10-15): 체크포인트 보고로 끝난 차례는 끝남(completion) 대신 compact 로 낸다 — 발생 데몬이 갈라 화면 판정은 그대로
+  const checkpointTurn = async (a: PaseoAgent) => { const s = claudeSession(a); return !!s && await lastTurnCheckpointReady(s); };
   const valid = async (a: PaseoAgent, kind: SoundKind, nativeId: string, cfg: Config, cycle: number, paseo: PaseoApi) => {
     if (a.archivedAt || a.status === "closed") return false;
     if (kind === "question") return a.pendingPermissions.some((p) => p.id === nativeId && (p.kind === "question" || p.kind === "plan"));
-    if (kind === "completion") {
+    if (kind === "completion" || kind === "compact") {
       if (a.status !== "idle" || !a.lastUserMessageAt || await completionId(paseo, a) !== nativeId || a.pendingPermissions.some((p) => p.kind === "question" || p.kind === "plan")) return false;
-      if (a.provider === "claude" && a.persistence?.sessionId && await lastTurnCommandOnly(a.persistence.sessionId)) return false;
-      return true;
+      const s = claudeSession(a);
+      if (s && await lastTurnCommandOnly(s)) return false;
+      return (await checkpointTurn(a)) === (kind === "compact");
     }
     if (kind === "workflow") return true; // 번호는 스캐너가 실제 완료 항목에서 준다.
     const p = percent(a);
@@ -81,13 +86,14 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
         if (input.kind === "completion" && (!a.lastUserMessageAt || input.nativeId !== a.lastUserMessageAt)) return { event: null };
         const nativeId = input.kind === "completion" ? await completionId(paseo, a)
           : input.kind === "warning" || input.kind === "danger" ? String(cycle) : input.nativeId;
-        if (!nativeId || !await valid(a, input.kind, nativeId, input, cycle, paseo)) return { event: null };
+        const kind: SoundKind = input.kind === "completion" && await checkpointTurn(a) ? "compact" : input.kind;
+        if (!nativeId || !await valid(a, kind, nativeId, input, cycle, paseo)) return { event: null };
         const { serverId } = await hostIdentity(); if (!serverId) throw new Error("발생 데몬 번호 미확인");
-        const eventId = JSON.stringify(["sound-v2", serverId, input.kind === "workflow" ? "workflow" : incarnation(a), input.kind, nativeId]);
+        const eventId = JSON.stringify(["sound-v2", serverId, kind === "workflow" ? "workflow" : incarnation(a), kind, nativeId]);
         if (skipped.has(eventId)) return { event: null };
         return { event: {
           eventId,
-          originHostId: serverId, agentId: a.id, kind: input.kind, nativeId,
+          originHostId: serverId, agentId: a.id, kind, nativeId,
           directory: await directoryOf(paseo, a), projectKey: null,
         } };
       });

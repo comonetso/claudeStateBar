@@ -7,6 +7,8 @@ const NOTES: Record<SoundKind, number[]> = {
   warning: [784, 659],
   danger: [880, 440, 880],
   workflow: [784, 988, 784, 988],
+  // 압축 준비(10-15) — 끝남(올라가는 세 음)과 갈리게 낮게 두 번 두드린 뒤 올린다
+  compact: [392, 392, 587],
 };
 
 export function defaultChime(kind: SoundKind): Buffer {

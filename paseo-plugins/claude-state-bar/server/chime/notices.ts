@@ -32,12 +32,24 @@ export interface TaskNotices {
     byRun: Map<string, string>;
     /** Task id → status and time of its latest notice. For a sub-agent the task id is its agentId. */
     byTask: Map<string, { status: string; at: number }>;
+    /** Workflow run id → time of its latest end notice, whatever the status. A run resumed under the same id
+     *  (resumeFromRunId) can end `completed` while an agent of the earlier, cut-off attempt never wrote a result;
+     *  an agent whose log stopped before this time is not running (Mesa wf_c0345637-ce7, 2026-10-15). */
+    runEnds?: Map<string, number>;
+}
+
+/** Every task id a notice names. On restart Claude Code reports the tasks the old process left behind in ONE
+ *  notice — several ids, one status, plus an internal marker id starting with `__orphan_summary`. */
+function noticeTaskIds(notice: string): string[] {
+    return [...notice.matchAll(/<task-id>([\s\S]*?)<\/task-id>/g)].map((m) => m[1].trim())
+        .filter((id) => id && !id.startsWith('__orphan_summary'));
 }
 
 export function parseTaskNotices(text: string): TaskNotices {
     const taskToRun = new Map<string, string>();
     const byRun = new Map<string, string>();
     const byTask = new Map<string, { status: string; at: number }>();
+    const runEnds = new Map<string, number>();
     for (const line of text.split('\n')) {
         if (!line) continue;
 
@@ -71,13 +83,21 @@ export function parseTaskNotices(text: string): TaskNotices {
 
         const status = /<status>(\w+)<\/status>/.exec(content)?.[1];
         if (!status) continue;
-        const taskId = /<task-id>(\w+)<\/task-id>/.exec(content)?.[1];
-        const run = (taskId && taskToRun.get(taskId)) || /\(run (wf_[A-Za-z0-9-]+)\)/.exec(content)?.[1];
-        if (run) byRun.set(run, status);
-        if (taskId) {
-            const at = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
-            byTask.set(taskId, { status, at: Number.isFinite(at) ? at : 0 });
+        const parsedAt = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+        const at = Number.isFinite(parsedAt) ? parsedAt : 0;
+        const taskIds = noticeTaskIds(content);
+        const runs = new Set<string>();
+        for (const taskId of taskIds) {
+            const mapped = taskToRun.get(taskId);
+            if (mapped) runs.add(mapped);
+            byTask.set(taskId, { status, at });
+        }
+        // A run named in the summary, used when no launch line matched (a bundled notice can name several)
+        if (!runs.size) for (const m of content.matchAll(/\(run (wf_[A-Za-z0-9-]+)\)/g)) runs.add(m[1]);
+        for (const run of runs) {
+            byRun.set(run, status);
+            if (at) runEnds.set(run, at);
         }
     }
-    return { byRun, byTask };
+    return { byRun, byTask, runEnds };
 }

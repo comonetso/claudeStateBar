@@ -23,7 +23,7 @@ export const SETTINGS_TITLE = "Claude State Bar";
 // 화면 글자는 사전(client/settingsI18n)에서 — 한글·영어 두 벌, 언어는 Paseo 언어 설정을 따른다(리규형님 10-08 결정).
 // 화면이 열릴 때 한 번 읽는다(Paseo 언어를 바꾸면 설정 화면을 다시 열 때 반영 — 같은 결정).
 
-const ORDER: SoundKind[] = ["completion", "question", "warning", "danger", "workflow"];
+const ORDER: SoundKind[] = ["completion", "question", "warning", "danger", "workflow", "compact"];
 
 
 type Draft = Record<SoundKind, { file: string; gain: string }> & {

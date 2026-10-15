@@ -73,11 +73,11 @@ import { importExtSettings } from "./server/extSettings";
 import { extSettingsImport } from "./shared/extSettings";
 import { collectClaudeStats } from "./server/stats/claudeStats";
 import { claudeStats } from "./shared/stats";
-import { forgetAccount, providerFromDisk, switchAccount, waitAccounts } from "./server/account";
+import { forgetAccount, providerFromDisk, stopAccounts, switchAccount, waitAccounts } from "./server/account";
 import { accountSwitch, accountsWait } from "./shared/account";
 import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCode, waitLogin } from "./server/claudeLogin";
 import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
-import { teamUsageSource } from "./server/teamUsage";
+import { teamUsageSources } from "./server/teamUsage";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(soundSettings);
@@ -89,7 +89,7 @@ export default function contribute(server: PluginServerContext) {
   // 팀 공급자 한도를 사용량 목록에 늘 올린다(10-15 — server/teamUsage). 이 기능이 없는 옛 데몬에선 건너뛴다
   if (typeof (server as { registerUsageSource?: unknown }).registerUsageSource === "function") {
     try {
-      server.registerUsageSource(teamUsageSource());
+      for (const source of teamUsageSources()) server.registerUsageSource(source);
     } catch (error) {
       console.log(`[team-usage] register failed: ${String(error)}`);
     }
@@ -315,6 +315,7 @@ export default function contribute(server: PluginServerContext) {
   }
   return () => {
     for (const stop of stopAccountHooks) stop();
+    stopAccounts();
     stopLogin();
     void routerPromise?.then((value) => value.dispose(), () => {});
     stopProjectLabels();

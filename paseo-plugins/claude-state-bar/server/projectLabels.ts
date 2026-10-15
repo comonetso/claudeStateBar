@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { renameRetry } from "./renameRetry";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProjectEntry } from "../shared/projects";
@@ -68,7 +69,7 @@ async function writeLocal(text: string): Promise<{ ok: boolean; out: string }> {
     await mkdir(dirname(LABELS_FILE), { recursive: true });
     const tmp = `${LABELS_FILE}.${process.pid}.tmp`;
     await writeFile(tmp, text, "utf8");
-    await rename(tmp, LABELS_FILE);
+    await renameRetry(tmp, LABELS_FILE);
     return { ok: true, out: LABELS_FILE };
   } catch (error) {
     return { ok: false, out: String(error) };

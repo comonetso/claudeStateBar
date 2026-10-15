@@ -1,11 +1,12 @@
 import { onUiRole, registerUiRole, startFallbackCandidate } from "./client/uiRole";
 import { settingsRpc } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { createActivityButtons } from "./client/activityButton";
+import { createActivityButtons, openActivityHere } from "./client/activityButton";
 import { ACTIVITY_PANEL_ID } from "./client/activityKinds";
 import { ActivityPanel } from "./client/activityShell";
 import { createChimeWatcher } from "./client/chime";
 import { createContextPills } from "./client/contextPill";
+import { createJumpPills } from "./client/jumpPill";
 import { createAccountPills } from "./client/accountPill";
 import { createLoginPills } from "./client/claudeLogin";
 import { createJudge } from "./client/judge";
@@ -21,7 +22,7 @@ import { chainButtons, createSettingsButtons, SETTINGS_SCREEN_ID } from "./clien
 import { browserLabel, startScreenRole } from "./client/screenRole";
 import { startSettingsSync } from "./client/settingsSync";
 import { startLayoutAutoPull, startLayoutSave, syncMenuItem } from "./client/layoutSync";
-import { startPaneMaxWatch } from "./client/paneMaxWatch";
+import { startPaneMaxWatch, togglePaneMaximized } from "./client/paneMaxWatch";
 import { layoutLoad } from "./shared/layoutSync";
 import { registerThinking } from "./client/thinking";
 import { hideSubagentsPill } from "./client/hideSubagentsPill";
@@ -31,7 +32,7 @@ import { currentSettings, emitSharedSignal, registerProvider, soundProvider } fr
 import { startSoundProjects, registerSoundOrigin, soundOrigin } from "./client/soundScreen";
 import { reportSoundEvent, startSoundPlayback } from "./client/soundPlayback";
 import type { RoutedSoundEvent } from "./shared/soundClaim";
-import { readAppFontSizes } from "./client/web";
+import { listenGlobalKey, readAppFontSizes } from "./client/web";
 import { startDictationInsertOnly } from "./client/dictationInsertOnly";
 import { soundOriginObserve, soundOriginPrepare } from "./shared/soundEvents";
 
@@ -159,6 +160,9 @@ export default function contribute(client: PluginClientContext) {
           // 올라오므로 단축키도 한 곳(이 PC)에서만 단다 — 여러 곳에서 달면 한 번 누를 때 여러 번 넘어가 제자리가 된다
           attached.push(client.addSidebarHeaderItem({ id: "projects", title: "프로젝트", Component: ProjectsSidebarItem }));
           attached.push(startProjectsMode());
+          // Ctrl+Alt+Shift+F 칸 전체 화면 켜기·풀기 · Ctrl+Alt+Shift+W 작업 현황(10-15 리규형님) — B 와 같은 까닭으로 이 화면 담당 한 곳에서만
+          attached.push(listenGlobalKey((e) => e.code === "KeyF" && e.ctrl && e.shift && e.alt && !e.meta, () => void togglePaneMaximized()));
+          attached.push(listenGlobalKey((e) => e.code === "KeyW" && e.ctrl && e.shift && e.alt && !e.meta, () => void openActivityHere()));
           attached.push(startDictationInsertOnly(log));
 
           emitSharedSignal("settings");
@@ -225,6 +229,8 @@ export default function contribute(client: PluginClientContext) {
 
   // 대화마다 입력창 위 "컨텍스트 N%" 알약
   const pills = createContextPills(client, log);
+  // 대화마다 입력창 위 "직전 내 말로" 알약(10-15) — 컨텍스트 알약 바로 뒤
+  const jumpPills = createJumpPills(client, log);
   // 턴 복사 옆·진행 중 말 아래 읽기 단추(웹·데스크톱, 10-09)
   cleanups.push(createTurnReadButtons(client, log));
   // 대화마다 입력창 위 "목록" 알약 + 입력창 목록 이어쓰기·들여쓰기·내어쓰기 키(웹·데스크톱, 10-07)
@@ -247,6 +253,7 @@ export default function contribute(client: PluginClientContext) {
         observeSound(entry.agent, true);
         watchChimes(entry.agent, true);
         pills.observe(entry.agent);
+        jumpPills.observe(entry.agent);
         listPills.observe(entry.agent);
         foldPills.observe(entry.agent);
         accountPills.observe(entry.agent);
@@ -257,6 +264,7 @@ export default function contribute(client: PluginClientContext) {
           judge.remove(update.agentId);
           for (const [sessionId, agentId] of sessionToAgent) if (agentId === update.agentId) { chimeWatcher.remove(sessionId); sessionToAgent.delete(sessionId); }
           pills.remove(update.agentId);
+          jumpPills.remove(update.agentId);
           listPills.remove(update.agentId);
           foldPills.remove(update.agentId);
           accountPills.remove(update.agentId);
@@ -267,6 +275,7 @@ export default function contribute(client: PluginClientContext) {
         observeSound(update.agent, false);
         watchChimes(update.agent);
         pills.observe(update.agent);
+        jumpPills.observe(update.agent);
         listPills.observe(update.agent);
         foldPills.observe(update.agent);
         accountPills.observe(update.agent);
@@ -283,6 +292,7 @@ export default function contribute(client: PluginClientContext) {
             observeSound(entry.agent, true);
             watchChimes(entry.agent, true);
             pills.observe(entry.agent);
+            jumpPills.observe(entry.agent);
             listPills.observe(entry.agent);
             foldPills.observe(entry.agent);
             accountPills.observe(entry.agent);
@@ -308,6 +318,7 @@ export default function contribute(client: PluginClientContext) {
     judge.dispose();
     chimeWatcher.dispose();
     pills.dispose();
+    jumpPills.dispose();
     listPills.dispose();
     foldPills.dispose();
     accountPills.dispose();

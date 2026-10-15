@@ -25,7 +25,8 @@ import { countsTotal, useProjectCounts, type ProjectTarget } from "./projectCoun
 import { StatusIndicator } from "./statusIndicator";
 import { isTeamMember } from "./teamMode";
 import { lineColor, UiInput } from "./ui";
-import { setDraggableRow, setHoverTitle, setNoTranslate } from "./web";
+import { setContextMenu, setDraggableRow, setHoverTitle, setNoTranslate } from "./web";
+import { ProjectMenu, type ProjectMenuAt } from "./projectMenu";
 
 // 프로젝트 목록 — 카테고리 묶음을 접고 편다(리규형님 10-05 결정: 꺼 둔 것은 따로 묶음 · 10-07: tags → category ·
 // 10-11: "꺼 둠" → "숨김"으로 용어 통일, 카테고리 번호는 이름에서 떼고 순서대로 붙인다).
@@ -62,6 +63,8 @@ export function ProjectsList(props: {
   const { theme, variant, data, index, live, busy, notice, onOpen, onManage, onReload, toolbarStart, toolbarInset } = props;
   const [filter, setFilter] = useState("");
   const [, bump] = useState(0);
+  // 줄 오른쪽 클릭·길게 누르기 메뉴(10-15) — 이름 복사·이름 바꾸기
+  const [menu, setMenu] = useState<ProjectMenuAt | null>(null);
   const scale = useFontScale();
   const c = theme.colors;
   const readOnly = data?.readOnly === true || isOfflineFallback();
@@ -314,7 +317,11 @@ export function ProjectsList(props: {
                         setHoverTitle(node, mixed && badge ? `${badge}. ${e.category} · ${hoverHost}` : hoverHost);
                         // 마우스로 끌어 같은 묶음 안 순서를 바꾼다(10-06 고정 → 10-07 모든 묶음, PC·웹 — 폰은 순서 바꾸기 없음)
                         if (!readOnly) setDraggableRow(node, key, g.name, c.accent, onDrop);
+                        setContextMenu(node, (x, y) => setMenu({ entry: e, x, y }));
                       }}
+                      // 폰은 길게 누르기(껍데기 앱 웹뷰가 contextmenu 를 안 낼 수도 있어 둘 다 단다 — 같은 메뉴를 다시 여는 것뿐)
+                      onLongPress={(ev: { nativeEvent?: { pageX?: number; pageY?: number } }) =>
+                        setMenu({ entry: e, x: ev?.nativeEvent?.pageX ?? 40, y: ev?.nativeEvent?.pageY ?? 80 })}
                       accessibilityRole="button"
                       accessibilityLabel={`${e.name}${mixed && e.category ? ` (${e.category})` : ""} 열기${alive ? ` (열린 대화 ${alive.open}개${alive.running ? `, 돌고 있음 ${alive.running}개` : ""}${alive.asking ? `, 질문 대기 ${alive.asking}개` : ""})` : ""}`}
                       disabled={!!busy || (e.missing && !(readOnly && e.host === "PC"))}
@@ -386,6 +393,7 @@ export function ProjectsList(props: {
         );
       })}
       {data?.source && !sidebar ? <Text style={{ color: c.foregroundMuted, fontSize: fs(11), marginTop: 8 }}>목록 파일: {data.source}</Text> : null}
+      {menu ? <ProjectMenu theme={theme} at={menu} readOnly={readOnly} fontSize={fs(12)} onClose={() => setMenu(null)} onChanged={onReload} /> : null}
     </View>
   );
 }

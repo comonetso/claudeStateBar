@@ -1,7 +1,8 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
-export const soundKinds = ["warning", "danger", "completion", "question", "workflow"] as const;
+// compact = 압축 준비(10-15 리규형님) — 체크포인트 보고로 끝난 차례에 끝남 대신 낸다(server/soundEvents 가 가른다)
+export const soundKinds = ["warning", "danger", "completion", "question", "workflow", "compact"] as const;
 export type SoundKind = (typeof soundKinds)[number];
 
 // 이 호스트의 소리 하나를 설정(파일·크기)대로 읽어 data URL 로 준다.

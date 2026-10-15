@@ -17,6 +17,8 @@ const DEFAULT_WAVS: Record<SoundKind, { win32: string; darwin: string }> = {
   completion: { win32: "C:\\Windows\\Media\\tada.wav", darwin: "/System/Library/Sounds/Hero.aiff" },
   question: { win32: "C:\\Windows\\Media\\Speech On.wav", darwin: "/System/Library/Sounds/Ping.aiff" },
   workflow: { win32: "C:\\Windows\\Media\\Ring06.wav", darwin: "/System/Library/Sounds/Funk.aiff" },
+  // 압축 준비(10-15, 확장에는 없다) — 리규형님이 고른 캘린더 알림. 맥은 다른 넷과 겹치지 않는 Submarine(Claude 가 고름)
+  compact: { win32: "C:\\Windows\\Media\\Windows Notify Calendar.wav", darwin: "/System/Library/Sounds/Submarine.aiff" },
 };
 
 /** 직원 데몬은 자기 화면의 소리 정본이다. 일반 서버는 계속 PC 공급자를 쓴다. */

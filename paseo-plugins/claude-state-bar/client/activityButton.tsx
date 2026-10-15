@@ -25,6 +25,20 @@ import { latestCounts, requestTab, totalOf, useCounts } from "./useCounts";
 // 확장은 세션 메뉴에 "작업 현황 — 워크플로우 2 · 백그라운드 1 진행 중"을 보인다. 단추 글자 칸이 좁아 합계만 두고,
 // 누르면 작업 현황 패널을 연다(돌고 있는 갈래가 있으면 그 탭).
 
+// 단축키 Ctrl+Alt+Shift+W(10-15 리규형님): 단추를 누른 것과 같은 동작. 호스트마다 플러그인이 따로 떠 있어 작업 공간을 맡은 인스턴스의
+// 여는 함수를 공용 목록(작업 공간 → 여는 함수)에 적어 두고, 화면 담당 하나가 단 단축키가 지금 작업 공간으로 찾아 부른다
+const OPENERS_KEY = "__claudeStateBar_activityOpeners_v1";
+const openers = (): Map<string, () => void> =>
+  ((globalThis as Record<string, unknown>)[OPENERS_KEY] ??= new Map<string, () => void>()) as Map<string, () => void>;
+/** 지금 보는 작업 공간의 작업 현황을 단추처럼 연다. 맡은 인스턴스가 없으면 false */
+export function openActivityHere(): boolean {
+  const here = currentWorkspaceFromUrl();
+  const open = here ? openers().get(here.workspaceId) : undefined;
+  if (!open) return false;
+  open();
+  return true;
+}
+
 /** 확장 세션 메뉴 문구(menu.activityRunning · menu.noneRunning · menu.checking) */
 function summaryOf(c: ActivityCounts | null): string {
   if (!c) return "확인 중…";
@@ -119,12 +133,14 @@ export function createActivityButtons(client: PluginClientContext, log: (message
           button: { ...presentation(null), icon: ActivityIcon, behavior: { kind: "action", onPress: () => openActivity(workspaceId) } },
         }),
       );
+      openers().set(workspaceId, () => openActivity(workspaceId));
     } catch (error) {
       log(`header button ${workspaceId}: ${String(error)}`);
     }
   };
   const drop = (workspaceId: string) => {
     leading?.drop(workspaceId);
+    if (registrations.has(workspaceId)) openers().delete(workspaceId);
     registrations.get(workspaceId)?.remove();
     registrations.delete(workspaceId);
     shown.delete(workspaceId);

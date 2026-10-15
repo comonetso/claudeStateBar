@@ -230,6 +230,15 @@ async function readWorkflows(sessionId: string, sessionDir: string, notices: Tas
     // 세션이 끝나 멈춘 실행은 부모 대화의 끝 알림으로만 안다
     if (agents.some((a) => a.status === "running") && endedStatus(notices.byRun.get(wfId))) {
       for (const a of agents) if (a.status === "running") a.status = "stopped";
+    } else if (agents.some((a) => a.status === "running")) {
+      // 같은 실행 번호로 다시 돌린(재개) 실행이 끝났으면, 그 끝 알림 전에 기록이 멈춘 결과 없는 에이전트는 앞 실행에서 끊긴 것이다
+      // (10-15 Mesa wf_c0345637-ce7: 첫 에이전트가 재시작으로 끊기고 재개 실행이 completed 로 끝나 "실행 중"으로 남았다).
+      // 알림 뒤에도 기록이 이어지는 에이전트는 아직 도는 것이라 그대로 둔다
+      const endAt = notices.runEnds?.get(wfId);
+      if (endAt) for (const a of agents) {
+        const last = timings.get(a.id)?.lastTs ?? 0;
+        if (a.status === "running" && last && last <= endAt) a.status = "stopped";
+      }
     }
     const terminal = await readParsed(join(sessionDir, "workflows", `${wfId}.json`), `marker:${wfId}`, markerStatus(wfId));
     const allDone = agents.length > 0 && agents.every((a) => a.status === "done");

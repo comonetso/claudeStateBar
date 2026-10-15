@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { renameRetry } from "./renameRetry";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -50,7 +51,7 @@ export function clearProjectOrders(): Promise<{ groups: Orders }> {
     await mkdir(dirname(FILE), { recursive: true });
     const tmp = `${FILE}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify({ groups: {} }), "utf8");
-    await rename(tmp, FILE);
+    await renameRetry(tmp, FILE);
     return { groups: {} };
   };
   const done = writing.then(run, run);
@@ -66,7 +67,7 @@ export function changeProjectOrders(change: (groups: Orders) => void): Promise<{
     await mkdir(dirname(FILE), { recursive: true });
     const tmp = `${FILE}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify({ groups }), "utf8");
-    await rename(tmp, FILE);
+    await renameRetry(tmp, FILE);
     return { groups };
   };
   const done = writing.then(run, run);
@@ -83,7 +84,7 @@ export function setProjectOrder(group: string, keys: string[]): Promise<{ groups
     // 임시 파일에 다 쓴 뒤 바꿔 끼운다 — 쓰다 끊겨도 반쯤 쓴 파일이 남지 않는다
     const tmp = `${FILE}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify({ groups }), "utf8");
-    await rename(tmp, FILE);
+    await renameRetry(tmp, FILE);
     return { groups };
   };
   const done = writing.then(run, run);

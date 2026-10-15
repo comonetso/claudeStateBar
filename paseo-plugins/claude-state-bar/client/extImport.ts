@@ -16,7 +16,8 @@ export type ImportableDraft = Record<SoundKind, { file: string; gain: string }> 
   workflowBeep: boolean;
 };
 
-const KINDS: SoundKind[] = ["completion", "question", "warning", "danger", "workflow"];
+// 압축 준비(compact)는 확장에 없는 소리라 가져오지 않는다(10-15)
+const KINDS: Exclude<SoundKind, "compact">[] = ["completion", "question", "warning", "danger", "workflow"];
 
 /** 채울 칸 수 — 데몬이 스키마에 맞다고 돌려준 값의 개수 */
 export function countImported(values: ExtImportResult["values"]): number {

@@ -16,6 +16,8 @@ export const settingsSchema = z.object({
   completion: sound.default({ file: "", gain: 100 }),
   question: sound.default({ file: "", gain: 100 }),
   workflow: sound.default({ file: "", gain: 100 }),
+  // 압축 준비(10-15) — 빈 값 = 기본(Windows 캘린더 알림, 리규형님이 고름 · 설정에서 바꿀 수 있다)
+  compact: sound.default({ file: "", gain: 100 }),
   // 끝남·질문 대기 — 확장 기본(3000)과 다르게 1000(리규형님 10-08). Paseo 는 턴이 분명히 끝나고, 소리 직전에 원본이 아직
   // 끝난 상태인지 두 번 다시 확인해(client/soundPlayback) 확장처럼 오래 기다릴 까닭이 줄었다. 3초면 답이 끝나고 소리까지 5~6초였다
   settleMs: z.number().int().min(100).max(5000).default(1000),

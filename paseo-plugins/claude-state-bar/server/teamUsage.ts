@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { UsageSourceRegistration } from "@getpaseo/plugin/server";
 import { hashAccountKey, toneFromUsedPct, unavailable, windowFromUsedPct, type UsageReport, type UsageWindow } from "@getpaseo/plugin/server/usage";
-import { readProviders, TEAM_PROVIDER } from "./account";
-import { TEAM_USAGE_SOURCE_ID } from "../shared/account";
+import { claudeProviders } from "./account";
+import { teamUsageSourceId } from "../shared/account";
 
 // 팀 공급자(claude-yeogiaen) 한도를 Paseo 사용량 목록에 늘 올린다(10-15 리규형님 "Claude 공급자가 여러 개면 한도 상황판에
 // 언제든 표시"). Paseo 의 내장 Claude 사용량 원천은 데몬 자신의 로그인(~/.claude)만 찾아서, 다른 설정 폴더로 로그인한
@@ -50,8 +50,8 @@ function readJson(path: string): unknown {
 }
 
 /** 이 기기 팀 공급자의 로그인 폴더 — 없으면 null(서버처럼 열쇠로만 들어가는 곳) */
-function teamDir(): string | null {
-  const dir = readProviders()[TEAM_PROVIDER]?.env?.CLAUDE_CONFIG_DIR;
+function teamDir(provider: string): string | null {
+  const dir = claudeProviders()[provider]?.env?.CLAUDE_CONFIG_DIR;
   return typeof dir === "string" && dir.trim() ? dir.trim() : null;
 }
 
@@ -60,7 +60,7 @@ function readLogin(dir: string) {
   return parsed.success ? parsed.data.claudeAiOauth ?? null : null;
 }
 
-let refreshing: Promise<string | null> | null = null;
+const refreshing = new Map<string, Promise<string | null>>();
 
 /**
  * 팀 로그인 갱신 — 새 액세스 열쇠를 돌려준다(실패하면 null, 이유는 로그에만 · 열쇠 값은 어디에도 남기지 않는다).
@@ -68,8 +68,9 @@ let refreshing: Promise<string | null> | null = null;
  * 그사이 팀 Claude 가 먼저 바꿨으면(갱신용 열쇠가 달라짐) 덮어쓰지 않고 파일 값을 쓴다. 쓰기는 임시 파일 → 이름 바꾸기.
  */
 export function refreshTeamLogin(dir: string, log: (m: string) => void = () => {}): Promise<string | null> {
-  if (refreshing) return refreshing;
-  refreshing = (async () => {
+  const pending = refreshing.get(dir);
+  if (pending) return pending;
+  const running = (async () => {
     const path = join(dir, ".credentials.json");
     const fresh = (o: ReturnType<typeof readLogin>) => !!o?.accessToken && (o.expiresAt === undefined || o.expiresAt - REFRESH_EARLY_MS > Date.now());
     const before = readLogin(dir);
@@ -100,14 +101,15 @@ export function refreshTeamLogin(dir: string, log: (m: string) => void = () => {
     renameSync(tmp, path);
     log(`[team-usage] refreshed, valid until ${new Date(next.claudeAiOauth.expiresAt).toISOString()}`);
     return tok.data.access_token;
-  })().catch((e) => { log(`[team-usage] refresh error ${e instanceof Error ? e.message : String(e)}`); return null; }).finally(() => { refreshing = null; });
-  return refreshing;
+  })().catch(() => { log("[team-usage] refresh error"); return null; }).finally(() => { refreshing.delete(dir); });
+  refreshing.set(dir, running);
+  return running;
 }
 
 /** 팀 공급자 이름(Paseo 설정 label) — 카드 제목. 리규형님 결정: "팀·개인" 말고 공급자 이름 그대로 */
-export function teamUsageLabel(): string {
-  const v = readProviders()[TEAM_PROVIDER]?.label;
-  return typeof v === "string" && v.trim() ? v.trim() : TEAM_PROVIDER;
+export function teamUsageLabel(provider: string): string {
+  const v = claudeProviders()[provider]?.label;
+  return typeof v === "string" && v.trim() ? v : provider === "claude" ? "Claude" : provider;
 }
 
 function windowsOf(resp: z.infer<typeof responseSchema>): UsageWindow[] {
@@ -136,13 +138,17 @@ function windowsOf(resp: z.infer<typeof responseSchema>): UsageWindow[] {
   return windows;
 }
 
-export function teamUsageSource(): UsageSourceRegistration {
+export function teamUsageSources(): UsageSourceRegistration[] {
+  return Object.keys(claudeProviders()).filter((id) => teamDir(id) !== null).map(teamUsageSource);
+}
+
+export function teamUsageSource(provider: string): UsageSourceRegistration {
   return {
-    id: TEAM_USAGE_SOURCE_ID,
-    label: teamUsageLabel(),
+    id: teamUsageSourceId(provider),
+    label: teamUsageLabel(provider),
     input: inputSchema,
     async discover() {
-      const dir = teamDir();
+      const dir = teamDir(provider);
       if (!dir || !existsSync(join(dir, ".credentials.json")) || !readLogin(dir)?.accessToken) return [];
       const account = accountSchema.safeParse(readJson(join(dir, ".claude.json")));
       const who = account.success ? account.data.oauthAccount : undefined;
