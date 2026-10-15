@@ -1871,9 +1871,18 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
             const ended = (s: string | undefined) => s === 'stopped' || s === 'killed' || s === 'failed';
             for (const { wf } of unsettled) {
                 if (wf.wfId.startsWith('wf_')) {
-                    if (!ended(notices.byRun.get(wf.wfId))) continue;
-                    for (const a of wf.agents) {
-                        if (a.status === 'running') a.status = 'stopped';
+                    if (ended(notices.byRun.get(wf.wfId))) {
+                        for (const a of wf.agents) {
+                            if (a.status === 'running') a.status = 'stopped';
+                        }
+                        continue;
+                    }
+                    // A run resumed under the same id (resumeFromRunId) that has since ended leaves the cut-off
+                    // agent of the earlier attempt without a result; one whose log stopped before that end notice
+                    // is not running (Mesa wf_c0345637-ce7, 2026-10-15). One still writing after it is the resumed one.
+                    const endAt = notices.runEnds?.get(wf.wfId);
+                    if (endAt) for (const a of wf.agents) {
+                        if (a.status === 'running' && a.lastAt && a.lastAt <= endAt) a.status = 'stopped';
                     }
                     continue;
                 }

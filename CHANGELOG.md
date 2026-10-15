@@ -170,6 +170,15 @@ Aside's own Start-menu shortcuts can't be written by the user and are reported a
 pinned to the taskbar or made by the user takes the flags. `doctor` and `setup` print a one-line warning
 when the running Aside lacks them.
 
+Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
+reports every task the old process left behind in a single notification that names several tasks, and
+only the first one was read, so the rest kept running in the background tab for good. A monitor that
+expired, timed out or was stopped now ends too; it says so only as its last event, without a status.
+In the workflow tab, a run resumed under the same id that has since finished no longer keeps the
+cut-off agent of the earlier attempt running: an agent whose log stopped before the run's end
+notification counts as stopped, while one still writing after it is left running. The same fixes are in
+the Paseo plugin.
+
 ## [1.17.1] - 2026-09-30
 
 Sub-agents launched with the Agent tool are now handled the same way as workflows. The orange dot
