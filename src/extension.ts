@@ -86,7 +86,7 @@ interface WorkflowAgentInfo {
     tokens?: number;  // last usage record's in+cache_creation+cache_read+out — matches Claude Code's own totalTokens
     model?: string;   // raw model id from the agent's own log (e.g. claude-opus-5)
     phase?: string;   // phase recovered from the workflow script; undefined → no grouping for this agent
-    lastAt?: number;  // sub-agents only: time of the log's last entry, to tell a stale end notice from a woken agent
+    lastAt?: number;  // time of the log's last entry, to tell a stale end notice from a woken agent and an orphan of a restart from a live one
 }
 
 interface WorkflowInfo {
@@ -1770,6 +1770,7 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
                         ...(timing.firstTs ? { startedAt: timing.firstTs } : {}),
                         ...(name ? { name } : {}), ...(fullName ? { fullName } : {}),
                         ...(timing.tokens ? { tokens: timing.tokens } : {}),
+                        ...(timing.lastTs ? { lastAt: timing.lastTs } : {}),
                         // Displayed name, resolved here so the webview stays free of model
                         // naming rules. No "1M" suffix: an agent log records the plain id
                         // (claude-opus-5) and nothing on disk says which context variant
@@ -1869,11 +1870,22 @@ async function findWorkflowsForSession(sessionFileUri: string): Promise<Workflow
         try {
             const notices = await readParsed(vscode.Uri.parse(sessionFileUri), 'notices', parseTaskNotices);
             const ended = (s: string | undefined) => s === 'stopped' || s === 'killed' || s === 'failed';
+            // The conversation's Claude was replaced after this agent last wrote — it died with the old process,
+            // even when the new one left no notice naming it (Mesa, 2026-10-16 19:15 team rotation: two runs read
+            // as running for six hours). An agent still writing after the change is live and stays running.
+            const lastRestart = notices.restarts?.length ? notices.restarts[notices.restarts.length - 1] : 0;
+            const orphaned = (a: WorkflowAgentInfo) => a.status === 'running' && !!a.lastAt && a.lastAt < lastRestart;
             for (const { wf } of unsettled) {
+                for (const a of wf.agents) {
+                    if (orphaned(a)) a.status = 'stopped';
+                }
                 if (wf.wfId.startsWith('wf_')) {
                     if (ended(notices.byRun.get(wf.wfId))) {
+                        // Resumed under the same id after the cut, the run's new agents write past the notice and
+                        // are live (Mesa, 2026-10-17 01:22 rotation: two resumed runs read as stopped while working).
+                        const endAt = notices.runEnds?.get(wf.wfId) ?? 0;
                         for (const a of wf.agents) {
-                            if (a.status === 'running') a.status = 'stopped';
+                            if (a.status === 'running' && !(endAt && a.lastAt && a.lastAt > endAt)) a.status = 'stopped';
                         }
                         continue;
                     }

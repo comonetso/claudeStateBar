@@ -179,6 +179,16 @@ cut-off agent of the earlier attempt running: an agent whose log stopped before 
 notification counts as stopped, while one still writing after it is left running. The same fixes are in
 the Paseo plugin.
 
+A workflow cut off when Claude restarted under it no longer reads as running for hours. The new process
+does not always report the runs it lost: after a team rotation on a Paseo host it reported a background
+shell but not the two workflows beside it, which stayed "running" for six hours. An agent whose log stopped
+before the conversation shows a restart, and that wrote no result, now counts as stopped. A restart is read
+from a "didn't finish before the previous session ended" notification for any task, or from the line the
+Paseo relay types into the conversation after a team rotation. The other way round, a run resumed under the
+same id after a restart keeps its new agents running even though a stopped notification names the run. The
+rule for resumed runs above also failed for workflows until now, since their agents carried no time of
+last entry.
+
 ## [1.17.1] - 2026-09-30
 
 Sub-agents launched with the Agent tool are now handled the same way as workflows. The orange dot
