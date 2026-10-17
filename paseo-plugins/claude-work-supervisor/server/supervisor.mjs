@@ -6,8 +6,8 @@
 import { mkdirSync, readdirSync, watch } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { alive, appendEvent, forgetAgent, listTransitions, missingFields, paths, pruneTransitions, readJson, readRegistry, removeFile,
-  sameWindow, TRANSITION_OPEN, validId, writeJson, writeTransition } from "./workstate.mjs";
+import { alive, appendEvent, forgetAgent, idlePctOf, listTransitions, missingFields, paths, pruneTransitions, readJson, readRegistry, removeFile,
+  sameWindow, SEAT_LABEL, TRANSITION_OPEN, validId, warnPctOf, writeJson, writeTransition } from "./workstate.mjs";
 
 /**
  * 다시 볼 간격·횟수 — 기획 §4 "일시 오류 5·10·15분 세 번"(Claude 선택 값, 실측 뒤 조정). 이행이 멈췄는지 확인·결과 모르는 말의 재확인에도 같은 값을 쓴다
@@ -258,6 +258,67 @@ export function askNotice(work) {
     body: q.slice(0, 200) } };
 }
 
+/**
+ * 사용량 경고·풀림 말의 머리 — 실행기(rotation.mjs mainInputKind)가 "usage" 종류로 따로 센다.
+ * 깨우기 말([supervisor])과 섞이면 이 말로 끝난 턴이 깨우기 결과·진척 없는 깨움으로 세어진다
+ */
+export const USAGE_MARK = "[supervisor:usage]";
+/** 압축 신호가 끊긴 뒤 이만큼 지나면 끝난 것으로 본다 — Claude Code 는 압축 중 status "compacting" 을 30초마다 되풀이한다(세 번 놓침) */
+export const COMPACT_STALE_MS = 90_000;
+const seatName = (id) => SEAT_LABEL[id] ?? String(id);
+export function usageWarnText({ provider, pct, warn, idle }) {
+  return `${USAGE_MARK} 사용량 경고 — 사람 말이 아니라 감독자(claude-work-supervisor)가 넣은 말이다. 지금 계정 ${seatName(provider)}의 5시간 사용률이 `
+    + `${Math.round(pct)}%로 경고 기준 ${warn}%를 넘었다. 지금부터 새 서브에이전트·워크플로우를 더 띄우지 말고, 돌고 있는 것만 마무리한다. `
+    + "다시 띄워도 되는 때는 감독자가 알린다(계정이 바뀌거나 5시간 창이 초기화되면) — 사용률을 스스로 재서 판단하지 않는다. "
+    + `계정 넘김은 실행기가 ${idle ?? "?"}%부터 쉬는 틈에 한다. 리규형님께 경고를 받았다고 한 줄 알린다.`;
+}
+export function usageClearText({ from, to, reset }) {
+  const why = reset ? `${seatName(to)} 계정의 5시간 창이 초기화됐다` : `계정이 ${seatName(from)}에서 ${seatName(to)}로 바뀌었다`;
+  return `${USAGE_MARK} 사용량 풀림 — 사람 말이 아니라 감독자(claude-work-supervisor)가 넣은 말이다. ${why}. `
+    + "새 서브에이전트·워크플로우를 다시 띄워도 된다(정해 둔 동시 개수 안에서). 장부를 확인하고(work-cli.mjs show) 다음 조각을 이어서 한다. "
+    + "리규형님께 풀림을 한 줄 알린다.";
+}
+
+/**
+ * 사용량 경고·풀림(10-17 저녁 리규형님 — "더 이상 무거운 것 돌리지 말라고 경고, 메사가 스스로 말고 감독자가 전달") — 판단(decideAgent)과 따로 도는 칸.
+ * 돌려주는 값: { send: { kind: "warn"|"clear", text, provider, window, pct } } · { dueAt(ms) } · {}
+ * - 경고: 지금 계정의 5시간 사용률이 경고 기준(팀 80·개인 85, workstate SEAT_PCT) 이상이고 이 계정·이 창에 아직 안 보냈으면. 계정·창마다 한 번.
+ *   실행 중일 때만 끼워 넣는다 — 멈춘 대화를 경고로 깨우지 않는다(다음 실행이 시작되면 그때 보낸다)
+ * - 풀림: 경고 뒤 계정이 바뀌었거나 그 창이 초기화됐으면. 새 계정도 이미 경고 기준 이상이면 풀림 대신 새 경고.
+ *   멈춰 있어도 장부에 할 일이 있으면(ready·waiting_external·waiting_provider) 보낸다 — 이 말이 깨운다(Mesa 가 시각을 스스로 재지 않게).
+ *   보류·사람이 중단한 멈춤·할 일 없는 멈춤엔 깨우지 않고 실행이 시작되면 보낸다
+ * - 압축 중이면 미룬다(Paseo 는 압축 중에 들어온 말로 압축을 취소한다 — 리규형님 "압축 끝날 때까지 미룸") · 넘김 이행 중이면 미룬다 ·
+ *   실행기 관측이 없으면 판단하지 않는다 · sv.usage.deferUntil(보내기 직전 압축 중·보내기 실패로 미룬 시각) 전엔 보내지 않는다
+ */
+export function usageNotice({ now, observe, relayAlive = false, running = false, work = null, sv = {}, transitionOpen = false }) {
+  if (!observe || !relayAlive || transitionOpen) return {};
+  const c = observe.compacting, lastCompact = Date.parse(c?.at ?? "");
+  if (c && Number.isFinite(lastCompact) && now < lastCompact + COMPACT_STALE_MS) return { dueAt: lastCompact + COMPACT_STALE_MS };
+  const cur = observe.provider, warn = warnPctOf(cur), seat = observe.seats?.[cur];
+  const live = !!seat && typeof seat.pct === "number" && typeof seat.resetsAt === "number" && seat.resetsAt * 1000 > now;
+  const over = live && warn !== null && seat.pct >= warn;
+  const warnOf = () => ({ kind: "warn", text: usageWarnText({ provider: cur, pct: seat.pct, warn, idle: idlePctOf(cur) }), provider: cur, window: seat.resetsAt, pct: seat.pct });
+  const warned = sv.usage?.warned ?? null;
+  let n = null;
+  if (warned) {
+    const switched = warned.provider !== cur;
+    const reset = !switched && (warned.window * 1000 <= now || (live && !sameWindow(warned.window, seat.resetsAt)));
+    if (!switched && !reset) return { dueAt: warned.window * 1000 + 1000 };
+    if (over) { if (running) n = warnOf(); }
+    else {
+      const cut = observe.interrupt;
+      const humanStop = observe.main?.done === true && Number.isFinite(cut?.seq) && (observe.input?.seq ?? 0) === cut.seq;
+      const canWake = !sv.hold && !humanStop && ["ready", "waiting_external", "waiting_provider"].includes(work?.state);
+      if (running || canWake) {
+        n = { kind: "clear", text: usageClearText({ from: warned.provider, to: cur, reset }), provider: cur, window: live ? seat.resetsAt : null, pct: live ? seat.pct : null };
+      }
+    }
+  } else if (over && running) n = warnOf();
+  if (!n) return {};
+  const defer = Date.parse(sv.usage?.deferUntil ?? "");
+  return Number.isFinite(defer) && now < defer ? { dueAt: defer } : { send: n };
+}
+
 /** 대화 기록 항목에서 사람·자동 말(user_message)만 — 감독자 말·이어 달리기 말 확인용 */
 const userTexts = (items) => (Array.isArray(items) ? items : []).filter((i) => i?.type === "user_message");
 
@@ -437,9 +498,18 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
       } else if (q && q.key !== asked?.key) send();
       else if (!q && asked) sv = { ...sv, asked: null };
     }
+    // 사용량 경고·풀림 칸(10-17 저녁) — 판단과 따로. 보낼 게 있으면 감독자 기록을 저장한 뒤 보낸다(sendUsage)
+    let usageSend = null, usageDue = 0;
+    if (snap && d.status !== "archived") {
+      const u = usageNotice({ now: now(), observe: o, relayAlive: relayAlive(o), running: !!snap.activeTurn || snap.status === "running",
+        work: w.value ?? null, sv, transitionOpen: transitions.some((t) => TRANSITION_OPEN.includes(t.state)) });
+      usageSend = u.send ?? null;
+      usageDue = u.dueAt ?? 0;
+    }
+    const due = [d.dueAt, usageDue].filter((x) => x > 0);
     const logKey = `${d.status}|${d.reason}`;
     const fresh = sv.lastLogged !== logKey;
-    sv = { ...sv, status: d.status, reason: d.reason, dueAt: d.dueAt ? new Date(d.dueAt).toISOString() : null, lastLogged: logKey };
+    sv = { ...sv, status: d.status, reason: d.reason, dueAt: due.length ? new Date(Math.min(...due)).toISOString() : null, lastLogged: logKey };
     writeSv(id, sv);
     if (fresh) {
       log(`${id.slice(0, 8)} ${d.status} — ${d.reason}${d.dueAt ? ` (next ${new Date(d.dueAt).toISOString()})` : ""}`);
@@ -457,7 +527,52 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
         appendEvent(root, { kind: "perm-deny", agentId: id, requestId: a.id, ok: false });
       }
     }
+    // 사용량 말을 먼저 — 풀림이 멈춘 대화를 깨우면 뒤의 깨우기는 보내기 직전 확인에서 "실행 중"으로 건너뛴다
+    if (usageSend) await sendUsage(id, usageSend);
     if (d.actions.some((a) => a.t === "wake")) await sendWake(id, d.actions.find((a) => a.t === "wake").why, o, w.value);
+  }
+
+  /**
+   * 사용량 경고·풀림 보내기 — 직전에 다시 본다: 권한 창 대기면 미루고, 대화 기록의 마지막 압축 표시가 아직 진행 중이면 COMPACT_STALE_MS 뒤로 미룬다
+   * (실행기가 옛 코드라 관측에 압축 표시가 없어도 Paseo 기록으로 가린다). 경고는 그새 실행이 끝났으면 보내지 않는다(다음 실행에서).
+   * 기록(warned)을 먼저 저장하고 보낸다 — 같은 창에 두 번 보내지 않게. 보내기가 실패하면 기록을 되돌리고 RECHECK_MS 뒤 다시
+   */
+  async function sendUsage(id, n) {
+    let snap = null, items = [];
+    try { snap = await api.snapshot(id); } catch { /* 아래에서 미룬다 */ }
+    try { items = await api.timeline(id); } catch (e) { log(`timeline failed ${id.slice(0, 8)}: ${e?.message ?? e}`); }
+    const lastCompaction = [...(Array.isArray(items) ? items : [])].reverse().find((i) => i?.type === "compaction");
+    const running = !!snap?.activeTurn || snap?.status === "running";
+    const blocked = !snap ? "Paseo 상태 모름" : snap.pendingPermissions?.length ? "권한 대기" : lastCompaction?.status === "loading" ? "압축 중"
+      : n.kind === "warn" && !running ? "실행이 끝남" : null;
+    const at = new Date(now()).toISOString();
+    if (blocked) {
+      log(`usage ${n.kind} deferred ${id.slice(0, 8)} — ${blocked}`);
+      if (blocked === "실행이 끝남") return;
+      const until = now() + (blocked === "압축 중" ? COMPACT_STALE_MS : RECHECK_MS);
+      const sv = readSv(id);
+      writeSv(id, { ...sv, usage: { ...(sv.usage ?? {}), deferUntil: new Date(until).toISOString() }, dueAt: new Date(Math.min(until, Date.parse(sv.dueAt ?? "") || Infinity)).toISOString() });
+      arm();
+      return;
+    }
+    const msgId = `svu-${id.slice(0, 8)}-${now()}`;
+    let sv = readSv(id);
+    const prev = sv.usage ?? null;
+    sv = { ...sv, usage: { warned: n.kind === "warn" ? { provider: n.provider, window: n.window, pct: n.pct, at } : null,
+      last: { kind: n.kind, msgId, at, provider: n.provider, pct: n.pct } } };
+    if (!writeSv(id, sv)) { log(`usage ${n.kind} skipped ${id.slice(0, 8)} — state not saved`); return; }
+    appendEvent(root, { kind: "usage", agentId: id, notice: n.kind, provider: n.provider, pct: n.pct, msgId });
+    try {
+      await api.send(id, n.text, { activeTurnBehavior: "steer", messageId: msgId });
+      log(`usage ${n.kind} sent ${id.slice(0, 8)} provider=${n.provider} pct=${n.pct == null ? "-" : Math.round(n.pct)} ${msgId}`);
+    } catch (e) {
+      const until = new Date(now() + RECHECK_MS).toISOString();
+      const cur = readSv(id);
+      writeSv(id, { ...cur, usage: { ...(prev ?? {}), deferUntil: until, error: String(e?.message ?? e).slice(0, 200) },
+        dueAt: new Date(Math.min(now() + RECHECK_MS, Date.parse(cur.dueAt ?? "") || Infinity)).toISOString() });
+      log(`usage ${n.kind} failed ${id.slice(0, 8)}: ${e?.message ?? e}`);
+    }
+    arm();
   }
 
   /**

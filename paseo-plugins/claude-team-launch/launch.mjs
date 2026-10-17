@@ -9,8 +9,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { applyAccount, HOME, watchAccount } from "../claude-rc-relay/account.mjs";
-import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, startResumeKicker, takeHandoff } from "../claude-rc-relay/rotation.mjs";
-import { workRecorder } from "../claude-rc-relay/workstate.mjs";
+import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, shouldResume, startResumeKicker, takeHandoff } from "../claude-rc-relay/rotation.mjs";
+import { isRegistered, workRecorder, workRoot } from "../claude-rc-relay/workstate.mjs";
 
 const args = process.argv.slice(2);
 const at = args.indexOf("--real");
@@ -75,7 +75,7 @@ process.stdout.on("drain", () => child.stdout.resume());
 child.stdout.on("end", output.end);
 // 켜져 있는 동안 이 대화의 계정 기록이 바뀌면 Claude 를 끈다 — 다음 말 때 Paseo 가 이 실행기를 다시 띄우며 새 계정이 적용된다
 const stopAccountWatch = ephemeral ? () => {} : watchAccount(agentId, () => {
-  log("account changed — stopping claude; the next message restarts it");
+  log(`account changed (agent ${String(agentId).slice(0, 8)}) — stopping claude; the next message restarts it`);
   try {
     child.kill();
   } catch {
@@ -86,8 +86,13 @@ child.on("exit", () => {
   stopAccountWatch();
   rotation.stop();
   // 자동 전환으로 꺼졌으면 다음 말을 기다리지 않고 이어 달린다(10-16, ../claude-rc-relay/rotation.mjs startResumeKicker).
-  // 이행 파일에 다음 단계 주인을 남긴다 — kicker, 못 띄웠으면 감독자
-  if (rotation.state().switched) {
+  // 이행 파일에 다음 단계 주인을 남긴다 — kicker, 못 띄웠으면 감독자.
+  // 일이 끝난 쉬는 틈의 넘김은 무중단 등록 대화만 깨운다(10-17 저녁, rotation.mjs shouldResume) — 그 밖엔 다음 사람 말을 기다린다
+  const why = rotation.state().transition?.reason;
+  if (rotation.state().switched && !shouldResume({ reason: why, registered: isRegistered(workRoot(), agentId) })) {
+    log(`rotation switched at an idle point (${why}) — not waking (agent ${String(agentId).slice(0, 8)}); the next message starts the new account`);
+    rotation.updateTransition({ state: "next_message", owner: "relay", relayExitAt: new Date().toISOString() });
+  } else if (rotation.state().switched) {
     const kicker = startResumeKicker({ agentId, home: HOME, logFile: join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "claude-rc-relay.log"),
       tid: rotation.state().transition?.tid ?? "" });
     if (kicker) log("rotation resume armed");

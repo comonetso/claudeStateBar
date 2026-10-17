@@ -5,10 +5,11 @@
 // 막을 때는 {"decision":"block","reason":…} — 같은 실행이 이어진다(2.1.301 실측). 연속으로 막는 횟수는 Claude Code 가
 // 끊는다(CLAUDE_CODE_STOP_HOOK_BLOCK_CAP 기본 8, 도구를 쓰면 0 으로) — 그래서 stop_hook_active 여도 같은 판정을 한다.
 // 파일 읽기만 한다. 모르면(파일이 깨졌거나 세대를 못 맞추면) 그 검사는 막지 않는 쪽으로 넘어간다 — 문지기는 보조 장치이고 감독자가 받는다.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { alive, appendEvent, isRegistered, missingFields, paths, readJson, sameWindow, validId, workRoot, writeJson } from "./workstate.mjs";
+import { alive, appendEvent, idlePctOf, isRegistered, missingFields, paths, PERSONAL_SEAT, personalSwitchPath, readJson, sameWindow, validId, workRoot,
+  writeJson } from "./workstate.mjs";
 
 /** 자동 전환 대상 팀 좌석 — rotation.mjs TEAM_PROVIDER_IDS 와 같아야 한다(문지기는 rotation.mjs 를 불러오지 않는다: 설정 파일 읽기 없이 빨리 끝나게) */
 export const TEAM_SEATS = ["claude-yeogiaen", "claude-hrg"];
@@ -16,13 +17,16 @@ export const TEAM_SEATS = ["claude-yeogiaen", "claude-hrg"];
 const NOT_WAITED = ["local_bash", "monitor_mcp", "monitor_ws", "shell", "monitor"];
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "work-cli.mjs");
 
-/** 다른 팀 좌석으로 넘어갈 희망이 있는지 — 관측이 없거나, 창이 지났거나, 85% 미만이면 있다(무중단 명세 §0-3) */
-export function otherSeatHopeful(current, seats, now = Date.now() / 1000, teamSeats = TEAM_SEATS) {
-  return teamSeats.filter((id) => id !== current).some((id) => {
+/**
+ * 다른 좌석으로 넘어갈 희망이 있는지 — 관측이 없거나, 창이 지났거나, 그 좌석의 쉬는 틈 기준(팀 85·개인 90) 미만이면 있다(무중단 명세 §0-3).
+ * personal = 개인 계정 포함 스위치(10-17) — 켜져 있으면 개인도 넘어갈 곳이다(실행기 chooseTarget 과 같은 후보)
+ */
+export function otherSeatHopeful(current, seats, now = Date.now() / 1000, teamSeats = TEAM_SEATS, personal = false) {
+  return [...teamSeats, ...(personal ? [PERSONAL_SEAT] : [])].filter((id) => id !== current).some((id) => {
     const s = seats?.[id];
     if (!s || !(typeof s.resetsAt === "number") || s.resetsAt <= now) return true;
     if (s.status === "limit") return false;
-    return !(typeof s.pct === "number" && s.pct >= 85);
+    return !(typeof s.pct === "number" && s.pct >= (idlePctOf(id) ?? 85));
   });
 }
 /** 같은 좌석의 여러 관측 중 가장 새 것(실행기 자기 관측과 감독자 집계 pool.json) */
@@ -39,7 +43,7 @@ export function mergeSeats(...lists) {
  * 판정 — 순수 함수(시험이 같은 것을 쓴다). 돌려주는 값: { verdict: "pass"|"block", reason, code }
  * work = 장부, observe = 실행기 관측(현재 세대일 때만), hook = Stop 입력, pool = 감독자 좌석 집계
  */
-export function judge({ work, workError, observe, hook = {}, pool = null, now = Date.now() }) {
+export function judge({ work, workError, observe, hook = {}, pool = null, now = Date.now(), personal = false }) {
   if (workError) return { verdict: "pass", code: "work_unreadable" }; // 깨진 장부를 이유로 막으면 고칠 수 없는 반복이 된다 — 감독자가 받는다
   if (!work) return { verdict: "block", code: "no_work", reason: "장부가 없다. 지금 일의 상태를 먼저 적는다." };
   // 이번 입력 뒤 갱신했나 — 실행기 관측이 현재 세대일 때만 본다(모르면 건너뛴다)
@@ -56,14 +60,18 @@ export function judge({ work, workError, observe, hook = {}, pool = null, now = 
   const waited = observe?.background && typeof observe.background.waited === "number" ? observe.background.waited
     : Array.isArray(hook.background_tasks) ? hook.background_tasks.filter((t) => !NOT_WAITED.includes(t?.type)).length : 0;
   if (waited > 0) return { verdict: "pass", code: "background_wait", waited };
-  // 전환 양보 — 지금 좌석 85% 이상, 이번 창에 넘길 곳 없음 판정이 없고, 다른 좌석에 희망이 있으면 끝내게 둔다(실행기가 넘김을 판정한다)
+  // 전환 양보 — 지금 좌석이 쉬는 틈 기준(팀 85·개인 90) 이상, 이번 창에 넘길 곳 없음 판정이 없고, 다른 좌석에 희망이 있으면 끝내게 둔다(실행기가 넘김을 판정한다).
+  // 개인 좌석은 개인 계정 포함 스위치가 켜져 있을 때만 — 10-17 개인 포함 때 이 양보가 빠져 개인을 쓰는 동안엔 쉬는 틈이 오지 않았다(99% 강제까지 밀림)
   const current = observe?.provider;
   const seat = observe?.seats?.[current];
-  if (current && TEAM_SEATS.includes(current) && typeof seat?.pct === "number" && seat.pct >= 85 && seat.resetsAt > now / 1000) {
+  // 실행기가 이 대화를 자동 넘김 대상으로 안 보면(active false — 개인 포함 전에 뜬 옛 실행기는 개인을 모른다) 놓아 주지 않는다.
+  // 놓아 주면 실행기는 안 넘기고 턴만 끝나 멈춘다(10-17 저녁 — 문지기는 턴마다 새로 떠 바로 새 판, 실행기는 다시 뜰 때까지 옛 판)
+  const inPool = current && observe.active !== false && (TEAM_SEATS.includes(current) || (personal && current === PERSONAL_SEAT));
+  if (inPool && typeof seat?.pct === "number" && seat.pct >= (idlePctOf(current) ?? 85) && seat.resetsAt > now / 1000) {
     const d = observe.decision;
     const settled = d && sameWindow(d.window, seat.resetsAt) && (d.reason === "no_target" || d.reason === "error");
     const seats = mergeSeats(pool?.seats, observe.seats);
-    if (!settled && otherSeatHopeful(current, seats, now / 1000)) return { verdict: "pass", code: "yield_rotation", pct: seat.pct };
+    if (!settled && otherSeatHopeful(current, seats, now / 1000, TEAM_SEATS, personal)) return { verdict: "pass", code: "yield_rotation", pct: seat.pct };
   }
   return { verdict: "block", code: "ready", reason: `할 일이 남아 있다(다음: ${String(work.next).slice(0, 300)}). 턴을 끝내지 말고 다음 조각을 바로 이어서 한다.` };
 }
@@ -90,7 +98,7 @@ function main(raw) {
   // 관측이 이 Claude 를 띄운 실행기의 것인지 — 그 실행기가 살아 있어야 한다(옛 세대의 입력 번호로 판단하지 않게)
   const observe = o && alive(Number(o.pid)) ? o : null;
   const pool = readJson(p.pool).value ?? null;
-  const result = judge({ work: w.value ?? null, workError: w.error ?? null, observe, hook, pool });
+  const result = judge({ work: w.value ?? null, workError: w.error ?? null, observe, hook, pool, personal: existsSync(personalSwitchPath(root)) });
   // 같은 입력에서 몇 번째로 막는지 — Claude 와 사람이 반복을 알아볼 수 있게
   const mark = observe ? `${observe.runGen}:${observe.input?.seq}` : null;
   const prevGate = readJson(p.gate(agentId)).value;

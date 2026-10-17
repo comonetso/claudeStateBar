@@ -87,19 +87,38 @@ export async function writeAccount(agentId, to, base, guard = () => true) {
     return true;
   } finally { rmdirSync(lock); }
 }
+/**
+ * 켜져 있는 동안 이 대화의 계정 기록이 바뀌면 onChange. 기록 파일을 못 읽은 때(다른 프로세스가 바꿔 쓰는 순간 · 손상)는 "바뀜"으로 보지 않는다 —
+ * 예전엔 읽기 실패를 "기록 없음"으로 읽어, 기록이 있던 대화가 아무도 안 바꿨는데 꺼질 수 있었다(10-17 저녁 전수 조사, 19:34 여러 실행기 동시 꺼짐).
+ * 실패하면 잠시 뒤 한 번 더 읽는다 — 그 사이 진짜 변경이 끝났으면 놓치지 않게
+ */
 export function watchAccount(agentId, onChange) {
   if (!agentId) return () => {};
-  const key = () => JSON.stringify(accountEntry(agentId));
-  let last = key();
+  const key = () => {
+    try {
+      const e = readDocument().entries[agentId];
+      const to = normalizeProvider(e?.to), base = normalizeProvider(e?.base);
+      return JSON.stringify(to && base && to !== base ? { to, base } : null);
+    } catch { return undefined; }
+  };
+  // 시작 기준은 applyAccount 가 본 것과 같게 — 그때 못 읽었으면 기록 없이 띄웠다(accountEntry 가 null)
+  let last = key() ?? JSON.stringify(null);
+  let retry = null;
+  const check = (again = false) => {
+    const now = key();
+    if (now === undefined) {
+      // 다시 읽기는 변경 알림 한 번에 한 번만 — 파일이 계속 깨져 있으면 다음 변경 알림을 기다린다
+      if (!again && !retry) { retry = setTimeout(() => { retry = null; check(true); }, 200); retry.unref?.(); }
+      return;
+    }
+    if (now === last) return;
+    last = now;
+    onChange();
+  };
   try {
     mkdirSync(DIR, { recursive: true });
-    const w = watch(DIR, () => {
-      const now = key();
-      if (now === last) return;
-      last = now;
-      onChange();
-    });
+    const w = watch(DIR, () => check());
     w.on("error", () => {});
-    return () => { try { w.close(); } catch { /* 이미 닫힘 */ } };
+    return () => { if (retry) clearTimeout(retry); try { w.close(); } catch { /* 이미 닫힘 */ } };
   } catch { return () => {}; }
 }

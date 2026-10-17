@@ -19,8 +19,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { applyAccount, HOME, watchAccount } from "./account.mjs";
-import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, startResumeKicker, takeHandoff } from "./rotation.mjs";
-import { workRecorder } from "./workstate.mjs";
+import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, shouldResume, startResumeKicker, takeHandoff } from "./rotation.mjs";
+import { isRegistered, workRecorder, workRoot } from "./workstate.mjs";
 
 const argv = process.argv.slice(2);
 let real = "claude";
@@ -133,8 +133,13 @@ child.on("exit", () => {
   stopAccountWatch();
   rotation.stop();
   // 자동 전환으로 꺼졌으면 다음 말을 기다리지 않고 이어 달린다(10-16, rotation.mjs startResumeKicker) — 손으로 바꾼 때는 안 한다.
-  // 이행 파일에 다음 단계 주인을 남긴다 — kicker(pid 로 살아 있는지 본다), 못 띄웠으면 감독자가 넘겨받는다
-  if (rotation.state().switched) {
+  // 이행 파일에 다음 단계 주인을 남긴다 — kicker(pid 로 살아 있는지 본다), 못 띄웠으면 감독자가 넘겨받는다.
+  // 일이 끝난 쉬는 틈의 넘김은 무중단 등록 대화만 깨운다(10-17 저녁, rotation.mjs shouldResume) — 그 밖엔 다음 사람 말을 기다린다
+  const why = rotation.state().transition?.reason;
+  if (rotation.state().switched && !shouldResume({ reason: why, registered: isRegistered(workRoot(), agentId) })) {
+    log(`rotation switched at an idle point (${why}) — not waking (agent ${String(agentId).slice(0, 8)}); the next message starts the new account`);
+    rotation.updateTransition({ state: "next_message", owner: "relay", relayExitAt: new Date().toISOString() });
+  } else if (rotation.state().switched) {
     const kicker = startResumeKicker({ agentId, home: HOME, logFile: LOG, tid: rotation.state().transition?.tid ?? "" });
     if (kicker) log(`rotation resume armed (agent ${String(agentId).slice(0, 8)})`);
     rotation.updateTransition(kicker ? { owner: "kicker", kickerPid: kicker.pid ?? null, relayExitAt: new Date().toISOString() }

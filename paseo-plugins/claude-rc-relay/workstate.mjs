@@ -15,6 +15,21 @@ export const STATES = ["ready", "waiting_provider", "waiting_external", "waiting
 export const sameWindow = (a, b) => typeof a === "number" && typeof b === "number" && Math.abs(a - b) <= 60;
 export const validId = (id) => /^[A-Za-z0-9-]{1,64}$/.test(String(id ?? ""));
 export const workRoot = (env = process.env) => join(env.PASEO_HOME || join(homedir(), ".paseo"), "claude-work");
+/** 개인 계정 포함 스위치 파일 — <Paseo 홈>/claude-rc-relay-personal.json(root = <Paseo 홈>/claude-work). 있으면 켜짐 */
+export const personalSwitchPath = (root) => join(dirname(root), "claude-rc-relay-personal.json");
+
+/**
+ * 계정별 5시간 사용률 기준(10-17 저녁 리규형님 — "개인 계정 맥스는 팀의 2배라" 개인을 5% 높게).
+ * idle = 쉬는 틈에 다른 계정으로 넘기는 기준(실행기 rotation.mjs · 문지기 양보) · warn = 감독자가 "새 서브를 더 띄우지 말고
+ * 돌던 것만 마무리"라고 경고하는 기준(Mesa 가 스스로 재서 판단하지 않게 — 리규형님 "감독자가 전달")
+ */
+export const PERSONAL_SEAT = "claude";
+export const TEAM_SEAT_IDS = ["claude-yeogiaen", "claude-hrg"];
+export const SEAT_PCT = { team: { idle: 85, warn: 80 }, personal: { idle: 90, warn: 85 } };
+export const seatKind = (id) => (id === PERSONAL_SEAT ? "personal" : TEAM_SEAT_IDS.includes(id) ? "team" : null);
+export const idlePctOf = (id) => SEAT_PCT[seatKind(id)]?.idle ?? null;
+export const warnPctOf = (id) => SEAT_PCT[seatKind(id)]?.warn ?? null;
+export const SEAT_LABEL = { claude: "개인", "claude-yeogiaen": "팀(como)", "claude-hrg": "팀(hrg)" };
 
 export function paths(root) {
   const per = (sub) => (id) => (validId(id) ? join(root, sub, `${id}.json`) : null);
