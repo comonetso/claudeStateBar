@@ -29,6 +29,14 @@ export const accountsWait = defineRpc({
   }),
 });
 
+/** 개인 계정 로그인 열쇠 유지(10-17 리규형님) — 사용량 칸이 읽을 때마다 부른다. 개인 열쇠가 곧 만료면 데몬 플러그인이 미리 바꿔 둔다
+ *  (server/teamUsage keepPersonalLogin). 바깥 사용량 조회는 하지 않는다. ok = 열쇠가 살아 있음 */
+export const personalLoginKeep = defineRpc({
+  name: "usage.keep-login",
+  input: z.object({}),
+  output: z.object({ ok: z.boolean() }),
+});
+
 /** 대화의 계정을 바꾸고 다시 띄운다. 원래 계정으로 바꾸면 기억을 지운다(공급자 기본으로 돌아감) */
 export const accountSwitch = defineRpc({
   name: "account.switch",

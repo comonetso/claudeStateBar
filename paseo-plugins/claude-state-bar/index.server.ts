@@ -74,10 +74,10 @@ import { extSettingsImport } from "./shared/extSettings";
 import { collectClaudeStats } from "./server/stats/claudeStats";
 import { claudeStats } from "./shared/stats";
 import { forgetAccount, providerFromDisk, stopAccounts, switchAccount, waitAccounts } from "./server/account";
-import { accountSwitch, accountsWait } from "./shared/account";
+import { accountSwitch, accountsWait, personalLoginKeep } from "./shared/account";
 import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCode, waitLogin } from "./server/claudeLogin";
 import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
-import { teamUsageSources } from "./server/teamUsage";
+import { keepPersonalLogin, teamUsageSources } from "./server/teamUsage";
 import { createPush, registerPushToken } from "./server/push";
 import { pushCompactWait, pushRegister } from "./shared/push";
 
@@ -294,6 +294,8 @@ export default function contribute(server: PluginServerContext) {
   // 같은 창에서 계정 바꾸기(10-14) — 입력창 위 알약이 기록을 바꾸고, 실행기(claude-rc-relay/account.mjs)가 그 기록으로 계정을 정한다.
   // 팀원 데몬은 안 한다
   server.handle(accountsWait, async ({ rev }) => waitAccounts(rev));
+  // 개인 계정 로그인 열쇠 유지 — 사용량 칸이 읽을 때마다(10-17 — server/teamUsage keepPersonalLogin)
+  server.handle(personalLoginKeep, async () => keepPersonalLogin());
   server.handle(accountSwitch, async ({ agentId, to }, { paseo }) => {
     const handle = paseo.agents.ref(agentId);
     await handle.refresh().catch(() => null);

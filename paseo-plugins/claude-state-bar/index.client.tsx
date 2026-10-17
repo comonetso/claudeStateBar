@@ -24,6 +24,7 @@ import { browserLabel, startScreenRole } from "./client/screenRole";
 import { startSettingsSync } from "./client/settingsSync";
 import { startLayoutAutoPull, startLayoutSave, syncMenuItem } from "./client/layoutSync";
 import { startPaneMaxWatch, togglePaneMaximized } from "./client/paneMaxWatch";
+import { personalLoginKeep } from "./shared/account";
 import { layoutLoad } from "./shared/layoutSync";
 import { registerThinking } from "./client/thinking";
 import { registerAskAnswer } from "./client/askAnswer";
@@ -191,7 +192,9 @@ export default function contribute(client: PluginClientContext) {
       };
       // 사용량 새로 받기는 이 호스트 데몬에(10-17 — 사용량 칸 30초)
       const refreshUsage = () => (info.serverId ? forceUsageRefresh(info.serverId) : Promise.resolve(null));
-      const ui = { settings: () => settings, usage: () => client.paseo.providers.listUsage(), refreshUsage, openSettings: () => client.openSettings(SETTINGS_SCREEN_ID) };
+      // 개인 계정 로그인 열쇠 유지 — 사용량 칸이 읽을 때마다(10-17 — server/teamUsage keepPersonalLogin)
+      const keepLogin = () => client.rpc(personalLoginKeep, {});
+      const ui = { settings: () => settings, usage: () => client.paseo.providers.listUsage(), refreshUsage, keepLogin, openSettings: () => client.openSettings(SETTINGS_SCREEN_ID) };
       cleanups.push(onUiRole(() => emitSharedSignal("settings")));
       if (!primary) {
         cleanups.push(startFallbackCandidate(client, { kind: "fallback", provider: ui, start: () => attachFour(true) }));
@@ -208,6 +211,7 @@ export default function contribute(client: PluginClientContext) {
         },
         usage: () => client.paseo.providers.listUsage(),
         refreshUsage,
+        keepLogin,
         openSettings: () => client.openSettings(SETTINGS_SCREEN_ID),
         loadLayout: (slot) => client.rpc(layoutLoad, { slot }),
         claimSound: async () => false, // 같은 화면 안 옛 호스트 인스턴스도 무음으로 닫는다.

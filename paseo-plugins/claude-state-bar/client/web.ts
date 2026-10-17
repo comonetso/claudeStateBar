@@ -572,31 +572,23 @@ function paseoMemoryStore(which: keyof PaseoModuleIds, exported: string, key: st
 
 type UsageReportsClient = { listUsageReports?(options: { forceRefresh: boolean }): Promise<{ reports?: Array<{ report?: { status?: string } }> }> };
 /**
- * 사용량 "기억 건너뛰고 새로 받기"(10-17 리규형님 — 사용량 칸 30초). Paseo 사용량 화면 새로고침과 같은 요청
- * (usage.list_reports.request forceRefresh)이라 데몬이 바깥 조회 5분 기억(UsageSourceRegistry ttlMs)을 건너뛴다.
+ * 사용량 "기억 건너뛰고 새로 받기" — 사용량 칸의 "지금 갱신" 아이콘이 부른다(10-17 리규형님 "Paseo 하던 대로 두고, 내가 원할 때
+ * 즉시 갱신"). Paseo 사용량 화면 새로고침과 같은 요청(usage.list_reports.request forceRefresh)이라 데몬이 바깥 조회 5분 기억
+ * (UsageSourceRegistry ttlMs)을 건너뛴다. 🔴 자동으로 자주 부르지 마라 — 30초마다 강제하자 Anthropic 이 막았다(10-17 09:26 429).
  * true = 받음 · false = 요청 실패나 오류 항목(status "error") · null = 이 판에선 못 함(번호 모름·연결 없음 — 예전처럼 데몬 기억값)
- * 같은 화면의 여러 묻기(호스트마다 뜬 플러그인·옛 판)가 각자 강제하면 바깥 조회가 그 수만큼 는다(10-17 실측 — 30초에 3~4번).
- * 화면 하나에서는 기기마다 30초에 한 번만 강제하고, 그 사이 묻기는 진행 중이거나 마지막 결과를 같이 쓴다(30초 = 리규형님 간격)
+ * 진행 중에 또 부르면 같은 요청을 같이 기다린다(화면 하나에 한 번)
  */
-const USAGE_FORCE_MIN_MS = 30_000;
-type UsageForce = { at: number; pending: Promise<boolean | null> | null; last: boolean | null };
-function usageForces(): Map<string, UsageForce> {
-  const g = globalThis as { __claudeStateBar_usageForce_v1?: Map<string, UsageForce> };
-  return (g.__claudeStateBar_usageForce_v1 ??= new Map());
+function usageForces(): Map<string, Promise<boolean | null>> {
+  const g = globalThis as { __claudeStateBar_usageForce_v2?: Map<string, Promise<boolean | null>> };
+  return (g.__claudeStateBar_usageForce_v2 ??= new Map());
 }
 export function forceUsageRefresh(serverId: string): Promise<boolean | null> {
   const forces = usageForces();
-  const prev = forces.get(serverId);
-  if (prev?.pending) return prev.pending;
-  if (prev && Date.now() - prev.at < USAGE_FORCE_MIN_MS) return Promise.resolve(prev.last);
-  const entry: UsageForce = { at: Date.now(), pending: null, last: null };
-  entry.pending = runUsageForce(serverId).then((result) => {
-    entry.last = result;
-    entry.pending = null;
-    return result;
-  });
-  forces.set(serverId, entry);
-  return entry.pending;
+  const pending = forces.get(serverId);
+  if (pending) return pending;
+  const running = runUsageForce(serverId).finally(() => forces.delete(serverId));
+  forces.set(serverId, running);
+  return running;
 }
 async function runUsageForce(serverId: string): Promise<boolean | null> {
   const getStore = paseoModule("hostRuntime")?.getHostRuntimeStore as (() => { getClient?(id: string): unknown }) | undefined;

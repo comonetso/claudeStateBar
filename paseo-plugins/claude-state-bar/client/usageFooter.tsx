@@ -14,14 +14,12 @@ import { isTeamUsageSource } from "../shared/account";
 // 값은 Paseo 데몬이 받아 둔 것을 쓴다(providers.listUsage). 표는 Paseo 가 주는 창 전부(10-07부터 — Fable 같은 모델별
 // 주간 창 포함), 상단 단추 글자는 Paseo 가 요약에 쓰라고 표시한 창(summary)만.
 
-// 10-17 리규형님: 30초마다 새로 받고, 실패하면 1분 · 또 실패하면 2분으로 물러난다(받으면 다시 30초) — "VS Code 확장에서
-// 30초로 써도 한도에 걸린 적 없다". 데몬은 바깥 조회를 5분 기억하므로(UsageSourceRegistry ttlMs) 묻기 직전에 "기억 건너뛰고
-// 새로 받기"를 보낸다(web.ts forceUsageRefresh — 못 하는 판이면 예전처럼 데몬 기억값). 가려진 화면은 묻지 않는다(pageVisible.ts)
+// 10-17: 30초마다 묻는다(읽기 실패하면 1분·2분, 받으면 30초) — 데몬이 기억한 값이라 바깥 조회는 Paseo 하던 대로 데몬이 5분에 한 번.
+// 리규형님 "Paseo 하던 대로 두고 내가 원할 때 즉시 갱신" → 펼친 칸 머리의 갱신 아이콘을 누를 때만 "기억 건너뛰고 새로 받기"
+// (web.ts forceUsageRefresh). 🔴 자동 강제는 하지 마라 — 30초마다 강제하자 개인 Claude 조회가 Anthropic 횟수 제한(429)으로 막혀
+// 카드가 사라졌다(10-17 09:26). 묻을 때마다 개인 로그인 열쇠도 곧 만료면 데몬 플러그인이 미리 바꿔 둔다(keepLogin — 개인 계정을 쓰는
+// Claude 가 없으면 열쇠가 만료돼 카드가 사라졌다, 10-17 09:40). 30초 간격이라 만료 1분 전 창을 놓치지 않는다. 가려진 화면은 묻지 않는다
 const POLL_STEPS_MS = [30_000, 60_000, 120_000];
-// 🔴 10-17 09:26 부터 개인 Claude 조회가 "Rate limited by Claude. Try again in 1m."(Anthropic 횟수 제한)으로 막혀 카드가
-// 사라졌다(PC 데몬 기록 plugin-service "Usage fetch failed" sourceId claude) — 30초마다 강제하면 걸리고, 2분으로 물러나도 안 풀렸다.
-// 강제는 끈다: 30초마다 묻되 데몬 기억값(5분)만 읽는다. 다시 켜려면 걸리지 않는 간격·방법을 실측으로 정한 뒤에
-const FORCE_USAGE_REFRESH = false;
 // 글자는 Paseo 설정의 "인터페이스 크기"(사이드바 줄과 같은 크기, 리규형님 10-05: "너무 작다, 인터페이스 크기와 같게").
 // 못 읽으면 앱 웹 기본 14px. 설정을 바꾸면 몇 초 안에 따라온다
 const UI_DEFAULT_PX = 14;
@@ -42,7 +40,7 @@ type Provider = Usage["providers"][number];
 type Window = Provider["windows"][number];
 
 /**
- * 사용량 — 30초마다 데몬에 묻는다(실패하면 1분·2분). 왼쪽 아래 표와 오른쪽 위 사용량 단추(usageButton)가 같이 쓴다.
+ * 사용량 — 30초마다 데몬에 묻는다(실패하면 1분·2분, 값은 데몬 기억). 왼쪽 아래 표와 오른쪽 위 사용량 단추(usageButton)가 같이 쓴다.
  * 소리 담당 호스트(이 PC)가 공급자로 올라와 있으면 그 데몬에 묻는다 — 서버 작업 공간의 단추도 같은 숫자를 보이게(10-06).
  * 아직 안 올라왔으면 이 호스트 데몬에 묻는다.
  * 묻기는 화면 전체에 하나만 돈다(10-15). 두 칸이 따로 1분씩 물으니 데몬이 새 값을 받은 직후 한쪽만 바뀌어
@@ -52,6 +50,8 @@ type UsageSnap = { usage: Usage | null; error: string | null };
 let usageSnap: UsageSnap = { usage: null, error: null };
 const usageSubs = new Set<(s: UsageSnap) => void>();
 let usageStop: (() => void) | null = null;
+// 돌고 있는 묻기의 "지금 갱신" 입구 — 갱신 아이콘이 부른다. 묻기가 안 돌면 null
+let usageForceNow: (() => Promise<void>) | null = null;
 
 function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
   let alive = true;
@@ -59,14 +59,16 @@ function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
   let step = 0; // POLL_STEPS_MS 몇 번째 간격인지 — 실패할 때마다 한 칸 물러나고 받으면 처음으로
   let timer: ReturnType<typeof setTimeout> | null = null;
   const publish = (next: UsageSnap) => { usageSnap = next; for (const fn of usageSubs) fn(next); };
-  const load = async () => {
+  const load = async (force = false) => {
     if (timer) { clearTimeout(timer); timer = null; }
-    if (!alive || pageHidden()) return; // 다시 보이면 아래 onPageVisible 이 부른다
+    if (!alive || (!force && pageHidden())) return; // 다시 보이면 아래 onPageVisible 이 부른다
     const mine = ++generation;
     const provider = uiProvider() ?? soundProvider();
+    void provider?.keepLogin?.().catch(() => null);
     let failed = false;
     try {
-      if (FORCE_USAGE_REFRESH && (provider?.refreshUsage ? await provider.refreshUsage() : null) === false) failed = true;
+      // 갱신 아이콘을 눌렀을 때만 데몬 기억(5분)을 건너뛴다 — 개인 Claude·Codex·팀 카드 모두
+      if (force && provider?.refreshUsage) await provider.refreshUsage();
       const next = provider?.usage ? await provider.usage() : await paseo.providers.listUsage();
       if (alive && mine === generation) publish({ usage: next, error: null });
     } catch (e) {
@@ -80,7 +82,20 @@ function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
   void load();
   const off = onUiRole(() => { publish({ usage: null, error: null }); void load(); });
   const offVisible = onPageVisible(() => void load());
-  return () => { alive = false; if (timer) clearTimeout(timer); off(); offVisible(); };
+  const forceNow = () => load(true);
+  usageForceNow = forceNow;
+  return () => {
+    alive = false;
+    if (timer) clearTimeout(timer);
+    off();
+    offVisible();
+    if (usageForceNow === forceNow) usageForceNow = null;
+  };
+}
+
+/** 사용량 칸 "지금 갱신" — 데몬 기억을 건너뛰고 바로 받아 모든 칸에 다시 그린다(10-17 리규형님) */
+export function refreshUsageNow(): Promise<void> {
+  return usageForceNow ? usageForceNow() : Promise.resolve();
 }
 
 export function useUsage(): UsageSnap {
@@ -173,7 +188,33 @@ function leftText(iso: string | null | undefined, now: number): string {
 // Paseo 가 주는 창 전부 — Fable 같은 모델별 주간 창 포함). 줄마다 막대가 같은 자리에서 시작하도록 칸을 세로 열로 나눈다.
 // 상단 사용량 단추의 작은 창도 이 표를 그대로 쓴다(단추 글자는 요약 창만 — usageButton).
 // action 은 첫 계정 이름 줄 오른쪽 끝에 붙는다(왼쪽 아래 칸의 접기 단추)
-function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "theme"> & { usage: Usage | null; error: string | null; ui: number; action?: ReactNode }) {
+// 다음 갱신까지 남은 시간(10-17 리규형님 "몇 분 몇 초 후 갱신" + 갱신 아이콘) — 데몬은 받아 온 사용량을 5분 기억한다(Paseo
+// UsageSourceRegistry ttlMs 300000). 목록의 fetchedAt 은 가장 오래된 카드를 받은 시각이라 거기에 5분을 더한 때가 다음에 바뀌는
+// 때다(그 뒤 첫 묻기 — 최대 30초 늦을 수 있다). 지났으면 "곧 갱신". 누르면 바로 갱신. 남은 시간 글자만 1초마다 다시 그린다
+const DAEMON_USAGE_TTL_MS = 300_000;
+function RefreshLine({ theme, ui, fetchedAt, busy, onPress }: Pick<PluginHostProps, "theme"> & { ui: number; fetchedAt: string | null; busy: boolean; onPress: () => void }) {
+  const c = theme.colors;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const at = fetchedAt ? Date.parse(fetchedAt) : NaN;
+  const left = Number.isFinite(at) ? at + DAEMON_USAGE_TTL_MS - now : NaN;
+  const min = Math.floor(left / 60_000);
+  const sec = Math.floor((left % 60_000) / 1000);
+  // 글자 먼저, 아이콘 뒤(리규형님 10-17 "2분 44초 후 갱신 아이콘 — 순서를 바꿔줘")
+  const text = busy ? "갱신 중…" : !Number.isFinite(left) ? "" : left <= 0 ? "곧 갱신" : min > 0 ? `${min}분 ${sec}초 후 갱신` : `${sec}초 후 갱신`;
+  return (
+    <Pressable onPress={onPress} disabled={busy} accessibilityRole="button" accessibilityLabel="사용량 지금 갱신" hitSlop={6}
+      style={{ flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", opacity: busy ? 0.5 : 1 }}>
+      <Text style={{ color: c.foregroundMuted, fontSize: ui - 2 }}>{text}</Text>
+      <Icon name="RefreshCw" size={ui} color={c.foregroundMuted} />
+    </Pressable>
+  );
+}
+
+function UsageRows({ theme, usage, error, ui, action, top }: Pick<PluginHostProps, "theme"> & { usage: Usage | null; error: string | null; ui: number; action?: ReactNode; top?: ReactNode }) {
   const c = theme.colors;
   const toneColor = (w: Window) => (w.tone === "danger" ? c.statusDanger : w.tone === "warning" ? c.statusWarning : c.accent);
   const now = Date.now();
@@ -204,6 +245,7 @@ function UsageRows({ theme, usage, error, ui, action }: Pick<PluginHostProps, "t
   return (
     // 브라우저 번역이 날짜·창 이름을 길게 바꿔 칸 밖으로 밀어내지 않게(web.ts setNoTranslate)
     <View ref={setNoTranslate} style={{ paddingHorizontal: 12, paddingVertical: 8, gap: 8 }} accessibilityLabel="Claude·Codex 사용량">
+      {top}
       {providers.map((p, index) => {
         const rows = p.windows;
         const cell = { height: rowH, justifyContent: "center" } as const;
@@ -304,13 +346,31 @@ export function UsageFooter({ theme }: Pick<PluginHostProps, "theme">) {
     writeLocal(OPEN_KEY, next ? "1" : "0");
   };
 
+  // 지금 갱신(10-17 리규형님 "내가 원할 때 사용량 패널에서 아이콘을 누르면 즉시") — 받는 동안은 흐리게, 다시 못 누름
+  const [busy, setBusy] = useState(false);
+  const refresh = () => {
+    if (busy) return;
+    setBusy(true);
+    void refreshUsageNow().finally(() => setBusy(false));
+  };
+
   if (open) {
     const fold = (
       <Pressable onPress={toggle} accessibilityRole="button" accessibilityLabel="사용량 내리기" accessibilityState={{ expanded: true }} hitSlop={8}>
         <Icon name="ChevronDown" size={ui + 2} color={c.foregroundMuted} />
       </Pressable>
     );
-    return <UsageRows theme={theme} usage={usage} error={error} ui={ui} action={fold} />;
+    // 카드 목록 맨 위 한 줄에 갱신(왼쪽)·접기(오른쪽)(리규형님 10-17 스크린샷 빨간 네모 자리 · "접기 아이콘도 같은 행으로").
+    // 사용량을 못 읽은 상태엔 이 줄이 없어 접기를 그 줄 옆에 둔다
+    const top = (
+      <View style={{ flexDirection: "row", alignItems: "center" }}>
+        <View style={{ flex: 1 }}>
+          <RefreshLine theme={theme} ui={ui} fetchedAt={(usage as { fetchedAt?: string } | null)?.fetchedAt ?? null} busy={busy} onPress={refresh} />
+        </View>
+        {fold}
+      </View>
+    );
+    return <UsageRows theme={theme} usage={usage} error={error} ui={ui} action={usage ? undefined : fold} top={top} />;
   }
   const providers = availableProviders(usage);
   if (usage && !providers.length) return null;

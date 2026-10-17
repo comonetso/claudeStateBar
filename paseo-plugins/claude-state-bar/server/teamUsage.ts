@@ -214,26 +214,44 @@ export function teamUsageSource(provider: string): UsageSourceRegistration {
       return [{ key: hashAccountKey(who?.accountUuid ?? dir), input: { dir } }];
     },
     async fetch(input): Promise<UsageReport> {
-      const { dir } = inputSchema.parse(input);
-      const login = readLogin(dir);
-      if (!login?.accessToken) return { status: "error", error: "팀 공급자 로그인이 없습니다" };
-      let token: string | null = login.accessToken;
-      if (login.expiresAt !== undefined && login.expiresAt - REFRESH_EARLY_MS <= Date.now()) {
-        token = await refreshTeamLogin(dir, console.warn);
-        if (!token) return unavailable({ kind: "expired", expiresAt: new Date(login.expiresAt).toISOString() });
-      }
-      const ask = (t: string) => fetch(USAGE_URL, { headers: { Authorization: `Bearer ${t}`, "anthropic-beta": OAUTH_BETA } });
-      let res = await ask(token);
-      if (res.status === 401) {
-        // 만료 시각 전인데 거절 — 다른 곳에서 열쇠가 바뀌었거나 폐기됨. 한 번만 갱신하고 다시 묻는다
-        const again = await refreshTeamLogin(dir, console.warn);
-        if (again && again !== token) res = await ask(again);
-      }
-      if (!res.ok) return unavailable({ kind: "rejected", status: res.status });
-      const parsed = responseSchema.safeParse(await res.json().catch(() => null));
-      if (!parsed.success) return { status: "error", error: "한도 응답 형식을 읽지 못했습니다" };
-      const plan = login.subscriptionType ? login.subscriptionType.charAt(0).toUpperCase() + login.subscriptionType.slice(1) : undefined;
-      return { status: "available", ...(plan ? { planLabel: plan } : {}), windows: windowsOf(parsed.data) };
+      return fetchTeamReport(inputSchema.parse(input).dir);
     },
   };
+}
+
+async function fetchTeamReport(dir: string): Promise<UsageReport> {
+  const login = readLogin(dir);
+  if (!login?.accessToken) return { status: "error", error: "팀 공급자 로그인이 없습니다" };
+  let token: string | null = login.accessToken;
+  if (login.expiresAt !== undefined && login.expiresAt - REFRESH_EARLY_MS <= Date.now()) {
+    token = await refreshTeamLogin(dir, console.warn);
+    if (!token) return unavailable({ kind: "expired", expiresAt: new Date(login.expiresAt).toISOString() });
+  }
+  const ask = (t: string) => fetch(USAGE_URL, { headers: { Authorization: `Bearer ${t}`, "anthropic-beta": OAUTH_BETA } });
+  let res = await ask(token);
+  if (res.status === 401) {
+    // 만료 시각 전인데 거절 — 다른 곳에서 열쇠가 바뀌었거나 폐기됨. 한 번만 갱신하고 다시 묻는다
+    const again = await refreshTeamLogin(dir, console.warn);
+    if (again && again !== token) res = await ask(again);
+  }
+  if (!res.ok) return unavailable({ kind: "rejected", status: res.status });
+  const parsed = responseSchema.safeParse(await res.json().catch(() => null));
+  if (!parsed.success) return { status: "error", error: "한도 응답 형식을 읽지 못했습니다" };
+  const plan = login.subscriptionType ? login.subscriptionType.charAt(0).toUpperCase() + login.subscriptionType.slice(1) : undefined;
+  return { status: "available", ...(plan ? { planLabel: plan } : {}), windows: windowsOf(parsed.data) };
+}
+
+// 개인 계정 로그인(이 데몬의 기본 Claude 폴더)도 곧 만료면 미리 바꿔 둔다(10-17 리규형님) — 개인 카드는 Paseo 기본 Claude 원천이
+// 이 폴더의 열쇠로 묻는데, 개인 계정으로 도는 Claude 가 없으면 아무도 안 바꿔 만료(401)되고 카드가 사라졌다(10-17 09:40).
+// 바꾸는 방법·덮어쓰기 규칙은 팀과 같다(refreshTeamLogin). 새 열쇠는 데몬 기억(5분)이 풀린 다음 조회나 "지금 갱신"부터 쓰인다.
+// 사용량 칸이 읽을 때마다(30초) 불러 만료 1분 전 창을 놓치지 않는다. 바깥 사용량 조회는 하지 않는다
+const personalDir = () => (process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"));
+
+export async function keepPersonalLogin(): Promise<{ ok: boolean }> {
+  // 팀 로그인 폴더가 있는 데몬(= 사용량 칸을 맡는 PC)에서만 — 서버의 개인 로그인은 서버 Claude 대화들이 직접 쓴다
+  const hasTeam = Object.keys(claudeProviders()).some((provider) => teamDir(provider) !== null);
+  const personal = personalDir();
+  if (!hasTeam || !existsSync(join(personal, ".credentials.json"))) return { ok: false };
+  const token = await refreshTeamLogin(personal, (m) => console.warn(m.replace("[team-usage]", "[personal-login]")));
+  return { ok: token !== null };
 }
