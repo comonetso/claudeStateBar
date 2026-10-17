@@ -14,10 +14,17 @@ import { locateSession } from "./chime/tracker";
 // 서버 0.10.3 은 @getpaseo/client 를 가져오면 빌드를 거절한다 — 서버 SDK 문맥 타입에서 꺼낸다(soundEvents.ts 와 같이)
 type PaseoApi = PluginHandlerContext["paseo"];
 
-type Index = { size: number; rest: string; decoder: StringDecoder; seen: Set<string>; messages: Map<string, (string | null)[]> };
+type Index = { size: number; rest: string; decoder: StringDecoder; seen: Set<string>; messages: Map<string, (string | null)[]>; partial: boolean };
 const indexes = new Map<string, Index>();
 const sessions = new Map<string, string>();
 const CHUNK = 4 * 1024 * 1024;
+// 처음 읽을 때 파일 끝에서 이만큼만 읽는다 — 10-18 콜어드민 Mesa 대화 기록이 1GB 를 넘어, 처음부터 읽으며 생각 글을 다 쌓다
+// 플러그인이 메모리 초과로 죽었다(JavaScript heap out of memory, 하루 55번). 화면에 그려지는 상자는 최근 응답이라 끝부분이면 된다.
+// 더 오래된 상자는 경계를 못 찾아 통째로 남는다(못 찾을 때와 같은 동작)
+const TAIL = 32 * 1024 * 1024;
+// 쌓아 두는 응답 수 상한 — 대화가 계속 길어져도 다시 불지 않게, 넘치면 오래된 것부터 버린다
+const KEEP_MESSAGES = 2000;
+const KEEP_SEEN = KEEP_MESSAGES * 10;
 
 type Line = { type?: string; uuid?: string; isSidechain?: boolean; message?: { id?: string; content?: unknown } };
 
@@ -33,7 +40,9 @@ function addLine(ix: Index, line: string): void {
   if (o.uuid) {
     if (ix.seen.has(o.uuid)) return;
     ix.seen.add(o.uuid);
+    if (ix.seen.size > KEEP_SEEN) ix.seen.delete(ix.seen.values().next().value!);
   }
+  if (!ix.messages.has(o.message.id) && ix.messages.size >= KEEP_MESSAGES) ix.messages.delete(ix.messages.keys().next().value!);
   const seq = ix.messages.get(o.message.id) ?? [];
   for (const block of o.message.content as { type?: string; thinking?: unknown }[]) {
     if (block?.type === "thinking") {
@@ -57,7 +66,8 @@ async function loadNow(file: string): Promise<Index> {
   const { size } = await stat(file);
   let ix = indexes.get(file);
   if (!ix || size < ix.size) {
-    ix = { size: 0, rest: "", decoder: new StringDecoder("utf8"), seen: new Set(), messages: new Map() };
+    const start = Math.max(0, size - TAIL);
+    ix = { size: start, rest: "", decoder: new StringDecoder("utf8"), seen: new Set(), messages: new Map(), partial: start > 0 };
     indexes.set(file, ix);
   }
   if (size === ix.size) return ix;
@@ -70,6 +80,11 @@ async function loadNow(file: string): Promise<Index> {
       ix.size += bytesRead;
       const lines = (ix.rest + ix.decoder.write(buffer.subarray(0, bytesRead))).split("\n");
       ix.rest = lines.pop() ?? "";
+      // 끝에서부터 읽기 시작했으면 첫 줄은 중간부터라 버린다
+      if (ix.partial && lines.length) {
+        lines.shift();
+        ix.partial = false;
+      }
       for (const line of lines) addLine(ix, line);
     }
   } finally {
@@ -92,22 +107,6 @@ export function runsOf(messages: Iterable<(string | null)[]>): string[][] {
     if (run.length) runs.push(run);
   }
   return runs;
-}
-
-/** runsOf 와 같은 순서로, 묶음마다 뒤에 다른 블록(도구·본문)이 기록됐는가 — 그 생각 묶음이 끝났다는 뜻(10-18, cutFromRuns closed) */
-export function runsClosedOf(messages: Iterable<(string | null)[]>): boolean[] {
-  const closed: boolean[] = [];
-  for (const seq of messages) {
-    let open = false;
-    for (const item of seq) {
-      if (item === null) {
-        if (open) closed.push(true);
-        open = false;
-      } else open = true;
-    }
-    if (open) closed.push(false);
-  }
-  return closed;
 }
 
 async function sessionFile(paseo: PaseoApi, agentId: string, fresh = false): Promise<string | null> {
@@ -170,7 +169,7 @@ export async function thinkingCut(paseo: PaseoApi, agentId: string, text: string
   let waited = false;
   for (;;) {
     const ix = await load(file);
-    const found = cutFromRuns(runsOf(ix.messages.values()), clean, runsClosedOf(ix.messages.values()));
+    const found = cutFromRuns(runsOf(ix.messages.values()), clean);
     if (found.matched) {
       // 기다렸다 찾은 경우 — 생각이 다 들어온 뒤 기록에 늦게 적히는 일이 얼마나 잦은지 본다(10-09)
       if (waited) console.log(`[thinking] boundary found after ${Date.now() - started}ms wait agent=${agentId.slice(0, 8)} cut=${found.cut ?? "none"}`);

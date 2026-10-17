@@ -270,12 +270,9 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   // 읽기 조절(이전·일시정지·중지·다음·속도)은 입력창 위 한 곳(web.ts startReadDock) — 10-11 리규형님 "컨트롤러를 여기로 통일".
   // 예전엔 상자 위·아래 두 곳과 꺼낸 말 밑에 따로 있었다
 
-  // 꺼낼 자리가 0 = 상자에 남는 글이 없다(한 칸뿐인 생각을 통째로 꺼냄, 10-18 리규형님 "빈 상자는 숨기기") — 상자 틀을 그리지 않고 꺼낸 글만
-  const boxEmpty = box.cut === 0;
-
   return (
     <View style={{ marginVertical: 4 }}>
-      {boxEmpty ? null : <View style={{ borderRadius: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, overflow: "hidden" }}>
+      <View style={{ borderRadius: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, overflow: "hidden" }}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6 }}>
           <Pressable accessibilityRole="button" accessibilityState={{ expanded: box.open }} onPress={() => controller.toggleOpen(box)} style={{ flexDirection: "row", alignItems: "center", flexShrink: 1, gap: 6 }}>
             <Icon name={box.open ? "ChevronDown" : "ChevronRight"} size={px - 1} color={c.foregroundMuted} />
@@ -335,10 +332,10 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
             {actionStatus()}
           </View>
         ) : null}
-      </View>}
+      </View>
       {/* 상자에서 꺼낸 Claude 의 말 — 상자를 접어도 보이게 상자 밖에 본문 글 크기·색으로(10-09) */}
       {said ? (
-        <View nativeID={saidId} style={{ marginTop: boxEmpty ? 0 : 8 }}>
+        <View nativeID={saidId} style={{ marginTop: 8 }}>
           {saidParagraphs.map((paragraph, i) => (
             // 문단 사이는 예전 한 덩어리(빈 줄 하나)와 같은 높이. 안쪽 조각은 늘 두고 색만 바꾼다(번역기가 바꾼 글을 지키려고 — 위 본문과 같음)
             <Text key={i} selectable nativeID={`${saidId}-${i}`} style={{ marginTop: i ? Math.round(px * 1.5) : 0, color: c.foreground, fontSize: px, lineHeight: Math.round(px * 1.5) }}>
