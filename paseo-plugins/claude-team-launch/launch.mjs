@@ -52,6 +52,7 @@ if (handoff) log(`rotation handoff (agent ${String(agentId).slice(0, 8)}) — no
 const work = workRecorder({ agentId, log, ephemeral });
 const rotation = createRotation({ real, env, initialEnv: process.env, agentId, log, enabled: !ephemeral,
   handoff: (info) => saveHandoff(HOME, agentId, info), testFile: join(HOME, "claude-rc-relay-test.json"),
+  personalFile: join(HOME, "claude-rc-relay-personal.json"),
   runGen: `${process.pid}-${Date.now()}`, record: work.record, onTransition: work.onTransition });
 const child = spawn(real, argv, { stdio: ["pipe", "pipe", "inherit"], env, windowsHide: true });
 const input = jsonLines(rotation.input), output = jsonLines(rotation.observe);

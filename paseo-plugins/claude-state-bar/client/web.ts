@@ -421,6 +421,27 @@ export function setHoverTitle(node: unknown, text: string): void {
   (node as { setAttribute?: (name: string, value: string) => void }).setAttribute?.("title", text);
 }
 
+// 알약 바로 위 작은 글씨(10-17 폰 "작업 현황" 알약의 개수 — phonePills.tsx). Paseo 는 알약 아이콘을 16px 상자에 담고 그 밖을 잘라
+// (overflow hidden, 제 탭 실측) 아이콘 안에서는 밖으로 못 그린다 → 아이콘이 자기를 담은 알약 요소에 글을 적어 두고 의사 요소로 띄운다.
+// 알약 줄은 바탕이 비쳐 대화 글이 겹쳐 보일 수 있어 글씨에 바탕색을 깐다
+const PILL_BADGE_STYLE = "claude-state-bar-pill-badge";
+const PILL_BADGE_CSS = "[data-csb-badge]{position:relative;overflow:visible}"
+  + "[data-csb-badge]::before{content:attr(data-csb-badge);position:absolute;bottom:calc(100% + 3px);left:50%;transform:translateX(-50%);"
+  + "font-size:10px;line-height:13px;white-space:nowrap;padding:0 3px;border-radius:3px;pointer-events:none;"
+  + "color:var(--csb-badge-color,#999);background:var(--csb-badge-bg,transparent)}";
+type BadgeEl = { closest?(selector: string): BadgeEl | null; setAttribute(n: string, v: string): void; removeAttribute(n: string): void; style: { setProperty(n: string, v: string): void } };
+/** node(알약 안의 요소)를 담은 알약(aria-label = pillLabel)에 위 글씨를 단다. text 가 null 이면 뗀다 */
+export function setPillBadge(node: unknown, pillLabel: string, text: string | null, color: string, background: string): void {
+  if (!isWeb() || !node) return;
+  const pill = (node as BadgeEl).closest?.(`[aria-label="${pillLabel}"]`);
+  if (!pill) return;
+  if (!document.getElementById(PILL_BADGE_STYLE)) setStyleSheet(PILL_BADGE_STYLE, PILL_BADGE_CSS);
+  if (text === null) { pill.removeAttribute("data-csb-badge"); return; }
+  pill.setAttribute("data-csb-badge", text);
+  pill.style.setProperty("--csb-badge-color", color);
+  pill.style.setProperty("--csb-badge-bg", background);
+}
+
 /**
  * 브라우저 페이지 번역(Chrome 번역·DeepL 등)이 이 요소 안 글을 건드리지 않게 표시한다(웹·데스크톱만). 10-09 리규형님 화면:
  * 번역이 켜져 사용량 표의 "10/10 15:00" 이 "10월 10일 15:00", "5h" 가 "5시간" 으로 바뀌어 길어지면서 칸 밖으로 튀어나갔다
@@ -1706,7 +1727,7 @@ type SpeedKeyHub = { version: number; users: Map<object, () => SpeedKeyBinding>;
 // 3(10-16): 키를 단축키 표에서 읽는다 — 옛 판(< > 고정) 듣기는 물러난다
 const SPEED_KEYS_VERSION = 3;
 /** 같은 페이지의 호스트·옛 판이 남아도 키 듣기는 하나. 가장 나중에 등록한 읽기 중 재생기 하나만 조절한다.
- *  키 = `<`·`>`(Shift+쉼표·마침표). 10-15 리규형님: Ctrl 없이도 — 읽는 중에만 가로채므로 그동안만 입력창에 < > 가 안 쳐진다. Ctrl 과 함께도 된다 */
+ *  키 = 단축키 표(처음 값 Ctrl+← →, 10-17 — 옛 처음 값 < > 는 읽는 동안 입력창에 < > 를 못 쳤다). 읽는 중에만 가로챈다 */
 export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
   if (!isWeb()) return () => {};
   const g = globalThis as Record<string, unknown>;
@@ -1716,7 +1737,7 @@ export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
   hub.users.set(token, binding);
   if (!hub.stop) {
     const onKey = (event: KeyEventLike) => {
-      // 키는 설정 화면 단축키 칸에서 바꾼다(10-16, 기본 < > — Ctrl 과 같이 눌러도 된다)
+      // 키는 설정 화면 단축키 칸에서 바꾼다(10-16, 처음 값 Ctrl+← → 10-17)
       const slower = shortcutMatches("read-slower", keyLike(event));
       if (event.isComposing || (!slower && !shortcutMatches("read-faster", keyLike(event)))) return;
       const active = [...hub.users.values()].reverse().map((get) => get()).find((b) => b.active);

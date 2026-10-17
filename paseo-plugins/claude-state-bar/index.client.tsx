@@ -12,6 +12,7 @@ import { createAccountPills } from "./client/accountPill";
 import { createLoginPills } from "./client/claudeLogin";
 import { createJudge } from "./client/judge";
 import { createThinkingFoldPills } from "./client/thinkingFoldPill";
+import { createPhonePills } from "./client/phonePills";
 import { startHeaderTitles } from "./client/headerTitles";
 import { startProjectsMode } from "./client/projectsMode";
 import { PROJECTS_SCREEN_ID, ProjectsScreen } from "./client/projectsScreen";
@@ -44,7 +45,8 @@ import { clientLog } from "./shared/log";
 import { DEFAULT_SETTINGS, settingsSchema, soundSettings, type SoundSettings } from "./shared/settings";
 import { hostInfo, soundDataV2, type SoundKind } from "./shared/sound";
 import { setTeamMember } from "./client/teamMode";
-import { startPushOpen, startPushToken } from "./client/pushShell";
+import { startAlertSounds, startPushOpen, startPushToken } from "./client/pushShell";
+import { onPageVisible } from "./client/pageVisible";
 import { startCompactReady } from "./client/compactReady";
 import { setShortcutSource, shortcutMatches } from "./shared/shortcuts";
 
@@ -95,6 +97,8 @@ export default function contribute(client: PluginClientContext) {
   cleanups.push(hideSubagentsPill());
   // 폰 푸시(10-15) — 폰 앱이 준 토큰을 호스트마다 자기 데몬에 맡긴다(데몬마다 자기 대화의 질문지·압축 준비를 보낸다)
   cleanups.push(startPushToken(client, log));
+  // 폰 앱에 원래 소리(질문·압축 준비)를 맡긴다 — 소리 파일이 있는 PC 데몬을 맡은 화면만(10-17)
+  cleanups.push(startAlertSounds(client, log, onPageVisible));
   // 프로젝트 목록 압축 준비 아이콘(10-15) — 호스트마다 자기 데몬의 "압축 명령어를 기다리는 대화"를 받아 화면 게시판에 올린다
   // (10-16 이 줄이 빠져 아이콘이 한 번도 안 떴다 — 리규형님 "아이콘 오는 건 확인 못 했네" 로 찾음)
   cleanups.push(startCompactReady(client, log));
@@ -271,6 +275,8 @@ export default function contribute(client: PluginClientContext) {
   const accountPills = createAccountPills(client, log);
   // 로그인이 풀린 대화 입력창 위 빨간 열쇠 알약 + 설정 화면 칸용 기기별 로그인 기능(10-14 — Claude 다시 로그인)
   const loginPills = createLoginPills(client, log);
+  // 폰(좁은 화면)만 입력창 위 "사용량"·"작업 현황" 알약 + 개수 작은 글씨(10-17 — 세로 점 메뉴에서 꺼냄)
+  const phonePills = createPhonePills(client, log);
 
   void (async () => {
     try {
@@ -289,6 +295,7 @@ export default function contribute(client: PluginClientContext) {
         foldPills.observe(entry.agent);
         accountPills.observe(entry.agent);
         loginPills.observe(entry.agent);
+        phonePills.observe(entry.agent);
       }
       const stop = client.paseo.agents.subscribe((update) => {
         if (update.kind === "remove") {
@@ -301,6 +308,7 @@ export default function contribute(client: PluginClientContext) {
           foldPills.remove(update.agentId);
           accountPills.remove(update.agentId);
           loginPills.remove(update.agentId);
+          phonePills.remove(update.agentId);
           return;
         }
         if (update.kind !== "upsert") return;
@@ -313,6 +321,7 @@ export default function contribute(client: PluginClientContext) {
         foldPills.observe(update.agent);
         accountPills.observe(update.agent);
         loginPills.observe(update.agent);
+        phonePills.observe(update.agent);
       });
       // 재연결 때 오는 새 목록은 기준으로만 다시 잡는다(끊긴 사이 바뀐 것으로 소리를 내지 않는다 — Codex 검토 10-05:
       // 첫 목록과 그 뒤 변경만 들어 재연결 목록을 버리던 것)
@@ -331,6 +340,7 @@ export default function contribute(client: PluginClientContext) {
             foldPills.observe(entry.agent);
             accountPills.observe(entry.agent);
             loginPills.observe(entry.agent);
+            phonePills.observe(entry.agent);
           }
         },
         update: () => {},
@@ -358,6 +368,7 @@ export default function contribute(client: PluginClientContext) {
     foldPills.dispose();
     accountPills.dispose();
     loginPills.dispose();
+    phonePills.dispose();
     for (const cleanup of cleanups.reverse()) cleanup();
   };
 }

@@ -29,6 +29,11 @@ export type ThinkingBoxState = {
   hostId: string;
   agentId: string;
   stamps: Set<number>;
+  /** 상자가 처음 생길 때의 생각 시각과 만든 순서 — 대화마다 맨 마지막 상자(자동 번역 대상, 10-17)를 가린다 */
+  firstStamp: number;
+  order: number;
+  /** 번역 단추로 직접 켰다(10-17) — 자동 번역 중에도 맨 마지막이 아닌 상자는 이렇게 켠 것만 번역을 보낸다 */
+  manual?: boolean;
   awaitingCompleteStamp?: boolean;
   text: string;
   phase: Phase;
@@ -248,14 +253,38 @@ export class ThinkingController {
       if (phase === "complete" && box.text === text) box.awaitingCompleteStamp = false;
       return box;
     }
+    const order = ++this.serial;
     box = {
-      key: JSON.stringify([hostId, agentId, stamp, ++this.serial]), hostId, agentId, stamps: new Set([stamp]), text, phase,
-      open: this.openByDefault, maximized: false, translate: this.autoHosts.has(hostId), suspended: false, controls: false, error: "", translations: new Map(), failures: new Map(), pending: new Set(), epoch: 0,
+      key: JSON.stringify([hostId, agentId, stamp, order]), hostId, agentId, stamps: new Set([stamp]), firstStamp: stamp, order, text, phase,
+      open: this.openByDefault, maximized: false, translate: false, suspended: false, controls: false, error: "", translations: new Map(), failures: new Map(), pending: new Set(), epoch: 0,
     };
     this.boxes.set(box.key, box);
-    // 자동 번역 중이면 생각 중인 새 상자를 펼친다(10-12) — 그리는 중에 만드는 새 상자라 알림 없이 처음 값으로 둔다
-    if (phase === "streaming" && this.autoHosts.has(hostId)) this.autoOpen(box);
+    if (this.autoHosts.has(hostId)) {
+      box.translate = this.isAutoBox(box);
+      // 맨 마지막 자리를 내준 상자는 자동 번역을 멈춘다 — 받은 번역이 있거나 받는 중이면 보이던 대로 두고, 없으면 원문(번역 단추가 보인다).
+      // 대화를 열 때 옛 상자가 먼저 그려져 잠깐 맨 마지막으로 잡혔던 것도 여기서 풀린다. 그리는 중이라 알림 없이 다음 그리기에 반영
+      if (box.translate) for (const other of this.boxes.values()) {
+        if (other === box || other.hostId !== hostId || other.agentId !== agentId || other.said || other.manual || !other.translate) continue;
+        if (!other.busy && ![...other.translations.values()].some((t) => typeof t === "string")) other.translate = false;
+      }
+      // 자동 번역 중이면 생각 중인 새 상자를 펼친다(10-12) — 그리는 중에 만드는 새 상자라 알림 없이 처음 값으로 둔다
+      if (phase === "streaming") this.autoOpen(box);
+    }
     return box;
+  }
+
+  /**
+   * 자동 번역 대상인가(10-17 리규형님 "맨 마지막 상자만 번역하면 됨") — 자동 번역이 켜진 호스트에서 그 대화의 맨 마지막 상자 하나.
+   * 맨 마지막 = 처음 생길 때의 생각 시각이 가장 늦은 상자(같으면 나중에 만든 것). 화면을 열거나 "모두 펼치기"를 눌러도 옛 상자는
+   * 번역을 보내지 않는다(그날 아침 PC 기록 — 화면이 열릴 때 1~2초에 수십 번씩 번역이 나갔다)
+   */
+  isAutoBox(box: ThinkingBoxState): boolean {
+    if (!this.autoHosts.has(box.hostId) || box.said) return false;
+    for (const other of this.boxes.values()) {
+      if (other === box || other.hostId !== box.hostId || other.agentId !== box.agentId || other.said) continue;
+      if (other.firstStamp > box.firstStamp || (other.firstStamp === box.firstStamp && other.order > box.order)) return false;
+    }
+    return true;
   }
 
   update(box: ThinkingBoxState, text: string, phase: Phase, stamp?: number): void {
@@ -315,8 +344,9 @@ export class ThinkingController {
     for (const box of this.boxes.values()) {
       if (box.hostId !== hostId || box.said) continue;
       box.original = false;
-      if (on) { box.translate = true; box.suspended = false; box.error = ""; if (box.phase === "streaming") this.autoOpen(box); }
-      else { box.translate = false; this.cancelTranslation(box); }
+      // 켜면 대화마다 맨 마지막 상자만 번역(10-17) — 다른 상자는 그대로 둔다(번역 단추로 켠 상자는 계속 번역)
+      if (on) { if (this.isAutoBox(box)) { box.translate = true; box.suspended = false; box.error = ""; if (box.phase === "streaming") this.autoOpen(box); } }
+      else { box.translate = false; box.manual = false; this.cancelTranslation(box); }
       if (this.run?.box === box) { this.run.strict = false; this.seek(this.run.index); }
       this.syncWatch(box);
       this.translateMore(box);
@@ -361,6 +391,7 @@ export class ThinkingController {
 
   toggleTranslation(box: ThinkingBoxState): void {
     box.translate = !box.translate;
+    box.manual = box.translate;
     box.suspended = false;
     box.error = "";
     // 번역을 켜면 원문 보기는 푼다(번역을 보겠다는 뜻). 끌 때 이미 보낸 번역은 버리지 않고 받아 둔다 — 다시 켤 때 그 문단을 또
@@ -401,6 +432,9 @@ export class ThinkingController {
     // 펼치는 순간 다시 부른다(toggleOpen·setAllOpen·expand·autoOpen). 읽는 중인 상자는 접혀 있어도 계속(번역을 기다려 읽는다).
     // 이미 보낸 번역은 비용이 나갔으니 접어도 받아 둔다
     if (!box.open && this.run?.box !== box) return;
+    // 자동 번역 중이면 맨 마지막 상자와 번역 단추로 켠 상자만 보낸다(10-17 리규형님 — 펼쳐서 번역이 시작돼도 맨 마지막만).
+    // 번역읽기로 읽는 중인 상자는 단추로 켠 것과 같다
+    if (this.autoHosts.has(box.hostId) && !box.manual && this.run?.box !== box && !this.isAutoBox(box)) return;
     const texts = [...new Set(splitParagraphs(boxText(box), boxPhase(box)).filter((p) => p.done && needsTranslation(p.src, lang) && !box.translations.has(p.src)).map((p) => p.src))].slice(0, 20);
     if (!texts.length) return;
     const epoch = box.epoch;

@@ -185,8 +185,9 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   const canTranslate = keys.translate && features.translate;
   const canRead = web && keys.tts && features.tts;
   // 자동 번역 중(10-12 리규형님 결정)이면 상자 단추는 원문 보기·읽기만, 꺼져 있으면 번역·읽기·번역읽기만. 자동 번역 중 읽기는
-  // 번역이 오기를 기다렸다가 번역으로 읽는다(원문 보기 중이면 원문) — 그래서 어느 쪽으로 읽든 읽는 중이면 읽기 단추가 켜진다
-  const autoTranslate = canTranslate && features.autoTranslate;
+  // 번역이 오기를 기다렸다가 번역으로 읽는다(원문 보기 중이면 원문) — 그래서 어느 쪽으로 읽든 읽는 중이면 읽기 단추가 켜진다.
+  // 10-17: 자동 번역은 대화마다 맨 마지막 상자만 — 옛 상자는 자동 번역이 꺼진 것과 같은 단추(번역은 눌러야 한다)
+  const autoTranslate = canTranslate && features.autoTranslate && controller.isAutoBox(box);
   const readStrict = autoTranslate && !original;
   const readActive = playback.active && (autoTranslate || !playback.strict);
   // 상자 안에서 글을 선택해 두고(한 글자라도) 누르면 그 문단, 그 글자부터 읽는다 — 선택이 없거나 이 상자 밖이면 처음부터(10-08).

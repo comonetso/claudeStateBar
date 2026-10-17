@@ -11,8 +11,9 @@ export const SHORTCUTS: { id: ShortcutId; defaultCombo: string; ctrlOptional?: b
   { id: "projects-toggle", defaultCombo: "Ctrl+Alt+Shift+KeyB" },
   { id: "pane-max", defaultCombo: "Ctrl+Alt+Shift+KeyF" },
   { id: "activity-open", defaultCombo: "Ctrl+Alt+Shift+KeyW" },
-  { id: "read-slower", defaultCombo: "Shift+Comma", ctrlOptional: true },
-  { id: "read-faster", defaultCombo: "Shift+Period", ctrlOptional: true },
+  // 10-17 리규형님: 기본 < > 는 읽는 동안 입력창에 < > 를 못 친다 → Ctrl+← → (Ctrl 없이 받는 규칙도 뺐다 — 방향키만 누르면 커서가 안 움직인다)
+  { id: "read-slower", defaultCombo: "Ctrl+ArrowLeft" },
+  { id: "read-faster", defaultCombo: "Ctrl+ArrowRight" },
 ];
 
 /** 바꿀 수 없는 입력창 목록 키 — 다른 단축키로 고르면 입력창에서 목록 쓰기가 안 먹으니 막는다(client/web.ts listenComposer) */

@@ -78,8 +78,8 @@ import { accountSwitch, accountsWait, personalLoginKeep } from "./shared/account
 import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCode, waitLogin } from "./server/claudeLogin";
 import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
 import { keepPersonalLogin, teamUsageSources } from "./server/teamUsage";
-import { createPush, registerPushToken } from "./server/push";
-import { pushCompactWait, pushRegister } from "./shared/push";
+import { ackPush, createPush, registerPushToken } from "./server/push";
+import { pushCompactWait, pushReceived, pushRegister } from "./shared/push";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(soundSettings);
@@ -319,6 +319,8 @@ export default function contribute(server: PluginServerContext) {
   }
   // 폰 푸시(10-15 — 질문지·압축 준비만, 모든 대화). 폰 앱이 준 토큰을 화면이 맡기고, 이 데몬 대화의 일만 보낸다. 직원 데몬은 안 한다
   server.handle(pushRegister, async ({ token }) => registerPushToken(token));
+  // 폰 앱의 "받았다"(10-17) — 이 데몬이 보낸 알림이면 기록한다(그 소리는 PC 에서 안 울림). 직원 데몬은 보내지 않으니 늘 ok:false
+  server.handle(pushReceived, async ({ eventId, receivedAt }) => (teamDaemon ? { ok: false } : ackPush(eventId, receivedAt)));
   if (teamDaemon) server.handle(pushCompactWait, async () => ({ rev: 0, agentIds: [] }));
   else {
     const push = createPush();

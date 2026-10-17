@@ -406,16 +406,36 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
     if (permGone) { sv = { ...sv, notified: null }; void Promise.resolve(push?.resolve(id)).catch(() => {}); }
     // 멈춤이 풀렸으면 처음 본 시각을 지운다 — 다음 멈춤은 다시 30초를 센다
     if (sv.stopSeen && !["settling", "would_wake", "waking", "retry_wait"].includes(d.status)) sv = { ...sv, stopSeen: null };
-    // 질문 칸 — 장부를 읽었고 보관되지 않았을 때만, 보낸 질문(sv.asked)과 달라질 때만 올리거나 지운다(상태 칸의 notified 와 같은 방식)
+    // 질문 칸 — 장부를 읽었고 보관되지 않았을 때만.
+    // 10-17 리규형님 "말하기 전까지 첫 알림만": 질문 알림이 폰에 떠 있는 동안은 리규형님이 그 대화에 말하기 전까지 다시 울리지 않는다
+    // (Mesa 가 답을 기다리며 질문을 고쳐 쓰고 지웠다 다시 써서 16:25~17:49 에 8번 울렸다). 질문이 바뀌거나 지워져도 그대로 두고,
+    // 사람 말이 들어오면 떠 있던 알림을 지운다 — 그때 이미 적혀 있던 질문은 다시 알리지 않고, 그 뒤 새로 적힌 질문부터 알린다.
+    // 사람 말 = 실행기 관측의 마지막 입력 종류가 human(실행기 세대 runGen 과 입력 번호로 가린다 — 번호는 실행기가 다시 뜨면 0 부터).
+    // 관측이 없는 대화는 예전처럼(질문이 바뀌면 다시 알리고 지워지면 지운다)
     if (!w.error && d.status !== "archived") {
-      const ask = askNotice(w.value ?? null);
-      if (ask.raise && sv.asked?.key !== ask.raise.key) {
-        sv = { ...sv, asked: { key: ask.raise.key, at: new Date(now()).toISOString() } };
-        raise(agentInfo, ask.raise.key, ask.raise.title, ask.raise.body, "ask");
-      } else if (ask.resolve && sv.asked) {
-        sv = { ...sv, asked: null };
-        void Promise.resolve(push?.resolve(id, "ask")).catch(() => {});
-      }
+      const q = askNotice(w.value ?? null).raise ?? null;
+      const at = new Date(now()).toISOString();
+      const humanNow = o?.input?.kind === "human" && o.runGen && Number.isSafeInteger(o.input.seq) ? `${o.runGen}#${o.input.seq}` : null;
+      if (humanNow) sv = { ...sv, human: humanNow };
+      let asked = sv.asked ?? null;
+      // 10-17 전 기록(떠 있는 알림) — 지금까지 사람 말이 없던 것으로 본다(배포하는 순간 떠 있던 알림이 지워지지 않게)
+      if (asked && !("human" in asked)) asked = { ...asked, sent: true, human: sv.human ?? null };
+      const spoke = !!asked && (sv.human ?? null) !== asked.human;
+      const send = () => {
+        sv = { ...sv, asked: { key: q.key, at, sent: true, human: sv.human ?? null } };
+        raise(agentInfo, q.key, q.title, q.body, "ask");
+      };
+      const clear = () => void Promise.resolve(push?.resolve(id, "ask")).catch(() => {});
+      if (!o) {
+        if (q && asked?.key !== q.key) send();
+        else if (!q && asked) { sv = { ...sv, asked: null }; if (asked.sent) clear(); }
+      } else if (asked?.sent && !spoke) {
+        if (asked !== sv.asked) sv = { ...sv, asked };
+      } else if (asked?.sent) {
+        clear();
+        sv = { ...sv, asked: q ? { key: q.key, at, sent: false, human: sv.human ?? null } : null };
+      } else if (q && q.key !== asked?.key) send();
+      else if (!q && asked) sv = { ...sv, asked: null };
     }
     const logKey = `${d.status}|${d.reason}`;
     const fresh = sv.lastLogged !== logKey;

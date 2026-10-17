@@ -10,6 +10,14 @@ export const pushRegister = defineRpc({
   output: z.object({ ok: z.boolean(), enabled: z.boolean() }),
 });
 
+// 폰 앱이 알림을 받았다(10-17 — 폰 앱 대화와 peer_mail 91f222d6 으로 맞춤: 앱이 웹에 "paseoshell:push-received" detail {eventId, kind, receivedAt}).
+// 화면 플러그인이 자기 데몬에 전한다 — 그 알림을 보낸 데몬만 ok(다른 데몬은 무시). 받았으면 그 소리는 PC 에서 울리지 않는다(server/push.ts)
+export const pushReceived = defineRpc({
+  name: "push.received",
+  input: z.object({ eventId: z.string().min(1).max(300), kind: z.string().max(20).optional(), receivedAt: z.number().optional() }),
+  output: z.object({ ok: z.boolean() }),
+});
+
 // 프로젝트 목록의 압축 준비 아이콘(10-15 리규형님 "질문지 올라올 때 ? 넣듯이") — 이 데몬에서 압축 명령어를 기다리는 대화.
 // 바뀌거나 25초가 지나면 답한다(rev 가 같으면 기다린다)
 export const pushCompactWait = defineRpc({

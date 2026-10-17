@@ -4,6 +4,7 @@ import type { SoundKind } from "../shared/sound";
 import { hostIdentity } from "./layoutSync";
 import { lastTurnCheckpointReady, lastTurnCommandOnly } from "./chime/lastTurn";
 import { SoundJournal, soundDataFile } from "./soundJournal";
+import { phoneTook } from "./push";
 
 // 서버 0.10.3 의 플러그인 묶기(paseo-plugin-server-runtime-boundary)는 @getpaseo/client 를 직접 가져오면 빌드를 거절한다
 // (10-08 서버 3대 배포 실패) — 늘 통과하던 서버 SDK 문맥 타입에서 꺼낸다
@@ -11,7 +12,7 @@ type PaseoApi = PluginHandlerContext["paseo"];
 type PaseoAgent = NonNullable<NonNullable<Awaited<ReturnType<ReturnType<PaseoApi["agents"]["ref"]>["refresh"]>>>["agent"]>;
 type Config = { warningPercent: number; dangerPercent: number };
 type Cycle = { key: string; cycle: number; high: boolean };
-export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")) {
+export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl"), tookByPhone: typeof phoneTook = phoneTook) {
   const cycles = new Map<string, Cycle>();
   const skipped = new Set<string>();
   const journal = new SoundJournal<Cycle | { type: "skip"; eventId: string }>(file, (value) => {
@@ -107,14 +108,21 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
         return { ok: true };
       });
     },
-    validate(event: RoutedSoundEvent, cfg: Config, paseo: PaseoApi) {
-      return journal.serial(async () => {
+    async validate(event: RoutedSoundEvent, cfg: Config, paseo: PaseoApi) {
+      const r = await journal.serial(async () => {
         const a = await fresh(paseo, event.agentId); if (!a) return { valid: false };
         const { serverId } = await hostIdentity();
         const expected = JSON.stringify(["sound-v2", serverId, event.kind === "workflow" ? "workflow" : incarnation(a), event.kind, event.nativeId]);
         if (skipped.has(event.eventId) || event.eventId !== expected || serverId !== event.originHostId) return { valid: false };
         return { valid: await valid(a, event.kind, event.nativeId, cfg, await sample(a, cfg), paseo) };
       });
+      // 폰 알림을 보냈고 폰 앱이 받았다고 답했으면 PC 는 울리지 않는다(10-17 리규형님 — 질문지·압축 준비만, 답은 3초까지 기다림 push.ts phoneTook).
+      // 기다림은 순서 대기열 밖에서 — 안에서 기다리면 다른 소리 확인까지 밀린다
+      if (r.valid && (event.kind === "question" || event.kind === "compact") && await tookByPhone(event.agentId, event.kind, event.nativeId)) {
+        console.log(`[sound-v2] ${event.kind} ${event.agentId.slice(0, 8)}: phone received the push — PC stays quiet`);
+        return { valid: false };
+      }
+      return r;
     },
   };
 }

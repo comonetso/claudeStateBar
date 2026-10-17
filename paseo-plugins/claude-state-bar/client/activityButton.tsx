@@ -30,6 +30,13 @@ import { latestCounts, requestTab, totalOf, useCounts } from "./useCounts";
 const OPENERS_KEY = "__claudeStateBar_activityOpeners_v1";
 const openers = (): Map<string, () => void> =>
   ((globalThis as Record<string, unknown>)[OPENERS_KEY] ??= new Map<string, () => void>()) as Map<string, () => void>;
+/** 그 작업 공간의 작업 현황을 머리줄 단추처럼 연다(폰 알약 — phonePills.tsx). 맡은 인스턴스가 없으면 false */
+export function openActivityFor(workspaceId: string): boolean {
+  const open = openers().get(workspaceId);
+  if (!open) return false;
+  open();
+  return true;
+}
 /** 지금 보는 작업 공간의 작업 현황을 단추처럼 연다. 맡은 인스턴스가 없으면 false */
 export function openActivityHere(): boolean {
   const here = currentWorkspaceFromUrl();

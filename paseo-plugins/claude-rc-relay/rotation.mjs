@@ -1,6 +1,6 @@
 // 리규형님 전용 팀 계정 자동 전환. 공개 플러그인은 정책을 알지 않는다.
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,22 @@ import { sameWindow } from "./workstate.mjs";
 export const TEAM_PROVIDER_IDS = ["claude-yeogiaen", "claude-hrg"];
 const isTeam = (p, ids = TEAM_PROVIDER_IDS) => ids.includes(p?.id) && isTeamProvider(p);
 const validPct = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+/**
+ * 개인 계정 포함(10-17 리규형님 "이번 주는 개인 계정도 포함" — 23일 만료 리셋권을 쓰려고 이번 주 개인 할당량을 먼저 다 쓴다).
+ * 스위치 = <Paseo 홈>/claude-rc-relay-personal.json 이 있으면 켜짐(내용은 보지 않는다). 판정마다 다시 보므로 지우면 바로 팀끼리만으로 돌아간다 —
+ * 끄는 때는 리규형님이 정한다("말씀하실 때까지"). 켜져 있으면: 넘길 곳은 개인을 먼저 · 개인으로 연 대화도 대상 · 팀을 쓰는 중 쉬는 틈에
+ * 개인이 85% 미만이면 개인으로 돌아간다(개인을 85% 이상·한도로 본 뒤엔 그 리셋 시각까지 다시 재지 않는다). 개인에서 넘기는 규칙은 팀과 같다
+ */
+export const PERSONAL_PROVIDER_ID = "claude";
+export const isPersonal = (p) => p?.id === PERSONAL_PROVIDER_ID && !isTeamProvider(p);
+export const personalSwitchOn = (file) => !!file && existsSync(file);
+/**
+ * 스위치 파일을 마지막으로 쓴 시각 — 리셋권 알림(10-17 리규형님 "리셋권을 쓸 타이밍은 내가 정하고 알려 줄게"). 리규형님이 리셋권을 썼다고 하면
+ * Claude 가 네 대의 스위치 파일을 다시 쓴다 → 개인을 "풀리는 시각까지 기다림"으로 기억한 실행기가 그 기억을 버리고 다음 쉬는 틈에 다시 잰다
+ */
+export function personalSwitchStamp(file) {
+  try { return file ? statSync(file).mtimeMs : null; } catch { return null; }
+}
 export function fiveHour(info, now = Date.now() / 1000) {
   const w = info?.unifiedWindows?.five_hour ?? (info?.rateLimitType === "five_hour" ? info : null);
   return w && validPct(w.utilization) && typeof w.resetsAt === "number" && Number.isFinite(w.resetsAt) && w.resetsAt > now
@@ -74,12 +90,13 @@ export function handoffNotice(info) {
   const why = info.reason === "limit" ? (!info.limitType || info.limitType === "five_hour" ? "5시간 한도 거절"
     : /seven_day|week/i.test(info.limitType) ? "주간 한도 거절" : `한도 거절(${info.limitType})`)
     : info.reason === "force" ? `5시간 사용률 ${pct || "99%"} — 작업이 돌고 있어도 강제로`
+    : info.reason === "back" ? "개인 계정이 다시 쓸 수 있어 개인 먼저 · 쉬는 틈"
     : `5시간 사용률 ${pct ? pct + " · " : ""}쉬는 틈`;
   const when = info.at ? new Date(info.at).toLocaleTimeString("en-GB", { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit", hour12: false }) : "";
   const list = (Array.isArray(info.tasks) ? info.tasks : []).map((t) =>
     `- ${TASK_NAMES[t?.type] ?? t?.type ?? "작업"}${t?.subagent ? `(${t.subagent})` : ""} · ${String(t?.description ?? "").slice(0, 200)}`);
   return [
-    `[rotation] 팀 계정 자동 전환으로 이 대화의 Claude 가 다시 떴다 — ${info.fromLabel ?? info.from} → ${info.toLabel ?? info.to}(${why}${when ? `, ${when}` : ""}). 사람 말이 아니라 실행기(claude-rc-relay)가 다음 말 앞에 한 번 붙인 안내다.`,
+    `[rotation] 계정 자동 전환으로 이 대화의 Claude 가 다시 떴다 — ${info.fromLabel ?? info.from} → ${info.toLabel ?? info.to}(${why}${when ? `, ${when}` : ""}). 사람 말이 아니라 실행기(claude-rc-relay)가 다음 말 앞에 한 번 붙인 안내다.`,
     list.length ? `꺼지기 직전 살아 있던 백그라운드 작업이 모두 끝났다(종류 · 설명):\n${list.join("\n")}` : "꺼지기 직전 살아 있던 백그라운드 작업은 없었다.",
     list.length
       ? "할 일: 아래 말에 답하기 전에, 대화 기록에서 위 작업을 띄운 명령을 찾아 아직 필요한 것만 다시 건다. 서브에이전트·워크플로우는 끝나지 못했으니 결과 파일·중간 저장을 확인하고 이어서 돌린다. 다시 건 것과 안 건 것을 리규형님께 한 줄씩 알린다."
@@ -92,7 +109,7 @@ export function handoffNotice(info) {
  * 파이프가 닫히면 — 넘김 파일이 아직 남아 있고(아무도 다시 띄우지 않음) Paseo 에서 그 대화가 실행 중이 아닐 때만 — 이 말을 넣는다.
  * 그 말에 Paseo 가 새 공급자로 실행기를 다시 띄우고, 실행기가 넘김 안내를 이 말 앞에 붙인다(withNotice)
  */
-export const RESUME_PROMPT = "[rotation] 자동 이어 달리기 — 사람 말이 아니라, 실행기(claude-rc-relay)가 팀 공급자를 넘긴 뒤 다음 말을 기다리지 않도록 넣은 말이다. 바로 위 [rotation] 안내대로 끊긴 작업을 확인하고 하던 일을 이어서 한다. 리규형님께는 공급자가 바뀐 것과 다시 건 작업·안 건 작업을 한 줄씩 알린다.";
+export const RESUME_PROMPT = "[rotation] 자동 이어 달리기 — 사람 말이 아니라, 실행기(claude-rc-relay)가 공급자를 넘긴 뒤 다음 말을 기다리지 않도록 넣은 말이다. 바로 위 [rotation] 안내대로 끊긴 작업을 확인하고 하던 일을 이어서 한다. 리규형님께는 공급자가 바뀐 것과 다시 건 작업·안 건 작업을 한 줄씩 알린다.";
 /** Paseo 명령 — PC 는 데스크톱 앱 안 resources\bin\paseo.cmd, 서버는 node 옆(nvm bin)의 paseo, 없으면 PATH. 시험은 CLAUDE_ROTATION_PASEO_CLI */
 export function paseoCli(env = process.env) {
   if (env.CLAUDE_ROTATION_PASEO_CLI) return env.CLAUDE_ROTATION_PASEO_CLI;
@@ -175,12 +192,13 @@ export function readRotationTest(file, agentId) {
  * 대상은 지금 쓰는 공급자가 팀인 대화다 — 처음 연 공급자(base)는 보지 않는다(10-15 리규형님: 개인으로 열고 손으로 팀으로 옮긴 Mesa 도 대상). base 는 기록용.
  * 99% 강제 넘김(forced)은 한도 넘김과 같이 쉬는 틈을 보지 않고, 넘어갈 곳도 같은 기준(95% 미만)이다
  */
-export function chooseTarget({ providers, base, current, pct, limited, forced = false, forcePct = FORCE_PCT, idle, usage, teamIds = TEAM_PROVIDER_IDS }) {
-  const team = (id) => isTeam(providers.find((p) => p.id === id), teamIds);
+export function chooseTarget({ providers, base, current, pct, limited, forced = false, forcePct = FORCE_PCT, idle, usage, teamIds = TEAM_PROVIDER_IDS, personal = false }) {
+  // personal = 개인 계정 포함 스위치(10-17) — 개인도 대상·후보이고, 후보 중 개인을 먼저 고른다
+  const inPool = (p) => isTeam(p, teamIds) || (personal && isPersonal(p));
   const urgent = limited || (forced && validPct(pct) && pct >= forcePct);
-  if (!team(current) || (!urgent && (!idle || !validPct(pct) || pct < 85))) return null;
-  return providers.filter((p) => p.id !== current && isTeam(p, teamIds) && validPct(usage[p.id]) && usage[p.id] < (urgent ? 95 : 85))
-    .sort((a, b) => usage[a.id] - usage[b.id] || a.id.localeCompare(b.id))[0]?.id ?? null;
+  if (!inPool(providers.find((p) => p.id === current)) || (!urgent && (!idle || !validPct(pct) || pct < 85))) return null;
+  return providers.filter((p) => p.id !== current && inPool(p) && validPct(usage[p.id]) && usage[p.id] < (urgent ? 95 : 85))
+    .sort((a, b) => (personal ? Number(isPersonal(b)) - Number(isPersonal(a)) : 0) || usage[a.id] - usage[b.id] || a.id.localeCompare(b.id))[0]?.id ?? null;
 }
 
 /** 파이프 원본은 호출자가 그대로 전달한다. 여기서는 UTF-8 줄의 복사본만 읽는다. */
@@ -296,13 +314,22 @@ function sevenDay(info) {
  */
 export function createRotation({ real, env, initialEnv, agentId, log = () => {}, enabled = true,
   providers: getProviders = readProviders, entry: getEntry = accountEntry, write = writeAccount, probe = probeUsage, handoff = () => {}, testFile = null,
-  runGen = `${process.pid}-${Date.now()}`, record = null, onTransition = null, teamIds = TEAM_PROVIDER_IDS }) {
+  runGen = `${process.pid}-${Date.now()}`, record = null, onTransition = null, teamIds = TEAM_PROVIDER_IDS, personalFile = null }) {
   const providers = getProviders(), original = getEntry(agentId);
   const base = original?.base ?? providerForEnv(initialEnv, providers);
   const current = original?.to ?? providerForEnv(env, providers);
-  const active = enabled && !!agentId && env.CLAUDE_TEAM_ROTATION !== "0" && !env.TEAM_UID
-    && isTeam(providers.find((p) => p.id === current), teamIds)
+  const currentProvider = providers.find((p) => p.id === current);
+  const eligible = enabled && !!agentId && env.CLAUDE_TEAM_ROTATION !== "0" && !env.TEAM_UID
     && providerForEnv(env, providers) === current;
+  // 개인 포함 스위치는 판정마다 다시 본다 — 떠 있는 실행기도 켜고 끄는 즉시 따른다(10-17)
+  const personal = () => personalSwitchOn(personalFile);
+  const isActive = () => eligible && (isTeam(currentProvider, teamIds) || (isPersonal(currentProvider) && personal()));
+  // 개인으로 돌아가기(10-17) — 개인을 다시 재 볼 시각(초). 0 = 아직 안 재 봄(첫 쉬는 틈에 잰다). 85% 이상·한도면 그 리셋 시각,
+  // 일시 오류면 RETRY_SEC 뒤. 이 실행기 안에서만 기억한다(새로 뜬 실행기는 첫 쉬는 틈에 한 번 다시 잰다)
+  let personalNext = 0;
+  // personalNext 를 정할 때의 스위치 파일 시각 — 파일이 다시 쓰이면(리셋권 알림) 기다림을 버린다
+  let personalSeen = null;
+  const personalWaiting = () => nowSec() < personalNext && personalSwitchStamp(personalFile) === personalSeen;
   let stopped = false, switched = false, busy = false, queued = false, epoch = 0;
   let mainDone = false, background = null, window = null, limited = false, limitReset = 0, limitType = null;
   let controller = null, tasks = [], limitTasks = null, loggedStep = 0, loggedWindow = null;
@@ -321,7 +348,7 @@ export function createRotation({ real, env, initialEnv, agentId, log = () => {},
   const seats = {};
   const startedAtMs = Number(String(runGen).split("-")[1]) || Date.now();
   const win = () => (window && window.resetsAt > nowSec() ? window : null);
-  const snapshot = () => ({ v: 1, agentId, runGen, pid: process.pid, startedAtMs, updatedAt: iso(), provider: current, base, active,
+  const snapshot = () => ({ v: 1, agentId, runGen, pid: process.pid, startedAtMs, updatedAt: iso(), provider: current, base, active: isActive(),
     input: { seq: inputSeq, at: inputAt, kind: inputKind }, main: { done: mainDone, at: mainAt },
     background: { waited: background, total: bgTotal, at: bgAt }, interrupt,
     limited, limitReset: limited ? limitReset : null, limitType: limited ? limitType : null,
@@ -351,27 +378,31 @@ export function createRotation({ real, env, initialEnv, agentId, log = () => {},
   };
   const sameEntry = () => JSON.stringify(getEntry(agentId)) === JSON.stringify(original);
   const idle = () => mainDone && background === 0;
-  const reason = () => limited ? "limit" : win()?.pct >= forcePct ? "force" : idle() && win()?.pct >= 85 ? "idle" : null;
+  // back = 개인 포함 스위치가 켜져 있고 팀을 쓰는 중, 쉬는 틈에 개인을 다시 잴 시각이 됐다(10-17 "개인 먼저")
+  // anyTime = 다시 잴 시각은 보지 않는다 — 판정 도중 그 시각을 고친 뒤에도 같은 판정이 유효한지 볼 때(valid)
+  const reason = (anyTime = false) => limited ? "limit" : win()?.pct >= forcePct ? "force" : idle() && win()?.pct >= 85 ? "idle"
+    : idle() && personal() && isTeam(currentProvider, teamIds) && (anyTime || !personalWaiting()) ? "back" : null;
   // 쉬는 틈 넘김만 탐침 동안 새 신호가 오면 다시 판정한다(쉬는 틈이 깨졌을 수 있다). 한도·99% 강제는 이유가 그대로면 유효 —
   // 10-16 Mesa: 한도 거절 직후 워크플로우 실패 신호가 이어져 첫 판정이 "stay" 로 버려지고 탐침을 한 번 더 했다(5초)
-  const valid = (generation, why) => !stopped && !switched && (why !== "idle" || epoch === generation) && sameEntry()
-    && reason() === why && (why === "limit" ? limitReset : window?.resetsAt) > nowSec();
+  const valid = (generation, why) => !stopped && !switched && (why !== "idle" && why !== "back" || epoch === generation) && sameEntry()
+    && reason(true) === why && (why === "back" || (why === "limit" ? limitReset : window?.resetsAt) > nowSec());
   /** 결과(result) 직후 넘길 이유가 없으면 남긴다 — 09:51 처럼 85% 바로 아래에서 끝난 턴을 실행기 기록으로 볼 수 있게 */
   const noteResult = () => {
     const w = win();
-    if (!active || switched || limited || !w || reason()) return;
+    if (!isActive() || switched || limited || !w || reason()) return;
     if (w.pct >= 85) decide({ reason: "tasks_running", window: w.resetsAt, pct: w.pct, waited: background });
     else decide({ reason: "below_threshold", window: w.resetsAt, pct: w.pct });
   };
   const check = async () => {
     queued = false;
-    if (!active || stopped || switched || busy) return;
+    if (!isActive() || stopped || switched || busy) return;
     test = readRotationTest(testFile, agentId);
     forcePct = validPct(test?.forcePct) ? test.forcePct : FORCE_PCT;
     const why = reason();
     if (!why) return;
     if (!sameWindow(window?.resetsAt, holdWindow)) { holdWindow = window?.resetsAt ?? null; holdUntil = 0; retries = 0; }
-    if (why !== "limit" && !test && nowSec() < holdUntil) return;
+    // 개인으로 돌아가기(back)는 holdUntil(팀 넘길 곳이 없을 때 쉬는 시각)이 아니라 personalNext 로 쉰다
+    if (why !== "limit" && why !== "back" && !test && nowSec() < holdUntil) return;
     const generation = epoch;
     busy = true; controller = new AbortController();
     const att = { attemptId: `${runGen}-${++attempts}`, why, window: window?.resetsAt ?? (limitReset || null), pct: win()?.pct ?? null, candidates: [] };
@@ -381,7 +412,10 @@ export function createRotation({ real, env, initialEnv, agentId, log = () => {},
       const nowProviders = getProviders();
       const usage = {}, windows = {}, resets = [];
       let temporary = false, auth = false;
-      for (const candidate of nowProviders.filter((p) => p.id !== current && isTeam(p, teamIds))) {
+      const personalOn = personal();
+      // 돌아가기는 개인만 잰다. 그 밖엔 팀과 (스위치가 켜져 있으면) 개인을 잰다
+      const pool = (p) => why === "back" ? isPersonal(p) : isTeam(p, teamIds) || (personalOn && isPersonal(p));
+      for (const candidate of nowProviders.filter((p) => p.id !== current && pool(p))) {
         if (!valid(generation, why)) return decide({ ...att, reason: "invalidated" });
         const fake = test?.usage && validPct(test.usage[candidate.id]) ? { pct: test.usage[candidate.id], resetsAt: window?.resetsAt } : null;
         log(`rotation probe provider=${candidate.id}${fake ? " (test)" : ""}`);
@@ -394,9 +428,22 @@ export function createRotation({ real, env, initialEnv, agentId, log = () => {},
         if (result.status === "auth") auth = true;
         // 후보 하나가 실패해도 다음 후보를 본다(10-16 무중단 — 예전엔 첫 실패에서 판정 전체를 버렸다)
         if (result.status === "ok" && validPct(result.pct) && result.resetsAt > nowSec()) { usage[candidate.id] = result.pct; windows[candidate.id] = result; }
+        // 개인을 쟀으면 다음에 다시 잴 시각을 남긴다 — 85% 미만이면 바로(0), 85% 이상·한도면 그 리셋 시각, 그 밖엔 RETRY_SEC 뒤
+        if (isPersonal(candidate)) {
+          personalNext = usage[candidate.id] !== undefined ? (usage[candidate.id] < 85 ? 0 : result.resetsAt)
+            : result.status === "limit" && result.resetsAt > nowSec() ? result.resetsAt : nowSec() + RETRY_SEC;
+          personalSeen = personalSwitchStamp(personalFile);
+        }
       }
       if (!valid(generation, why)) return decide({ ...att, reason: "invalidated" });
-      const to = chooseTarget({ providers: nowProviders, base, current, pct: win()?.pct, limited: why === "limit", forced: why === "force", forcePct, idle: idle(), usage, teamIds });
+      const to = why === "back"
+        ? (nowProviders.find((p) => isPersonal(p) && validPct(usage[p.id]) && usage[p.id] < 85)?.id ?? null)
+        : chooseTarget({ providers: nowProviders, base, current, pct: win()?.pct, limited: why === "limit", forced: why === "force", forcePct, idle: idle(), usage, teamIds, personal: personalOn });
+      if (!to && why === "back") {
+        decide({ ...att, reason: "personal_wait", nextAt: personalNext || null });
+        log(`rotation stay provider=${current} — personal not ready${personalNext ? ` until ${new Date(personalNext * 1000).toISOString()}` : ""}`);
+        return;
+      }
       if (!to) {
         // 넘길 곳이 없다 — 다시 볼 시각을 남긴다(아무도 다시 안 보는 일이 없게)
         const known = resets.length ? Math.min(...resets) : 0;
@@ -444,7 +491,7 @@ export function createRotation({ real, env, initialEnv, agentId, log = () => {},
     }
   };
   const schedule = () => {
-    if (!active || queued || stopped || switched) return;
+    if (queued || stopped || switched || !isActive()) return;
     queued = true;
     setImmediate(() => void check());
   };
@@ -502,7 +549,7 @@ export function createRotation({ real, env, initialEnv, agentId, log = () => {},
     },
     stop() { stopped = true; controller?.abort(); },
     // 테스트도 같은 판정을 사용한다.
-    state: () => ({ base, current, active, idle: idle(), switched, transition }),
+    state: () => ({ base, current, active: isActive(), idle: idle(), switched, transition, personalNext }),
     snapshot,
     /** 실행기가 이행 파일에 덧붙일 때(kicker pid 등) — 같은 이행의 다음 단계만 */
     updateTransition(patch) { if (transition) setTransition({ ...transition, ...patch }); },

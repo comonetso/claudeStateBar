@@ -111,10 +111,11 @@ export async function registerPushToken(token: string): Promise<{ ok: boolean; e
   return { ok: true, enabled };
 }
 
-async function send(message: Message): Promise<void> {
+/** 보낸 폰 수(Google 이 받은 수). 키·토큰이 없으면 0 */
+async function send(message: Message): Promise<number> {
   const key = await readKey();
   const list = await loadTokens();
-  if (!key || !list.length) return;
+  if (!key || !list.length) return 0;
   const bearer = await accessToken(key);
   const data: Record<string, string> = { ...message };
   const gone: string[] = [];
@@ -143,6 +144,67 @@ async function send(message: Message): Promise<void> {
   }
   if (gone.length) await saveTokens((await loadTokens()).filter((t) => !gone.includes(t.token)));
   log(`${message.kind} ${message.eventId}: sent ${sent}/${list.length}${gone.length ? `, dropped ${gone.length}` : ""}`);
+  return sent;
+}
+
+// ── 폰이 받았다(10-17 리규형님 — "FCM 으로 보냈으면 원래 자리에서 소리 내지 않기 · 전송이 실패한 경우만 원래 자리에서") ──
+// 성공 기준 = 폰 앱이 "받았다"고 답한 것(버튼 답 — Google 이 받기만 한 건 아님). 앱은 알림을 받는 즉시 웹 화면에 paseoshell:push-received 를
+// 보내고(폰 앱 대화와 peer_mail 91f222d6 으로 맞춤), 화면 플러그인이 이 데몬에 push.received 로 알린다(ackPush).
+// PC 소리는 재생 직전 확인(soundEvents validate)에서 phoneTook 으로 묻는다 — 보낸 뒤 PHONE_ACK_WAIT_MS 안에 답이 오면 PC 는 울리지 않는다.
+// 앱이 꺼져 있다가 깨어난 경우는 웹 화면이 없어 답을 못 보낸다 → PC 도 울린다(폰 앱 대화 설명, 리규형님이 고른 "받았다고 답해야 성공")
+/** 폰 답을 기다리는 시간(리규형님 10-17 버튼 "3초" — 10-16 실기에서 폰 도착은 1초 안쪽이었다) */
+export const PHONE_ACK_WAIT_MS = 3000;
+type Receipt = { agentId: string; kind: "question" | "compact"; sending: Promise<number>; sent: number | null; sentAt: number; ackedAt: number | null; waiters: Set<() => void> };
+const receipts = new Map<string, Receipt>();
+// 기록은 알림마다 하나 — 오래된 것부터 버린다(소리 확인은 알림 뒤 몇 초 안에 끝난다)
+const RECEIPTS_KEEP = 200;
+
+/** 보낸 알림 기록(시험도 이것으로 넣는다 — docs tests-261017/push_receipt_test.mjs) */
+export function trackReceipt(message: Message, sending: Promise<number>): void {
+  if (message.kind === "resolved") return;
+  const r: Receipt = { agentId: message.agentId, kind: message.kind, sending, sent: null, sentAt: 0, ackedAt: null, waiters: new Set() };
+  receipts.set(message.eventId, r);
+  while (receipts.size > RECEIPTS_KEEP) receipts.delete(receipts.keys().next().value!);
+  void sending.then((n) => { r.sent = n; r.sentAt = Date.now(); }, () => { r.sent = 0; r.sentAt = Date.now(); });
+}
+
+/** 화면 플러그인이 전한 폰 앱의 "받았다"(push.received). 이 데몬이 보낸 알림이 아니면 무시 */
+export function ackPush(eventId: string, receivedAt?: number): { ok: boolean } {
+  const r = receipts.get(eventId);
+  if (!r) return { ok: false };
+  if (r.ackedAt === null) {
+    r.ackedAt = Date.now();
+    log(`${r.kind} ${eventId}: phone received${r.sentAt ? ` ${r.ackedAt - r.sentAt}ms after send` : ""}${receivedAt ? ` (phone clock ${receivedAt})` : ""}`);
+    for (const wake of [...r.waiters]) wake();
+  }
+  return { ok: true };
+}
+
+/** 이 소리의 폰 알림을 폰이 받았는가 — 보내는 중이면 끝날 때까지, 보냈으면 PHONE_ACK_WAIT_MS 까지 기다린다. 안 보냈거나 못 보냈으면 바로 false */
+export async function phoneTook(agentId: string, kind: "question" | "compact", nativeId: string): Promise<boolean> {
+  let r: Receipt | undefined;
+  if (kind === "question") r = receipts.get(`q:${agentId}:${nativeId}`);
+  else {
+    // 압축 준비 소리의 번호는 [마지막 사람 말 시각, 차례 번호] — 차례 번호가 같은 알림을 먼저, 없으면 그 대화의 마지막 압축 준비 알림
+    let turnId: unknown = null;
+    try { turnId = (JSON.parse(nativeId) as unknown[])[1]; } catch { /* 형식이 다르면 대화로만 찾는다 */ }
+    r = typeof turnId === "string" ? receipts.get(`c:${agentId}:${turnId}`) : undefined;
+    if (!r) for (const x of receipts.values()) if (x.agentId === agentId && x.kind === "compact") r = x;
+  }
+  if (!r) return false;
+  if (r.ackedAt !== null) return true;
+  const sent = await r.sending.catch(() => 0);
+  if (!sent) return false;
+  if (r.ackedAt !== null) return true;
+  const left = r.sentAt + PHONE_ACK_WAIT_MS - Date.now();
+  if (left > 0) {
+    await new Promise<void>((done) => {
+      const finish = () => { clearTimeout(timer); r!.waiters.delete(finish); done(); };
+      const timer = setTimeout(finish, left);
+      r!.waiters.add(finish);
+    });
+  }
+  return r.ackedAt !== null;
 }
 
 /** 질문 글 — AskUserQuestion 이면 첫 질문, 여럿이면 개수를 붙인다 */
@@ -207,7 +269,13 @@ export function createPush() {
     return { serverId: id, workspaceId, agentId: agent.id, name: name || basename(agent.cwd) || agent.cwd, path: workspaceId ? `/h/${id}/workspace/${workspaceId}` : `/h/${id}` };
   };
 
-  const post = (message: Message) => void send(message).catch((error: unknown) => log(`${message.kind} ${message.eventId}: ${String(error)}`));
+  const post = (message: Message) => {
+    const sending = send(message).catch((error: unknown) => {
+      log(`${message.kind} ${message.eventId}: ${String(error)}`);
+      return 0;
+    });
+    trackReceipt(message, sending);
+  };
 
   const resolve = (match: (m: Ref) => boolean) => {
     let compact = false;
