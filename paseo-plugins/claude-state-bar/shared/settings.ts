@@ -26,6 +26,11 @@ export const settingsSchema = z.object({
   dangerPercent: z.number().min(1).max(100).default(75),
   // 확장 workflowCompleteBeep 과 같다: 워크플로우·서브에이전트 묶음·백그라운드 작업이 끝나면 따르릉
   workflowBeep: z.boolean().default(true),
+  // 따라 읽기 중 다른 소리 줄이기(리규형님 10-16 20시 — 유튜브 같은 다른 소리를 낮추고 따라 읽기를 앞에). 폰 = 폰 앱(PaseoShell)에
+  // 신호를 보내 안드로이드가 다른 앱을 잠깐 줄인다(client/shellDuck). 웹 = PC 브라우저 — 웹 페이지는 다른 탭·앱 소리를 못 바꿔
+  // Chrome 확장이 있어야 해서 아직 효과 없음(자리만). 처음 값: 폰 켬("끌 수 있도록"), 웹 꺼짐
+  followDuckPhone: z.boolean().default(true),
+  followDuckWeb: z.boolean().default(false),
   // 웹·폰이 PC 앱에서 가져올 항목(리규형님 10-07 결정 — 처음 값은 모두 켬)
   syncWorkspaceOrder: z.boolean().default(true),
   syncLayout: z.boolean().default(true),

@@ -1,6 +1,7 @@
 import { useRpc, useWorkspace } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activityCounts, type ActivityCounts } from "../shared/activity";
+import { onPageVisible, pageHidden } from "./pageVisible";
 import { readSession, writeSession } from "./web";
 
 // 작업 공간 폴더에서 돌고 있는 수(확장 activityCounts) — 머리줄 단추와 작업 현황 탭 숫자가 같이 쓴다.
@@ -43,8 +44,15 @@ export function useCounts(workspaceId: string): ActivityCounts | null {
   const live = counts ? totalOf(counts) > 0 : false;
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), live ? LIVE_POLL_MS : IDLE_POLL_MS);
-    return () => clearInterval(timer);
+    // 가려진 동안은 건너뛰고 다시 보이면 바로 읽는다(10-17 — pageVisible.ts)
+    const timer = setInterval(() => {
+      if (!pageHidden()) void load();
+    }, live ? LIVE_POLL_MS : IDLE_POLL_MS);
+    const offVisible = onPageVisible(() => void load());
+    return () => {
+      clearInterval(timer);
+      offVisible();
+    };
   }, [load, live]);
   return counts;
 }

@@ -5,7 +5,8 @@ import { translateKo } from "../shared/translate";
 import { speechGet, type SpeechSettings } from "../shared/speech";
 import { googleStatus, ttsSynthesize } from "../shared/tts";
 import { uiLanguage } from "./appLanguage";
-import { featureSwitches, onSharedSignal } from "./sounds";
+import { currentSettings, featureSwitches, onSharedSignal } from "./sounds";
+import { setShellDuck } from "./shellDuck";
 import { thinkingController as controller } from "./thinking";
 import type { ThinkingBoxState, ThinkingRpc } from "./thinkingPlayer";
 import { startComposerRail, startReadDock, startTurnReadButtons, watchSelection, type TurnReadBinding } from "./web";
@@ -63,6 +64,8 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
   const statuses = new Map<string, string>();
   const followListeners = new Set<() => void>();
   const followChanged = () => { for (const fn of followListeners) fn(); };
+  // 다른 소리 줄이기 요청자 이름 — 페이지에 플러그인이 호스트마다 실려도 서로의 바람을 덮지 않게(shellDuck)
+  const duckOwner = `read-${Math.random().toString(36).slice(2, 10)}`;
   const available = () => live && !!hostId && canSpeak && featureSwitches().tts;
   const endFollow = (why: string) => {
     const f = follow;
@@ -115,6 +118,11 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     }
     if (follow && !controller.state(follow.box).active) endFollow(follow.box.error ? `읽기 멈춤: ${follow.box.error}` : "읽기 멈춤");
     else if (follow && !available()) endFollow("읽을 수 없게 됨");
+    // 읽기가 소리를 내는 동안(소리 만드는 중 포함 — 문단 사이에 오르내리지 않게) 폰 앱에 다른 소리를 줄여 달라고 한다(shellDuck).
+    // 따라 읽기만이 아니라 모든 읽기(생각 상자·말·선택·따라 읽기 — 같은 재생기 하나)다(10-17 리규형님 "따라읽기 뿐 아니고, 모든 TTS 에").
+    // 읽을 문단이 없어 기다리거나·일시정지·끔·설정 끔이면 되돌린다. PC 는 10-17 리규형님 "롤백" — 데몬 재생기가 빠르기를 올리면 앞 4초를 건너뛰었다
+    const now = controller.current();
+    setShellDuck(duckOwner, !!now && !now.paused && now.status !== "waiting" && currentSettings().followDuckPhone, log);
     const can = available();
     if (can !== wasAvailable) { wasAvailable = can; followChanged(); }
     dom.refresh();
@@ -205,6 +213,7 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
   return {
     dispose: () => {
       endFollow("플러그인 종료");
+      setShellDuck(duckOwner, false, log);
       live = false;
       stopPick();
       keyCheck++;

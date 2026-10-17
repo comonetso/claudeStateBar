@@ -12,7 +12,8 @@ export type ThinkingRpc = {
 /** 읽기 시작 자리(10-08 생각 상자 선택 읽기) — index 번째 문단의, 화면에 보이던 글 안 offset 번째 글자부터 */
 export type StartAt = { index: number; offset: number };
 export type ThinkingAudio = {
-  play(file: AudioFile, rate: number, ended: () => void, error: (reason: string) => void): Promise<void>;
+  /** interrupted = 우리가 멈추지 않았는데 재생이 멈춤(폰에서 다른 앱이 소리를 가져감·앱이 뒤로 감) */
+  play(file: AudioFile, rate: number, ended: () => void, error: (reason: string) => void, interrupted?: () => void): Promise<void>;
   pause(): void;
   resume(): Promise<void>;
   stop(): void;
@@ -753,7 +754,14 @@ export class ThinkingController {
         run.index += 1;
         this.trimSlots(run);
         void this.pump(run);
-      }, (reason) => { if (this.run === run && run.generation === generation) this.stop(`재생 실패: ${reason}`); });
+      }, (reason) => { if (this.run === run && run.generation === generation) this.stop(`재생 실패: ${reason}`); }, () => {
+        // 바깥이 멈춤(폰에서 다른 앱이 소리를 가져감·앱이 뒤로 감) — 일시정지로 바꿔 컨트롤러가 재생 단추를 보이게 한다.
+        // 같은 소리가 남아 있어 재생을 누르면 그 자리부터 이어진다(10-16 리규형님 "컨트롤러는 살아있고 실제로는 멈춤")
+        if (this.run !== run || run.generation !== generation || run.paused) return;
+        run.paused = true;
+        run.box.controls = true;
+        this.notify();
+      });
       if (this.run !== run || run.generation !== generation) return;
       if (run.paused) this.audio.pause();
       else this.prefetch(run);

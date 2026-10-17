@@ -35,7 +35,7 @@ import { currentSettings, emitSharedSignal, registerProvider, soundProvider } fr
 import { startSoundProjects, registerSoundOrigin, soundOrigin } from "./client/soundScreen";
 import { reportSoundEvent, startSoundPlayback } from "./client/soundPlayback";
 import type { RoutedSoundEvent } from "./shared/soundClaim";
-import { listenGlobalKey, readAppFontSizes } from "./client/web";
+import { forceUsageRefresh, listenGlobalKey, readAppFontSizes } from "./client/web";
 import { startDictationInsertOnly } from "./client/dictationInsertOnly";
 import { soundOriginObserve, soundOriginPrepare } from "./shared/soundEvents";
 
@@ -189,7 +189,9 @@ export default function contribute(client: PluginClientContext) {
           return stop;
         } catch (error) { stop(); throw error; }
       };
-      const ui = { settings: () => settings, usage: () => client.paseo.providers.listUsage(), openSettings: () => client.openSettings(SETTINGS_SCREEN_ID) };
+      // 사용량 새로 받기는 이 호스트 데몬에(10-17 — 사용량 칸 30초)
+      const refreshUsage = () => (info.serverId ? forceUsageRefresh(info.serverId) : Promise.resolve(null));
+      const ui = { settings: () => settings, usage: () => client.paseo.providers.listUsage(), refreshUsage, openSettings: () => client.openSettings(SETTINGS_SCREEN_ID) };
       cleanups.push(onUiRole(() => emitSharedSignal("settings")));
       if (!primary) {
         cleanups.push(startFallbackCandidate(client, { kind: "fallback", provider: ui, start: () => attachFour(true) }));
@@ -205,6 +207,7 @@ export default function contribute(client: PluginClientContext) {
           await refreshSettings();
         },
         usage: () => client.paseo.providers.listUsage(),
+        refreshUsage,
         openSettings: () => client.openSettings(SETTINGS_SCREEN_ID),
         loadLayout: (slot) => client.rpc(layoutLoad, { slot }),
         claimSound: async () => false, // 같은 화면 안 옛 호스트 인스턴스도 무음으로 닫는다.

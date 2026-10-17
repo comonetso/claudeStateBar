@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync, chmodSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { UsageSourceRegistration } from "@getpaseo/plugin/server";
@@ -139,7 +140,64 @@ function windowsOf(resp: z.infer<typeof responseSchema>): UsageWindow[] {
 }
 
 export function teamUsageSources(): UsageSourceRegistration[] {
-  return Object.keys(claudeProviders()).filter((id) => teamDir(id) !== null).map(teamUsageSource);
+  return Object.keys(claudeProviders()).flatMap((id) => (teamDir(id) !== null ? [teamUsageSource(id)] : tokenTeam(id) ? [poolUsageSource(id)] : []));
+}
+
+// 서버처럼 1년 열쇠(CLAUDE_CODE_OAUTH_TOKEN)로만 들어가는 팀 공급자는 한도 조회가 429 로 막혀 위 원천을 못 쓴다. 그래서 PC 가 절전하면
+// 사용량 칸에서 como·hrg 카드가 사라졌다(10-16 리규형님 [66]). 리규형님 결정 [69]: 서버에 로그인을 따로 두지 않고 실행기 기록으로 —
+// 무중단 작업(10-16) 실행기가 Claude 의 사용률 신호·넘김 탐침으로 남긴 좌석 관측을 감독자(claude-work-supervisor)가 모은
+// claude-work/pool.json 으로 카드를 만든다. 마지막으로 본 값이라 그 뒤 쓴 양은 모른다 — 창이 지났으면 0% 를 지어내지 않고 "초기화됨"으로만 적는다.
+// 이 파일은 리규형님 서버에만 있다(없으면 카드도 없다)
+const POOL_FILE = join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "claude-work", "pool.json");
+const poolInputSchema = z.object({ provider: z.string().min(1) }).strict();
+const poolSeatSchema = z.object({
+  pct: z.number().finite().nullish(),
+  resetsAt: z.number().finite().nullish(),
+  observedAt: z.string().nullish(),
+  status: z.string().nullish(),
+  limitType: z.string().nullish(),
+  limitReset: z.number().finite().nullish(),
+  week: z.object({ pct: z.number().finite(), resetsAt: z.number().finite() }).nullish(),
+}).passthrough();
+const tokenTeam = (provider: string) => typeof claudeProviders()[provider]?.env?.CLAUDE_CODE_OAUTH_TOKEN === "string";
+function poolSeat(provider: string) {
+  const doc = readJson(POOL_FILE) as { seats?: Record<string, unknown> } | null;
+  const parsed = poolSeatSchema.safeParse(doc?.seats?.[provider]);
+  return parsed.success ? parsed.data : null;
+}
+export function poolUsageReport(seat: z.infer<typeof poolSeatSchema>, now = Date.now()): UsageReport {
+  const windows: UsageWindow[] = [];
+  const reset = typeof seat.resetsAt === "number" ? seat.resetsAt * 1000 : null;
+  const live = reset !== null && reset > now;
+  // 거절은 그 창에만 — 주간 거절을 5시간 100% 로 덮지 않는다(Codex 리뷰 261016_182309). 5시간 거절이거나 종류를 모르면 5시간 100%
+  const weeklyLimit = seat.status === "limit" && /seven_day|week/i.test(seat.limitType ?? "");
+  const pct = seat.status === "limit" && !weeklyLimit ? 100 : seat.pct ?? null;
+  // 창이 지났거나 사용률을 모르면 "—" 막대를 남긴다 — 창이 하나도 없으면 사용량 칸(usageFooter availableProviders)이 카드를 통째로 뺀다
+  windows.push(windowFromUsedPct({ id: "five_hour", label: "Session", shortLabel: "5h", summary: true, utilizationPct: live ? pct : null,
+    resetsAt: live ? new Date(reset).toISOString() : null, tone: live && pct !== null ? toneFromUsedPct(pct) : undefined }));
+  const weekReset = seat.week?.resetsAt ?? (weeklyLimit ? seat.limitReset ?? null : null);
+  if (typeof weekReset === "number" && weekReset * 1000 > now) {
+    const wpct = weeklyLimit ? 100 : seat.week?.pct ?? null;
+    windows.push(windowFromUsedPct({ id: "weekly", label: "Weekly", shortLabel: "wk", summary: true, utilizationPct: wpct, resetsAt: new Date(weekReset * 1000).toISOString(), tone: wpct !== null ? toneFromUsedPct(wpct) : undefined }));
+  }
+  const at = seat.observedAt ? Date.parse(seat.observedAt) : NaN;
+  const ago = Number.isFinite(at) ? Math.max(0, Math.round((now - at) / 60_000)) : null;
+  const when = ago === null ? "모름" : ago < 60 ? `${ago}분 전` : `${Math.floor(ago / 60)}시간 ${ago % 60}분 전`;
+  return { status: "available", windows, details: [{ id: "observed", label: "관측", value: live || reset === null ? when : `${when} · 그 뒤 5시간 창 초기화됨` }] };
+}
+function poolUsageSource(provider: string): UsageSourceRegistration {
+  return {
+    id: teamUsageSourceId(provider),
+    label: teamUsageLabel(provider),
+    input: poolInputSchema,
+    async discover() {
+      return poolSeat(provider) ? [{ key: hashAccountKey(`pool:${provider}`), input: { provider } }] : [];
+    },
+    async fetch(input): Promise<UsageReport> {
+      const seat = poolSeat(poolInputSchema.parse(input).provider);
+      return seat ? poolUsageReport(seat) : { status: "error", error: "좌석 관측이 아직 없습니다" };
+    },
+  };
 }
 
 export function teamUsageSource(provider: string): UsageSourceRegistration {

@@ -173,6 +173,11 @@ const ko = {
   dangerLabel: "위험 기준 퍼센트",
   workflowBeepTitle: "따르릉 울리기",
   workflowBeepHint: "끄면 워크플로우·서브에이전트 묶음·백그라운드 작업·codex_rescue 실행이 끝나도 울리지 않습니다",
+  followDuckTitle: "읽기 중 다른 소리 줄이기",
+  followDuckHint: "소리 읽기(따라 읽기·생각 상자·말·선택 읽기)가 말하는 동안 유튜브 같은 다른 앱 소리를 낮춰 읽는 소리가 앞에 들리게 합니다",
+  followDuckPhone: "폰 앱",
+  followDuckWeb: "PC — 지원 안 함",
+  followDuckHelp: "폰 앱: 안드로이드가 내비게이션 안내처럼 다른 앱 소리를 원래의 20% 로 줄였다가, 읽기가 멈추거나 읽을 글을 기다리면 되돌립니다. 이 기능을 지원하는 폰 앱 판이어야 동작합니다.\n\nPC: 지원하지 않습니다. 읽기 소리와 유튜브가 같은 브라우저 안에 있으면 Windows 가 둘을 한 앱으로 보아 유튜브만 따로 줄일 수 없습니다.",
 
   // ── VS Code 확장 설정 가져오기(10-08)
   importTitle: "VS Code 확장 설정 가져오기",
@@ -518,6 +523,11 @@ const en: SettingsText = {
   dangerLabel: "Danger level percent",
   workflowBeepTitle: "Play the chime",
   workflowBeepHint: "When off, no chime when a workflow, a group of subagents, a background task or a codex_rescue run finishes",
+  followDuckTitle: "Lower other sounds while reading aloud",
+  followDuckHint: "While reading aloud (follow, thinking box, message or selection) speaks, other apps such as YouTube are turned down so the reading stays in front",
+  followDuckPhone: "Phone app",
+  followDuckWeb: "PC — not supported",
+  followDuckHelp: "Phone app: Android lowers other apps to 20% of their volume, as it does for navigation prompts, and restores them when reading pauses or waits for more text. Needs a phone app version that supports it.\n\nPC: not supported. When the reading and YouTube play in the same browser, Windows treats them as one app, so YouTube cannot be lowered alone.",
 
   importTitle: "Import VS Code extension settings",
   importHint:

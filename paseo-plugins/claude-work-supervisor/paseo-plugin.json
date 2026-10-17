@@ -1,0 +1,6 @@
+{
+  "id": "claude-work-supervisor",
+  "requirements": {
+    "paseo": ">=0.11.1"
+  }
+}

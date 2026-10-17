@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { activityCounts, type ActivityCounts } from "../shared/activity";
+import { onPageVisible, pageHidden } from "./pageVisible";
 import { soundOrigin, watchSoundOrigins } from "./soundScreen";
 import { IDLE_POLL_MS, LIVE_POLL_MS } from "./useCounts";
 
@@ -25,8 +26,11 @@ export function useProjectCounts(targets: ProjectTarget[]): Map<string, ProjectC
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
     const seq = new Map<string, number>();
     const waiting = new Set<string>(); // 기기 연결이 아직 없어 붙기를 기다리는 대상
+    const paused = new Set<string>(); // 화면이 가려져 쉬는 대상 — 다시 보이면 바로 읽는다(10-17 — pageVisible.ts)
     const tick = async (t: ProjectTarget) => {
       timers.delete(t.key);
+      if (pageHidden()) { paused.add(t.key); return; }
+      paused.delete(t.key);
       const origin = soundOrigin(t.serverId);
       if (!origin) { waiting.add(t.key); return; }
       waiting.delete(t.key);
@@ -46,12 +50,16 @@ export function useProjectCounts(targets: ProjectTarget[]): Map<string, ProjectC
     const unwatch = watchSoundOrigins(() => {
       for (const t of list) if (waiting.has(t.key) && soundOrigin(t.serverId)) void tick(t);
     });
+    const offVisible = onPageVisible(() => {
+      for (const t of list) if (paused.has(t.key)) void tick(t);
+    });
     // 빠진 대상의 숫자는 지운다
     const keys = new Set(list.map((t) => t.key));
     setCounts((prev) => { const next = new Map([...prev].filter(([k]) => keys.has(k))); return next.size === prev.size ? prev : next; });
     return () => {
       stopped = true;
       unwatch();
+      offVisible();
       for (const timer of timers.values()) clearTimeout(timer);
     };
   }, [signature]);

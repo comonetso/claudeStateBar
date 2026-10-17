@@ -8,6 +8,7 @@ import { TrashDrawer } from "./codexTrash";
 import { fmtBytes, fmtClock, fmtDur, fmtElapsed, fmtStamp, fmtTok, RUNNING_COLOR } from "./format";
 import { NoticeLine, panelStyles, useNotice } from "./ui";
 import { useFontScale } from "./fontScale";
+import { onPageVisible, pageHidden } from "./pageVisible";
 
 // 확장 Codex 진행 패널: 실행 카드 목록 · 묶음 카드 · 끝난 실행 접기 · 활동(턴 머리표·명령 묶기) · 요청서·결과 문서.
 // 휴지통: 끝난 카드의 🗑 은 묻지 않고 통째로 옮기고, 묻는 것은 서랍의 완전 삭제·비우기뿐(codexTrash.tsx).
@@ -106,8 +107,15 @@ export function CodexRunsPanel({ theme, layout, workspaceId }: PluginWorkspacePa
 
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), live ? LIVE_POLL_MS : IDLE_POLL_MS);
-    return () => clearInterval(timer);
+    // 가려진 동안은 건너뛰고 다시 보이면 바로 읽는다(10-17 — pageVisible.ts)
+    const timer = setInterval(() => {
+      if (!pageHidden()) void load();
+    }, live ? LIVE_POLL_MS : IDLE_POLL_MS);
+    const offVisible = onPageVisible(() => void load());
+    return () => {
+      clearInterval(timer);
+      offVisible();
+    };
   }, [load, live]);
 
   // 실행 중인 카드의 시계는 1초마다

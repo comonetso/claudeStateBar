@@ -227,9 +227,21 @@ async function readWorkflows(sessionId: string, sessionDir: string, notices: Tas
         ...(timing.model && getShortModelName(timing.model) ? { model: getShortModelName(timing.model) } : {}),
       };
     });
-    // 세션이 끝나 멈춘 실행은 부모 대화의 끝 알림으로만 안다
+    // 대화의 Claude 가 다시 뜬 시각보다 앞서 기록이 멈춘 결과 없는 에이전트는 옛 프로세스와 함께 죽었다 — 새 프로세스가 그 실행의
+    // 끝 알림을 안 남겨도(10-16 19:15 Mesa 팀 계정 전환: 두 실행이 6시간 "실행 중"). 다시 뜬 뒤에도 쓰는 에이전트는 살아 있다
+    const lastRestart = notices.restarts?.length ? notices.restarts[notices.restarts.length - 1] : 0;
+    for (const a of agents) {
+      const last = timings.get(a.id)?.lastTs ?? 0;
+      if (a.status === "running" && last && last < lastRestart) a.status = "stopped";
+    }
+    // 세션이 끝나 멈춘 실행은 부모 대화의 끝 알림으로만 안다. 끊긴 뒤 같은 번호로 다시 돌린 실행의 새 에이전트는 알림 뒤에도 써서 살아 있다
+    // (10-17 01:22 Mesa 전환: 다시 돌린 두 실행이 일하는 중에 "멈춤"으로 보였다)
     if (agents.some((a) => a.status === "running") && endedStatus(notices.byRun.get(wfId))) {
-      for (const a of agents) if (a.status === "running") a.status = "stopped";
+      const endAt = notices.runEnds?.get(wfId) ?? 0;
+      for (const a of agents) {
+        const last = timings.get(a.id)?.lastTs ?? 0;
+        if (a.status === "running" && !(endAt && last && last > endAt)) a.status = "stopped";
+      }
     } else if (agents.some((a) => a.status === "running")) {
       // 같은 실행 번호로 다시 돌린(재개) 실행이 끝났으면, 그 끝 알림 전에 기록이 멈춘 결과 없는 에이전트는 앞 실행에서 끊긴 것이다
       // (10-15 Mesa wf_c0345637-ce7: 첫 에이전트가 재시작으로 끊기고 재개 실행이 completed 로 끝나 "실행 중"으로 남았다).
@@ -374,6 +386,8 @@ async function readTaskBundles(sessionId: string, sessionDir: string, notices: T
       if (status === "running") {
         const n = notices.byTask.get(a.id);
         if (n && endedStatus(n.status) && (!a.lastTs || n.at >= a.lastTs)) status = "stopped";
+        // 대화의 Claude 가 다시 뜬 뒤로 기록이 없다 — 옛 프로세스와 함께 죽었다(워크플로우와 같은 판정)
+        else if (a.lastTs && notices.restarts?.length && a.lastTs < notices.restarts[notices.restarts.length - 1]) status = "stopped";
       }
       const oneLine = a.finalText.replace(/\s+/g, " ").trim();
       return {

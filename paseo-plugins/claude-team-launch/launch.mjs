@@ -9,7 +9,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { applyAccount, HOME, watchAccount } from "../claude-rc-relay/account.mjs";
-import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, takeHandoff } from "../claude-rc-relay/rotation.mjs";
+import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, startResumeKicker, takeHandoff } from "../claude-rc-relay/rotation.mjs";
+import { workRecorder } from "../claude-rc-relay/workstate.mjs";
 
 const args = process.argv.slice(2);
 const at = args.indexOf("--real");
@@ -47,8 +48,11 @@ const log = (message) => {
 // 자동 전환으로 꺼졌다 다시 뜨는 거라면 꺼지기 전 백그라운드 작업 목록을 첫 사람 말 앞에 한 번 붙인다(10-15, rotation.mjs saveHandoff)
 const handoff = ephemeral ? null : takeHandoff(HOME, agentId);
 if (handoff) log(`rotation handoff (agent ${String(agentId).slice(0, 8)}) — notice on next message, tasks=${handoff.tasks?.length ?? 0}`);
+// 무중단 작업(10-16, ../claude-rc-relay/workstate.mjs) — 이 실행기 세대·관측·넘김 이행을 claude-work/ 에 남긴다
+const work = workRecorder({ agentId, log, ephemeral });
 const rotation = createRotation({ real, env, initialEnv: process.env, agentId, log, enabled: !ephemeral,
-  handoff: (info) => saveHandoff(HOME, agentId, info) });
+  handoff: (info) => saveHandoff(HOME, agentId, info), testFile: join(HOME, "claude-rc-relay-test.json"),
+  runGen: `${process.pid}-${Date.now()}`, record: work.record, onTransition: work.onTransition });
 const child = spawn(real, argv, { stdio: ["pipe", "pipe", "inherit"], env, windowsHide: true });
 const input = jsonLines(rotation.input), output = jsonLines(rotation.observe);
 process.stdin.on("data", input.write);
@@ -77,12 +81,26 @@ const stopAccountWatch = ephemeral ? () => {} : watchAccount(agentId, () => {
     /* 이미 끝남 */
   }
 });
-child.on("exit", () => { stopAccountWatch(); rotation.stop(); });
+child.on("exit", () => {
+  stopAccountWatch();
+  rotation.stop();
+  // 자동 전환으로 꺼졌으면 다음 말을 기다리지 않고 이어 달린다(10-16, ../claude-rc-relay/rotation.mjs startResumeKicker).
+  // 이행 파일에 다음 단계 주인을 남긴다 — kicker, 못 띄웠으면 감독자
+  if (rotation.state().switched) {
+    const kicker = startResumeKicker({ agentId, home: HOME, logFile: join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "claude-rc-relay.log"),
+      tid: rotation.state().transition?.tid ?? "" });
+    if (kicker) log("rotation resume armed");
+    rotation.updateTransition(kicker ? { owner: "kicker", kickerPid: kicker.pid ?? null, relayExitAt: new Date().toISOString() }
+      : { owner: "supervisor", why: "kicker-not-started", relayExitAt: new Date().toISOString() });
+  }
+  work.flush();
+});
 child.on("error", (e) => {
   process.stderr.write(`claude-team-launch: claude 실행 실패 ${e.message}\n`);
   process.exit(127);
 });
 child.on("close", (code, signal) => {
+  work.flush();
   process.stdin.unpipe(child.stdin);
   process.stdin.pause();
   process.exitCode = code ?? (signal ? 1 : 0);

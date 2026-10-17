@@ -6,6 +6,8 @@ import type { Usage } from "./usageFooter";
 export interface UiProvider {
   settings(): SoundSettings;
   usage(): Promise<Usage>;
+  // 그 데몬의 사용량 기억을 건너뛰고 새로 받게 한다(10-17 — web.ts forceUsageRefresh)
+  refreshUsage?(): Promise<boolean | null>;
   openSettings(): void;
 }
 export interface UiCandidate {

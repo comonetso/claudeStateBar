@@ -20,6 +20,8 @@ export interface SoundProvider {
   // 이 PC 데몬의 Claude·Codex 사용량(10-06). 다른 호스트 작업 공간의 사용량 단추도 같은 숫자를 보이게 이것을 쓴다.
   // 옛 판 공급자에는 없을 수 있다
   usage?(): Promise<Usage>;
+  // 그 데몬의 사용량 기억을 건너뛰고 새로 받게 한다(10-17 — web.ts forceUsageRefresh). 옛 판 공급자에는 없을 수 있다
+  refreshUsage?(): Promise<boolean | null>;
   // 이 PC 플러그인이 등록한 설정 화면(Claude State Bar)을 연다(10-07 머리줄 톱니). 옛 판 공급자에는 없을 수 있다
   openSettings?(): void;
   // PC 앱이 맡겨 둔 작업 공간 순서·화면 구성(10-07 PC 에서 가져오기). 서버 작업 공간 단추도 이 PC 데몬 것을 읽게 공급자를 거친다.

@@ -2,7 +2,9 @@ import { Linking, Platform } from "react-native";
 import type { Edit } from "./markdownList";
 import type { AudioFile, ThinkingAudio } from "./thinkingPlayer";
 import { shellMuted, watchShellMute } from "./shellMute";
+import { createShellAudio, shellCanSpeak } from "./shellSpeech";
 import { comboOfKey, shortcutMatches, type KeyLike } from "../shared/shortcuts";
+import { joinSplitParens } from "./readParts";
 
 /** 키 이벤트 → 단축키 표(shared/shortcuts.ts)가 보는 모양 */
 const keyLike = (e: { code?: string; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean; metaKey?: boolean }): KeyLike =>
@@ -44,6 +46,9 @@ declare class Audio {
   muted: boolean;
   onended: (() => void) | null;
   onerror: (() => void) | null;
+  onpause: (() => void) | null;
+  ended: boolean;
+  paused: boolean;
   error: { message?: string; code: number } | null;
   play(): Promise<void>;
   pause(): void;
@@ -524,12 +529,16 @@ type MemoryStore = {
 // 모르는 번들에서는 쓰지 않고 해당 기능을 끈다(번호를 짐작해 맞추지 않는다). 설정 화면의 "이 화면의 Paseo 판" 칸이 꺼진 것을 알린다.
 // 새 판을 넣을 때: 번들에서 export 이름(useWorkspaceLayoutStore·WorkspaceLayoutPersistedStateSchema·navigateToWorkspace·
 // useSidebarOrderStore·queryClient)이 있는 모듈 번호를 찾고 본문이 이전 판과 같은지 확인한 뒤 한 줄 더한다.
-export type PaseoModuleIds = { layout: number; schema: number; navigate: number; sidebarOrder: number; queryClient: number };
+// hostRuntime(10-17, getHostRuntimeStore — 사용량 "기억 건너뛰고 새로 받기")은 확인한 판에만 있다
+export type PaseoModuleIds = { layout: number; schema: number; navigate: number; sidebarOrder: number; queryClient: number; hostRuntime?: number };
 export const PASEO_BUNDLES: Record<string, { version: string; ids: PaseoModuleIds }> = {
   // PC 앱 0.11.0-beta.5 (= 10-07 에 올린 웹)
   f07439c15f40c0ca1689fb49e3dcc6c8: { version: "0.11.0-beta.5", ids: { layout: 3801, schema: 3802, navigate: 3898, sidebarOrder: 4025, queryClient: 848 } },
   // PC 앱 0.11.1 (10-08 업데이트) — 위 판과 모듈 본문이 같고 번호만 2씩 밀렸다(tmp/paseo_0111_probe/probe.cjs)
-  "3a92a6be2c6767623cc9fa2aa410618e": { version: "0.11.1", ids: { layout: 3803, schema: 3804, navigate: 3900, sidebarOrder: 4027, queryClient: 850 } },
+  // hostRuntime 3761 은 두 판 모두 사용량 부품(4398)이 불러오는 연결 보관소(getHostRuntimeStore 내보냄 — 10-17 확인)
+  "3a92a6be2c6767623cc9fa2aa410618e": { version: "0.11.1", ids: { layout: 3803, schema: 3804, navigate: 3900, sidebarOrder: 4027, queryClient: 850, hostRuntime: 3761 } },
+  // PC 앱 0.11.4 (10-17 아침 앱 재시작 때 자동 설치) — 번호·본문 모두 0.11.1 과 같다(update-check/check-bundle.cjs, 결과 tests-261017/check_bundle_0114.json)
+  "8bce0495199b6764c1ef3c14273ac681": { version: "0.11.4", ids: { layout: 3803, schema: 3804, navigate: 3900, sidebarOrder: 4027, queryClient: 850, hostRuntime: 3761 } },
 };
 
 /** 이 화면 번들에서 확인한 모듈 번호. 모르는 판이거나 웹이 아니면 null */
@@ -540,11 +549,12 @@ export function paseoModuleIds(): PaseoModuleIds | null {
 
 function paseoModule(which: keyof PaseoModuleIds): MemoryState | null {
   const ids = paseoModuleIds();
-  if (!ids) return null;
+  const id = ids?.[which];
+  if (typeof id !== "number") return null;
   const require = (globalThis as { __r?: (id: number) => unknown }).__r;
   if (typeof require !== "function") return null;
   try {
-    const value = require(ids[which]);
+    const value = require(id);
     return value && typeof value === "object" ? value as MemoryState : null;
   } catch {
     return null;
@@ -560,6 +570,52 @@ function paseoMemoryStore(which: keyof PaseoModuleIds, exported: string, key: st
     typeof options.merge === "function" ? store : null;
 }
 
+type UsageReportsClient = { listUsageReports?(options: { forceRefresh: boolean }): Promise<{ reports?: Array<{ report?: { status?: string } }> }> };
+/**
+ * 사용량 "기억 건너뛰고 새로 받기"(10-17 리규형님 — 사용량 칸 30초). Paseo 사용량 화면 새로고침과 같은 요청
+ * (usage.list_reports.request forceRefresh)이라 데몬이 바깥 조회 5분 기억(UsageSourceRegistry ttlMs)을 건너뛴다.
+ * true = 받음 · false = 요청 실패나 오류 항목(status "error") · null = 이 판에선 못 함(번호 모름·연결 없음 — 예전처럼 데몬 기억값)
+ * 같은 화면의 여러 묻기(호스트마다 뜬 플러그인·옛 판)가 각자 강제하면 바깥 조회가 그 수만큼 는다(10-17 실측 — 30초에 3~4번).
+ * 화면 하나에서는 기기마다 30초에 한 번만 강제하고, 그 사이 묻기는 진행 중이거나 마지막 결과를 같이 쓴다(30초 = 리규형님 간격)
+ */
+const USAGE_FORCE_MIN_MS = 30_000;
+type UsageForce = { at: number; pending: Promise<boolean | null> | null; last: boolean | null };
+function usageForces(): Map<string, UsageForce> {
+  const g = globalThis as { __claudeStateBar_usageForce_v1?: Map<string, UsageForce> };
+  return (g.__claudeStateBar_usageForce_v1 ??= new Map());
+}
+export function forceUsageRefresh(serverId: string): Promise<boolean | null> {
+  const forces = usageForces();
+  const prev = forces.get(serverId);
+  if (prev?.pending) return prev.pending;
+  if (prev && Date.now() - prev.at < USAGE_FORCE_MIN_MS) return Promise.resolve(prev.last);
+  const entry: UsageForce = { at: Date.now(), pending: null, last: null };
+  entry.pending = runUsageForce(serverId).then((result) => {
+    entry.last = result;
+    entry.pending = null;
+    return result;
+  });
+  forces.set(serverId, entry);
+  return entry.pending;
+}
+async function runUsageForce(serverId: string): Promise<boolean | null> {
+  const getStore = paseoModule("hostRuntime")?.getHostRuntimeStore as (() => { getClient?(id: string): unknown }) | undefined;
+  if (typeof getStore !== "function") return null;
+  let client: UsageReportsClient | null = null;
+  try {
+    client = (getStore().getClient?.(serverId) ?? null) as UsageReportsClient | null;
+  } catch {
+    return null;
+  }
+  if (!client || typeof client.listUsageReports !== "function") return null;
+  try {
+    const { reports } = await client.listUsageReports({ forceRefresh: true });
+    return !(reports ?? []).some((r) => r.report?.status === "error");
+  } catch {
+    return false;
+  }
+}
+
 // ── 업데이트 대비 상태 표시(10-08 리규형님 결정 — Codex 261008_150613 작업 1~3) ──
 // 위 연결은 실패하면 null/false 만 돌려줘 왜 꺼졌는지가 사라진다(0.11.1 업데이트 때 "어떤 게 안 되는지조차 모름").
 // 같은 연결을 읽기만 해서 막힌 이유를 돌려준다. 값을 쓰거나 화면 배치를 바꾸지 않는다(client/health.ts 가 기능별로 판정).
@@ -568,12 +624,12 @@ export type PaseoInternals = { layout: InternalsReason | null; schema: Internals
 
 function probeModule(which: keyof PaseoModuleIds): MemoryState | InternalsReason {
   if (!isWeb()) return "not-web";
-  const ids = paseoModuleIds();
-  if (!ids) return "unknown-bundle";
+  const id = paseoModuleIds()?.[which];
+  if (typeof id !== "number") return "unknown-bundle";
   const require = (globalThis as { __r?: (id: number) => unknown }).__r;
   if (typeof require !== "function") return "no-require";
   try {
-    const value = require(ids[which]);
+    const value = require(id);
     return value && typeof value === "object" ? (value as MemoryState) : "no-export";
   } catch {
     return "load-failed";
@@ -1055,11 +1111,37 @@ declare class TextEncoder { encode(text: string): Uint8Array; }
 declare class Blob { constructor(parts: Uint8Array[], options: { type: string }); }
 declare const URL: { createObjectURL(blob: Blob): string; revokeObjectURL(url: string): void };
 
-/** 생각 읽기 전용 Audio 하나. 다른 알림 소리 함수는 기존 동작 그대로 둔다. */
+/**
+ * 생각 읽기·따라 읽기·목소리 미리 듣기 소리. 폰 앱이 소리를 틀 수 있으면 앱에 넘기고(client/shellSpeech.ts — 10-16 22시 리규형님
+ * "앱이 소리를 직접 튼다"), 아니면(PC·브라우저) 웹 Audio 하나로 튼다. 틀 때마다 고르고, 나머지 조작은 마지막으로 튼 쪽에 보낸다.
+ * 🔴 재생이 둘로 갈린다 — 빠르기·일시정지·음소거·끝남을 고치면 아래 웹 판과 shellSpeech.ts 를 다 고친다. 다른 알림 소리 함수는 기존 동작 그대로.
+ */
 export function createThinkingAudio(): ThinkingAudio {
+  const web = createWebThinkingAudio();
+  const app = createShellAudio();
+  let use: ThinkingAudio = web;
+  return {
+    play(file, rate, ended, error, interrupted) {
+      const next = shellCanSpeak() ? app : web;
+      if (next !== use) use.stop();
+      use = next;
+      return use.play(file, rate, ended, error, interrupted);
+    },
+    pause() { use.pause(); },
+    resume() { return use.resume(); },
+    stop() { use.stop(); },
+    setRate(rate) { use.setRate(rate); },
+  };
+}
+
+/** 웹 Audio 하나로 트는 판(PC·브라우저, 앱 함수가 없는 옛 폰 앱) */
+function createWebThinkingAudio(): ThinkingAudio {
   let audio: Audio | undefined;
   let url: string | undefined;
   let generation = 0;
+  // 우리가 멈춘 것인가 — 아니면 바깥(폰에서 다른 앱이 소리를 가져감 등)이 멈춘 것이다(10-16 리규형님 "플레이 표시는 되지만 읽지는 않네")
+  let selfPause = false;
+  const pauseOwn = () => { if (audio && !audio.paused) { selfPause = true; audio.pause(); } };
   // 폰 앱 음소거 중엔 소리만 끈다 — 읽기(형광펜·진행)는 그대로 가고, 풀면 그 자리부터 들린다(10-15)
   watchShellMute(() => {
     if (audio) audio.muted = shellMuted();
@@ -1075,13 +1157,14 @@ export function createThinkingAudio(): ThinkingAudio {
     audio!.src = url;
   };
   return {
-    async play(file, rate, ended, error) {
+    async play(file, rate, ended, error, interrupted) {
       if (Platform.OS !== "web") throw new Error("이 앱에서는 소리 읽기를 지원하지 않습니다");
       const token = ++generation;
       audio ??= new Audio();
-      audio.pause();
+      pauseOwn();
       audio.onended = null;
       audio.onerror = null;
+      audio.onpause = null;
       release();
       load(file);
       audio.playbackRate = rate;
@@ -1089,20 +1172,28 @@ export function createThinkingAudio(): ThinkingAudio {
       audio.muted = shellMuted();
       audio.onended = () => { if (generation === token) ended(); };
       audio.onerror = () => { if (generation === token) error(audio?.error?.message || `오디오 오류 ${audio?.error?.code ?? ""}`); };
+      // 끝까지 들려 멈춘 것(ended)·우리가 멈춘 것은 빼고, 바깥이 멈춘 것만 알린다 — 재생기는 일시정지로 바꿔 컨트롤러가 재생 단추를 보인다
+      audio.onpause = () => {
+        if (selfPause) { selfPause = false; return; }
+        if (generation === token && audio && !audio.ended) interrupted?.();
+      };
+      selfPause = false;
       await audio.play();
     },
-    pause() { if (Platform.OS === "web") audio?.pause(); },
+    pause() { if (Platform.OS === "web") pauseOwn(); },
     async resume() {
       if (Platform.OS !== "web") return;
+      selfPause = false;
       await audio?.play();
     },
     stop() {
       if (Platform.OS !== "web") return;
       generation += 1;
       if (audio) {
-        audio.pause();
+        pauseOwn();
         audio.onended = null;
         audio.onerror = null;
+        audio.onpause = null;
         audio.removeAttribute("src");
         audio.load();
       }
@@ -1975,7 +2066,8 @@ function screenParts(root: ReadEl): { block: ReadEl | null; text: string }[] {
     if (!part || part.block !== block) { part = { block, text: "" }; parts.push(part); }
     part.text += node.nodeType === 3 ? node.nodeValue ?? "" : "\n";
   }
-  return parts.map((p) => ({ block: p.block as ReadEl | null, text: p.text.replace(/\n[\t ]*\n\s*/g, "\n").trim() })).filter((p) => /\p{L}/u.test(p.text));
+  return joinSplitParens(parts.map((p) => ({ block: p.block as ReadEl | null, text: p.text.replace(/\n[\t ]*\n\s*/g, "\n").trim() })))
+    .filter((p) => /\p{L}/u.test(p.text));
 }
 /** 읽는 문단 형광펜 — 생각 상자 READING_HIGHLIGHT 와 같은 색. 브라우저 글 강조(CSS Highlight)로 칠해 Paseo 글 요소를 바꾸지 않는다
  *  (요소를 감싸거나 스타일을 바꾸면 번역기가 글을 되돌리거나 Paseo 가 다시 그리며 지운다). 글줄마다 칠해지는 것도 생각 상자와 같다 */

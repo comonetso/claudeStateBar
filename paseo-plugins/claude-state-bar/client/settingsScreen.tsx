@@ -32,6 +32,8 @@ type Draft = Record<SoundKind, { file: string; gain: string }> & {
   warningPercent: string;
   dangerPercent: string;
   workflowBeep: boolean;
+  followDuckPhone: boolean;
+  followDuckWeb: boolean;
   syncWorkspaceOrder: boolean;
   syncLayout: boolean;
   activitySplitPercent: string;
@@ -54,6 +56,8 @@ function toDraft(values: SoundSettings): Draft {
     warningPercent: String(values.warningPercent),
     dangerPercent: String(values.dangerPercent),
     workflowBeep: values.workflowBeep,
+    followDuckPhone: values.followDuckPhone,
+    followDuckWeb: values.followDuckWeb,
     syncWorkspaceOrder: values.syncWorkspaceOrder,
     syncLayout: values.syncLayout,
     activitySplitPercent: String(values.activitySplitPercent),
@@ -77,6 +81,8 @@ function fromDraft(draft: Draft) {
     warningPercent: Number(draft.warningPercent),
     dangerPercent: Number(draft.dangerPercent),
     workflowBeep: draft.workflowBeep,
+    followDuckPhone: draft.followDuckPhone,
+    followDuckWeb: draft.followDuckWeb,
     syncWorkspaceOrder: draft.syncWorkspaceOrder,
     syncLayout: draft.syncLayout,
     activitySplitPercent: Number(draft.activitySplitPercent),
@@ -684,6 +690,29 @@ export function createSettingsScreen(onSaved: () => void, readOnly = false) {
                   onChangeText={(dangerPercent) => setDraft({ ...draft, dangerPercent })}
                   keyboardType="numeric"
                   accessibilityLabel={t.dangerLabel}
+                />
+              </View>
+            </View>
+
+            <View style={styles.card}>
+              <View style={styles.row}>
+                <Text style={styles.text}>{t.followDuckTitle}</Text>
+                <HelpTip theme={theme} text={t.followDuckHelp} fontSize={14} />
+              </View>
+              <Text style={styles.muted}>{t.followDuckHint}</Text>
+              <View style={styles.switchRow}>
+                <Text style={[styles.text, styles.switchText]}>{t.followDuckPhone}</Text>
+                <Switch disabled={readOnly}
+                  value={draft.followDuckPhone}
+                  onValueChange={(followDuckPhone) => setDraft({ ...draft, followDuckPhone })}
+                  accessibilityLabel={`${t.followDuckTitle} — ${t.followDuckPhone}`}
+                />
+              </View>
+              <View style={styles.switchRow}>
+                <Text style={[styles.muted, styles.switchText]}>{t.followDuckWeb}</Text>
+                <Switch disabled
+                  value={draft.followDuckWeb}
+                  accessibilityLabel={`${t.followDuckTitle} — ${t.followDuckWeb}`}
                 />
               </View>
             </View>

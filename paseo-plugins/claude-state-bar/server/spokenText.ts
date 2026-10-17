@@ -34,16 +34,30 @@ export function tableToSentences(text: string): string {
 }
 
 /**
- * 괄호 안은 읽지 않는다(10-13 리규형님 "괄호 안은 거의 필요가 없어") — 소괄호·전각 괄호, 겹친 괄호는 안쪽부터. 짝 없는 괄호는 기호만 지운다.
- * 뒤가 한글·빈칸·부호·끝이면 빈칸 없이 지운다 — "3대(DB)는" 이 "3대 는" 으로 조사 앞에서 끊겨 들렸다. 뒤가 영어·숫자면 빈칸을 둬 낱말이 붙지 않게
+ * 괄호 안을 읽을지(10-16 리규형님 — 10-13 "괄호 안은 통째로 안 읽음"을 바꿈). 괄호 규칙을 만든 이유는 괄호 속 영문 파일명이었다:
+ * 한글이 든 괄호는 안의 영어까지 그대로 읽고, 파일명이라고 판단되는 것(확장자 붙은 이름·경로)이 들었거나 한글이 없는 괄호는 건너뛴다.
+ * 파일명 판단 = 확장자 붙은 이름(work-cli.mjs · readaloud_text.py) 또는 구분자가 붙은 경로(docs/x · C:\ · ~/)
+ */
+// 영문·숫자 이름만 본다 — "(읽기/쓰기)" 같은 한글 사이 빗금은 경로가 아니다
+const FILE_NAME = /[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9]{0,5}(?![A-Za-z0-9])|[A-Za-z0-9_.~-]*[\\/][A-Za-z0-9_.-]+|[A-Za-z]:[\\/]/;
+export function keepParenContent(inner: string): boolean {
+  return /\p{Script=Hangul}/u.test(inner) && !FILE_NAME.test(inner);
+}
+/**
+ * 괄호 정리 — 읽을 괄호는 기호만 빼고 안을 남기고(keepParenContent), 아닌 괄호는 통째로 지운다. 소괄호·전각 괄호, 겹친 괄호는 안쪽부터. 짝 없는 괄호는 기호만 지운다.
+ * 통째로 지울 때 뒤가 한글·빈칸·부호·끝이면 빈칸 없이 — "3대(DB)는" 이 "3대 는" 으로 조사 앞에서 끊겨 들렸다. 뒤가 영어·숫자면 빈칸을 둬 낱말이 붙지 않게
  */
 export function dropParens(text: string): string {
   let prev: string;
   do {
     prev = text;
-    text = text.replace(/\([^()\n]*\)|（[^（）\n]*）/g, (m: string, at: number, all: string) => {
+    text = text.replace(/\(([^()\n]*)\)|（([^（）\n]*)）/g, (m: string, a: string | undefined, b: string | undefined, at: number, all: string) => {
+      const inner = a ?? b ?? "";
       const next = all.charAt(at + m.length);
-      return /[\p{L}\p{N}]/u.test(next) && !/\p{Script=Hangul}/u.test(next) ? " " : "";
+      const spaceAfter = /[\p{L}\p{N}]/u.test(next) && !/\p{Script=Hangul}/u.test(next) ? " " : "";
+      // 읽는 괄호는 안쪽을 남긴다 — 앞은 띄우고, 뒤는 조사·부호면 붙인다("허용(사람 확인)을" → "허용 사람 확인을"). 빈칸 겹침은 끝에서 줄인다
+      if (keepParenContent(inner)) return ` ${inner}${spaceAfter}`;
+      return spaceAfter;
     });
   } while (text !== prev);
   return text.replace(/[()（）]/g, " ");
@@ -128,6 +142,9 @@ export function makeSpokenText(text: string, lang: TargetLang): string {
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(URL_PATTERN, "URL");
+  // 괄호 바로 안쪽의 줄바꿈은 먼저 없앤다 — 화면이 코드 글씨를 따로 상자로 그려 "파일(" ↵ "~/.claude/settings.json" ↵ ")에" 로 들어오면
+  // 괄호로 알아보지 못해 경로를 읽었다(10-16 19:46 리규형님 "괄호안에 경로를 읽었음"). 괄호 판정은 그대로 줄을 넘지 않는다(짝 없는 괄호가 다음 문단을 먹지 않게)
+  spoken = spoken.replace(/([(（])[ \t]*\n\s*/g, "$1").replace(/\s*\n[ \t]*([)）])/g, "$1");
   // 표를 먼저 문장으로(칸 구분 | 가 아래에서 지워지기 전에), 그다음 괄호 안을 지운다(표 칸의 "1명(이 계정)" 도)
   spoken = dropParens(tableToSentences(spoken));
   spoken = shortenPaths(spoken);

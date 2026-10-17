@@ -6,6 +6,7 @@ import { fmtElapsed, fmtStamp, RUNNING_COLOR } from "./format";
 import { NoticeLine, panelStyles, useNotice, type PanelStyles } from "./ui";
 import { useFontScale } from "./fontScale";
 import { useActivity } from "./useActivity";
+import { onPageVisible, pageHidden } from "./pageVisible";
 
 // 확장 작업 현황의 백그라운드 탭(media/bgtasks.js)과 같은 규칙(리규형님 09-22 결정):
 //   · 두 묶음 — Claude 가 백그라운드로 돌린 것(명령·모니터) · 오래 걸린 일반 명령. 묶음 머리는 접힌다
@@ -45,10 +46,15 @@ function OutputBox({ cwd, card, styles }: { cwd: string; card: BgCard; styles: P
         .catch((e) => alive && setText(`읽지 못했습니다: ${String(e)}`));
     read();
     if (card.status !== "running") return () => void (alive = false);
-    const timer = setInterval(read, OUTPUT_POLL_MS);
+    // 가려진 동안은 건너뛰고 다시 보이면 바로 읽는다(10-17 — pageVisible.ts)
+    const timer = setInterval(() => {
+      if (!pageHidden()) read();
+    }, OUTPUT_POLL_MS);
+    const offVisible = onPageVisible(read);
     return () => {
       alive = false;
       clearInterval(timer);
+      offVisible();
     };
   }, [cwd, card.sessionId, card.taskId, card.kind, card.status, fetchOutput]);
 

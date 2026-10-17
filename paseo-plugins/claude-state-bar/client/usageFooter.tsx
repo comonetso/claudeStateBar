@@ -4,17 +4,20 @@ import { usePaseo } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, Text, View, type LayoutChangeEvent } from "react-native";
+import { onPageVisible, pageHidden } from "./pageVisible";
 import { soundProvider } from "./sounds";
 import { readAppFontSizes, readLocal, setNoTranslate, writeLocal } from "./web";
 import { isTeamUsageSource } from "../shared/account";
 
 // 왼쪽 목록 칸 맨 아래에 Claude·Codex 사용량을 둔다(리규형님 10-05 결정 — Paseo 자체 "사용량" 줄은 눌러야 보인다).
 // 10-09 부터 처음엔 접혀 요약 한 줄만 보이고, 올리고 내린 것을 기억한다(아래 UsageFooter).
-// 값은 Paseo 데몬이 이미 받아 둔 것을 그대로 쓴다(providers.listUsage — 데몬이 5분 동안 기억하므로 1분마다 물어도
-// 바깥 조회는 5분에 한 번 이하). 표는 Paseo 가 주는 창 전부(10-07부터 — Fable 같은 모델별 주간 창 포함),
-// 상단 단추 글자는 Paseo 가 요약에 쓰라고 표시한 창(summary)만.
+// 값은 Paseo 데몬이 받아 둔 것을 쓴다(providers.listUsage). 표는 Paseo 가 주는 창 전부(10-07부터 — Fable 같은 모델별
+// 주간 창 포함), 상단 단추 글자는 Paseo 가 요약에 쓰라고 표시한 창(summary)만.
 
-const POLL_MS = 60_000;
+// 10-17 리규형님: 30초마다 새로 받고, 실패하면 1분 · 또 실패하면 2분으로 물러난다(받으면 다시 30초) — "VS Code 확장에서
+// 30초로 써도 한도에 걸린 적 없다". 데몬은 바깥 조회를 5분 기억하므로(UsageSourceRegistry ttlMs) 묻기 직전에 "기억 건너뛰고
+// 새로 받기"를 보낸다(web.ts forceUsageRefresh — 못 하는 판이면 예전처럼 데몬 기억값). 가려진 화면은 묻지 않는다(pageVisible.ts)
+const POLL_STEPS_MS = [30_000, 60_000, 120_000];
 // 글자는 Paseo 설정의 "인터페이스 크기"(사이드바 줄과 같은 크기, 리규형님 10-05: "너무 작다, 인터페이스 크기와 같게").
 // 못 읽으면 앱 웹 기본 14px. 설정을 바꾸면 몇 초 안에 따라온다
 const UI_DEFAULT_PX = 14;
@@ -35,7 +38,7 @@ type Provider = Usage["providers"][number];
 type Window = Provider["windows"][number];
 
 /**
- * 사용량 — 1분마다 데몬에 묻는다. 왼쪽 아래 표와 오른쪽 위 사용량 단추(usageButton)가 같이 쓴다.
+ * 사용량 — 30초마다 데몬에 묻는다(실패하면 1분·2분). 왼쪽 아래 표와 오른쪽 위 사용량 단추(usageButton)가 같이 쓴다.
  * 소리 담당 호스트(이 PC)가 공급자로 올라와 있으면 그 데몬에 묻는다 — 서버 작업 공간의 단추도 같은 숫자를 보이게(10-06).
  * 아직 안 올라왔으면 이 호스트 데몬에 묻는다.
  * 묻기는 화면 전체에 하나만 돈다(10-15). 두 칸이 따로 1분씩 물으니 데몬이 새 값을 받은 직후 한쪽만 바뀌어
@@ -49,21 +52,31 @@ let usageStop: (() => void) | null = null;
 function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
   let alive = true;
   let generation = 0;
+  let step = 0; // POLL_STEPS_MS 몇 번째 간격인지 — 실패할 때마다 한 칸 물러나고 받으면 처음으로
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const publish = (next: UsageSnap) => { usageSnap = next; for (const fn of usageSubs) fn(next); };
   const load = async () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (!alive || pageHidden()) return; // 다시 보이면 아래 onPageVisible 이 부른다
     const mine = ++generation;
+    const provider = uiProvider() ?? soundProvider();
+    let failed = false;
     try {
-      const fromProvider = (uiProvider() ?? soundProvider())?.usage;
-      const next = fromProvider ? await fromProvider() : await paseo.providers.listUsage();
+      if ((provider?.refreshUsage ? await provider.refreshUsage() : null) === false) failed = true;
+      const next = provider?.usage ? await provider.usage() : await paseo.providers.listUsage();
       if (alive && mine === generation) publish({ usage: next, error: null });
     } catch (e) {
+      failed = true;
       if (alive && mine === generation) publish({ usage: usageSnap.usage, error: String(e) });
     }
+    if (!alive || mine !== generation) return;
+    step = failed ? Math.min(step + 1, POLL_STEPS_MS.length - 1) : 0;
+    timer = setTimeout(() => void load(), POLL_STEPS_MS[step]);
   };
   void load();
   const off = onUiRole(() => { publish({ usage: null, error: null }); void load(); });
-  const timer = setInterval(() => void load(), POLL_MS);
-  return () => { alive = false; clearInterval(timer); off(); };
+  const offVisible = onPageVisible(() => void load());
+  return () => { alive = false; if (timer) clearTimeout(timer); off(); offVisible(); };
 }
 
 export function useUsage(): UsageSnap {

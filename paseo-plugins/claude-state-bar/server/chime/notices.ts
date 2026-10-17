@@ -36,6 +36,31 @@ export interface TaskNotices {
      *  (resumeFromRunId) can end `completed` while an agent of the earlier, cut-off attempt never wrote a result;
      *  an agent whose log stopped before this time is not running (Mesa wf_c0345637-ce7, 2026-10-15). */
     runEnds?: Map<string, number>;
+    /** Times the conversation's Claude process was replaced, oldest first. A workflow or sub-agent whose log
+     *  stopped before one of these and never wrote a result died with the old process. Read by the activity
+     *  panel only — the chime does not use it. */
+    restarts?: number[];
+}
+
+// The relay's team rotation (claude-rc-relay/rotation.mjs) restarts Claude and then types this line into the
+// conversation. On 2026-10-16 19:15 it cut two Mesa workflows mid-request, and the new process left a "previous
+// session" notice for a background shell it lost but none for the two runs — so they read as running for six
+// hours. Either signal now marks the process change (user's call, 2026-10-17: both).
+const ROTATION_RESTART = '[rotation] 팀 계정 자동 전환으로 이 대화의 Claude 가 다시 떴다';
+
+/** The text the user (or the relay, typing as the user) sent on this line — not a tool result or a quote. */
+function promptText(entry: any): string {
+    if (entry?.type === 'user' && !entry.origin) {
+        const raw = entry.message?.content;
+        if (typeof raw === 'string') return raw;
+        if (Array.isArray(raw) && raw[0]?.type === 'text') return raw[0].text || '';
+        return '';
+    }
+    if (entry?.type === 'attachment' && entry.attachment?.type === 'queued_command'
+        && typeof entry.attachment.prompt === 'string' && entry.attachment.commandMode !== 'task-notification') {
+        return entry.attachment.prompt;
+    }
+    return '';
 }
 
 /** Every task id a notice names. On restart Claude Code reports the tasks the old process left behind in ONE
@@ -50,8 +75,21 @@ export function parseTaskNotices(text: string): TaskNotices {
     const byRun = new Map<string, string>();
     const byTask = new Map<string, { status: string; at: number }>();
     const runEnds = new Map<string, number>();
+    const restarts: number[] = [];
+    const timeOf = (entry: any): number => {
+        const t = typeof entry?.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+        return Number.isFinite(t) ? t : 0;
+    };
     for (const line of text.split('\n')) {
         if (!line) continue;
+
+        if (line.includes(ROTATION_RESTART)) {
+            try {
+                const entry = JSON.parse(line);
+                const at = timeOf(entry);
+                if (at && promptText(entry).trimStart().startsWith(ROTATION_RESTART)) restarts.push(at);
+            } catch { /* not a whole line */ }
+        }
 
         if (line.includes('Task ID:')) {
             const tid = /Task ID: (\w+)/.exec(line);
@@ -83,8 +121,10 @@ export function parseTaskNotices(text: string): TaskNotices {
 
         const status = /<status>(\w+)<\/status>/.exec(content)?.[1];
         if (!status) continue;
-        const parsedAt = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
-        const at = Number.isFinite(parsedAt) ? parsedAt : 0;
+        const at = timeOf(entry);
+        // "…didn't finish before the previous session ended" / "No completion record was found … in the previous
+        // session": whatever task it names, the process before this one is gone.
+        if (at && status === 'stopped' && /previous session/.test(content)) restarts.push(at);
         const taskIds = noticeTaskIds(content);
         const runs = new Set<string>();
         for (const taskId of taskIds) {
@@ -99,5 +139,6 @@ export function parseTaskNotices(text: string): TaskNotices {
             if (at) runEnds.set(run, at);
         }
     }
-    return { byRun, byTask, runEnds };
+    restarts.sort((a, b) => a - b);
+    return { byRun, byTask, runEnds, restarts };
 }

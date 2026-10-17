@@ -1,6 +1,7 @@
 import { useRpc, useWorkspace } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activityList, type BgCard, type WorkflowCard } from "../shared/activity";
+import { onPageVisible, pageHidden } from "./pageVisible";
 
 type ActivityData = { projectDir: string | null; sessions: number; workflows: WorkflowCard[]; background: BgCard[] };
 
@@ -39,8 +40,15 @@ export function useActivity(workspaceId: string, isLive: (data: ActivityData) =>
   const live = data ? isLive(data) : false;
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), live ? LIVE_POLL_MS : IDLE_POLL_MS);
-    return () => clearInterval(timer);
+    // 가려진 동안은 건너뛰고 다시 보이면 바로 읽는다(10-17 — pageVisible.ts)
+    const timer = setInterval(() => {
+      if (!pageHidden()) void load();
+    }, live ? LIVE_POLL_MS : IDLE_POLL_MS);
+    const offVisible = onPageVisible(() => void load());
+    return () => {
+      clearInterval(timer);
+      offVisible();
+    };
   }, [load, live]);
 
   return { directory, data, error, live, reload: load };

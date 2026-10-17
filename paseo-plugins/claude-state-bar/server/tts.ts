@@ -1,3 +1,6 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { TargetLang } from "../shared/translate";
 import { GOOGLE_LANGUAGE_CODES, GOOGLE_VOICES, OPENAI_VOICES, LANGUAGE_NAMES, PREVIEW_TEXT, type AudioProvider } from "../shared/speech";
 import { readGoogleKeys } from "./googleKeys";
@@ -24,6 +27,24 @@ function pausesMarkup(text: string, lang: TargetLang): string | null {
   if (!/,\s|\u2003/.test(text)) return null;
   return text.replace(/\[/g, "(").replace(/\]/g, ")")
     .replace(/,(?=\s)/g, ", [pause short]").replace(/\u2003/g, " [pause] ");
+}
+
+/**
+ * 음성 회사로 실제로 보낸 글 — 최근 SENT_KEEP 개만 이 기기 파일에 남긴다(10-16 리규형님 "')' 를 '작은괄호 닫기'로 읽더라" — 코드로는
+ * 괄호가 음성까지 가는 길을 못 찾아, 다시 들리면 그 시각의 보낸 글로 바로 찾는다). 화면에 보이던 글이라 비밀값은 아니지만 이 기기 밖으로 내보내지 않는다
+ */
+const SENT_FILE = join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "claude-state-bar", "tts-sent.jsonl");
+const SENT_KEEP = 50;
+let sentLines: string[] | null = null;
+let sentWriting: Promise<void> = Promise.resolve();
+function noteSent(texts: string[], lang: TargetLang, provider: AudioProvider): void {
+  sentWriting = sentWriting.then(async () => {
+    if (!sentLines) sentLines = (await readFile(SENT_FILE, "utf8").catch(() => "")).split("\n").filter(Boolean).slice(-SENT_KEEP);
+    for (const text of texts) sentLines.push(JSON.stringify({ at: new Date().toISOString(), lang, provider, text: text.slice(0, 1200) }));
+    sentLines = sentLines.slice(-SENT_KEEP);
+    await mkdir(dirname(SENT_FILE), { recursive: true });
+    await writeFile(SENT_FILE, sentLines.join("\n") + "\n", { mode: 0o600 });
+  }).catch(() => { /* 기록 실패는 읽기에 영향 없음 */ });
 }
 
 function fits(text: string, lang: TargetLang): boolean {
@@ -132,6 +153,7 @@ export async function synthesizeVoice(text: string, lang: TargetLang, provider: 
     }
     const chunks = splitInput(spoken, lang);
     count = chunks.length;
+    noteSent(chunks.map((c) => (provider === "google" ? pausesMarkup(c, lang) ?? c : c)), lang, provider);
     const audio: Buffer[] = [];
     for (const chunk of chunks) {
       const markup = provider === "google" ? pausesMarkup(chunk, lang) : null;

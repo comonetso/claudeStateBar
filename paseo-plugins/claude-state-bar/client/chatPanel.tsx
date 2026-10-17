@@ -6,6 +6,7 @@ import { ChatTrashDrawer } from "./chatTrash";
 import { fmtClock } from "./format";
 import { NoticeLine, panelStyles, StatusChip, useNotice } from "./ui";
 import { useFontScale } from "./fontScale";
+import { onPageVisible, pageHidden } from "./pageVisible";
 
 // 확장 Codex 채팅 탭(media/codexchat.js): codex_rescue 채팅(핑퐁) 대화 카드, 펼치면 턴마다 Claude 말 · Codex 말.
 // 턴 펼침 규칙(리규형님 08-23 결정, 다시 정하지 않는다):
@@ -110,8 +111,15 @@ export function CodexChatPanel({ theme, layout, workspaceId }: PluginWorkspacePa
   const live = !!chats?.some((ch) => ch.live);
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), live ? LIVE_POLL_MS : IDLE_POLL_MS);
-    return () => clearInterval(timer);
+    // 가려진 동안은 건너뛰고 다시 보이면 바로 읽는다(10-17 — pageVisible.ts)
+    const timer = setInterval(() => {
+      if (!pageHidden()) void load();
+    }, live ? LIVE_POLL_MS : IDLE_POLL_MS);
+    const offVisible = onPageVisible(() => void load());
+    return () => {
+      clearInterval(timer);
+      offVisible();
+    };
   }, [load, live]);
 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
