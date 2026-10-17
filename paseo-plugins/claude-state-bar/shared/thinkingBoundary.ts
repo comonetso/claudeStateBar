@@ -27,8 +27,12 @@ export type CutResult = { cut: number | null; matched: boolean };
  * - 칸k 가 들어오는 중(상자 글이 칸k 앞부분에서 끝남)이면 칸k 시작(k≥2)
  * - 기록의 칸을 다 지나고도 상자 글이 길면 기록에 아직 안 적힌 다음 칸이 들어오는 중 — 그 시작
  * 글은 \r 을 뺀 뒤 비교한다(Paseo 생각 감시도 \r 을 뺀다).
+ * closed(묶음마다, 뒤에 도구·본문 블록이 기록됐는가 — 없으면 예전 동작): 한 칸 묶음이 닫혔으면 0(통째로 꺼낸다) — 10-18 리규형님 "한 칸뿐이면 밖으로".
+ * 진행 글은 생각 없이 혼자 생각 칸으로 오기도 하고(공식 문서 progress updates), summarized 에선 실제 생각과 구별할 표시가 없다 — 실제 생각이
+ * 한 칸으로 온 응답도 밖으로 나가는 것은 받아들였다. 아직 안 닫힌 한 칸은 "기록에 아직 없음"(matched=false) — 두 칸 응답의 첫 칸(실제 생각)이
+ * 먼저 도착한 순간 0 을 주면 화면이 그 자리로 굳혀 다시 묻지 않는다. 다시 찾게 둔다
  */
-export function cutFromRuns(runs: readonly (readonly string[])[], text: string): CutResult {
+export function cutFromRuns(runs: readonly (readonly string[])[], text: string, closed?: readonly boolean[]): CutResult {
   for (let r = runs.length - 1; r >= 0; r--) {
     const run = runs[r];
     if (!run.length || !run[0] || !text.startsWith(run[0].slice(0, Math.min(run[0].length, text.length)))) continue;
@@ -38,7 +42,11 @@ export function cutFromRuns(runs: readonly (readonly string[])[], text: string):
       const block = run[k];
       const end = pos + block.length;
       if (text.length >= end && text.startsWith(block, pos)) {
-        if (text.length === end) return { cut: k >= 1 ? pos : null, matched: true };
+        if (text.length === end) {
+          if (k >= 1) return { cut: pos, matched: true };
+          if (closed && run.length === 1) return closed[r] ? { cut: 0, matched: true } : { cut: null, matched: false };
+          return { cut: null, matched: true };
+        }
         pos = end;
         continue;
       }

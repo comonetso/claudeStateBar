@@ -199,8 +199,10 @@ export function workRecorder({ agentId, log = () => {}, env = process.env, ephem
   const failed = new Set();
   const fail = (what) => (e) => { if (!failed.has(what)) { failed.add(what); log(`work state ${what} write failed: ${e?.code ?? e?.message ?? e}`); } };
   let stale = false;
+  // 등록 여부는 쓸 때마다 다시 본다 — 떠 있는 동안 등록된 대화도 관측을 쓰게(10-18 Mesa d30c37a7: 실행기가 등록 6분 전에 떠
+  // 관측을 한 줄도 안 써서 감독자가 백그라운드 대기를 멈춤으로 보고 알림을 세 번 보냈다). 등록 파일은 작아 읽기 부담이 없다
   const writer = serialWriter((snap) => {
-    if (stale || (!snap.active && !registered)) return;
+    if (stale || (!snap.active && !isRegistered(root, agentId))) return;
     if (writeObserve(root, agentId, snap) === "stale") { stale = true; log("work state observe — a newer launcher owns this agent, stopped writing"); }
   }, fail("observe"));
   const onTransition = (t) => {

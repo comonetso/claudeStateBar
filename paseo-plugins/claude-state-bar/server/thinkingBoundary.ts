@@ -3,6 +3,7 @@ import { open, stat } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { cutFromRuns } from "../shared/thinkingBoundary";
+import { baseOf } from "./account";
 import { locateSession } from "./chime/tracker";
 
 // 생각 상자에서 Claude 의 말을 꺼낼 자리를 Claude 원본 기록(jsonl)으로 찾는다(10-09, 까닭은 shared/thinkingBoundary.ts).
@@ -93,6 +94,22 @@ export function runsOf(messages: Iterable<(string | null)[]>): string[][] {
   return runs;
 }
 
+/** runsOf 와 같은 순서로, 묶음마다 뒤에 다른 블록(도구·본문)이 기록됐는가 — 그 생각 묶음이 끝났다는 뜻(10-18, cutFromRuns closed) */
+export function runsClosedOf(messages: Iterable<(string | null)[]>): boolean[] {
+  const closed: boolean[] = [];
+  for (const seq of messages) {
+    let open = false;
+    for (const item of seq) {
+      if (item === null) {
+        if (open) closed.push(true);
+        open = false;
+      } else open = true;
+    }
+    if (open) closed.push(false);
+  }
+  return closed;
+}
+
 async function sessionFile(paseo: PaseoApi, agentId: string, fresh = false): Promise<string | null> {
   const known = fresh ? undefined : sessions.get(agentId);
   if (known) {
@@ -101,7 +118,9 @@ async function sessionFile(paseo: PaseoApi, agentId: string, fresh = false): Pro
     sessions.delete(agentId);
   }
   const agent = (await paseo.agents.ref(agentId).refresh())?.agent;
-  if (!agent || agent.provider !== "claude") return null;
+  // 개인 claude 와 그것을 이어받은 팀 공급자(claude-yeogiaen·claude-hrg 등, Paseo 설정 extends === "claude") 모두 — 10-18 전엔 이름이
+  // 정확히 "claude" 일 때만 찾아서 팀 대화의 진행 글이 늘 상자에 갇혔다. 기록은 모두 같은 projects 폴더에 쌓인다(PC 는 팀 폴더가 정션, 서버는 열쇠 방식)
+  if (!agent || !baseOf(agent.provider)) return null;
   const sessionId = agent.persistence?.sessionId ?? agent.runtimeInfo?.sessionId;
   if (!sessionId) return null;
   sessions.set(agentId, sessionId);
@@ -151,7 +170,7 @@ export async function thinkingCut(paseo: PaseoApi, agentId: string, text: string
   let waited = false;
   for (;;) {
     const ix = await load(file);
-    const found = cutFromRuns(runsOf(ix.messages.values()), clean);
+    const found = cutFromRuns(runsOf(ix.messages.values()), clean, runsClosedOf(ix.messages.values()));
     if (found.matched) {
       // 기다렸다 찾은 경우 — 생각이 다 들어온 뒤 기록에 늦게 적히는 일이 얼마나 잦은지 본다(10-09)
       if (waited) console.log(`[thinking] boundary found after ${Date.now() - started}ms wait agent=${agentId.slice(0, 8)} cut=${found.cut ?? "none"}`);

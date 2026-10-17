@@ -66,16 +66,24 @@ export function seatWasBlocked(observe) {
   return (observe.limited === true && typeof observe.limitReset === "number") || (seat?.status === "limit" && typeof seat.resetsAt === "number");
 }
 
+/** 턴 끝 문지기가 이번 턴에 "백그라운드 작업 대기"로 통과시켰는가 — 판정 시각이 이 감독자가 본 턴 시작보다 뒤일 때만(턴 시작을 모르면 false) */
+export function gateWaiting(gate, turnStartAt) {
+  if (gate?.verdict !== "pass" || gate.code !== "background_wait" || !(turnStartAt > 0)) return false;
+  const at = Date.parse(gate.at ?? "");
+  return Number.isFinite(at) && at >= turnStartAt;
+}
+
 /**
  * 한 대화의 판단 — 순수 함수. 돌려주는 값 { status, reason, dueAt(ms, 0 = 없음), actions }
  * actions: {t:"notify", key, title, body} · {t:"transition", tid, patch} · {t:"wake", why} · {t:"hold", reason} · {t:"outbox", patch} ·
  *          {t:"perm_seen", id, at}(권한 요청을 처음 봄) · {t:"deny", id, message}(답 없어 거절) · {t:"stop_seen", key, at}(멈춤을 처음 봄)
  * c: now · snap(Paseo 상태: status·activeTurn·pendingPermissions·archivedAt) · work/workError · observe · relayAlive(실행기 생존) ·
- *    transitions · ownerAlive(t) · sv(감독자 기록) · autoSend · seenResume(Set tid) · seenWake(bool) · lastFailedAt(ms) · settleMs(멈춤 대기, 시험용)
+ *    transitions · ownerAlive(t) · sv(감독자 기록) · autoSend · seenResume(Set tid) · seenWake(bool) · lastFailedAt(ms) · settleMs(멈춤 대기, 시험용) ·
+ *    gate(턴 끝 문지기의 마지막 판정 파일) · turnStartAt(이 감독자가 본 마지막 턴 시작 ms, 모르면 0)
  */
 export function decideAgent(c) {
   const { now, snap, work, workError, observe, relayAlive = false, transitions = [], ownerAlive = () => false, sv = {}, autoSend = false,
-    seenResume = new Set(), seenWake = false, lastFailedAt = 0, settleMs = STOP_SETTLE_MS } = c;
+    seenResume = new Set(), seenWake = false, lastFailedAt = 0, settleMs = STOP_SETTLE_MS, gate = null, turnStartAt = 0 } = c;
   const actions = [];
   const out = (status, reason, dueAt = 0) => ({ status, reason, dueAt, actions });
   const notify = (key, title, body) => actions.push({ t: "notify", key, title, body });
@@ -237,6 +245,10 @@ export function decideAgent(c) {
       const miss = missingFields(work, now);
       if (miss.length) { notify(`invalid:${work.rev}`, "판별 불가", `장부 칸이 비었습니다: ${miss.join(", ")}`); return out("invalid_work", "장부 칸 빠짐"); }
       if (relayAlive && observe?.background?.waited > 0) return out("background", `서브에이전트·워크플로우 ${observe.background.waited}개 대기 — 끝나면 Claude 가 스스로 깬다`);
+      // 실행기 관측이 없으면 이번 턴 끝의 문지기 판정으로 대신한다(10-18 Mesa d30c37a7: 실행기가 등록 6분 전에 떠 관측을 안 써서
+      // 문지기는 "백그라운드 작업 대기"로 통과시켰는데 감독자는 "멈춤 — 할 일 남음"을 세 번 보냈다). 이번 턴 시작 뒤의 판정만 믿고,
+      // 턴 시작을 못 봤으면(감독자가 다시 뜬 직후) 예전처럼 알린다 — 문지기가 이번 턴에 안 돌았을 때 옛 판정으로 진짜 멈춤을 놓치지 않게
+      if (!observe && gateWaiting(gate, turnStartAt)) return out("background", "문지기 판정: 백그라운드 작업 대기 — 끝나면 Claude 가 스스로 깬다(실행기 관측 없음)");
       const until = providerBlockedUntil(observe, now);
       if (until) return out("waiting_provider", "좌석 한도 — 초기화 대기", until);
       return wake("할 일이 남았는데 멈춤");
@@ -334,6 +346,10 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
   const agents = new Map();
   const watchers = new Map();
   let timer = null, stopped = false, poolBusy = false, poolAgain = false;
+  // 문지기 판정(gateWaiting)에는 턴 시작을 아직 못 본 대화면 감독자가 뜬 시각을 넘긴다 — 뜬 뒤의 문지기 판정은 뜬 뒤 끝난 턴의 것이다.
+  // 0 을 넘기면 다시 불러온 직후 돌던 턴이 끝날 때 문지기 판정을 버려 잘못된 멈춤 알림이 한 번 더 나간다(10-18 배포 직후 Mesa).
+  // turnStartAt 자체는 0 그대로 둔다 — onTurnEnded 의 "예상한 종료" 판정이 0 일 때 따로 최근 RECHECK_MS 를 본다
+  const bootAt = now();
   const st = (id) => {
     let s = agents.get(id);
     if (!s) { s = { busy: false, again: false, turnStartAt: 0, lastFailedAt: 0, events: [], dueHandled: null }; agents.set(id, s); }
@@ -408,7 +424,7 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
   async function evaluate(id, why) {
     const reg = registered();
     if (!reg || !Object.hasOwn(reg.agents, id)) { agents.delete(id); return; }
-    const w = readJson(p.work(id)), o = readJson(p.observe(id)).value ?? null;
+    const w = readJson(p.work(id)), o = readJson(p.observe(id)).value ?? null, g = readJson(p.gate(id)).value ?? null;
     const transitions = listTransitions(root, id);
     let sv = readSv(id);
     // 사람이 명시적으로 보류를 푼다(work-cli resume — 요청 파일 하나만 남기고 감독자가 지운다)
@@ -437,7 +453,7 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
     }
     const s = st(id);
     const d = decideAgent({ now: now(), snap, work: w.value ?? null, workError: w.error ?? null, observe: o, relayAlive: relayAlive(o),
-      transitions, ownerAlive, sv, autoSend: reg.autoSend, seenResume, seenWake, lastFailedAt: s.lastFailedAt, settleMs });
+      transitions, ownerAlive, sv, autoSend: reg.autoSend, seenResume, seenWake, lastFailedAt: s.lastFailedAt, settleMs, gate: g, turnStartAt: s.turnStartAt || bootAt });
     const agentInfo = { id, workspaceId: snap?.workspaceId ?? null, cwd: snap?.cwd ?? "", label: reg.agents[id]?.label ?? null };
     for (const n of applied.notices) raise({ ...n.agent, label: agentInfo.label }, n.key, n.title, n.body);
     // 권한 창 알림은 턴 안에서 풀린다(새 턴 시작이 없다) — 풀린 판단이면 지운다. 이번 판단이 새 알림을 올리면 그 알림이 대신한다

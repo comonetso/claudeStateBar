@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { applyAccount, HOME, watchAccount } from "./account.mjs";
+import { createAssistantFix } from "./assistant-fix.mjs";
 import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, shouldResume, startResumeKicker, takeHandoff } from "./rotation.mjs";
 import { isRegistered, workRecorder, workRoot } from "./workstate.mjs";
 
@@ -246,53 +247,8 @@ const handleLine = (line) => {
   }
   return true;
 };
-// Paseo 화면 중복 막기(10-05 리규형님 "대화가 중복으로 계속 나온다").
-// Claude 는 한 응답의 완성본(assistant 줄)을 블록마다 따로, 그 블록만 담아 보낸다(실측). Paseo 0.11 의 조립기
-// (TimelineAssembler.applyAbsoluteFragments)는 완성본을 "그 응답의 지금까지 전체"로 보고, 실시간 조각으로 쌓은 글과
-// 앞부분이 다르면 처음부터 다시 그린 셈 친다. 그래서 같은 응답에 생각·본문 블록이 둘 이상이면 두 번째부터 두 번 나온다.
-// 본 대화 줄의 첫 생각·본문 블록 앞에 같은 응답에서 앞서 나온 글을 붙여 Paseo 가 기대하는 모양으로 맞춘다.
-// 서브에이전트 줄(parent_tool_use_id)은 Paseo 가 조립기를 거치지 않고 블록마다 그리므로 손대지 않는다.
-let curMsgId = null;
-let prevThinking = "";
-let prevText = "";
-const fixAssistant = (line) => {
-  if (!line.includes('"type":"assistant"')) return line;
-  let o;
-  try {
-    o = JSON.parse(line);
-  } catch {
-    return line;
-  }
-  if (o.type !== "assistant" || o.parent_tool_use_id || !Array.isArray(o.message?.content) || !o.message.id) return line;
-  if (o.message.id !== curMsgId) {
-    curMsgId = o.message.id;
-    prevThinking = "";
-    prevText = "";
-  }
-  const pT = prevThinking;
-  const pX = prevText;
-  let changed = false;
-  let firstThinking = true;
-  let firstText = true;
-  for (const b of o.message.content) {
-    if (b?.type === "thinking" && typeof b.thinking === "string" && b.thinking) {
-      prevThinking += b.thinking;
-      if (firstThinking && pT) {
-        b.thinking = pT + b.thinking;
-        changed = true;
-      }
-      firstThinking = false;
-    } else if (b?.type === "text" && typeof b.text === "string" && b.text) {
-      prevText += b.text;
-      if (firstText && pX) {
-        b.text = pX + b.text;
-        changed = true;
-      }
-      firstText = false;
-    }
-  }
-  return changed ? JSON.stringify(o) + "\n" : line;
-};
+// Paseo 화면 중복 막기(10-05) — 까닭과 방법은 assistant-fix.mjs. 팀 실행기도 같은 것을 쓴다(10-18)
+const fixAssistant = createAssistantFix();
 // 조각 경계에서 잘린 한글이 깨지지 않게 디코더로 이어 붙인다
 const decoder = new StringDecoder("utf8");
 child.stdout.on("data", (chunk) => {

@@ -8,7 +8,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { applyAccount, HOME, watchAccount } from "../claude-rc-relay/account.mjs";
+import { createAssistantFix } from "../claude-rc-relay/assistant-fix.mjs";
 import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, shouldResume, startResumeKicker, takeHandoff } from "../claude-rc-relay/rotation.mjs";
 import { isRegistered, workRecorder, workRoot } from "../claude-rc-relay/workstate.mjs";
 
@@ -69,12 +71,30 @@ if (handoff) {
   process.stdin.on("end", () => { forward.end(); child.stdin.end(); });
 } else process.stdin.pipe(child.stdin);
 child.stdin.on("error", () => { /* Claude 가 먼저 종료됨 */ });
+// Paseo 화면 중복 막기(10-18, ../claude-rc-relay/assistant-fix.mjs) — 이 실행기엔 없어서 PC 팀 대화의 생각 상자에 진행 글이 두 번 찍혔다.
+// 줄 단위로 고쳐 넘긴다. 자동 전환 관측(output)은 고치기 전 원본 바이트로 본다. 조각 경계에서 잘린 한글이 깨지지 않게 디코더로 이어 붙인다
+const fixAssistant = createAssistantFix();
+const decoder = new StringDecoder("utf8");
+let outBuf = "";
 child.stdout.on("data", (chunk) => {
   output.write(chunk);
-  if (!process.stdout.write(chunk)) child.stdout.pause();
+  outBuf += decoder.write(chunk);
+  let nl;
+  let pass = "";
+  while ((nl = outBuf.indexOf("\n")) >= 0) {
+    const line = outBuf.slice(0, nl + 1);
+    outBuf = outBuf.slice(nl + 1);
+    pass += fixAssistant(line);
+  }
+  if (pass && !process.stdout.write(pass)) child.stdout.pause();
 });
 process.stdout.on("drain", () => child.stdout.resume());
-child.stdout.on("end", output.end);
+child.stdout.on("end", () => {
+  output.end();
+  outBuf += decoder.end();
+  if (outBuf) process.stdout.write(fixAssistant(outBuf));
+  outBuf = "";
+});
 // 켜져 있는 동안 이 대화의 계정 기록이 바뀌면 Claude 를 끈다 — 다음 말 때 Paseo 가 이 실행기를 다시 띄우며 새 계정이 적용된다
 const stopAccountWatch = ephemeral ? () => {} : watchAccount(agentId, () => {
   log(`account changed (agent ${String(agentId).slice(0, 8)}) — stopping claude; the next message restarts it`);

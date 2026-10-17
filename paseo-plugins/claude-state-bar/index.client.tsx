@@ -129,10 +129,11 @@ export default function contribute(client: PluginClientContext) {
   const watchChimes = (agent: { id: string; provider: string; cwd: string; workspaceId?: string | null; persistence?: { sessionId?: string | null } | null }, initial = false) => {
 
     const sessionId = agent.persistence?.sessionId;
-    if (agent.provider !== "claude" || !sessionId) return;
+    // Claude 계열(개인 claude·팀 공급자)인지는 데몬이 공급자 이름으로 가린다(10-18 — 전엔 여기서 "claude" 만 받아 팀 대화엔 작업 끝 소리가 없었다)
+    if (!sessionId) return;
     sessionToAgent.set(sessionId, agent.id);
 
-    chimeWatcher.poke(sessionId, agent.cwd, initial);
+    chimeWatcher.poke(sessionId, agent.cwd, initial, agent.provider);
   };
 
   // 이 호스트가 소리를 낼 수 있으면(윈도우·맥 데몬) 공급자로 등록하고 설정 화면을 붙인다

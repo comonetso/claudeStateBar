@@ -73,7 +73,7 @@ import { importExtSettings } from "./server/extSettings";
 import { extSettingsImport } from "./shared/extSettings";
 import { collectClaudeStats } from "./server/stats/claudeStats";
 import { claudeStats } from "./shared/stats";
-import { forgetAccount, providerFromDisk, stopAccounts, switchAccount, waitAccounts } from "./server/account";
+import { baseOf, forgetAccount, providerFromDisk, stopAccounts, switchAccount, waitAccounts } from "./server/account";
 import { accountSwitch, accountsWait, personalLoginKeep } from "./shared/account";
 import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCode, waitLogin } from "./server/claudeLogin";
 import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
@@ -110,7 +110,10 @@ export default function contribute(server: PluginServerContext) {
     return { platform: process.platform, canPlay: canPlayHere(), team, ...(team && process.env.HOME ? { home: process.env.HOME } : {}), ...(await hostIdentity()) };
   });
   server.handle(chimeCheck, async ({ clientId, sessionId, cwd }) => checkSession(clientId, sessionId, cwd));
-  server.handle(chimeCheckV2, async ({ clientId, sessionId, cwd, baseline }) => checkSessionV2(clientId, sessionId, cwd, baseline));
+  // provider 가 오면 Claude 계열(개인 claude·팀 공급자)만 본다 — 화면은 Paseo 설정을 몰라 이름만 실어 보낸다(10-18 전엔 화면이 "claude" 만 보내 팀 대화엔 작업 끝 소리가 없었다).
+  // 옛 화면은 provider 없이 claude 대화만 보낸다
+  server.handle(chimeCheckV2, async ({ clientId, sessionId, cwd, baseline, provider }) =>
+    provider !== undefined && !baseOf(provider) ? { events: [], found: false } : checkSessionV2(clientId, sessionId, cwd, baseline));
   server.handle(lastTurnCheck, async ({ sessionId }) => ({ commandOnly: await lastTurnCommandOnly(sessionId) }));
   server.handle(chimeForget, async ({ clientId }) => {
     forgetClient(clientId);
