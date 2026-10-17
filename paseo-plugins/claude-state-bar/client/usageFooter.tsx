@@ -18,6 +18,10 @@ import { isTeamUsageSource } from "../shared/account";
 // 30초로 써도 한도에 걸린 적 없다". 데몬은 바깥 조회를 5분 기억하므로(UsageSourceRegistry ttlMs) 묻기 직전에 "기억 건너뛰고
 // 새로 받기"를 보낸다(web.ts forceUsageRefresh — 못 하는 판이면 예전처럼 데몬 기억값). 가려진 화면은 묻지 않는다(pageVisible.ts)
 const POLL_STEPS_MS = [30_000, 60_000, 120_000];
+// 🔴 10-17 09:26 부터 개인 Claude 조회가 "Rate limited by Claude. Try again in 1m."(Anthropic 횟수 제한)으로 막혀 카드가
+// 사라졌다(PC 데몬 기록 plugin-service "Usage fetch failed" sourceId claude) — 30초마다 강제하면 걸리고, 2분으로 물러나도 안 풀렸다.
+// 강제는 끈다: 30초마다 묻되 데몬 기억값(5분)만 읽는다. 다시 켜려면 걸리지 않는 간격·방법을 실측으로 정한 뒤에
+const FORCE_USAGE_REFRESH = false;
 // 글자는 Paseo 설정의 "인터페이스 크기"(사이드바 줄과 같은 크기, 리규형님 10-05: "너무 작다, 인터페이스 크기와 같게").
 // 못 읽으면 앱 웹 기본 14px. 설정을 바꾸면 몇 초 안에 따라온다
 const UI_DEFAULT_PX = 14;
@@ -62,7 +66,7 @@ function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
     const provider = uiProvider() ?? soundProvider();
     let failed = false;
     try {
-      if ((provider?.refreshUsage ? await provider.refreshUsage() : null) === false) failed = true;
+      if (FORCE_USAGE_REFRESH && (provider?.refreshUsage ? await provider.refreshUsage() : null) === false) failed = true;
       const next = provider?.usage ? await provider.usage() : await paseo.providers.listUsage();
       if (alive && mine === generation) publish({ usage: next, error: null });
     } catch (e) {
