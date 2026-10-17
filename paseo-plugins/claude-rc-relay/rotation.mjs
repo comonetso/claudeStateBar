@@ -336,7 +336,7 @@ function sevenDay(info) {
  */
 export function createRotation({ real, env, initialEnv, agentId, log = () => {}, enabled = true,
   providers: getProviders = readProviders, entry: getEntry = accountEntry, write = writeAccount, probe = probeUsage, handoff = () => {}, testFile = null,
-  runGen = `${process.pid}-${Date.now()}`, record = null, onTransition = null, teamIds = TEAM_PROVIDER_IDS, personalFile = null }) {
+  runGen = `${process.pid}-${Date.now()}`, record = null, onTransition = null, teamIds = TEAM_PROVIDER_IDS, personalFile = null, registered = null }) {
   const providers = getProviders(), original = getEntry(agentId);
   const base = original?.base ?? providerForEnv(initialEnv, providers);
   const current = original?.to ?? providerForEnv(env, providers);
@@ -345,7 +345,14 @@ export function createRotation({ real, env, initialEnv, agentId, log = () => {},
     && providerForEnv(env, providers) === current;
   // 개인 포함 스위치는 판정마다 다시 본다 — 떠 있는 실행기도 켜고 끄는 즉시 따른다(10-17)
   const personal = () => personalSwitchOn(personalFile);
-  const isActive = () => eligible && (isTeam(currentProvider, teamIds) || (isPersonal(currentProvider) && personal()));
+  // 자동 전환은 무중단 등록 대화만(10-17 밤 리규형님 "자동은 무리가 있다 · 잘 때 Mesa 무중단은 팀플랜만 · 그 밖은 내가 판단해서 수동으로").
+  // 한도 거절·99% 강제·쉬는 틈 모두 이 관문을 지난다. 장부는 판정마다 다시 읽는다 — 등록·해제하면 떠 있는 실행기도 바로 따른다.
+  // registered 를 넘기지 않으면(실행기 밖 단위 시험) 대화를 가리지 않는다. 장부를 못 읽으면 넘기지 않는다
+  const nonstop = () => {
+    if (!registered) return true;
+    try { return registered() === true; } catch { return false; }
+  };
+  const isActive = () => eligible && (isTeam(currentProvider, teamIds) || (isPersonal(currentProvider) && personal())) && nonstop();
   // 개인으로 돌아가기(10-17) — 개인을 다시 재 볼 시각(초). 0 = 아직 안 재 봄(첫 쉬는 틈에 잰다). 90% 이상·한도면 그 리셋 시각,
   // 일시 오류면 RETRY_SEC 뒤. 이 실행기 안에서만 기억한다(새로 뜬 실행기는 첫 쉬는 틈에 한 번 다시 잰다)
   let personalNext = 0;

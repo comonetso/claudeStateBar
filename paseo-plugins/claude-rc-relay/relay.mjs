@@ -116,6 +116,8 @@ const work = workRecorder({ agentId, log, ephemeral });
 const rotation = createRotation({ real, env: childEnv, initialEnv: process.env, agentId, log, enabled: !ephemeral,
   handoff: (info) => saveHandoff(HOME, agentId, info), testFile: join(HOME, "claude-rc-relay-test.json"),
   personalFile: join(HOME, "claude-rc-relay-personal.json"),
+  // 자동 전환은 무중단 등록 대화만(10-17 밤) — 판정마다 장부를 다시 읽는다
+  registered: () => isRegistered(workRoot(), agentId),
   runGen, record: work.record, onTransition: work.onTransition });
 const child = spawn(real, argv, { stdio: ["pipe", "pipe", "inherit"], env: childEnv, windowsHide: true });
 // 켜져 있는 동안 이 대화의 계정 기록이 바뀌면 Claude 를 끈다 — 다음 말 때 Paseo 가 이 실행기를 다시 띄우며 새 계정이 적용된다
