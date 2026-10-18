@@ -172,6 +172,46 @@ function waitForGrowth(file: string, size: number, ms: number): Promise<Growth> 
   });
 }
 
+// 진단(10-18 밤 리규형님 "하루 진단 뒤 마지막 문단만 자동", docs/paseo-plugin-tools/THINKING_PROGRESS_TEXT_PLAN.md) — 글 내용은 남기지 않고
+// 숫자만. (1) 찾은 상자: 그 응답의 생각 칸 수 · 칸마다 문단 수 · 마지막 칸의 마지막 문단 글자 수 · 응답이 끝났는지(그 칸 묶음 뒤에 본문·도구
+// 칸이 기록됐는지). 응답·끝남 여부마다 한 번. (2) 못 찾은 상자: 상자 글 앞부분이 기록의 어느 칸 묶음 중간에 들어 있는지(그 위치) —
+// 기록이 늦게 적힌 것인지, 상자 글이 생각 중간부터 잘려 들어온 것인지 가른다
+const SHAPE_KEEP = 2000;
+const shapeSeen = new Set<string>();
+const paragraphs = (s: string) => s.split(/\n\s*\n/).filter((p) => p.trim()).length;
+function logShape(agentId: string, ix: Index, clean: string, cut: number | null): void {
+  const entries = [...ix.messages.entries()];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const [id, seq] = entries[i];
+    let run: string[] = [];
+    let hit: { blocks: string[]; closed: boolean } | null = null;
+    for (let k = 0; k <= seq.length; k++) {
+      const item = k < seq.length ? seq[k] : null;
+      if (item !== null) { run.push(item); continue; }
+      if (run.length && cutFromRuns([run], clean).matched) hit = { blocks: run, closed: k < seq.length };
+      run = [];
+    }
+    if (!hit) continue;
+    const key = `${id}:${hit.closed ? 1 : 0}`;
+    if (shapeSeen.has(key)) return;
+    shapeSeen.add(key);
+    if (shapeSeen.size > SHAPE_KEEP) shapeSeen.delete(shapeSeen.values().next().value!);
+    const last = hit.blocks[hit.blocks.length - 1].split(/\n\s*\n/).filter((p) => p.trim()).pop() ?? "";
+    console.log(`[thinking-shape] agent=${agentId.slice(0, 8)} blocks=${hit.blocks.length} paras=${hit.blocks.map(paragraphs).join(",")} lastPara=${last.trim().length} closed=${hit.closed ? 1 : 0} cut=${cut === null ? "none" : "y"}`);
+    return;
+  }
+}
+/** 못 찾은 상자 글의 앞 64자가 기록 칸 묶음 안 어디에 있나 — "위치/묶음 칸 수", 없으면 -1 */
+function insideOf(ix: Index, clean: string): string {
+  const head = clean.slice(0, 64);
+  if (head.length < 16) return "short";
+  for (const run of runsOf(ix.messages.values()).reverse()) {
+    const at = run.join("").indexOf(head);
+    if (at >= 0) return `${at}/${run.length}`;
+  }
+  return "-1";
+}
+
 type BoundaryResult = { cut: number | null; state: BoundaryState; reason?: BoundaryReason };
 const unavailable = (reason: BoundaryReason): BoundaryResult => ({ cut: null, state: "unavailable", reason });
 
@@ -206,6 +246,7 @@ export async function thinkingBoundaryOf(paseo: PaseoApi, agentId: string, text:
     if (found.matched) {
       // 기다렸다 찾은 경우 — 생각이 다 들어온 뒤 기록에 늦게 적히는 일이 얼마나 잦은지 본다(10-09)
       if (waited) console.log(`[thinking] boundary found after ${Date.now() - started}ms wait agent=${agentId.slice(0, 8)} cut=${found.cut ?? "none"}`);
+      try { logShape(agentId, ix, clean, found.cut); } catch { /* 진단이 답을 막지 않게 */ }
       return { cut: found.cut, state: "matched" };
     }
     // 못 찾으면 대화 정보를 한 번 다시 묻는다 — /clear 등으로 세션이 바뀌었는데 예전 기록 파일을 보고 있을 수 있다(10-09)
@@ -235,7 +276,9 @@ export async function thinkingBoundaryOf(paseo: PaseoApi, agentId: string, text:
         while (k < joined.length && k < clean.length && joined.charCodeAt(k) === clean.charCodeAt(k)) k++;
         if (k > best) best = k;
       }
-      console.log(`[thinking] boundary not found after wait agent=${agentId.slice(0, 8)} len=${clean.length} samePrefix=${best}${ix.clipped ? " clipped" : ""}`);
+      let inside = "?";
+      try { inside = insideOf(ix, clean); } catch { /* 진단이 답을 막지 않게 */ }
+      console.log(`[thinking] boundary not found after wait agent=${agentId.slice(0, 8)} len=${clean.length} samePrefix=${best} inside=${inside}${ix.clipped ? " clipped" : ""}`);
       return { cut: null, state: "pending" };
     }
     waited = true;

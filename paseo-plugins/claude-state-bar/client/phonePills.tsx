@@ -9,7 +9,7 @@ import { totalOf, useCounts } from "./useCounts";
 import { phonePillsShown, setPillBadge, watchCompactWidth } from "./web";
 
 // 폰(좁은 화면) 입력창 위 알약 줄에 "사용량"·"작업 현황"(10-17 리규형님 — "오른쪽 위 세로 … 를 누르면 사용량·작업 현황이 아래에서 올라와
-// 자주 누르는데 졸라 불편, 각각 독립 아이콘으로"). Paseo 는 좁은 화면에서 머리줄 단추를 세로 점 메뉴로 접고, 접지 않게 하는 설정이
+// 자주 누르는데 매우 불편, 각각 독립 아이콘으로").Paseo 는 좁은 화면에서 머리줄 단추를 세로 점 메뉴로 접고, 접지 않게 하는 설정이
 // 플러그인 도구에 없어 알약으로 따로 꺼낸다(버튼 답 "입력창 위 알약 줄"). 넓은 화면은 머리줄 단추가 그대로 보이므로 알약을 감춘다.
 // 10-18: 좁은 화면에선 머리줄 단추를 아예 안 붙이고(activityButton.tsx — 세로 점 메뉴 제거), 이 두 알약과 컨텍스트 알약을 띠 아랫줄로
 // 내린다(web.ts RAIL_CSS data-csb-rows). 붙일지 판정은 둘이 같은 phonePillsShown 하나를 쓴다.
@@ -51,10 +51,29 @@ function ActivityPillIcon({ workspaceId, size, color, theme }: PluginButtonIconP
   );
 }
 
-/** settings: 머리줄 톱니와 같은 동작(settingsButton.tsx settingsBehavior). 주면 좁은 화면에 설정 알약도 붙인다 — 좁은 화면엔 머리줄 단추를
- *  안 붙여(activityButton.tsx) 톱니가 함께 빠졌다(10-18 리규형님 "상단 설정아이콘 사라짐 … 맨오른쪽에 설정아이콘", 자리는 web.ts RAIL_CSS) */
+/** settings: 톱니 동작(settingsButton.tsx settingsBehavior). 주면 설정 알약을 화면 폭과 상관없이 늘 붙인다 — 10-18 리규형님: 좁은 화면
+ *  "맨오른쪽에 설정아이콘", 넓은 화면도 "설정을 알약들 맨 오른쪽에"(머리줄은 셋까지만 보여서). 넓은 화면 자리는 공급자 알약 다음 ·
+ *  Paseo 변경사항 단추 앞(등록 순서 — index.client.tsx 가 공급자 알약을 먼저 단다), 좁은 화면 자리는 web.ts RAIL_CSS */
 export function createPhonePills(client: PluginClientContext, log: (message: string) => void, settings?: PluginButtonBehavior) {
   const pills = new Map<string, PluginButtonRegistration[]>();
+  const settingsPills = new Map<string, PluginButtonRegistration>();
+  const attachSettings = (agentId: string, workspaceId: string) => {
+    if (!settings || settingsPills.has(agentId)) return;
+    try {
+      settingsPills.set(agentId, client.addComposerPill({
+        id: "phone-settings",
+        workspaceId,
+        agentId,
+        button: { title: SETTINGS_TITLE, icon: "Settings", label: ICON_ONLY, visible: true, behavior: settings },
+      }));
+    } catch (error) {
+      log(`settings pill ${agentId.slice(0, 8)}: ${String(error)}`);
+    }
+  };
+  const detachSettings = (agentId: string) => {
+    settingsPills.get(agentId)?.remove();
+    settingsPills.delete(agentId);
+  };
   // 본 대화(대화 → 작업 공간) — 넓은 화면에선 알약을 떼 두었다가 좁아지면 다시 붙인다
   const agents = new Map<string, string>();
   // 숨김(visible:false)으로 붙였다가 보이게 바꾸는 갱신은 Paseo 가 반영하지 않았다(10-17 제 탭 실측 — 폭을 390 으로 줄여도 안 나옴) →
@@ -86,16 +105,7 @@ export function createPhonePills(client: PluginClientContext, log: (message: str
           behavior: { kind: "action", onPress: () => { if (!openActivityFor(workspaceId)) client.openPanel("activity", { workspaceId }); } },
         },
       });
-      const set = [usage, activity];
-      if (settings) {
-        set.push(client.addComposerPill({
-          id: "phone-settings",
-          workspaceId,
-          agentId,
-          button: { title: SETTINGS_TITLE, icon: "Settings", label: ICON_ONLY, visible: true, behavior: settings },
-        }));
-      }
-      pills.set(agentId, set);
+      pills.set(agentId, [usage, activity]);
     } catch (error) {
       log(`phone pills ${agentId.slice(0, 8)}: ${String(error)}`);
     }
@@ -112,14 +122,17 @@ export function createPhonePills(client: PluginClientContext, log: (message: str
       if (!agent.workspaceId) return;
       agents.set(agent.id, agent.workspaceId);
       if (shown) attach(agent.id, agent.workspaceId);
+      attachSettings(agent.id, agent.workspaceId);
     },
     remove(agentId: string) {
       agents.delete(agentId);
       detach(agentId);
+      detachSettings(agentId);
     },
     dispose() {
       stopWidth();
       for (const id of [...pills.keys()]) detach(id);
+      for (const id of [...settingsPills.keys()]) detachSettings(id);
       agents.clear();
     },
   };

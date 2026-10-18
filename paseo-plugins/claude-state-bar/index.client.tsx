@@ -20,7 +20,7 @@ import { ProjectsSidebarItem } from "./client/projectsSidebar";
 import { createTurnReadButtons } from "./client/selectionRead";
 import { createComposerMarkdown } from "./client/composerMarkdown";
 import { createSettingsScreen, SETTINGS_TITLE } from "./client/settingsScreen";
-import { chainButtons, createSettingsButtons, SETTINGS_SCREEN_ID, settingsBehavior } from "./client/settingsButton";
+import { chainButtons, createSyncButtons, SETTINGS_SCREEN_ID, settingsBehavior } from "./client/settingsButton";
 import { browserLabel, startScreenRole } from "./client/screenRole";
 import { startSettingsSync } from "./client/settingsSync";
 import { startLayoutAutoPull, startLayoutSave, syncMenuItem } from "./client/layoutSync";
@@ -83,9 +83,9 @@ export default function contribute(client: PluginClientContext) {
 
   // 작업 공간 머리줄 "작업 현황" 단추: 돌고 있는 것 수(확장 탭 숫자), 누르면 종류별 수와 탭 열기.
   // 그 왼쪽에 "사용량" 단추(10-06 — 지금 웹(안정판)에도 있는 머리줄 단추라 웹·폰에서도 사용량이 보인다)
-  // 그 왼쪽 끝에 톱니(10-07 — 누르면 Paseo 설정 안 Claude State Bar 화면: 웹 로그인·소리). 웹·폰은 톱니가 메뉴가 되어
-  // "PC 에서 가져오기"도 함께 든다 — Paseo 는 플러그인 단추를 셋까지만 머리줄에 내놓는다
-  cleanups.push(createActivityButtons(client, log, chainButtons(createSettingsButtons(client, syncMenuItem()), createUsageButtons(client))));
+  // 그 왼쪽 끝에 웹의 "대표 배치 가져오기"(PC 앱은 없음). 톱니는 10-18 부터 입력창 위 알약 줄 맨 오른쪽(phonePills) —
+  // Paseo 는 플러그인 단추를 셋까지만 머리줄에 내놓아 톱니·가져오기를 메뉴 하나로 합쳤더니 매번 두 번 눌러야 해서 불편했다(리규형님 10-18)
+  cleanups.push(createActivityButtons(client, log, chainButtons(createSyncButtons(client, syncMenuItem()), createUsageButtons(client))));
 
   // 생각 상자: 영어 → 한국어(끝난 문장부터) + 맨 아래로 따라가기(10-06). 호스트마다 그 호스트 대화의 생각을 그린다
   cleanups.push(registerThinking(client));
@@ -279,8 +279,9 @@ export default function contribute(client: PluginClientContext) {
   const accountPills = createAccountPills(client, log);
   // 로그인이 풀린 대화 입력창 위 빨간 열쇠 알약 + 설정 화면 칸용 기기별 로그인 기능(10-14 — Claude 다시 로그인)
   const loginPills = createLoginPills(client, log);
-  // 폰(좁은 화면)만 입력창 위 "사용량"·"작업 현황" 알약 + 개수 작은 글씨(10-17 — 세로 점 메뉴에서 꺼냄)
-  const phonePills = createPhonePills(client, log, settingsBehavior(client, syncMenuItem()));
+  // 폰(좁은 화면)만 입력창 위 "사용량"·"작업 현황" 알약 + 개수 작은 글씨(10-17 — 세로 점 메뉴에서 꺼냄),
+  // 톱니 알약은 모든 화면 알약 줄 맨 오른쪽(10-18) — 공급자 알약(accountPills) 뒤에 단다
+  const phonePills = createPhonePills(client, log, settingsBehavior(client));
 
   void (async () => {
     try {

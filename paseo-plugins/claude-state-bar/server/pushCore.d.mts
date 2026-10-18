@@ -6,6 +6,7 @@ export declare const PHONE_ACK_WAIT_MS: number;
 export declare const RAISE_TIMEOUT_MS: number;
 export declare const COMMIT_TIMEOUT_MS: number;
 export declare const PC_WAIT_CAP_MS: number;
+export declare const WAIT_POLL_MS: number;
 
 export type CentralRoute = { url: string; originId: string; secret: string };
 export type PushRoute = { mode: "legacy" | "central" | "off"; central: CentralRoute | null; error: string | null };
@@ -33,7 +34,7 @@ export type CentralClient = {
   originId: string;
   hello(): Promise<CentralReply>;
   raise(eventId: string, kind: "question" | "compact", fallback: "origin" | "none", data: CentralData, revision?: number): Promise<CentralReply>;
-  wait(eventId: string, waitMs: number): Promise<CentralReply>;
+  wait(eventId: string, waitMs: number, stop?: AbortSignal): Promise<CentralReply>;
   commit(eventId: string, decision: "phone" | "pc", deliveryId?: string): Promise<CentralReply>;
   resolve(eventId: string, revision?: number): Promise<CentralReply>;
 };

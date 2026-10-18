@@ -102,11 +102,55 @@ const MATH = new RegExp(String.raw`(?<![\w.,])${MATH_NUMBER}(?:${MATH_OPERATOR}$
 // 등호 앞 숫자의 끝소리 받침 — 2(이)·4(사)·5(오)·9(구)·%(퍼센트)는 받침이 없어 "는", 나머지(0 영·1 일·3 삼·6 육·7 칠·8 팔, 끝 0 = 십·백·천·만)는 "은"
 const equalsJosa = (before: string) => (/[2459%]\s*$/.test(before) ? "는" : "은");
 
+// ── 한국어 숫자 말(10-19 리규형님 "전수조사해서 올바른 한국식으로 모두" — 80,055 를 "팔십에 오십오", 54,926~80,055 를 쉼표·물결에서 끊어 읽었다) ──
+const KO_DIGITS = ["영", "일", "이", "삼", "사", "오", "육", "칠", "팔", "구"];
+const KO_SMALL = ["", "십", "백", "천"];
+const KO_BIG = ["", "만", "억", "조", "경"];
+/** 정수(숫자 글자)를 한자어 수사로 — 80055 → 팔만 오십오 · 54926 → 오만 사천구백이십육 · 1000000 → 백만 · 10000 → 만 · 100000000 → 일억.
+ *  만 단위마다 띄우고, 십·백·천 앞의 일과 "일만"의 일은 뺀다(억·조는 "일억"). 경을 넘으면 그대로 */
+export function koreanNumber(digits: string): string {
+  const n = digits.replace(/^0+(?=\d)/, "");
+  if (!/^\d+$/.test(n)) return digits;
+  if (/^0+$/.test(n)) return "영";
+  if (n.length > 20) return n;
+  const groups: string[] = [];
+  for (let end = n.length; end > 0; end -= 4) groups.unshift(n.slice(Math.max(0, end - 4), end));
+  const words: string[] = [];
+  groups.forEach((group, gi) => {
+    const big = KO_BIG[groups.length - 1 - gi];
+    const padded = group.padStart(4, "0");
+    let word = "";
+    for (let i = 0; i < 4; i++) {
+      const d = +padded[i];
+      if (!d) continue;
+      const unit = KO_SMALL[3 - i];
+      word += (d === 1 && unit ? "" : KO_DIGITS[d]) + unit;
+    }
+    if (!word) return;
+    if (word === "일" && big === "만") word = "";
+    words.push(word + big);
+  });
+  return words.join(" ");
+}
+/** 소수 자리는 한 자리씩(.56 → 점 오육) */
+const koreanFraction = (frac: string) => ` 점 ${frac.split("").map((d) => KO_DIGITS[+d]).join("")}`;
+// 숫자 바로 뒤에 붙은 단위 — 영어 철자 대신 한국어로(35ms → 35밀리초). "m"(미터·분)은 뜻이 갈려 뺀다. 긴 이름을 먼저
+const UNIT_WORDS: Record<string, string> = {
+  ms: "밀리초", sec: "초", min: "분", s: "초", h: "시간", px: "픽셀", fps: "프레임",
+  KiB: "키비바이트", MiB: "메비바이트", GiB: "기비바이트", TiB: "테비바이트", KB: "킬로바이트", kB: "킬로바이트", MB: "메가바이트", GB: "기가바이트", TB: "테라바이트",
+  kHz: "킬로헤르츠", MHz: "메가헤르츠", GHz: "기가헤르츠", Hz: "헤르츠", km: "킬로미터", kg: "킬로그램", "°C": "도", "℃": "도",
+};
+const UNIT_NAMES = Object.keys(UNIT_WORDS).sort((a, b) => b.length - a.length).join("|");
+// 하이픈 범위 뒤에 바로 붙는 한국어 단위(3-5초 · 1-3명) — 이때 하이픈은 "에서"
+const RANGE_UNIT = "초|분|시간|일|주|개월|달|년|명|개|번|회|배|대|건|줄|쪽|장|마리|권|차|단계|가지|글자|자|살|원|위|곳|층|호|퍼센트|%";
+
 export function readNumbersKo(text: string): string {
   return text
-    // 연도 붙은 날짜(2026-10-14 · 2026/10/14 · 2026.10.14) — 하이픈 날짜는 범위(3-5초)와 같은 모양이라 연도가 있을 때만. 바로 뒤 ISO 의 T 는 띄운다
+    // 연도 붙은 날짜(2026-10-14 · 2026/10/14 · 2026.10.14). 바로 뒤 ISO 의 T 는 띄운다
     .replace(/(?<![\d.:/-])(\d{4})([-/.])(\d{1,2})\2(\d{1,2})(?![\d/-]|[.:]\d)(T(?=\d{1,2}:\d{2}))?/g,
       (m, year: string, _sep: string, month: string, day: string, iso?: string) => (validMonthDay(month, day) ? `${year}년 ${+month}월 ${+day}일${iso ? " " : ""}` : m))
+    // 끝자리를 x 로 둔 시각(18:4x — 기록에 대략 시각을 이렇게 쓴다) — "18시 40분쯤", 0x 는 "18시쯤"
+    .replace(/(?<![\d.:])([01]?\d|2[0-3]):([0-5])x(?![A-Za-z0-9])/g, (_m, hour: string, tens: string) => (+tens ? `${+hour}시 ${tens}0분쯤` : `${+hour}시쯤`))
     // 시각(9:05 · 16:24 · 06:51:51) — 0 인 분·초는 끝에서부터 뺀다(09:00 → 9시). 주소 번호(127.0.0.1:6800)는 앞이 숫자·점이라 아니다.
     // ISO 끝의 Z 는 세계 표준시 표시라 "UTC"(한국 시각과 9시간 차이 — 빼면 틀린 시각으로 들린다)
     .replace(/(?<![\d.:])([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(Z(?![A-Za-z0-9]))?(?![\d:]|\.\d)/g, (_m, hour: string, minute: string, second?: string, utc?: string) => {
@@ -116,6 +160,11 @@ export function readNumbersKo(text: string): string {
       if (utc) parts.push("UTC");
       return parts.join(" ");
     })
+    // 하이픈 범위 뒤에 한국어 단위가 바로 붙으면(3-5초 · 1-3명 · 20-25배) 하이픈은 "에서" — 날짜보다 먼저
+    .replace(new RegExp(String.raw`(?<![\w.:/-])(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?=(?:${RANGE_UNIT}))`, "g"), "$1에서 $2")
+    // 연도 없는 하이픈 날짜(10-10 · 10-18) — 월·일 범위면 날짜(10-19 리규형님 — 예전엔 범위와 모양이 같아 연도 있을 때만 바꿨다). 범위 밖(0-2 · 13-20)·
+    // 등호 식(10-3=7)·전화번호(010-1234 — 앞이 숫자)는 그대로. 물결 범위(10-18~10-25)는 양쪽 다 날짜
+    .replace(/(?<![\w.:/=+×*÷±-])(\d{1,2})-(\d{1,2})(?![\d./-]|:\d|\s*[=+×*÷±])/g, (m, month: string, day: string) => (validMonthDay(month, day) ? `${+month}월 ${+day}일` : m))
     // 수식 — 더하기·곱하기·나누기(÷)·플러스마이너스는 늘, 빼기·나누기(/)는 등호가 있는 식에서만(1-3명 · 010-1234 · 날짜 10/14 는 아니다)
     .replace(MATH, (expr) => {
       const equation = expr.includes("=");
@@ -132,7 +181,23 @@ export function readNumbersKo(text: string): string {
       });
     })
     // 숫자 두 개 날짜(10/14) — 월·일 범위면 날짜(같은 모양의 진행도 3/5 도 날짜로 읽힌다 — 리규형님 결정). 범위 밖(13/20 · 44/44)은 그대로
-    .replace(/(?<![\d./:-])(\d{1,2})\/(\d{1,2})(?![\d/]|\.\d)/g, (m, month: string, day: string) => (validMonthDay(month, day) ? `${+month}월 ${+day}일` : m));
+    .replace(/(?<![\d./:-])(\d{1,2})\/(\d{1,2})(?![\d/]|\.\d)/g, (m, month: string, day: string) => (validMonthDay(month, day) ? `${+month}월 ${+day}일` : m))
+    // 홀로 선 부호 숫자(+9 · -30 · −5 · +45.6k) — 부호가 기호 정리에서 지워져 뜻이 사라졌다 → 플러스·마이너스. 목록 글머리(- 30개)·날짜(10-18)는 아니다
+    .replace(/(^|[\s(（,])([+−-])(?=\d)/gm, (_m, before: string, sign: string) => `${before}${sign === "+" ? "플러스" : "마이너스"} `)
+    // 천·백만 접미(45.6k · 2K · 1.5M) — 값으로 풀어 수사로(사만 오천육백). kg·MB 같은 단위는 아니다
+    .replace(/(?<![\w.,])(\d+(?:\.\d+)?)([kKM])(?![A-Za-z0-9])/g, (_m, value: string, suffix: string) =>
+      koreanNumber(String(Math.round(Number(value) * (suffix === "M" ? 1_000_000 : 1000)))))
+    // 배속·배수(1.3x · 4x) — "엑스"가 아니라 "배". 16진수(0x1F)는 뒤에 글자가 붙어 아니다
+    .replace(/(?<![\w.,])(\d+(?:\.\d+)?)x(?![A-Za-z0-9])/g, "$1배")
+    // 숫자 바로 뒤 단위(35ms · 19MB · 30px · 5h · 1,024MB) — 한국어 이름으로. 숫자는 그대로(쉼표 숫자는 아래에서 수사로)
+    .replace(new RegExp(String.raw`(?<![\w.,])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s?(${UNIT_NAMES})(?![A-Za-z0-9])`, "g"), (_m, value: string, unit: string) => `${value}${UNIT_WORDS[unit]}`)
+    // 천 단위 쉼표 숫자(54,926 · 80,055 · 1,000,000) — 엔진이 쉼표에서 끊어 "오십사, 구백이십육"으로 읽었다 → 수사로 직접(오만 사천구백이십육)
+    .replace(/(?<![\d.,])(\d{1,3}(?:,\d{3})+)(?:\.(\d+))?(?![\d,])/g, (_m, whole: string, frac?: string) => koreanNumber(whole.replace(/,/g, "")) + (frac ? koreanFraction(frac) : ""))
+    // 남은 곱하기(30초×60 · 25ms×40 — 수식은 숫자 사이만 본다) → "곱하기"
+    .replace(/\s*×\s*(?=\d)/g, " 곱하기 ")
+    // 물결 범위(4~5개 · 15:39~15:45 · 54,926~80,055 · 10-18~10-25) — 물결이 기호 정리에서 지워져 "4 5개"로 붙어 읽혔다 → "에서". 위에서 날짜·시각·수사로 바꾼 뒤라
+    // 뒤가 숫자이거나 한글 수사로 시작할 때만(그 밖의 물결은 그대로 지워진다)
+    .replace(/([\d%가-힣A-Za-z])[ \t]*~[ \t]*(?=[\d일이삼사오육칠팔구십백천만억조영])/g, "$1에서 ");
 }
 
 /** 화면 글은 바꾸지 않는다. 음성에만 필요한 마크다운·코드 이름 정리를 적용한다. */

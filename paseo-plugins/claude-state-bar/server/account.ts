@@ -1,8 +1,9 @@
 import { readdirSync, readFileSync, watchFile, unwatchFile } from "node:fs";
-import { mkdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AccountKind } from "../shared/account";
+import { renameRetry } from "./renameRetry";
 import { isTeamDaemon } from "./sound";
 
 // 기록만 바꾼다. 실행기가 기록을 감시해 Claude 를 끄며 다음 말에 새 계정으로 이어 뜬다.
@@ -93,22 +94,8 @@ export function stopAccounts(): void { unwatchFile(FILE, onDiskChange); }
 let writing: Promise<unknown> = Promise.resolve();
 // Windows 는 다른 프로세스가 대상 파일을 여는 순간 이름 바꾸기를 EPERM·EACCES·EBUSY 로 거부한다 — 이 파일은 실행기들이 감시하며 읽는다
 // (claude-rc-relay/account.mjs watchAccount). 10-18 18:08 PC: 거부가 처리되지 않아 플러그인 프로세스가 죽고 웹이 PC 를 "꺼짐"으로 봤다.
-// 잠깐 뒤 다시 하면 된다 — 25ms 씩 최대 40번(1초, 잠금 대기 5초 안). 끝내 안 되면 임시 파일을 지우고 오류를 넘긴다
-const RENAME_TRIES = 40;
-const RENAME_WAIT_MS = 25;
-async function renameRetry(from: string, to: string): Promise<void> {
-  for (let i = 1; ; i++) {
-    try { await rename(from, to); return; }
-    catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if ((code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") || i >= RENAME_TRIES) {
-        await rm(from, { force: true }).catch(() => {});
-        throw e;
-      }
-      await new Promise((resolve) => setTimeout(resolve, RENAME_WAIT_MS));
-    }
-  }
-}
+// 잠깐 뒤 다시 하면 된다 — 공용 재시도를 1초 상한으로 쓴다(잠금을 쥔 채라 실행기들의 잠금 대기 5초 안에 끝나야 한다). 끝내 안 되면 임시 파일을 지우고 오류를 넘긴다
+const RENAME_MAX_MS = 1000;
 function save(change: (doc: Document) => void): Promise<void> {
   const run = async () => {
     await mkdir(dirname(FILE), { recursive: true });
@@ -130,7 +117,8 @@ function save(change: (doc: Document) => void): Promise<void> {
       change(doc);
       const tmp = `${FILE}.${process.pid}.tmp`;
       await writeFile(tmp, JSON.stringify(doc), { encoding: "utf8", mode: 0o600 });
-      await renameRetry(tmp, FILE);
+      try { await renameRetry(tmp, FILE, { maxMs: RENAME_MAX_MS }); }
+      catch (e) { await rm(tmp, { force: true }).catch(() => {}); throw e; }
       load(); bump();
     } finally { await rmdir(lock); }
   };

@@ -1537,7 +1537,7 @@ export function watchScreenUse(onUse: () => void): () => void {
 }
 
 // ── 입력창 위 단추 줄: 불투명 띠·맨 아래로 단추 띄우기·아이콘 가운데 유지 ──
-const RAIL_SHEET = "claude-state-bar-composer-rail-v6";
+const RAIL_SHEET = "claude-state-bar-composer-rail-v9";
 const RAIL_CSS =
   // 단추 안 아이콘·글을 가운데로(10-09 리규형님 "아이콘이 왼쪽으로 쏠렸어" — 폰에선 글 없이 아이콘만 남아 49px 단추 왼쪽에 붙었다)
   "[data-csb-track] [role=\"button\"]{justify-content:center !important}" +
@@ -1546,16 +1546,26 @@ const RAIL_CSS =
   "[data-csb-track] [data-csb-empty]{display:none !important}" +
   // 좁은 화면 두 줄(10-18 리규형님 — 알약 8개라 컨텍스트 알약이 "3.." 으로 잘렸다): 컨텍스트 사용률·작업 현황·사용량 세 알약만
   // 줄바꿈해 아랫줄로 보낸다. Paseo 가 그린 알약은 옮기지 않고 순서·줄바꿈만 준다(감싸개가 display:contents 라 알약 단추가 줄의
-  // 칸이다 — 폰 폭 실측). 높이 0 의 한 줄짜리 의사 요소가 줄을 끊는다. 읽기 조절기는 그 줄 맨 뒤 남는 공간 가운데(DOCK row2)
+  // 칸이다 — 폰 폭 실측). 높이 0 의 한 줄짜리 의사 요소가 줄을 끊는다. 읽기 조절기는 그 줄 맨 뒤 남는 공간 가운데에 작게(DOCK row2)
   "[data-csb-track][data-csb-rows] > :first-child{flex-wrap:wrap !important;row-gap:6px}" +
   "[data-csb-track][data-csb-rows] > :first-child::after{content:\"\";flex-basis:100%;order:50;height:0}" +
   "[data-csb-track][data-csb-rows] [aria-label^=\"컨텍스트 사용량\"]{order:51}" +
   "[data-csb-track][data-csb-rows] [aria-label=\"작업 현황\"]{order:52}" +
   "[data-csb-track][data-csb-rows] [aria-label=\"사용량\"]{order:53}" +
   // 두 줄일 때 윗줄은 왼쪽부터 붙이고 맨 오른쪽에 설정 알약(10-18 리규형님). 생각 상자 펼치기 알약의 오른쪽 밀기(thinkingFoldPill.ts
-  // margin-left:auto — 10-08 "채팅창 위 오른쪽")는 넓은 화면에서만 산다
+  // margin-left:auto — 10-08 "채팅창 위 오른쪽")는 넓은 화면에서만 산다. 설정 알약 오른쪽 24px 은 폰 앱이 화면 오른쪽 끝에 띄우는
+  // 단추(새로고침·소리·전원)와 겹치지 않게(10-18 리규형님 "왼쪽으로 쪼금" — 캡처에서 그 단추 왼쪽 끝이 화면 끝에서 약 32px)
   "[data-csb-track][data-csb-rows] [aria-label^=\"생각 상자 모두\"]{margin-left:0 !important}" +
-  "[data-csb-track][data-csb-rows] [aria-label=\"Claude State Bar 설정\"]{order:49;margin-left:auto}";
+  "[data-csb-track][data-csb-rows] [aria-label=\"Claude State Bar 설정\"]{order:49;margin-left:auto;margin-right:24px}" +
+  // 좁은 화면 알약 안쪽 좌우 여백 12px → 8px(10-18 리규형님 "약간씩만 줄여 첫째 줄에 알약 두 개 더") — 아이콘 알약 41 → 33px.
+  // 읽기 조절기 단추는 제 크기 규칙(DOCK row2)이 있어 뺀다
+  "[data-csb-track][data-csb-rows] > :first-child :is([role=button],button):not([data-csb-read-dock]){padding-left:8px !important;padding-right:8px !important}" +
+  // 넓은 화면: 설정 알약은 공급자 알약(⇆) 다음, Paseo 변경사항 단추 앞(10-18 리규형님 "설정을 알약들 맨 오른쪽에"). 등록 순서로는
+  // 설정이 ⇆ 앞에 놓였다(제 탭 1400 실측) → 순번으로 못박는다. 변경사항 단추는 알약 줄 직속 button(플러그인 알약은 감싸개 안)이라
+  // 이름 대신 구조로 골라 Paseo 언어와 상관없다. 생각 상자 펼치기 알약(order 0, margin-left:auto)은 그대로 오른쪽 묶음의 시작
+  "[data-csb-track]:not([data-csb-rows]) > :first-child [aria-label^=\"Claude 공급자\"]{order:1}" +
+  "[data-csb-track]:not([data-csb-rows]) > :first-child [aria-label=\"Claude State Bar 설정\"]{order:2}" +
+  "[data-csb-track]:not([data-csb-rows]) > :first-child > button{order:3}";
 type RailEl = Omit<HeaderEl, "style" | "parentElement"> & {
   parentElement: RailEl | null;
   style: { display: string; backgroundColor: string; boxShadow: string; translate: string };
@@ -1569,7 +1579,7 @@ type RailEl = Omit<HeaderEl, "style" | "parentElement"> & {
 
 /** 이 장치 코드를 고치면 올린다 — 플러그인을 다시 읽어도 같은 페이지에는 처음 시작한 옛 판 장치가 남아 새 코드가 안 돌았다
  *  (10-08 폰 진단). 더 높은 판이 오면 옛 판 장치를 멈추고 넘겨받는다. 판이 섞인 호스트들은 높은 판 하나를 같이 쓴다 */
-const RAIL_VERSION = 11; // 10: 10-18 좁은 화면 두 줄·목록 끝 여백·개수 글씨 정리 · 11: 윗줄 왼쪽 정렬·설정 알약 맨 오른쪽(10-18 저녁)
+const RAIL_VERSION = 14; // 10: 10-18 좁은 화면 두 줄·목록 끝 여백·개수 글씨 정리 · 11: 윗줄 왼쪽 정렬·설정 알약 맨 오른쪽(10-18 저녁) · 12: 설정 알약 오른쪽 24px(폰 앱 떠 있는 단추) · 13: 넓은 화면 설정 알약 ⇆ 다음 · 14: 좁은 화면 알약 안쪽 여백 8px
 
 // 입력창 위 단추 줄(컨텍스트·목록·접기)을 대화 화면 바탕색 띠로 칠한다(10-09 리규형님 "아이콘 뒷배경이 투명이라 거슬려 — 글자가
 // 안 보여야 해, 헷갈리고 잘 안 보여" · "웹도 동일한 경험으로, 폰 분기 하지 말고"). 단추는 Paseo 가 불투명하게 칠하지만(composerPillStyles
@@ -3045,8 +3055,8 @@ export type ReadDockState = {
 };
 const DOCK_MARK = "data-csb-read-dock";
 // 판이 오르면 스타일 이름도 바꾼다 — 옛 판을 정리할 때 옛 이름 스타일만 지워지게(project_paseo_client_hub_stale)
-const DOCK_SHEET = "claude-state-bar-read-dock-v3";
-const DOCK_VERSION = 3; // 2: 가운데 배치(10-12) · 3: 좁은 화면은 두 줄 띠의 아랫줄 남는 공간 가운데(10-18)
+const DOCK_SHEET = "claude-state-bar-read-dock-v6";
+const DOCK_VERSION = 6; // 2: 가운데 배치(10-12) · 3: 좁은 화면은 두 줄 띠의 아랫줄 남는 공간 가운데(10-18) · 4: 알약 줄 위(되돌림) · 5: 아랫줄에 작게(10-18 밤) · 6: 속도 칸 기본 모양 끔(폰 테두리 두 겹)
 type DockHub = { version: number; users: Map<object, (() => ReadDockState) & { csbVersion?: number }>; stop: (() => void) | null; refresh: (() => void) | null };
 export function startReadDock(state: () => ReadDockState): { refresh(): void; dispose(): void } {
   const noop = { refresh: () => {}, dispose: () => {} };
@@ -3084,14 +3094,23 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
       // 알약 줄(Paseo 가 이미 position:relative)의 정가운데에 띄운다 — 알약 줄 흐름에 끼지 않아 다른 알약 자리를 밀지 않는다
       `[${DOCK_MARK}="dock"][data-place="center"]{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1}` +
       `[${DOCK_MARK}="dock"][data-place="below"]{align-self:center;margin-top:4px}` +
-      // 좁은 화면: 두 줄 띠(RAIL_CSS data-csb-rows)의 아랫줄 맨 뒤 — 세 알약 뒤 남는 공간 가운데(10-18 리규형님). 자리가 모자라면 셋째 줄 가운데
-      `[${DOCK_MARK}="dock"][data-place="row2"]{order:54;margin-left:auto;margin-right:auto}` +
+      // 좁은 화면: 두 줄 띠(RAIL_CSS data-csb-rows)의 아랫줄 맨 뒤 — 세 알약 뒤 남는 공간 가운데(10-18 리규형님). 폰 폭 390 에서 남는 폭이
+      // 약 189px 인데 보통 크기(약 191px)로는 셋째 줄로 밀려(10-18 밤 폰 실기) 단추·간격·속도 글씨를 줄여 약 150px 로 넣는다
+      // (알약 줄 위에 띄우는 안은 균형이 안 맞아 되돌림 — 리규형님). 가운데 기준을 12px 왼쪽으로 — 폰 앱이 화면 오른쪽 끝에 띄우는
+      // 단추(새로고침·소리·전원)가 둘째 줄 오른쪽 끝도 가려서, 남는 공간에서 오른쪽 24px 를 뺀 곳의 가운데에 둔다. 그래도 모자라면 셋째 줄 가운데
+      `[${DOCK_MARK}="dock"][data-place="row2"]{order:54;margin-left:auto;margin-right:auto;position:relative;left:-12px;gap:0;padding:0 2px}` +
+      `[${DOCK_MARK}="dock"][data-place="row2"] [${DOCK_MARK}="button"]{width:24px;height:24px}` +
+      `[${DOCK_MARK}="dock"][data-place="row2"] [${DOCK_MARK}="speed"]{height:22px;margin:0 0 0 1px;padding:0 13px 0 4px;font-size:11px;background-position:right 4px center}` +
       `[${DOCK_MARK}="button"]{display:flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;margin:0;border:0;border-radius:999px;background:transparent;cursor:pointer;color:var(--colors-foreground-muted, currentColor)}` +
       `[${DOCK_MARK}="button"]:hover{background:var(--colors-surface2, rgba(127,127,127,.15))}` +
       `[${DOCK_MARK}="button"]:focus-visible{outline:2px solid currentColor;outline-offset:1px}` +
       `[${DOCK_MARK}="button"][data-tone="go"]{color:${READ_GREEN}}` +
       `[${DOCK_MARK}="button"][data-tone="stop"]{color:var(--colors-status-dot-danger, #f7796d)}` +
       `[${DOCK_MARK}="speed"]{height:24px;margin:0 0 0 2px;border:1px solid var(--colors-accent-bright, currentColor);border-radius:999px;padding:0 6px;color:var(--colors-accent-bright, currentColor);background:var(--colors-surface1, transparent);font:inherit;font-size:12px;cursor:pointer}` +
+      // 폰 앱(안드로이드 웹뷰)은 선택칸에 자체 기본 모양을 한 겹 더 그려 테두리가 두 겹으로 보였다(10-18 리규형님 — PC 크롬은 우리 테두리로
+      // 대체해 안 보임). 기본 모양을 끄고 같은 자리에 ∨ 화살표를 그린다. 누른 뒤 남는 포커스 테두리도 없앤다
+      `[${DOCK_MARK}="speed"]{-webkit-appearance:none;appearance:none;outline:none;box-shadow:none;padding-right:16px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='%239aa0a6' stroke-width='1.3'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 5px center}` +
+      `[${DOCK_MARK}="speed"]:focus,[${DOCK_MARK}="speed"]:focus-visible{outline:none;box-shadow:none}` +
       `[${DOCK_MARK}="speed"] option{color:var(--colors-foreground, inherit);background:var(--colors-surface1, Canvas)}`);
     const node = (tag: string, kind: string) => {
       const el = document.createElement(tag) as unknown as ReadEl;

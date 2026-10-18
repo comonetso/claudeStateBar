@@ -6,9 +6,10 @@ import {
 } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useState, useSyncExternalStore } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { accountSwitch, accountsWait, type AccountKind } from "../shared/account";
 import { contextUsedTokens } from "./contextPill";
+import { phonePillsShown, watchCompactWidth } from "./web";
 
 // 입력창 위 "Claude 공급자 바꾸기" 알약(리규형님 10-14 결정): 알약 줄에 두고 모든 화면에서 화살표 아이콘만 보인다. 처음 연 공급자와
 // 다르게 바꿨을 때는 아이콘 색(주황)으로만 구분한다(리규형님 "화살표 쪽은 색깔만"). 이름은 "팀·개인"이 아니라 이 기기 Paseo 공급자
@@ -132,8 +133,11 @@ function AccountDetail(props: PluginButtonContentProps) {
 
 /** 대화 목록 구독에서 넘어오는 Claude 대화마다 알약을 붙인다. 이 기기에 팀 공급자 설정이 없거나 팀원 데몬이면 붙이지 않는다 */
 export function createAccountPills(client: PluginClientContext, log: (message: string) => void) {
-  const pills = new Map<string, { reg: PluginButtonRegistration; title: string }>();
+  const pills = new Map<string, { reg: PluginButtonRegistration; title: string; label: string }>();
   const agents = new Map<string, AgentLike>();
+  // 넓은 화면은 아이콘 오른쪽에 지금 도는 공급자 이름을 쓴다(10-18 리규형님 "공급자가 보이게 알약 안쪽 아이콘 오른쪽에").
+  // 폰(좁은 화면)은 아이콘만 — 첫째 줄에 알약 두 개를 더 넣으려고 여백을 줄여 둔 자리라서(같은 날)
+  let compact = phonePillsShown();
   let supported = false;
   let accounts: Record<string, AccountKind> = {};
   let names: Names = FALLBACK_NAMES;
@@ -162,11 +166,13 @@ export function createAccountPills(client: PluginClientContext, log: (message: s
     // "'Claude 공급자' 하고 밑으로 'Claude → Claude'"). 지금 도는 공급자 이름을 뒤에 붙인다(리규형님 10-15 저녁 "마우스 오버 시
     // 명시적으로 현재 어떤 프로바이더로 돌고 있는지") — 바뀌면 아래에서 알약 이름도 다시 넣는다
     const title = `Claude 공급자: ${names[current]}`;
+    const label = compact ? ICON_ONLY : names[current];
     const known = pills.get(agentId);
     if (known) {
-      if (known.title !== title) {
+      if (known.title !== title || known.label !== label) {
         known.title = title;
-        known.reg.update({ title, label: ICON_ONLY });
+        known.label = label;
+        known.reg.update({ title, label });
       }
       return;
     }
@@ -175,9 +181,9 @@ export function createAccountPills(client: PluginClientContext, log: (message: s
         id: "account",
         workspaceId: agent.workspaceId,
         agentId,
-        button: { title, icon: AccountIcon, label: ICON_ONLY, behavior: { kind: "popover", Content: AccountDetail } },
+        button: { title, icon: AccountIcon, label, behavior: { kind: "popover", Content: AccountDetail } },
       });
-      pills.set(agentId, { reg, title });
+      pills.set(agentId, { reg, title, label });
       switchers.set(agentId, async (to) => {
         const r = await client.rpc(accountSwitch, { agentId, to });
         log(`account ${agentId.slice(0, 8)} → ${to}: ${r.ok ? "ok" : r.error}`);
@@ -210,6 +216,13 @@ export function createAccountPills(client: PluginClientContext, log: (message: s
     }
   })();
 
+  // 폭이 바뀌면(웹 창 크기) 알약 글자를 다시 맞춘다 — 폰 앱은 늘 좁은 화면이라 감시가 없다
+  const stopWidth = Platform.OS === "web" ? watchCompactWidth((next) => {
+    if (next === compact) return;
+    compact = next;
+    for (const id of [...agents.keys()]) sync(id);
+  }) : () => {};
+
   return {
     observe(agent: AgentLike) {
       agents.set(agent.id, agent);
@@ -221,6 +234,7 @@ export function createAccountPills(client: PluginClientContext, log: (message: s
     },
     dispose() {
       disposed = true;
+      stopWidth();
       for (const id of [...pills.keys()]) remove(id);
       agents.clear();
     },
