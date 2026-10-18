@@ -20,7 +20,7 @@ import { ProjectsSidebarItem } from "./client/projectsSidebar";
 import { createTurnReadButtons } from "./client/selectionRead";
 import { createComposerMarkdown } from "./client/composerMarkdown";
 import { createSettingsScreen, SETTINGS_TITLE } from "./client/settingsScreen";
-import { chainButtons, createSettingsButtons, SETTINGS_SCREEN_ID } from "./client/settingsButton";
+import { chainButtons, createSettingsButtons, SETTINGS_SCREEN_ID, settingsBehavior } from "./client/settingsButton";
 import { browserLabel, startScreenRole } from "./client/screenRole";
 import { startSettingsSync } from "./client/settingsSync";
 import { startLayoutAutoPull, startLayoutSave, syncMenuItem } from "./client/layoutSync";
@@ -37,7 +37,7 @@ import { currentSettings, emitSharedSignal, registerProvider, soundProvider } fr
 import { startSoundProjects, registerSoundOrigin, soundOrigin } from "./client/soundScreen";
 import { reportSoundEvent, startSoundPlayback } from "./client/soundPlayback";
 import type { RoutedSoundEvent } from "./shared/soundClaim";
-import { forceUsageRefresh, listenGlobalKey, readAppFontSizes } from "./client/web";
+import { forceUsageRefresh, listUsageReportsRaw, listenGlobalKey, readAppFontSizes } from "./client/web";
 import { startDictationInsertOnly } from "./client/dictationInsertOnly";
 import { soundOriginObserve, soundOriginPrepare } from "./shared/soundEvents";
 
@@ -129,10 +129,11 @@ export default function contribute(client: PluginClientContext) {
   const watchChimes = (agent: { id: string; provider: string; cwd: string; workspaceId?: string | null; persistence?: { sessionId?: string | null } | null }, initial = false) => {
 
     const sessionId = agent.persistence?.sessionId;
-    if (agent.provider !== "claude" || !sessionId) return;
+    // Claude 계열(개인 claude·팀 공급자)인지는 데몬이 공급자 이름으로 가린다(10-18 — 전엔 여기서 "claude" 만 받아 팀 대화엔 작업 끝 소리가 없었다)
+    if (!sessionId) return;
     sessionToAgent.set(sessionId, agent.id);
 
-    chimeWatcher.poke(sessionId, agent.cwd, initial);
+    chimeWatcher.poke(sessionId, agent.cwd, initial, agent.provider);
   };
 
   // 이 호스트가 소리를 낼 수 있으면(윈도우·맥 데몬) 공급자로 등록하고 설정 화면을 붙인다
@@ -196,9 +197,11 @@ export default function contribute(client: PluginClientContext) {
       };
       // 사용량 새로 받기는 이 호스트 데몬에(10-17 — 사용량 칸 30초)
       const refreshUsage = () => (info.serverId ? forceUsageRefresh(info.serverId) : Promise.resolve(null));
+      // 같은 계정 카드 거르기용 원본 보고도 이 호스트 데몬에서(10-18 C2 — 기억 건너뛰기 없음). 번호를 모르면 못 묻는다(사용량 칸이 옛 목록으로)
+      const usageReports = () => (info.serverId ? listUsageReportsRaw(info.serverId) : Promise.reject(new Error("no-client")));
       // 개인 계정 로그인 열쇠 유지 — 사용량 칸이 읽을 때마다(10-17 — server/teamUsage keepPersonalLogin)
       const keepLogin = () => client.rpc(personalLoginKeep, {});
-      const ui = { settings: () => settings, usage: () => client.paseo.providers.listUsage(), refreshUsage, keepLogin, openSettings: () => client.openSettings(SETTINGS_SCREEN_ID) };
+      const ui = { settings: () => settings, usage: () => client.paseo.providers.listUsage(), refreshUsage, usageReports, keepLogin, openSettings: () => client.openSettings(SETTINGS_SCREEN_ID) };
       cleanups.push(onUiRole(() => emitSharedSignal("settings")));
       if (!primary) {
         cleanups.push(startFallbackCandidate(client, { kind: "fallback", provider: ui, start: () => attachFour(true) }));
@@ -215,6 +218,7 @@ export default function contribute(client: PluginClientContext) {
         },
         usage: () => client.paseo.providers.listUsage(),
         refreshUsage,
+        usageReports,
         keepLogin,
         openSettings: () => client.openSettings(SETTINGS_SCREEN_ID),
         loadLayout: (slot) => client.rpc(layoutLoad, { slot }),
@@ -276,7 +280,7 @@ export default function contribute(client: PluginClientContext) {
   // 로그인이 풀린 대화 입력창 위 빨간 열쇠 알약 + 설정 화면 칸용 기기별 로그인 기능(10-14 — Claude 다시 로그인)
   const loginPills = createLoginPills(client, log);
   // 폰(좁은 화면)만 입력창 위 "사용량"·"작업 현황" 알약 + 개수 작은 글씨(10-17 — 세로 점 메뉴에서 꺼냄)
-  const phonePills = createPhonePills(client, log);
+  const phonePills = createPhonePills(client, log, settingsBehavior(client, syncMenuItem()));
 
   void (async () => {
     try {

@@ -13,7 +13,7 @@ import { useActivityOpen } from "./activityVisible";
 import { clearMaximizedPane, paintMaximizedPane } from "./paneMaximized";
 import { releaseMaximizedPane } from "./paneMaxWatch";
 import { currentSettings } from "./sounds";
-import { currentWorkspaceFromUrl, isCompactWidth, setStyleSheet } from "./web";
+import { currentWorkspaceFromUrl, isCompactWidth, phonePillsShown, setStyleSheet, watchCompactWidth } from "./web";
 
 /** paseo-plugin.json 의 id — Paseo 가 패널 탭에 이 이름을 붙인다 */
 const PLUGIN_ID = "claude-state-bar";
@@ -124,8 +124,12 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     client.openPanel(ACTIVITY_PANEL_ID, { workspaceId });
   };
 
-  const add = (workspaceId: string) => {
-    if (disposed || registrations.has(workspaceId)) return;
+  // 아는 작업 공간 — 여는 함수(openActivityFor, 폰 "작업 현황" 알약이 쓴다)는 늘 둔다. 머리줄 단추(사용량·작업 현황)는 폰 알약이
+  // 없는 화면에서만 붙인다: 좁은 화면에선 Paseo 가 머리줄 단추를 세로 점 메뉴로 접어 두었고 폰 알약이 같은 일을 해서, 10-18 리규형님
+  // "상단 세로 쩜쩜쩜 제거 — 더이상 필요하지 않으니". 화면 폭이 바뀌면 단추만 붙이고 뗀다
+  const known = new Set<string>();
+  const attachHeader = (workspaceId: string) => {
+    if (disposed || registrations.has(workspaceId) || phonePillsShown()) return;
     try {
       leading?.add(workspaceId);
     } catch (error) {
@@ -140,18 +144,34 @@ export function createActivityButtons(client: PluginClientContext, log: (message
           button: { ...presentation(null), icon: ActivityIcon, behavior: { kind: "action", onPress: () => openActivity(workspaceId) } },
         }),
       );
-      openers().set(workspaceId, () => openActivity(workspaceId));
     } catch (error) {
       log(`header button ${workspaceId}: ${String(error)}`);
     }
   };
-  const drop = (workspaceId: string) => {
+  const detachHeader = (workspaceId: string) => {
     leading?.drop(workspaceId);
-    if (registrations.has(workspaceId)) openers().delete(workspaceId);
     registrations.get(workspaceId)?.remove();
     registrations.delete(workspaceId);
     shown.delete(workspaceId);
   };
+  const add = (workspaceId: string) => {
+    if (disposed) return;
+    if (!known.has(workspaceId)) {
+      known.add(workspaceId);
+      openers().set(workspaceId, () => openActivity(workspaceId));
+    }
+    attachHeader(workspaceId);
+  };
+  const drop = (workspaceId: string) => {
+    if (known.delete(workspaceId)) openers().delete(workspaceId);
+    detachHeader(workspaceId);
+  };
+  const stopWidth = watchCompactWidth(() => {
+    for (const id of known) {
+      if (phonePillsShown()) detachHeader(id);
+      else attachHeader(id);
+    }
+  });
 
   type Page = { entries: { id: string }[]; pageInfo: { nextCursor: string | null; hasMore: boolean } };
   // 한 번에 오는 것은 첫 묶음(200개)뿐이라 다음 묶음까지 마저 읽어 맞춘다. 재연결 때 오는 새 목록에도 같은 방식으로
@@ -168,7 +188,7 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     }
     if (disposed || mine !== generation) return;
     for (const id of ids) add(id);
-    for (const id of [...registrations.keys()]) if (!ids.has(id)) drop(id);
+    for (const id of [...known]) if (!ids.has(id)) drop(id);
   };
 
   void (async () => {
@@ -192,7 +212,7 @@ export function createActivityButtons(client: PluginClientContext, log: (message
         stopSnapshots();
         void list.subscription.release();
       };
-      log(`header buttons on ${registrations.size} workspaces`);
+      log(`header buttons on ${registrations.size}/${known.size} workspaces`);
     } catch (error) {
       log(`workspace subscribe failed: ${String(error)}`);
     }
@@ -201,7 +221,8 @@ export function createActivityButtons(client: PluginClientContext, log: (message
   return () => {
     disposed = true;
     release?.();
-    for (const id of [...registrations.keys()]) drop(id);
+    stopWidth();
+    for (const id of [...known]) drop(id);
     leading?.dispose?.();
     clearMaximizedPane();
     paintedOpen = null;

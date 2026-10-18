@@ -8,13 +8,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { alive, appendEvent, idlePctOf, isRegistered, missingFields, paths, PERSONAL_SEAT, personalSwitchPath, readJson, sameWindow, validId, workRoot,
-  writeJson } from "./workstate.mjs";
+import { alive, appendEvent, idlePctOf, isRegistered, missingFields, NOT_WAITED_HOOK_TYPES, paths, PERSONAL_SEAT, personalSwitchPath, readJson, sameWindow,
+  SEAT_PCT, TEAM_SEAT_IDS, validId, workRoot, writeJson } from "./workstate.mjs";
 
-/** 자동 전환 대상 팀 좌석 — rotation.mjs TEAM_PROVIDER_IDS 와 같아야 한다(문지기는 rotation.mjs 를 불러오지 않는다: 설정 파일 읽기 없이 빨리 끝나게) */
-export const TEAM_SEATS = ["claude-yeogiaen", "claude-hrg"];
-/** 셸·감시는 기다리지 않는다 — rotation.mjs waitedTask 와 같은 뜻(Stop 입력은 친근한 이름 shell·monitor 로 온다) */
-const NOT_WAITED = ["local_bash", "monitor_mcp", "monitor_ws", "shell", "monitor"];
+/** 자동 전환 대상 팀 좌석 — rotation.mjs TEAM_PROVIDER_IDS 와 같은 배열(정본 workstate.mjs TEAM_SEAT_IDS). 문지기는 rotation.mjs 를 불러오지 않는다: 설정 파일 읽기 없이 빨리 끝나게 */
+export const TEAM_SEATS = TEAM_SEAT_IDS;
+/** 셸·감시는 기다리지 않는다 — rotation.mjs waitedTask 와 같은 뜻(Stop 입력은 친근한 이름 shell·monitor 로 온다). 정본 workstate.mjs */
+const NOT_WAITED = NOT_WAITED_HOOK_TYPES;
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "work-cli.mjs");
 
 /**
@@ -26,7 +26,7 @@ export function otherSeatHopeful(current, seats, now = Date.now() / 1000, teamSe
     const s = seats?.[id];
     if (!s || !(typeof s.resetsAt === "number") || s.resetsAt <= now) return true;
     if (s.status === "limit") return false;
-    return !(typeof s.pct === "number" && s.pct >= (idlePctOf(id) ?? 85));
+    return !(typeof s.pct === "number" && s.pct >= (idlePctOf(id) ?? SEAT_PCT.team.idle));
   });
 }
 /** 같은 좌석의 여러 관측 중 가장 새 것(실행기 자기 관측과 감독자 집계 pool.json) */
@@ -67,7 +67,7 @@ export function judge({ work, workError, observe, hook = {}, pool = null, now = 
   // 실행기가 이 대화를 자동 넘김 대상으로 안 보면(active false — 개인 포함 전에 뜬 옛 실행기는 개인을 모른다) 놓아 주지 않는다.
   // 놓아 주면 실행기는 안 넘기고 턴만 끝나 멈춘다(10-17 저녁 — 문지기는 턴마다 새로 떠 바로 새 판, 실행기는 다시 뜰 때까지 옛 판)
   const inPool = current && observe.active !== false && (TEAM_SEATS.includes(current) || (personal && current === PERSONAL_SEAT));
-  if (inPool && typeof seat?.pct === "number" && seat.pct >= (idlePctOf(current) ?? 85) && seat.resetsAt > now / 1000) {
+  if (inPool && typeof seat?.pct === "number" && seat.pct >= (idlePctOf(current) ?? SEAT_PCT.team.idle) && seat.resetsAt > now / 1000) {
     const d = observe.decision;
     const settled = d && sameWindow(d.window, seat.resetsAt) && (d.reason === "no_target" || d.reason === "error");
     const seats = mergeSeats(pool?.seats, observe.seats);

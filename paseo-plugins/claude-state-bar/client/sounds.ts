@@ -22,6 +22,8 @@ export interface SoundProvider {
   usage?(): Promise<Usage>;
   // 그 데몬의 사용량 기억을 건너뛰고 새로 받게 한다(10-17 — web.ts forceUsageRefresh). 옛 판 공급자에는 없을 수 있다
   refreshUsage?(): Promise<boolean | null>;
+  // 그 데몬의 사용량 원본 보고(10-18 C2 — web.ts listUsageReportsRaw, 기억 건너뛰기 없음). 같은 계정 카드 거르기에 쓴다. 옛 판 공급자에는 없을 수 있다
+  usageReports?(): Promise<unknown>;
   // 개인 계정 로그인 열쇠가 곧 만료면 그 데몬 플러그인이 미리 바꿔 둔다(10-17 — shared/account personalLoginKeep). 옛 판 공급자에는 없을 수 있다
   keepLogin?(): Promise<unknown>;
   // 이 PC 플러그인이 등록한 설정 화면(Claude State Bar)을 연다(10-07 머리줄 톱니). 옛 판 공급자에는 없을 수 있다

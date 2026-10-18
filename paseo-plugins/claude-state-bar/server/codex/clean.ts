@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { findCodexDirs } from "../chime/scan";
+import { globalClaudeHome } from "../claudePaths";
 import type { CleanItemKey, CleanRefusal } from "../../shared/codexClean";
 import { CLEAN_ITEMS, parseUsage } from "./usage";
 
@@ -48,7 +48,7 @@ function pathKey(p: string): string {
 
 /** 이 기기 홈의 ~/.claude — 확장 getClaudeBaseUri 의 로컬 창과 같다(Claude Code 가 플러그인을 까는 곳, 리규형님 10-02 결정 16③) */
 function claudeBase(): string {
-  return join(homedir(), ".claude");
+  return globalClaudeHome(); // CLAUDE_CONFIG_DIR 과 무관한 홈 고정 — 계산은 server/claudePaths.ts
 }
 
 /**

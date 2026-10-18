@@ -6,8 +6,8 @@
 import { mkdirSync, readdirSync, watch } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { alive, appendEvent, forgetAgent, idlePctOf, listTransitions, missingFields, paths, pruneTransitions, readJson, readRegistry, removeFile,
-  sameWindow, SEAT_LABEL, TRANSITION_OPEN, validId, warnPctOf, writeJson, writeTransition } from "./workstate.mjs";
+import { alive, appendEvent, forgetAgent, idlePctOf, listTransitions, MARK, missingFields, paths, pruneTransitions, readJson, readRegistry, removeFile,
+  sameWindow, SEAT_LABEL, TRANSITION_OPEN, transitionTag, validId, warnPctOf, writeJson, writeTransition } from "./workstate.mjs";
 
 /**
  * 다시 볼 간격·횟수 — 기획 §4 "일시 오류 5·10·15분 세 번"(Claude 선택 값, 실측 뒤 조정). 이행이 멈췄는지 확인·결과 모르는 말의 재확인에도 같은 값을 쓴다
@@ -20,9 +20,10 @@ export const STAGE_MAX_MS = RECHECK_MS * RECHECK_MAX;
 export const NO_PROGRESS_MAX = 2;
 /** 턴 이벤트 대기열 상한 — 판단이 막혀도 메모리에 끝없이 쌓이지 않게(오래된 것부터 버림) */
 export const EVENTS_QUEUE_MAX = 50;
-export const WAKE_MARK = "[supervisor]";
-/** kicker(resume-kicker.mjs)가 넣는 이어 달리기 말의 머리 — rotation.mjs RESUME_PROMPT 와 같아야 한다 */
-export const RESUME_MARK = "[rotation] 자동 이어 달리기";
+// 말 머리 정본은 workstate.mjs MARK(실행기 rotation.mjs 와 같은 값을 쓴다 — 손으로 맞춘 사본을 두지 않는다, 10-18)
+export const WAKE_MARK = MARK.supervisor;
+/** kicker(resume-kicker.mjs)가 넣는 이어 달리기 말의 머리 — rotation.mjs RESUME_PROMPT 가 같은 MARK.resume 으로 시작한다 */
+export const RESUME_MARK = MARK.resume;
 
 /** 권한 창·질문지에 답이 없을 때 거절까지 기다리는 시간 — 리규형님 10-16 19:4x "일정시간이란 5분정도" */
 export const PERMISSION_WAIT_MS = 5 * 60_000;
@@ -66,16 +67,26 @@ export function seatWasBlocked(observe) {
   return (observe.limited === true && typeof observe.limitReset === "number") || (seat?.status === "limit" && typeof seat.resetsAt === "number");
 }
 
+/** 턴 끝 문지기가 이번 턴에 "백그라운드 작업 대기"로 통과시켰는가 — 판정 시각이 이 감독자가 본 턴 시작보다 뒤일 때만(턴 시작을 모르면 false) */
+export function gateWaiting(gate, turnStartAt) {
+  if (gate?.verdict !== "pass" || gate.code !== "background_wait" || !(turnStartAt > 0)) return false;
+  const at = Date.parse(gate.at ?? "");
+  return Number.isFinite(at) && at >= turnStartAt;
+}
+
 /**
  * 한 대화의 판단 — 순수 함수. 돌려주는 값 { status, reason, dueAt(ms, 0 = 없음), actions }
  * actions: {t:"notify", key, title, body} · {t:"transition", tid, patch} · {t:"wake", why} · {t:"hold", reason} · {t:"outbox", patch} ·
- *          {t:"perm_seen", id, at}(권한 요청을 처음 봄) · {t:"deny", id, message}(답 없어 거절) · {t:"stop_seen", key, at}(멈춤을 처음 봄)
+ *          {t:"perm_seen", id, at}(권한 요청을 처음 봄) · {t:"deny", id, message}(답 없어 거절) · {t:"stop_seen", key, at}(멈춤을 처음 봄) ·
+ *          wake 의 schedKey(정해 둔 시각의 깨우기 열쇠 — 보낼 때 sv.scheduled 에 남긴다) · {t:"sched_notified", key}(그 열쇠로 깨운 뒤 장부 그대로 알림을 보냄)
+ *    sv.scheduled = { key, at, wakeId, notified? } — 마지막으로 보낸 정해 둔 시각의 깨우기(같은 열쇠는 다시 보내지 않는다)
  * c: now · snap(Paseo 상태: status·activeTurn·pendingPermissions·archivedAt) · work/workError · observe · relayAlive(실행기 생존) ·
- *    transitions · ownerAlive(t) · sv(감독자 기록) · autoSend · seenResume(Set tid) · seenWake(bool) · lastFailedAt(ms) · settleMs(멈춤 대기, 시험용)
+ *    transitions · ownerAlive(t) · sv(감독자 기록) · autoSend · seenResume(Set tid) · seenWake(bool) · lastFailedAt(ms) · settleMs(멈춤 대기, 시험용) ·
+ *    gate(턴 끝 문지기의 마지막 판정 파일) · turnStartAt(이 감독자가 본 마지막 턴 시작 ms, 모르면 0)
  */
 export function decideAgent(c) {
   const { now, snap, work, workError, observe, relayAlive = false, transitions = [], ownerAlive = () => false, sv = {}, autoSend = false,
-    seenResume = new Set(), seenWake = false, lastFailedAt = 0, settleMs = STOP_SETTLE_MS } = c;
+    seenResume = new Set(), seenWake = false, lastFailedAt = 0, settleMs = STOP_SETTLE_MS, gate = null, turnStartAt = 0 } = c;
   const actions = [];
   const out = (status, reason, dueAt = 0) => ({ status, reason, dueAt, actions });
   const notify = (key, title, body) => actions.push({ t: "notify", key, title, body });
@@ -185,8 +196,12 @@ export function decideAgent(c) {
     return out("no_work", workError ? "장부 깨짐" : "장부 없음");
   }
   // scheduled = 기다리던 시각이 된 깨우기(외부 작업 다시 볼 시각·막혔던 좌석이 풀린 시각) — autoSend 와 상관없이 깨운다.
-  // 대화 Claude 가 스스로 깨우기 예약을 걸던 규칙을 장치로 옮긴 것(리규형님 10-16 19:5x "외부 작업 시각만 감독자가 자동으로"). 할 일 남은 멈춤은 그대로 autoSend 를 따른다
-  const wake = (why, scheduled = false) => {
+  // 대화 Claude 가 스스로 깨우기 예약을 걸던 규칙을 장치로 옮긴 것(리규형님 10-16 19:5x "외부 작업 시각만 감독자가 자동으로"). 할 일 남은 멈춤은 그대로 autoSend 를 따른다.
+  // 🔴 정해 둔 시각의 깨우기는 같은 열쇠(장부 판 rev + 그 시각)에 한 번만 보낸다(10-18 콜어드민 05:18~05:36 KST 사고: 장부가 waiting_external 인 채
+  // 다시 볼 시각이 지나, 깨운 턴이 약 1초 만에 completed 로 끝날 때마다 또 깨워 1,263번 보냈다 — 깨운 말이 보이면 바로 confirmed 가 되고,
+  // 기다리는 상태라 무진척으로도 안 세어져 막을 것이 없었다). 깨운 뒤에도 장부가 그대로면(같은 열쇠) 다시 깨우지 않고 would_wake 로 남기고
+  // 폰으로 한 번만 알린다. 장부가 바뀌면(rev·시각이 바뀜) 새 열쇠라 다시 깨울 수 있다
+  const wake = (why, scheduled = false, schedKey = null) => {
     // 사람이 마지막 말 뒤에 턴을 중단했다 — 사람 손에 있다. 다음 말이 올 때까지 알리지도 깨우지도 않는다(리규형님 10-16 22:4x)
     const cut = observe?.interrupt;
     if (relayAlive && observe?.main?.done === true && Number.isFinite(cut?.seq) && (observe.input?.seq ?? 0) === cut.seq) return out("human_stopped", "사람이 중단 — 다음 말까지 알리지 않음");
@@ -203,13 +218,20 @@ export function decideAgent(c) {
       notify(`noprog:${work.rev}`, "멈춤 — 진척 없음", `감독자가 깨운 턴이 결과 없이 ${sv.noProgress.count}번 끝났습니다. 대화를 확인해 주세요.`);
       return out("hold", "진척 없음");
     }
+    if (scheduled && schedKey && sv.scheduled?.key === schedKey) {
+      if (!sv.scheduled.notified) {
+        notify(`sched:${schedKey}`, "멈춤 — 깨워도 장부 그대로", `${why}에 한 번 깨웠지만 장부가 그대로라 다시 깨우지 않습니다. 대화를 확인해 주세요. 다음: ${String(work.next ?? work.task ?? work.external?.ref ?? "").slice(0, 150)}`);
+        actions.push({ t: "sched_notified", key: schedKey });
+      }
+      return out("would_wake", `${why} — 한 번 깨웠는데 장부 그대로(다시 깨우지 않음)`);
+    }
     const key = `stop:${observe?.runGen ?? "-"}:${observe?.input?.seq ?? "-"}:${work.rev}`;
     if (!autoSend && !scheduled) {
       notify(key, "멈춤 — 할 일 남음", `${why} · 다음: ${String(work.next ?? work.task ?? "").slice(0, 150)}`);
       return out("would_wake", why);
     }
     if (lastFailedAt && now < lastFailedAt + RECHECK_MS) return out("retry_wait", "오류로 끝난 뒤 다시 볼 시각", lastFailedAt + RECHECK_MS);
-    actions.push({ t: "wake", why });
+    actions.push(schedKey ? { t: "wake", why, schedKey } : { t: "wake", why });
     return out("waking", why);
   };
   switch (work.state) {
@@ -225,18 +247,31 @@ export function decideAgent(c) {
         notify(`invalid:${work.rev}`, "판별 불가", "외부 작업 대기인데 참조나 다시 볼 시각이 없습니다.");
         return out("invalid_work", "외부 대기 칸 빠짐");
       }
-      return due > now ? out("waiting_external", work.external.ref, due) : wake("외부 작업을 다시 볼 시각", true);
+      if (due > now) return out("waiting_external", work.external.ref, due);
+      // 지금 좌석이 사용 한도에 걸려 있으면 깨우지 않는다 — 깨운 턴이 바로 끝나기만 한다(10-18 사고 때 개인 계정 99% 이상). 풀리는 시각에 다시 본다.
+      // 한도는 실행기 관측(limited·좌석 status limit — rotation.mjs 가 rate_limit_event·result 오류로 적는다)으로만 안다. 관측이 없으면 위의 "한 번만" 규칙이 막는다
+      const blocked = providerBlockedUntil(observe, now);
+      if (blocked) return out("waiting_provider", "외부 작업 시각이 지났지만 좌석 한도 — 초기화 대기", blocked);
+      return wake("외부 작업을 다시 볼 시각", true, `ext:${work.rev ?? "-"}:${work.external.recheckAt}`);
     }
     case "waiting_provider": {
       const until = providerBlockedUntil(observe, now);
       if (until) return out("waiting_provider", "좌석 초기화 대기", until);
-      // 막혔던 기록이 있고 그 시각이 지났을 때만 기다리던 깨우기로 본다 — 기록 없이 깨우면 같은 상태로 끝나기를 되풀이할 수 있다
-      return seatWasBlocked(observe) ? wake("막혔던 좌석이 풀린 시각", true) : wake("좌석이 막힌 기록이 없음");
+      // 막혔던 기록이 있고 그 시각이 지났을 때만 기다리던 깨우기로 본다 — 기록 없이 깨우면 같은 상태로 끝나기를 되풀이할 수 있다.
+      // 열쇠 = 장부 판 + 막혔던 시각(외부 작업과 같은 "한 번만" 규칙)
+      if (!seatWasBlocked(observe)) return wake("좌석이 막힌 기록이 없음");
+      const seat = observe.seats?.[observe.provider];
+      const blockedAt = observe.limited && typeof observe.limitReset === "number" ? observe.limitReset : seat?.resetsAt ?? "-";
+      return wake("막혔던 좌석이 풀린 시각", true, `seat:${work.rev ?? "-"}:${observe.provider ?? "-"}:${blockedAt}`);
     }
     case "ready": {
       const miss = missingFields(work, now);
       if (miss.length) { notify(`invalid:${work.rev}`, "판별 불가", `장부 칸이 비었습니다: ${miss.join(", ")}`); return out("invalid_work", "장부 칸 빠짐"); }
       if (relayAlive && observe?.background?.waited > 0) return out("background", `서브에이전트·워크플로우 ${observe.background.waited}개 대기 — 끝나면 Claude 가 스스로 깬다`);
+      // 실행기 관측이 없으면 이번 턴 끝의 문지기 판정으로 대신한다(10-18 Mesa d30c37a7: 실행기가 등록 6분 전에 떠 관측을 안 써서
+      // 문지기는 "백그라운드 작업 대기"로 통과시켰는데 감독자는 "멈춤 — 할 일 남음"을 세 번 보냈다). 이번 턴 시작 뒤의 판정만 믿고,
+      // 턴 시작을 못 봤으면(감독자가 다시 뜬 직후) 예전처럼 알린다 — 문지기가 이번 턴에 안 돌았을 때 옛 판정으로 진짜 멈춤을 놓치지 않게
+      if (!observe && gateWaiting(gate, turnStartAt)) return out("background", "문지기 판정: 백그라운드 작업 대기 — 끝나면 Claude 가 스스로 깬다(실행기 관측 없음)");
       const until = providerBlockedUntil(observe, now);
       if (until) return out("waiting_provider", "좌석 한도 — 초기화 대기", until);
       return wake("할 일이 남았는데 멈춤");
@@ -262,7 +297,7 @@ export function askNotice(work) {
  * 사용량 경고·풀림 말의 머리 — 실행기(rotation.mjs mainInputKind)가 "usage" 종류로 따로 센다.
  * 깨우기 말([supervisor])과 섞이면 이 말로 끝난 턴이 깨우기 결과·진척 없는 깨움으로 세어진다
  */
-export const USAGE_MARK = "[supervisor:usage]";
+export const USAGE_MARK = MARK.usage;
 /** 압축 신호가 끊긴 뒤 이만큼 지나면 끝난 것으로 본다 — Claude Code 는 압축 중 status "compacting" 을 30초마다 되풀이한다(세 번 놓침) */
 export const COMPACT_STALE_MS = 90_000;
 const seatName = (id) => SEAT_LABEL[id] ?? String(id);
@@ -334,6 +369,10 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
   const agents = new Map();
   const watchers = new Map();
   let timer = null, stopped = false, poolBusy = false, poolAgain = false;
+  // 문지기 판정(gateWaiting)에는 턴 시작을 아직 못 본 대화면 감독자가 뜬 시각을 넘긴다 — 뜬 뒤의 문지기 판정은 뜬 뒤 끝난 턴의 것이다.
+  // 0 을 넘기면 다시 불러온 직후 돌던 턴이 끝날 때 문지기 판정을 버려 잘못된 멈춤 알림이 한 번 더 나간다(10-18 배포 직후 Mesa).
+  // turnStartAt 자체는 0 그대로 둔다 — onTurnEnded 의 "예상한 종료" 판정이 0 일 때 따로 최근 RECHECK_MS 를 본다
+  const bootAt = now();
   const st = (id) => {
     let s = agents.get(id);
     if (!s) { s = { busy: false, again: false, turnStartAt: 0, lastFailedAt: 0, events: [], dueHandled: null }; agents.set(id, s); }
@@ -408,7 +447,7 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
   async function evaluate(id, why) {
     const reg = registered();
     if (!reg || !Object.hasOwn(reg.agents, id)) { agents.delete(id); return; }
-    const w = readJson(p.work(id)), o = readJson(p.observe(id)).value ?? null;
+    const w = readJson(p.work(id)), o = readJson(p.observe(id)).value ?? null, g = readJson(p.gate(id)).value ?? null;
     const transitions = listTransitions(root, id);
     let sv = readSv(id);
     // 사람이 명시적으로 보류를 푼다(work-cli resume — 요청 파일 하나만 남기고 감독자가 지운다)
@@ -432,12 +471,12 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
     if (snap && (needResume.length || needWake)) {
       let items = [];
       try { items = userTexts(await api.timeline(id)); } catch (e) { log(`timeline failed ${id.slice(0, 8)}: ${e?.message ?? e}`); }
-      for (const t of needResume) if (items.some((i) => String(i.text ?? "").includes(RESUME_MARK) && String(i.text ?? "").includes(`(이행 ${t.tid})`))) seenResume.add(t.tid);
+      for (const t of needResume) if (items.some((i) => String(i.text ?? "").includes(RESUME_MARK) && String(i.text ?? "").includes(transitionTag(t.tid)))) seenResume.add(t.tid);
       if (needWake) seenWake = items.some((i) => i.messageId === sv.outbox.wakeId || i.clientMessageId === sv.outbox.wakeId);
     }
     const s = st(id);
     const d = decideAgent({ now: now(), snap, work: w.value ?? null, workError: w.error ?? null, observe: o, relayAlive: relayAlive(o),
-      transitions, ownerAlive, sv, autoSend: reg.autoSend, seenResume, seenWake, lastFailedAt: s.lastFailedAt, settleMs });
+      transitions, ownerAlive, sv, autoSend: reg.autoSend, seenResume, seenWake, lastFailedAt: s.lastFailedAt, settleMs, gate: g, turnStartAt: s.turnStartAt || bootAt });
     const agentInfo = { id, workspaceId: snap?.workspaceId ?? null, cwd: snap?.cwd ?? "", label: reg.agents[id]?.label ?? null };
     for (const n of applied.notices) raise({ ...n.agent, label: agentInfo.label }, n.key, n.title, n.body);
     // 권한 창 알림은 턴 안에서 풀린다(새 턴 시작이 없다) — 풀린 판단이면 지운다. 이번 판단이 새 알림을 올리면 그 알림이 대신한다
@@ -457,6 +496,8 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
       if (a.t === "outbox") sv = { ...sv, outbox: { ...sv.outbox, ...a.patch } };
       if (a.t === "perm_seen") sv = { ...sv, perms: { ...(sv.perms ?? {}), [a.id]: { at: a.at, denyTries: 0 } } };
       if (a.t === "stop_seen") sv = { ...sv, stopSeen: { key: a.key, at: new Date(a.at).toISOString() } };
+      // 정해 둔 시각의 깨우기를 한 번 보낸 뒤 장부 그대로라는 폰 알림 — 같은 열쇠는 한 번만(sv.notified 가 다른 알림으로 바뀌어도 다시 안 울린다)
+      if (a.t === "sched_notified" && sv.scheduled?.key === a.key) sv = { ...sv, scheduled: { ...sv.scheduled, notified: true } };
       if (a.t === "deny") { const cur = sv.perms?.[a.id] ?? { at: now() }; sv = { ...sv, perms: { ...(sv.perms ?? {}), [a.id]: { ...cur, denyTries: (cur.denyTries ?? 0) + 1 } } }; }
       if (a.t === "hold") sv = { ...sv, hold: { reason: a.reason, at: new Date(now()).toISOString(), seq: o?.input?.seq ?? null, runGen: o?.runGen ?? null } };
       if (a.t === "notify" && sv.notified?.key !== a.key) {
@@ -529,7 +570,8 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
     }
     // 사용량 말을 먼저 — 풀림이 멈춘 대화를 깨우면 뒤의 깨우기는 보내기 직전 확인에서 "실행 중"으로 건너뛴다
     if (usageSend) await sendUsage(id, usageSend);
-    if (d.actions.some((a) => a.t === "wake")) await sendWake(id, d.actions.find((a) => a.t === "wake").why, o, w.value);
+    const wakeAct = d.actions.find((a) => a.t === "wake");
+    if (wakeAct) await sendWake(id, wakeAct.why, o, w.value, wakeAct.schedKey ?? null);
   }
 
   /**
@@ -579,7 +621,7 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
    * 자동 깨우기(autoSend 켜졌을 때만) — 보내기 직전에 다시 확인한다. 그사이 턴 이벤트가 들어왔으면 보내지 않는다(다음 판단이 먼저 적용).
    * 보낼 말(outbox)을 디스크에 저장하지 못하면 보내지 않는다 — 저장 없이 보내면 다음 판단·재시작이 모르고 또 보낸다(Codex 리뷰). 결과를 모르면 다시 보내지 않는다
    */
-  async function sendWake(id, why, observe, work) {
+  async function sendWake(id, why, observe, work, schedKey = null) {
     let snap = null;
     try { snap = await api.snapshot(id); } catch { /* 아래에서 그만둔다 */ }
     const ob = readJson(p.observe(id)).value;
@@ -593,7 +635,9 @@ export function createSupervisor({ root, api, push, log = () => {}, now = Date.n
     let sv = readSv(id);
     sv = { ...sv, outbox: { wakeId, text, behavior: "steer", state: "pending", at: new Date(now()).toISOString(), why,
       progressAtWake: work?.progressAt ?? null, workRev: work?.rev ?? null, reconcileLeft: RECHECK_MAX,
-      checkAt: new Date(now() + RECHECK_MS).toISOString() } };
+      checkAt: new Date(now() + RECHECK_MS).toISOString() },
+      // 정해 둔 시각의 깨우기면 그 열쇠를 같은 쓰기로 남긴다 — 저장 없이 보내면 다음 판단이 또 보낸다. 보내기가 실패해도(결과 모름) 다시 보내지 않는다
+      ...(schedKey ? { scheduled: { key: schedKey, at: new Date(now()).toISOString(), wakeId } } : {}) };
     if (!writeSv(id, sv)) { log(`wake skipped ${id.slice(0, 8)} — outbox not saved`); return; }
     appendEvent(root, { kind: "wake", agentId: id, wakeId, why });
     try {

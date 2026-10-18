@@ -1,24 +1,34 @@
 // 공급자 계정 값과 accounts.json 계약. 자동 전환 정책은 rotation.mjs 에만 둔다.
-import { mkdirSync, readFileSync, renameSync, rmdirSync, watch, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmdirSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { paseoHome } from "./workstate.mjs";
 
-export const HOME = process.env.PASEO_HOME || join(homedir(), ".paseo");
+export const HOME = paseoHome();
 const DIR = join(HOME, "plugin-data", "claude-state-bar");
 export const FILE = join(DIR, "accounts.json");
 export const ACCOUNT_KEYS = ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"];
+/**
+ * Claude 계열 공급자 판정 — 실행기 쪽 정본(10-18 정리). 기본 공급자 claude 와 설정에서 extends: "claude" 인 공급자(팀 등)가 Claude 계열이다.
+ * 판정할 때 공급자 이름("claude"·팀 이름)을 직접 비교하지 말고 이것을 쓴다. 플러그인 쪽 짝은 claude-state-bar/server/account.ts isClaudeProvider
+ * (둘이 같은 답을 내는지 docs tests-261018/launcher_unify_test.mjs 가 본다)
+ */
+export const CLAUDE_ROOT = "claude";
+export const isClaudeProvider = (id, p) => !!p && (id === CLAUDE_ROOT || p.extends === CLAUDE_ROOT);
+/** 화면 이름 — 설정 label, 없으면 기본 공급자는 "Claude", 그 밖은 공급자 번호 */
+export const providerLabel = (id, p) => (typeof p?.label === "string" && p.label.trim() ? p.label : id === CLAUDE_ROOT ? "Claude" : id);
+// 옛 기록 값 이행용('team'·'personal' — 공급자 번호로 바꾸기 전 accounts.json). 판정이 아니라 데이터 변환이라 이름이 남는다
 export const normalizeProvider = (id) => typeof id !== "string" ? null
-  : id === "team" ? "claude-yeogiaen" : id === "personal" ? "claude" : id || null;
+  : id === "team" ? "claude-yeogiaen" : id === "personal" ? CLAUDE_ROOT : id || null;
 
 export function readProviders() {
   try {
     const doc = JSON.parse(readFileSync(join(HOME, "config.json"), "utf8"));
     const configured = doc?.agents?.providers ?? {};
-    return Object.entries({ claude: {}, ...configured })
-      .filter(([id, p]) => p && (id === "claude" || p.extends === "claude"))
+    return Object.entries({ [CLAUDE_ROOT]: {}, ...configured })
+      .filter(([id, p]) => isClaudeProvider(id, p))
       .map(([id, p]) => ({
-        id, label: typeof p.label === "string" && p.label.trim() ? p.label : id === "claude" ? "Claude" : id,
+        id, label: providerLabel(id, p),
         env: Object.fromEntries(ACCOUNT_KEYS.filter((k) => typeof p.env?.[k] === "string" && p.env[k]).map((k) => [k, p.env[k]])),
       }));
   } catch { return []; }
@@ -27,7 +37,7 @@ export const isTeamProvider = (p) => !!p && Object.keys(p.env).length > 0;
 export function providerForEnv(env, providers = readProviders()) {
   const matches = providers.filter((p) => ACCOUNT_KEYS.every((k) => (env[k] || "") === (p.env[k] || "")));
   return matches.length === 1 ? matches[0].id
-    : matches.every((p) => !isTeamProvider(p)) ? matches.find((p) => p.id === "claude")?.id ?? null : null;
+    : matches.every((p) => !isTeamProvider(p)) ? matches.find((p) => p.id === CLAUDE_ROOT)?.id ?? null : null;
 }
 function readDocument() {
   try {
@@ -65,6 +75,23 @@ export function applyAccount(env, agentId) {
 
 /** 플러그인과 같은 디렉터리 잠금 + 최신 문서 읽기 + 임시 파일 rename.
  * 잠금 안에서 guard 를 다시 확인하여 탐침 중 수동 변경/새 입력을 덮어쓰지 않는다. */
+// Windows 는 다른 프로세스가 대상 파일을 여는 순간 이름 바꾸기를 EPERM·EACCES·EBUSY 로 거부한다 — 이 파일은 다른 실행기들(watchAccount)과
+// 상태바 플러그인이 같이 읽고 쓴다(10-18 18:08 PC 상태바가 이 거부로 죽음 — claude-state-bar/server/account.ts renameRetry 와 같은 처리).
+// 25ms 씩 최대 40번(1초, 잠금 대기 5초 안) 다시 하고, 끝내 안 되면 임시 파일을 지우고 오류를 넘긴다
+const RENAME_TRIES = 40;
+const RENAME_WAIT_MS = 25;
+async function renameRetry(from, to) {
+  for (let i = 1; ; i++) {
+    try { renameSync(from, to); return; }
+    catch (e) {
+      if (!["EPERM", "EACCES", "EBUSY"].includes(e?.code) || i >= RENAME_TRIES) {
+        try { unlinkSync(from); } catch { /* 이미 없음 */ }
+        throw e;
+      }
+      await new Promise((resolve) => setTimeout(resolve, RENAME_WAIT_MS));
+    }
+  }
+}
 export async function writeAccount(agentId, to, base, guard = () => true) {
   if (!agentId || !normalizeProvider(to) || !normalizeProvider(base)) return false;
   mkdirSync(DIR, { recursive: true });
@@ -83,7 +110,7 @@ export async function writeAccount(agentId, to, base, guard = () => true) {
     else doc.entries[agentId] = { to, base, at: new Date().toISOString() };
     const tmp = `${FILE}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(doc), { encoding: "utf8", mode: 0o600 });
-    renameSync(tmp, FILE);
+    await renameRetry(tmp, FILE);
     return true;
   } finally { rmdirSync(lock); }
 }

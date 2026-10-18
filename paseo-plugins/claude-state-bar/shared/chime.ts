@@ -29,6 +29,7 @@ export const chimeForget = defineRpc({
 // v2는 개수가 아니라 완료한 실제 항목 번호를 보존한다. 옛 check 출력은 그대로 둔다.
 export const chimeCheckV2 = defineRpc({
   name: "chime.check-v2",
-  input: z.object({ clientId: z.string(), sessionId: z.string(), cwd: z.string().optional(), baseline: z.boolean().optional() }),
+  // provider = 대화의 Paseo 공급자 이름(10-18) — 서버가 Claude 계열인지 가린다. 옛 화면은 보내지 않는다(claude 대화만 보냈다)
+  input: z.object({ clientId: z.string(), sessionId: z.string(), cwd: z.string().optional(), baseline: z.boolean().optional(), provider: z.string().optional() }),
   output: z.object({ events: z.array(z.string()), found: z.boolean(), recheckAfterMs: z.number().optional() }),
 });

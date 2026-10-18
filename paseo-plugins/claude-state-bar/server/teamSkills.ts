@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { TEAM_LOGS } from "../shared/teamAccess";
 import { projectHosts } from "./projectsEdit";
 import { SAFE_HOST, sshExe } from "./projectLabels";
+import { claudeConfigDir } from "./claudePaths";
 
 // 팀원 관리 시험판(10-11) — 직원에게 줄 스킬·명령어 목록.
 // 리규형님 10-11: "command 도 나와야 돼" · "Paseo 및 Claude 전용 스킬은 로드할 필요 없잖아" · "서버 특화 스킬은 내가 추가하고 서버에서
@@ -15,7 +15,7 @@ import { SAFE_HOST, sshExe } from "./projectLabels";
 
 type Item = { kind: "skill" | "command"; name: string; description: string };
 
-const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+const CLAUDE_DIR = claudeConfigDir(); // 데몬이 뜰 때 한 번 정한다(전과 같음)
 
 function descriptionOf(text: string): string {
   const head = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);

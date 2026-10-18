@@ -12,25 +12,45 @@
 // 그 밖에는 Paseo 화면 중복을 막으려고 본 대화 완성본 줄의 글만 고친다(아래 fixAssistant). 나머지 바이트는 손대지 않는다.
 // Paseo 가 Remote Control 기능을 넣으면 설정에서 command 를 지우고 이 파일을 버린다 — 그때 화면 중복도 Paseo 에서
 // 고쳐졌는지 먼저 본다(요청: https://github.com/getpaseo/paseo/discussions/6141, 10-05).
+//
+// 🔴 실행기는 이 파일 하나다(10-18 리규형님 "코드가 파편화된 것이 문제"). 개인·팀 공급자 모두, PC·서버 모두 이 파일로 띄운다.
+// PC 팀 공급자만 따로 쓰던 claude-team-launch/launch.mjs 는 이 파일을 그대로 실행하는 이행용 껍데기다 — 거기에 기능을 넣지 마라.
+// 그 실행기에만 있던 동작(SIGBREAK 신호 · 동기화 실패 이유 남기기 · 출력·입력 흐름 제어)은 여기로 옮겼다.
+// 팀 설정 동기화는 PC(Windows) 도구라 Windows 에서만 돈다(10-18 Codex 261018_052815 D4 — 리눅스에서 PC 정션 스크립트를 부르지 않는다).
 
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { applyAccount, HOME, watchAccount } from "./account.mjs";
+import { createAssistantFix } from "./assistant-fix.mjs";
 import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, shouldResume, startResumeKicker, takeHandoff } from "./rotation.mjs";
-import { isRegistered, workRecorder, workRoot } from "./workstate.mjs";
+import { isRegistered, isStaffDaemon, legacyRcStateDir, paseoHome, personalSwitchFile, relayLogFile, rotationTestFile, teamSyncScript, workRecorder, workRoot } from "./workstate.mjs";
 
-const argv = process.argv.slice(2);
-let real = "claude";
-if (argv[0] === "--real") {
-  real = argv[1];
-  argv.splice(0, 2);
+// 진짜 claude 위치 — `--real <실행 파일>` 하나만 받는다(10-18 Codex D5). 해석은 이 한 곳뿐이다(팀 껍데기 launch.mjs 도 이 파일을 그대로 실행한다).
+// 기기 네 대의 Paseo 설정은 모두 맨 앞 `--real <claude>` 이고(10-18 실측), 옛 팀 실행기는 위치와 무관하게 찾았다 — 둘 다 받으려고 첫 `--real` 을 찾는다.
+// `--real` 이 없거나 · 값이 비었거나 · 값이 다른 옵션처럼 보이거나(-로 시작) · 두 번 나오면 실패한다.
+// 예전 relay 는 `--real` 이 맨 앞이 아니면 PATH 의 claude 를 조용히 실행했다 — 다른 판의 claude 가 떠도 알 수 없었다
+const rawArgs = process.argv.slice(2);
+const realAt = rawArgs.indexOf("--real");
+const realValue = realAt >= 0 ? rawArgs[realAt + 1] : undefined;
+const realBad = realAt < 0 ? "--real 이 없음" : !realValue ? "--real 뒤 값이 없음" : realValue.startsWith("-") ? `--real 뒤 값이 옵션처럼 보임(${realValue.slice(0, 40)})`
+  : rawArgs.indexOf("--real", realAt + 1) >= 0 ? "--real 이 두 번 나옴" : null;
+if (realBad) {
+  // 동기 쓰기로 다 쓴 뒤 끝낸다 — Windows 에서 stderr 가 파이프면 process.stderr.write 는 비동기라 바로 끝내면 이 줄이 잘릴 수 있다.
+  // 최상위 await 를 쓰지 않는다(10-18 2차 — rotation_verify 가 이 파일을 CommonJS 로 바꿔 vm 에서 돌리는데 최상위 await 가 있으면 문법 오류)
+  try {
+    writeSync(2, `claude-rc-relay: ${realBad} — 사용법: node relay.mjs --real <claude 실행 파일> [claude 인자…]\n`);
+  } catch {
+    /* 오류 출력이 막혀도 종료 코드 2 는 남긴다 */
+  }
+  process.exit(2);
 }
+const real = realValue;
+const argv = [...rawArgs.slice(0, realAt), ...rawArgs.slice(realAt + 2)];
 
-const LOG_DIR = process.env.PASEO_HOME || join(homedir(), ".paseo");
-const LOG = join(LOG_DIR, "claude-rc-relay.log");
+const LOG_DIR = paseoHome(process.env);
+const LOG = relayLogFile(LOG_DIR);
 const log = (msg) => {
   try {
     mkdirSync(LOG_DIR, { recursive: true });
@@ -56,7 +76,7 @@ const REMOTE_CONTROL = false;
 // 웹·폰 원격과 Paseo 보관 상태 맞추기(리규형님 10-06 결정) — 플러그인 claude-state-bar 의 rcSync 가 읽던 상태 파일(10-10 rcSync 와 함께 끔).
 // ~/.paseo/claude-rc-state/<Claude 대화 번호>.json = { sessionId, relayPid, startedAt, cse?, remoteArchivedAt?, exitedAt? }
 // 대화 번호는 이어 띄울 때 --resume=<번호>, 새 대화면 Claude 가 내보내는 첫 session_id 에서 얻는다.
-const STATE_DIR = join(homedir(), ".paseo", "claude-rc-state");
+const STATE_DIR = legacyRcStateDir();
 const argValue = (name) => {
   const i = argv.findIndex((a) => a === name || a.startsWith(name + "="));
   if (i < 0) return null;
@@ -87,19 +107,28 @@ const saveState = (patch) => {
 };
 saveState({});
 
-// 같은 창 계정 바꾸기(10-14, account.mjs): 이 대화를 다른 계정으로 바꿔 둔 기록이 있으면 그 계정으로 띄운다. 팀으로 띄울 때 PC 는
-// 팀 실행기(claude-team-launch)처럼 팀 설정 동기화를 한 번 돌린다(동기화 없이 팀 폴더를 바로 지정했을 때 한 번 "로그인 안 됨"이 났다
-// — 10-14 실측, 원인 미확정). 서버는 동기화할 것이 없다(팀 계정이 토큰이라 설정 폴더가 같다).
+// 같은 창 계정 바꾸기(10-14, account.mjs): 이 대화를 다른 계정으로 바꿔 둔 기록이 있으면 그 계정으로 띄운다.
+// 설정 폴더(CLAUDE_CONFIG_DIR)를 지정해 띄울 때는(PC 팀 공급자 · 팀으로 바꾼 대화) 팀 설정 동기화(claude-team-sync.js team)를 한 번 돌린다 —
+// 순서는 바탕화면 세션이 만든 claude-team.cmd 와 같다. 동기화 없이 팀 폴더를 바로 지정했을 때 한 번 "로그인 안 됨"이 났다(10-14 실측, 원인 미확정).
+// 동기화 스크립트는 PC 바탕화면 세션이 만든 Windows 도구(정션)라 Windows 에서만, 직원 데몬이 아닐 때만 돈다(10-18 Codex 261018_052815 D4).
+// 리눅스에 CLAUDE_CONFIG_DIR 이 있어도 PC 정션 스크립트를 부르지 않는다 — 서버는 팀 계정이 토큰이라 원래 설정 폴더를 지정하지 않는다.
+// 동기화가 실패해도 그대로 실행한다(claude-team.cmd 도 결과를 보지 않는다). 동기화 출력은 stderr 로만 — stdout 은 Paseo 와 claude 의 stream-json 통로다
 const agentId = process.env.PASEO_AGENT_ID || null;
 const childEnv = { ...process.env };
-const account = ephemeral ? null : applyAccount(childEnv, agentId);
-if (process.platform === "win32" && childEnv.CLAUDE_CONFIG_DIR) {
-  const sync = spawnSync(process.execPath, [join(homedir(), ".local", "bin", "claude-team-sync.js"), "team"], {
+// 직원(울타리 안 팀원) 데몬이 띄운 Claude 면(10-18 Codex 261018_052815 C7) 화면 중복 막기·한글 디코더만 하고,
+// 계정 바꾸기·넘김 안내·무중단 기록·자동 전환·계정 감시·PC 설정 동기화는 하지 않는다 — 일회성 실행(ephemeral)과 같은 자리에서 끈다
+const staff = isStaffDaemon(process.env);
+const account = ephemeral || staff ? null : applyAccount(childEnv, agentId);
+if (!isStaffDaemon(process.env) && process.platform === "win32" && childEnv.CLAUDE_CONFIG_DIR) {
+  const sync = spawnSync(process.execPath, [teamSyncScript(), "team"], {
     stdio: ["ignore", 2, 2],
     env: childEnv,
     windowsHide: true,
   });
-  log(`team account: settings sync ${sync.error || sync.status !== 0 ? "failed" : "ok"}`);
+  const failed = sync.error || sync.status !== 0;
+  const why = failed ? (sync.error?.message ?? `exit ${sync.status}`) : "";
+  log(`team account: settings sync ${failed ? `failed (${why})` : "ok"}`);
+  if (failed) process.stderr.write(`claude-rc-relay: 설정 동기화 실패(${why}) — 그대로 실행합니다\n`);
 }
 if (account) log(`account ${account} (agent ${String(agentId).slice(0, 8)})`);
 // 어느 계정으로 띄우는지 남긴다(값은 안 남긴다) — 서버 팀 토큰은 claude auth status 에 안 보이고 대화 안 명령 창에도 안 넘어가서
@@ -107,21 +136,21 @@ if (account) log(`account ${account} (agent ${String(agentId).slice(0, 8)})`);
 if (!ephemeral) log(`auth (agent ${String(agentId).slice(0, 8)}): team token ${childEnv.CLAUDE_CODE_OAUTH_TOKEN ? "set" : "none"} · config dir ${childEnv.CLAUDE_CONFIG_DIR ? "set" : "default"}`);
 
 // 자동 전환으로 꺼졌다 다시 뜨는 거라면 꺼지기 전 백그라운드 작업 목록을 첫 사람 말 앞에 한 번 붙인다(10-15 리규형님, rotation.mjs saveHandoff)
-const handoff = ephemeral ? null : takeHandoff(HOME, agentId);
+const handoff = ephemeral || staff ? null : takeHandoff(HOME, agentId);
 const notice = handoff ? handoffNotice(handoff) : null;
 if (handoff) log(`rotation handoff (agent ${String(agentId).slice(0, 8)}) — notice on next message, tasks=${handoff.tasks?.length ?? 0}`);
 // 무중단 작업(10-16, workstate.mjs) — 이 실행기 세대·관측·넘김 이행을 claude-work/ 에 남긴다. 턴 끝 문지기와 감독자가 읽는다
 const runGen = `${process.pid}-${Date.now()}`;
-const work = workRecorder({ agentId, log, ephemeral });
-const rotation = createRotation({ real, env: childEnv, initialEnv: process.env, agentId, log, enabled: !ephemeral,
-  handoff: (info) => saveHandoff(HOME, agentId, info), testFile: join(HOME, "claude-rc-relay-test.json"),
-  personalFile: join(HOME, "claude-rc-relay-personal.json"),
+const work = workRecorder({ agentId, log, ephemeral: ephemeral || staff });
+const rotation = createRotation({ real, env: childEnv, initialEnv: process.env, agentId, log, enabled: !ephemeral && !staff,
+  handoff: (info) => saveHandoff(HOME, agentId, info), testFile: rotationTestFile(HOME),
+  personalFile: personalSwitchFile(HOME),
   // 자동 전환은 무중단 등록 대화만(10-17 밤) — 판정마다 장부를 다시 읽는다
   registered: () => isRegistered(workRoot(), agentId),
   runGen, record: work.record, onTransition: work.onTransition });
 const child = spawn(real, argv, { stdio: ["pipe", "pipe", "inherit"], env: childEnv, windowsHide: true });
 // 켜져 있는 동안 이 대화의 계정 기록이 바뀌면 Claude 를 끈다 — 다음 말 때 Paseo 가 이 실행기를 다시 띄우며 새 계정이 적용된다
-const stopAccountWatch = ephemeral
+const stopAccountWatch = ephemeral || staff
   ? () => {}
   : watchAccount(agentId, () => {
       log(`account changed (agent ${String(agentId).slice(0, 8)}) — stopping claude; the next message restarts it`);
@@ -157,10 +186,22 @@ child.on("error", (e) => {
 
 // Paseo → claude: 바이트는 그대로 넘기고, 줄을 훑어 초기화 요청 번호만 기억한다.
 // 넘겨받은 안내가 있으면 첫 사람 말 줄에 붙인다(rotation.mjs noticeForwarder)
+// 흐름 제어(옛 팀 실행기의 pause/drain 계약 — 10-18 Codex D3): claude 가 입력을 못 따라오면 Paseo 쪽 입력을 멈췄다가 비면 다시 받는다.
+// 안 하면 받은 입력이 이 프로세스 메모리에 끝없이 쌓인다. 기다리는 drain 은 하나만 건다(한 조각이 여러 번 써져도 리스너가 쌓이지 않게)
 let initId = null;
 let inBuf = "";
+let inputPaused = false;
+const toChild = (data) => {
+  if (child.stdin.write(data) || inputPaused) return;
+  inputPaused = true;
+  process.stdin.pause();
+  child.stdin.once("drain", () => {
+    inputPaused = false;
+    process.stdin.resume();
+  });
+};
 const rotationInput = jsonLines(rotation.input);
-const forward = noticeForwarder(notice, (data) => child.stdin.write(data), () => log("rotation handoff notice added to the next message"));
+const forward = noticeForwarder(notice, toChild, () => log("rotation handoff notice added to the next message"));
 process.stdin.on("data", (chunk) => {
   rotationInput.write(chunk);
   forward.write(chunk);
@@ -210,14 +251,17 @@ const handleLine = (line) => {
       saveState({});
     }
   }
-  if (line.includes(RC_ID)) {
+  // 아래 두 줄 거르기는 Remote Control 을 켰을 때만 — 꺼져 있으면 우리가 요청을 안 보내 걸러야 할 줄이 없다(10-18 Codex A절 반례:
+  // 꺼져 있어도 글자만 보고 버려서, 도구 입력에 "bridge_state" 가 든 정상 assistant 줄이 Paseo 에 안 갔다). 다시 켜면 글자 검색 말고
+  // 실제 control_response·system 줄 종류와 request_id 로 가려야 한다
+  if (REMOTE_CONTROL && line.includes(RC_ID)) {
     const ok = line.includes('"subtype":"success"');
     log(ok ? "remote control on" : `remote control failed: ${line.slice(0, 300)}`);
     const cse = /"bridge_session_id":"(cse_[A-Za-z0-9]+)"/.exec(line);
     if (ok && cse) saveState({ cse: cse[1] });
     return false;
   }
-  if (line.includes('"bridge_state"')) {
+  if (REMOTE_CONTROL && line.includes('"bridge_state"')) {
     const m = /"state":"([a-z_]+)"/.exec(line);
     const bridge = m ? m[1] : "?";
     // 정상 상태는 낱말만, 그 밖(failed 등)은 원인을 알 수 있게 원문 앞부분까지 남긴다(10-05 22:26 끊김 원인을 못 찾음)
@@ -246,54 +290,11 @@ const handleLine = (line) => {
   }
   return true;
 };
-// Paseo 화면 중복 막기(10-05 리규형님 "대화가 중복으로 계속 나온다").
-// Claude 는 한 응답의 완성본(assistant 줄)을 블록마다 따로, 그 블록만 담아 보낸다(실측). Paseo 0.11 의 조립기
-// (TimelineAssembler.applyAbsoluteFragments)는 완성본을 "그 응답의 지금까지 전체"로 보고, 실시간 조각으로 쌓은 글과
-// 앞부분이 다르면 처음부터 다시 그린 셈 친다. 그래서 같은 응답에 생각·본문 블록이 둘 이상이면 두 번째부터 두 번 나온다.
-// 본 대화 줄의 첫 생각·본문 블록 앞에 같은 응답에서 앞서 나온 글을 붙여 Paseo 가 기대하는 모양으로 맞춘다.
-// 서브에이전트 줄(parent_tool_use_id)은 Paseo 가 조립기를 거치지 않고 블록마다 그리므로 손대지 않는다.
-let curMsgId = null;
-let prevThinking = "";
-let prevText = "";
-const fixAssistant = (line) => {
-  if (!line.includes('"type":"assistant"')) return line;
-  let o;
-  try {
-    o = JSON.parse(line);
-  } catch {
-    return line;
-  }
-  if (o.type !== "assistant" || o.parent_tool_use_id || !Array.isArray(o.message?.content) || !o.message.id) return line;
-  if (o.message.id !== curMsgId) {
-    curMsgId = o.message.id;
-    prevThinking = "";
-    prevText = "";
-  }
-  const pT = prevThinking;
-  const pX = prevText;
-  let changed = false;
-  let firstThinking = true;
-  let firstText = true;
-  for (const b of o.message.content) {
-    if (b?.type === "thinking" && typeof b.thinking === "string" && b.thinking) {
-      prevThinking += b.thinking;
-      if (firstThinking && pT) {
-        b.thinking = pT + b.thinking;
-        changed = true;
-      }
-      firstThinking = false;
-    } else if (b?.type === "text" && typeof b.text === "string" && b.text) {
-      prevText += b.text;
-      if (firstText && pX) {
-        b.text = pX + b.text;
-        changed = true;
-      }
-      firstText = false;
-    }
-  }
-  return changed ? JSON.stringify(o) + "\n" : line;
-};
-// 조각 경계에서 잘린 한글이 깨지지 않게 디코더로 이어 붙인다
+// Paseo 화면 중복 막기(10-05) — 까닭과 방법은 assistant-fix.mjs. 팀 공급자도 이 실행기로 뜨므로 모든 대화에 적용된다(10-18)
+const fixAssistant = createAssistantFix();
+// 조각 경계에서 잘린 한글이 깨지지 않게 디코더로 이어 붙인다.
+// 흐름 제어(옛 팀 실행기의 pause/drain 계약 — 10-18 Codex D3): Paseo 가 출력을 못 따라오면(쓰기가 false) claude 출력 읽기를 멈추고,
+// 비면(drain) 다시 읽는다. Windows 에선 파이프 쓰기가 비동기라 안 멈추면 큰 출력이 이 프로세스 메모리에 다 쌓인다
 const decoder = new StringDecoder("utf8");
 child.stdout.on("data", (chunk) => {
   outBuf += decoder.write(chunk);
@@ -304,8 +305,9 @@ child.stdout.on("data", (chunk) => {
     outBuf = outBuf.slice(nl + 1);
     if (handleLine(line)) pass += fixAssistant(line);
   }
-  if (pass) process.stdout.write(pass);
+  if (pass && !process.stdout.write(pass)) child.stdout.pause();
 });
+process.stdout.on("drain", () => child.stdout.resume());
 child.stdout.on("end", () => {
   outBuf += decoder.end();
   if (outBuf && handleLine(outBuf)) process.stdout.write(fixAssistant(outBuf));
@@ -319,7 +321,8 @@ child.on("close", (code, signal) => {
   process.exitCode = code ?? 1;
   process.stdout.write("", () => process.exit(code ?? 1));
 });
-for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+// SIGBREAK = Windows 콘솔 Ctrl+Break(옛 팀 실행기에서 옮김, 10-18). 리눅스 node 에선 보통 이벤트 이름으로만 등록되고 오류가 없다
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP", "SIGBREAK"]) {
   process.on(sig, () => {
     try {
       child.kill(sig);

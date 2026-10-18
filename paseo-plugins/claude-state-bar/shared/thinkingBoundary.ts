@@ -12,10 +12,30 @@ import { z } from "zod";
 
 // wait: 지금 도는 턴의 상자면 true — 기록에서 못 찾으면 데몬이 기록 파일이 늘어날 때까지 기다렸다 다시 찾는다(10-09: 생각이 다
 // 들어온 순간 물었는데 기록엔 아직 안 적혀 "모름"을 받고, 글이 더 안 바뀌어 다시 묻지 않아 상자에 남은 일이 있었다)
+//
+// 답의 상태(10-18, Codex 261018_052815 C3) — 예전엔 "찾았는데 한 칸이라 유지"·"아직 기록에 없음"·"파일·워처 실패"가 모두 cut:null
+// 하나라 화면이 다음에 무엇을 할지 가르지 못했다. 이제 state 로 가른다(약속 전체는 docs/paseo-plugin-tools/THINKING_CONTRACT.md):
+// - matched: 기록에서 이 상자를 찾았다. cut 이 null 이면 "한 칸이라 통째로 둔다"로 확정(다시 묻지 않는다, C5 — 한 칸 자동 꺼내기 안 함)
+// - pending: 기록에 아직 없다(기다리는 요청이면 데몬 WAIT_MS 만큼 기다린 뒤) — 지금 턴 상자만 다시 묻는다
+// - unavailable: 찾을 수 없다. reason = unsupported(Claude 대화 아님)·no_session(세션·기록 파일 없음)·watch_failed(파일 지켜보기 실패)·
+//   read_failed(읽기 실패)·history_truncated(기록 앞부분을 읽지 않음 — 끝 32MiB·응답 2000개 메모리 보호 밖일 수 있다)
+// cut 칸은 옛 화면(상태를 모르는 판)이 읽으므로 늘 보낸다. state 가 없는 답은 옛 데몬이다 — 같은 이름을 유지해 화면·데몬 판이
+// 엇갈려도(옛 화면이 남은 탭 등) 서로 읽을 수 있게 했다(새 이름 -v2 를 따로 두지 않음)
+export const BOUNDARY_STATES = ["matched", "pending", "unavailable"] as const;
+export type BoundaryState = (typeof BOUNDARY_STATES)[number];
+export const BOUNDARY_REASONS = ["unsupported", "no_session", "watch_failed", "read_failed", "history_truncated"] as const;
+export type BoundaryReason = (typeof BOUNDARY_REASONS)[number];
+/** 데몬 답 — state 가 없으면 옛 데몬(cut:null 의 뜻을 모른다) */
+export type BoundaryAnswer = { cut: number | null; state?: BoundaryState; reason?: BoundaryReason };
+
 export const thinkingBoundary = defineRpc({
   name: "thinking.boundary",
   input: z.object({ agentId: z.string(), text: z.string(), wait: z.boolean().optional() }),
-  output: z.object({ cut: z.number().int().nonnegative().nullable() }),
+  output: z.object({
+    cut: z.number().int().nonnegative().nullable(),
+    state: z.enum(BOUNDARY_STATES).optional(),
+    reason: z.enum(BOUNDARY_REASONS).optional(),
+  }),
 });
 
 /** 꺼낼 자리와, 상자 글이 기록의 어느 칸 묶음과 맞았는지(matched=false 면 기록에 아직 없음 — 다시 찾을 만하다) */

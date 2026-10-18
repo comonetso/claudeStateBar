@@ -1,4 +1,5 @@
 import type { SpeechSettings, SpeechLang, TranslateProvider } from "../shared/speech";
+import type { BoundaryTrack, BoxTurn } from "../shared/thinkingContract";
 export type Phase = "streaming" | "complete";
 export type Paragraph = { src: string; done: boolean };
 export type AudioFile = { base64: string; mimeType: string };
@@ -46,6 +47,12 @@ export type ThinkingBoxState = {
    * (같은 상자 알아보기·이어 받기가 전체 글로 맞춘다)
    */
   cut?: number | null;
+  /** 꺼낼 자리 묻기 진행(10-18 C3, shared/thinkingContract.ts) — 상자 상태에 두어 상자가 다시 그려져도 같은 글로 또 묻지 않는다 */
+  boundary?: BoundaryTrack;
+  /** 지금 그려진 상자의 묻기 함수 — 앞 요청의 답이 오면 이것으로 다음을 정한다(그려진 상자가 없으면 멈춘다) */
+  boundaryAsk?: () => void;
+  /** 이 상자가 어느 턴의 것인가(10-18 C3) — 처음 볼 때 한 번 정한다 */
+  turn?: BoxTurn;
   translate: boolean;
   /**
    * 원문 보기(10-10 리규형님 "번역본이면 원문으로, 원문이면 번역문으로") — 상자 화면이 원문을 따로 그린다(브라우저 번역 막음,

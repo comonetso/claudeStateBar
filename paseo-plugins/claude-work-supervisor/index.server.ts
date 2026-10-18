@@ -4,7 +4,6 @@
 // 공개 플러그인 claude-state-bar 와 나눈 이유: 좌석 교대·자동 깨우기는 리규형님 운영 정책이라 공개판에 넣지 않는다(기획 §5).
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 // @ts-ignore — 같은 폴더의 JS 모듈(esbuild 가 묶는다)
@@ -12,14 +11,14 @@ import { createSupervisor } from "./server/supervisor.mjs";
 // @ts-ignore
 import { createPush } from "./server/push.mjs";
 // @ts-ignore
-import { workRoot } from "./server/workstate.mjs";
+import { isStaffDaemon, paseoHome, workRoot } from "./server/workstate.mjs";
 
 type Snap = { status: string; activeTurn: unknown; pendingPermissions: unknown[]; archivedAt: string | null; workspaceId: string | null; cwd: string };
 
 export default function contribute(server: PluginServerContext) {
-  // 직원 데몬(울타리 안 팀원)은 하지 않는다 — claude-state-bar sound.ts isTeamDaemon 과 같은 판정
-  if (process.env.TEAM_UID || process.env.PASEO_HOME === "/team/paseo") return () => {};
-  const home = process.env.PASEO_HOME || join(homedir(), ".paseo");
+  // 직원 데몬(울타리 안 팀원)은 하지 않는다 — claude-state-bar sound.ts isTeamDaemon 과 같은 판정(정본 workstate.mjs isStaffDaemon)
+  if (isStaffDaemon(process.env)) return () => {};
+  const home = paseoHome(process.env);
   const log = (message: string) => console.log(`[supervisor] ${message}`);
   // 플러그인 프로세스에 하나뿐인 Paseo 연결 — 훅마다 같은 것이 온다(서버 plugin-process.js). 첫 훅에서 받아 둔다
   let paseo: any = null;

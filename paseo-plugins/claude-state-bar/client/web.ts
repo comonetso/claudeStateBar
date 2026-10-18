@@ -5,6 +5,7 @@ import { shellMuted, watchShellMute } from "./shellMute";
 import { createShellAudio, shellCanSpeak } from "./shellSpeech";
 import { comboOfKey, shortcutMatches, type KeyLike } from "../shared/shortcuts";
 import { joinSplitParens } from "./readParts";
+import { followPlan } from "../shared/thinkingContract";
 
 /** 키 이벤트 → 단축키 표(shared/shortcuts.ts)가 보는 모양 */
 const keyLike = (e: { code?: string; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean; metaKey?: boolean }): KeyLike =>
@@ -421,25 +422,45 @@ export function setHoverTitle(node: unknown, text: string): void {
   (node as { setAttribute?: (name: string, value: string) => void }).setAttribute?.("title", text);
 }
 
-// 알약 바로 위 작은 글씨(10-17 폰 "작업 현황" 알약의 개수 — phonePills.tsx). Paseo 는 알약 아이콘을 16px 상자에 담고 그 밖을 잘라
-// (overflow hidden, 제 탭 실측) 아이콘 안에서는 밖으로 못 그린다 → 아이콘이 자기를 담은 알약 요소에 글을 적어 두고 의사 요소로 띄운다.
-// 알약 줄은 바탕이 비쳐 대화 글이 겹쳐 보일 수 있어 글씨에 바탕색을 깐다
-const PILL_BADGE_STYLE = "claude-state-bar-pill-badge";
+// 알약 줄 위 왼쪽 끝 작은 글씨(10-17 폰 "작업 현황" 알약의 개수 — phonePills.tsx). Paseo 는 알약 아이콘을 16px 상자에 담고 그 밖을
+// 잘라(overflow hidden, 제 탭 실측) 아이콘 안에서는 밖으로 못 그린다 → 아이콘이 자기를 담은 알약 줄에 글을 적어 두고 의사 요소로 띄운다.
+// 10-17 엔 알약 위 가운데였는데 오른쪽에 떠서 애매했다(10-18 리규형님 Mesa 화면 "위치가 애매함, 왼쪽정렬") → 알약 줄 기준 왼쪽 끝.
+// 알약 줄은 바탕이 비쳐 대화 글이 겹쳐 보일 수 있어 글씨에 바탕색을 깐다. 어느 알약의 글씨인지 data-csb-badge-of 에 적어 두고,
+// 그 알약이 줄에서 사라지면 띠 장치(startComposerRail)가 지운다
+const PILL_BADGE_STYLE = "claude-state-bar-pill-badge-v2";
 const PILL_BADGE_CSS = "[data-csb-badge]{position:relative;overflow:visible}"
-  + "[data-csb-badge]::before{content:attr(data-csb-badge);position:absolute;bottom:calc(100% + 3px);left:50%;transform:translateX(-50%);"
+  + "[data-csb-badge]::before{content:attr(data-csb-badge);position:absolute;bottom:calc(100% + 3px);left:0;"
   + "font-size:10px;line-height:13px;white-space:nowrap;padding:0 3px;border-radius:3px;pointer-events:none;"
   + "color:var(--csb-badge-color,#999);background:var(--csb-badge-bg,transparent)}";
-type BadgeEl = { closest?(selector: string): BadgeEl | null; setAttribute(n: string, v: string): void; removeAttribute(n: string): void; style: { setProperty(n: string, v: string): void } };
-/** node(알약 안의 요소)를 담은 알약(aria-label = pillLabel)에 위 글씨를 단다. text 가 null 이면 뗀다 */
+type BadgeEl = {
+  closest?(selector: string): BadgeEl | null; parentElement: BadgeEl | null;
+  setAttribute(n: string, v: string): void; removeAttribute(n: string): void; style: { setProperty(n: string, v: string): void };
+};
+// 알약 이름 → 글씨를 단 알약 줄. 알약이 먼저 빠지면(대화 바꾸기) node 로는 줄을 못 찾아 여기서 지운다
+const badgeRows = new Map<string, BadgeEl>();
+// 알약 줄 = 알약(감싸개는 display:contents)을 담은, 부모가 절대 위치 띠인 요소(10-18 폰 폭 실측 — 띠 > 줄 > 감싸개 > 알약)
+function pillRowOf(pill: BadgeEl): BadgeEl | null {
+  for (let el = pill.parentElement, n = 0; el && el.parentElement && n < 6; el = el.parentElement, n++) {
+    if (window.getComputedStyle(el.parentElement as never).position === "absolute") return el;
+  }
+  return null;
+}
+/** node(알약 안의 요소)를 담은 알약(aria-label = pillLabel)이 있는 알약 줄 위 왼쪽 끝에 글씨를 단다. text 가 null 이면 뗀다 */
 export function setPillBadge(node: unknown, pillLabel: string, text: string | null, color: string, background: string): void {
-  if (!isWeb() || !node) return;
-  const pill = (node as BadgeEl).closest?.(`[aria-label="${pillLabel}"]`);
-  if (!pill) return;
+  if (!isWeb()) return;
+  const pill = node ? (node as BadgeEl).closest?.(`[aria-label="${pillLabel}"]`) ?? null : null;
+  const row = pill ? pillRowOf(pill) : null;
+  const old = badgeRows.get(pillLabel);
+  if (old && old !== row) { old.removeAttribute("data-csb-badge"); old.removeAttribute("data-csb-badge-of"); badgeRows.delete(pillLabel); }
+  if (!row) return;
+  document.getElementById("claude-state-bar-pill-badge")?.remove();
   if (!document.getElementById(PILL_BADGE_STYLE)) setStyleSheet(PILL_BADGE_STYLE, PILL_BADGE_CSS);
-  if (text === null) { pill.removeAttribute("data-csb-badge"); return; }
-  pill.setAttribute("data-csb-badge", text);
-  pill.style.setProperty("--csb-badge-color", color);
-  pill.style.setProperty("--csb-badge-bg", background);
+  if (text === null) { row.removeAttribute("data-csb-badge"); row.removeAttribute("data-csb-badge-of"); badgeRows.delete(pillLabel); return; }
+  row.setAttribute("data-csb-badge", text);
+  row.setAttribute("data-csb-badge-of", pillLabel);
+  row.style.setProperty("--csb-badge-color", color);
+  row.style.setProperty("--csb-badge-bg", background);
+  badgeRows.set(pillLabel, row);
 }
 
 /**
@@ -611,22 +632,43 @@ export function forceUsageRefresh(serverId: string): Promise<boolean | null> {
   forces.set(serverId, running);
   return running;
 }
-async function runUsageForce(serverId: string): Promise<boolean | null> {
-  const getStore = paseoModule("hostRuntime")?.getHostRuntimeStore as (() => { getClient?(id: string): unknown }) | undefined;
-  if (typeof getStore !== "function") return null;
+/** 그 데몬에 사용량 보고를 물을 연결(hostRuntime 연결 보관소). 못 찾으면 이유 — probeModule 이유 · "no-export"(보관소 함수 없음) ·
+ *  "no-client"(그 데몬 연결이 없거나 listUsageReports 가 없음). 웹이 아니거나 모르는 판이면 예전(paseoModule)처럼 못 찾음이다 */
+function usageClient(serverId: string): (UsageReportsClient & { listUsageReports: NonNullable<UsageReportsClient["listUsageReports"]> }) | InternalsReason | "no-client" {
+  const mod = probeModule("hostRuntime");
+  if (typeof mod === "string") return mod;
+  const getStore = mod.getHostRuntimeStore as (() => { getClient?(id: string): unknown }) | undefined;
+  if (typeof getStore !== "function") return "no-export";
   let client: UsageReportsClient | null = null;
   try {
     client = (getStore().getClient?.(serverId) ?? null) as UsageReportsClient | null;
   } catch {
-    return null;
+    return "no-client";
   }
-  if (!client || typeof client.listUsageReports !== "function") return null;
+  if (!client || typeof client.listUsageReports !== "function") return "no-client";
+  return client as UsageReportsClient & { listUsageReports: NonNullable<UsageReportsClient["listUsageReports"]> };
+}
+async function runUsageForce(serverId: string): Promise<boolean | null> {
+  const client = usageClient(serverId);
+  if (typeof client === "string") return null;
   try {
     const { reports } = await client.listUsageReports({ forceRefresh: true });
     return !(reports ?? []).some((r) => r.report?.status === "error");
   } catch {
     return false;
   }
+}
+
+/**
+ * 그 데몬의 사용량 원본 보고(10-18 C2 — 같은 계정 카드 거르기, client/usageFooter readUsage). 보고 번호에 계정 열쇠가 들어 있어
+ * 옛 목록(providers.listUsage)으로는 못 하는 판정을 한다. 🔴 forceRefresh 는 false — 데몬 5분 기억값을 읽을 뿐 바깥 조회를 늘리지 않는다
+ * (자동 강제 금지 — 위 forceUsageRefresh 주석, 10-17 09:26 429). 받은 값은 손대지 않고 돌려준다(모양 검사는 shared/usageIdentity).
+ * 못 물으면 이유를 글로 담은 Error 를 던진다(usageFooter 가 잡아 옛 목록으로 돌아가고, 기능 상태 칸이 그 이유를 보인다)
+ */
+export async function listUsageReportsRaw(serverId: string): Promise<unknown> {
+  const client = usageClient(serverId);
+  if (typeof client === "string") throw new Error(client);
+  return client.listUsageReports({ forceRefresh: false });
 }
 
 // ── 업데이트 대비 상태 표시(10-08 리규형님 결정 — Codex 261008_150613 작업 1~3) ──
@@ -1227,6 +1269,11 @@ const COMPACT_MAX_WIDTH = 720;
 export function isCompactWidth(): boolean {
   return isWeb() && typeof window.innerWidth === "number" && window.innerWidth < COMPACT_MAX_WIDTH;
 }
+/** 폰 알약(사용량·작업 현황, phonePills.tsx)을 붙이는 화면인가 — 웹은 좁은 화면, 웹이 아니면 늘. 머리줄 단추(activityButton.tsx)는
+ *  이것이 거짓일 때만 붙인다(10-18 리규형님 "상단 세로 쩜쩜쩜 제거" — 좁은 화면에서 머리줄 단추가 세로 점 메뉴로 접혀 있었다) */
+export function phonePillsShown(): boolean {
+  return isWeb() ? isCompactWidth() : true;
+}
 /** 좁은 화면 ↔ 넓은 화면이 바뀔 때마다 부른다(웹·데스크톱만). 끊기 함수 */
 export function watchCompactWidth(onChange: (compact: boolean) => void): () => void {
   if (!isWeb()) return () => {};
@@ -1490,13 +1537,25 @@ export function watchScreenUse(onUse: () => void): () => void {
 }
 
 // ── 입력창 위 단추 줄: 불투명 띠·맨 아래로 단추 띄우기·아이콘 가운데 유지 ──
-const RAIL_SHEET = "claude-state-bar-composer-rail-v4";
+const RAIL_SHEET = "claude-state-bar-composer-rail-v6";
 const RAIL_CSS =
   // 단추 안 아이콘·글을 가운데로(10-09 리규형님 "아이콘이 왼쪽으로 쏠렸어" — 폰에선 글 없이 아이콘만 남아 49px 단추 왼쪽에 붙었다)
   "[data-csb-track] [role=\"button\"]{justify-content:center !important}" +
   // 아이콘만 보이는 우리 단추(목록·생각 상자 접기)는 글자 자리에 폭 없는 공백(U+200B)을 둔다(Paseo 가 빈 글자를 거절) — 그 칸과
   // 아이콘 사이 간격(8px) 때문에 아이콘이 4px 왼쪽으로 밀렸다(10-09 실측). 그 칸만 숨긴다
-  "[data-csb-track] [data-csb-empty]{display:none !important}";
+  "[data-csb-track] [data-csb-empty]{display:none !important}" +
+  // 좁은 화면 두 줄(10-18 리규형님 — 알약 8개라 컨텍스트 알약이 "3.." 으로 잘렸다): 컨텍스트 사용률·작업 현황·사용량 세 알약만
+  // 줄바꿈해 아랫줄로 보낸다. Paseo 가 그린 알약은 옮기지 않고 순서·줄바꿈만 준다(감싸개가 display:contents 라 알약 단추가 줄의
+  // 칸이다 — 폰 폭 실측). 높이 0 의 한 줄짜리 의사 요소가 줄을 끊는다. 읽기 조절기는 그 줄 맨 뒤 남는 공간 가운데(DOCK row2)
+  "[data-csb-track][data-csb-rows] > :first-child{flex-wrap:wrap !important;row-gap:6px}" +
+  "[data-csb-track][data-csb-rows] > :first-child::after{content:\"\";flex-basis:100%;order:50;height:0}" +
+  "[data-csb-track][data-csb-rows] [aria-label^=\"컨텍스트 사용량\"]{order:51}" +
+  "[data-csb-track][data-csb-rows] [aria-label=\"작업 현황\"]{order:52}" +
+  "[data-csb-track][data-csb-rows] [aria-label=\"사용량\"]{order:53}" +
+  // 두 줄일 때 윗줄은 왼쪽부터 붙이고 맨 오른쪽에 설정 알약(10-18 리규형님). 생각 상자 펼치기 알약의 오른쪽 밀기(thinkingFoldPill.ts
+  // margin-left:auto — 10-08 "채팅창 위 오른쪽")는 넓은 화면에서만 산다
+  "[data-csb-track][data-csb-rows] [aria-label^=\"생각 상자 모두\"]{margin-left:0 !important}" +
+  "[data-csb-track][data-csb-rows] [aria-label=\"Claude State Bar 설정\"]{order:49;margin-left:auto}";
 type RailEl = Omit<HeaderEl, "style" | "parentElement"> & {
   parentElement: RailEl | null;
   style: { display: string; backgroundColor: string; boxShadow: string; translate: string };
@@ -1510,7 +1569,7 @@ type RailEl = Omit<HeaderEl, "style" | "parentElement"> & {
 
 /** 이 장치 코드를 고치면 올린다 — 플러그인을 다시 읽어도 같은 페이지에는 처음 시작한 옛 판 장치가 남아 새 코드가 안 돌았다
  *  (10-08 폰 진단). 더 높은 판이 오면 옛 판 장치를 멈추고 넘겨받는다. 판이 섞인 호스트들은 높은 판 하나를 같이 쓴다 */
-const RAIL_VERSION = 9; // 10-09 선택 읽기 조절 알약 전용 줄바꿈·가운데 표식 제거
+const RAIL_VERSION = 11; // 10: 10-18 좁은 화면 두 줄·목록 끝 여백·개수 글씨 정리 · 11: 윗줄 왼쪽 정렬·설정 알약 맨 오른쪽(10-18 저녁)
 
 // 입력창 위 단추 줄(컨텍스트·목록·접기)을 대화 화면 바탕색 띠로 칠한다(10-09 리규형님 "아이콘 뒷배경이 투명이라 거슬려 — 글자가
 // 안 보여야 해, 헷갈리고 잘 안 보여" · "웹도 동일한 경험으로, 폰 분기 하지 말고"). 단추는 Paseo 가 불투명하게 칠하지만(composerPillStyles
@@ -1523,6 +1582,80 @@ function solidBackgroundAbove(el: RailEl): string | null {
     if (bg && bg !== "transparent" && !/^rgba\(.*,\s*0\)$/.test(bg)) return bg;
   }
   return null;
+}
+
+// 좁은 화면 두 줄로 띠가 커진 만큼 대화 목록 끝 여백을 더한다(10-18 폰 폭 실측: 띠는 아래가 고정된 절대 위치라 위로 44px 커지고,
+// Paseo 는 목록 끝 여백을 띠 높이에 맞추지 않아 맨 아래 줄이 띠에 가려졌다). 목록 상자 자체에 여백을 주면 상자만 화면 밖으로 커져
+// 효과가 없었고, 안쪽 내용 상자(첫 자식) 아래 여백이 먹었다.
+// 대상은 Paseo 웹 대화 목록 표식 [data-testid="agent-chat-scroll"](설치 번들 0.11.4 모듈 4948)만 쓴다 — "가장 큰 스크롤 상자"로 고르면
+// 키보드·가로 화면에서 펼친 생각 상자를 골랐다(10-18 Codex 261018_164051 F3). 같은 칸에서 보이는 것이 하나로 정해지지 않으면 손대지 않는다.
+// 띠마다 고친 내용 상자와 원래 값을 기억하고(padOwners), 띠가 사라짐·대화 전환(내용 상자가 바뀜)·폭 전환·장치 멈춤 모두 같은 복원을 쓴다.
+// 복원은 지금 값이 우리가 쓴 값일 때만 — Paseo 가 그 사이 다시 그렸으면 덮어쓰지 않는다
+const CHAT_LIST_SELECTOR = '[data-testid="agent-chat-scroll"]';
+type Rect = { top: number; bottom: number; left: number; right: number; width: number };
+type ListContent = { isConnected: boolean; style: { paddingBottom: string; setProperty(n: string, v: string): void; removeProperty(n: string): void } };
+type ListEl = {
+  scrollTop: number; scrollHeight: number; clientHeight: number; parentElement: ListEl | null; firstElementChild: ListContent | null;
+  getBoundingClientRect(): Rect; querySelectorAll(selector: string): ArrayLike<ListEl>;
+};
+type RowEl = { getBoundingClientRect(): Rect; getAttribute(n: string): string | null; querySelector(selector: string): RowEl | null };
+type PadOwner = { list: ListEl; content: ListContent; base: number; inline: string; written: string };
+const padOwners = new Map<RailEl, PadOwner>();
+/** 띠와 같은 칸의 대화 목록 — 띠에서 위로 올라가며 처음 목록 표식이 나오는 조상에서, 보이고 띠와 가로로 겹치는 것이 정확히 하나일 때만 */
+function chatListFor(track: RailEl): ListEl | null {
+  const tr = track.getBoundingClientRect();
+  for (let p = (track as unknown as ListEl).parentElement, n = 0; p && n < 8; p = p.parentElement, n++) {
+    const all = p.querySelectorAll(CHAT_LIST_SELECTOR);
+    if (!all.length) continue;
+    const near: ListEl[] = [];
+    for (let i = 0; i < all.length; i++) {
+      const r = all[i].getBoundingClientRect();
+      if (r.width > 0 && r.right > tr.left && r.left < tr.right) near.push(all[i]);
+    }
+    return near.length === 1 ? near[0] : null;
+  }
+  return null;
+}
+function releasePad(track: RailEl): void {
+  const owner = padOwners.get(track);
+  if (!owner) return;
+  padOwners.delete(track);
+  if (!owner.content.isConnected || owner.content.style.paddingBottom !== owner.written) return;
+  if (owner.inline) owner.content.style.setProperty("padding-bottom", owner.inline);
+  else owner.content.style.removeProperty("padding-bottom");
+}
+/** 지금 띠 목록(live)에 없는 띠의 여백을 되돌린다 — live 를 비우면 전부 */
+function releasePadsExcept(live: Set<RailEl>): void {
+  for (const track of [...padOwners.keys()]) if (!live.has(track)) releasePad(track);
+}
+/** 두 줄 띠(track)에 맞춰 대화 목록 끝 여백을 맞춘다. 두 줄이 아니면(rows false 이거나 아랫줄이 비어 늘어난 높이가 0) 되돌린다 */
+function fitChatListToRail(track: RailEl, rows: boolean): void {
+  const row = (track as unknown as { firstElementChild: RowEl | null }).firstElementChild;
+  let extra = 0;
+  if (rows && row) {
+    const pill = row.querySelector('[role="button"]');
+    const line = pill ? pill.getBoundingClientRect().bottom - pill.getBoundingClientRect().top : 0;
+    extra = Math.max(0, Math.round(row.getBoundingClientRect().bottom - row.getBoundingClientRect().top - (line || 32)));
+    // 개수 글씨(setPillBadge)는 알약 줄 위로 13px+3px 뜬다 — 한 줄일 때는 원래 여유 안에 들어가고, 두 줄이면 그만큼 더 준다
+    if (extra > 0 && row.getAttribute("data-csb-badge") !== null) extra += 16;
+  }
+  const list = extra > 0 ? chatListFor(track) : null;
+  const content = list?.firstElementChild ?? null;
+  let owner = padOwners.get(track);
+  if (!list || !content) { releasePad(track); return; }
+  if (owner && (owner.content !== content || !owner.content.isConnected)) { releasePad(track); owner = undefined; }
+  if (!owner) {
+    const base = (window.getComputedStyle(content as never) as unknown as { paddingBottom?: string }).paddingBottom ?? "0";
+    owner = { list, content, base: parseFloat(base) || 0, inline: content.style.paddingBottom || "", written: "" };
+    padOwners.set(track, owner);
+  }
+  const want = `${owner.base + extra}px`;
+  if (content.style.paddingBottom === want) { owner.written = want; return; }
+  // 맨 아래를 보고 있었으면 여백을 늘린 뒤에도 맨 아래에 둔다(Paseo 의 "맨 아래 붙음"이 풀리지 않게)
+  const stuck = list.scrollHeight - list.clientHeight - list.scrollTop < 4;
+  content.style.setProperty("padding-bottom", want);
+  owner.written = want;
+  if (stuck) list.scrollTop = list.scrollHeight;
 }
 
 /** 화면에 한 벌만 돈다(기기마다 올라오는 플러그인이 같이 부르면 함께 쓰고, 다 끊으면 멈춘다). 끊기 함수 */
@@ -1559,8 +1692,22 @@ export function startComposerRail(): () => void {
         }
       }
       const extraTop = new Map<RailEl, number>();
+      const rows = isCompactWidth();
       for (const t of tracks) {
         if (t.getAttribute("data-csb-track") === null) t.setAttribute("data-csb-track", "");
+        // 좁은 화면 두 줄 표식(위 RAIL_CSS) · 커진 만큼 대화 목록 끝 여백
+        if (rows !== (t.getAttribute("data-csb-rows") !== null)) {
+          if (rows) t.setAttribute("data-csb-rows", "");
+          else t.removeAttribute("data-csb-rows");
+        }
+        // 개수 글씨(setPillBadge)를 단 알약이 줄에서 빠졌으면(대화 바꾸기·넓은 화면) 글씨도 뗀다
+        const badgeRow = (t as unknown as { firstElementChild: (RailEl & { querySelector(s: string): unknown }) | null }).firstElementChild;
+        const badgeOf = badgeRow?.getAttribute("data-csb-badge-of");
+        if (badgeRow && badgeOf && !badgeRow.querySelector(`[aria-label="${badgeOf}"]`)) {
+          badgeRow.removeAttribute("data-csb-badge");
+          badgeRow.removeAttribute("data-csb-badge-of");
+        }
+        try { fitChatListToRail(t, rows); } catch { /* 모르는 DOM 은 여백만 생략한다 */ }
         const bg = solidBackgroundAbove(t);
         if (bg && t.style.backgroundColor !== bg) t.style.backgroundColor = bg;
         // 띠 위 여백을 아래 여백만큼 — 배치는 그대로 두고 같은 색 그림자로 띠 위쪽만 넓힌다(10-09 리규형님 "아이콘 패널 상단 패딩을
@@ -1601,10 +1748,13 @@ export function startComposerRail(): () => void {
           else b.removeAttribute("data-csb-lift");
         }
       }
+      // 입력창이 사라져 띠가 목록에서 빠지면 fitChatListToRail 이 안 불린다 — 그 띠가 고친 여백을 여기서 되돌린다(Codex F3 정리 누락)
+      try { releasePadsExcept(tracks); } catch { /* 모르는 DOM 은 생략한다 */ }
       const painted = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < painted.length; i++) {
         if (tracks.has(painted[i])) continue;
         painted[i].removeAttribute("data-csb-track");
+        painted[i].removeAttribute("data-csb-rows");
         painted[i].removeAttribute("data-csb-shadow");
         painted[i].style.backgroundColor = "";
         painted[i].style.boxShadow = "";
@@ -1633,10 +1783,12 @@ export function startComposerRail(): () => void {
       const painted = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < painted.length; i++) {
         painted[i].removeAttribute("data-csb-track");
+        painted[i].removeAttribute("data-csb-rows");
         painted[i].removeAttribute("data-csb-shadow");
         painted[i].style.backgroundColor = "";
         painted[i].style.boxShadow = "";
       }
+      releasePadsExcept(new Set());
       const lifted = document.querySelectorAll("[data-csb-lift]") as unknown as ArrayLike<RailEl>;
       for (let i = 0; i < lifted.length; i++) {
         lifted[i].removeAttribute("data-csb-lift");
@@ -2269,22 +2421,30 @@ function lastSpeech(copy: ReadEl): SpeechGroup | null {
 // ── 따라 읽기(10-15) — 켜진 대화의 말 단위(Claude 말 블록 · 생각 상자에서 꺼낸 말, thinking.tsx saidId)를 화면 순서대로 모은다 ──
 const FOLLOW_SAID = '[id^="csb-think-"][id$="-said"]';
 const FOLLOW_UNITS = `[data-testid="assistant-message"], ${FOLLOW_SAID}`;
+/** 생각 상자 바깥 칸(thinking.tsx `${domId}-box`) — 아직 꺼낸 말이 없는 상자도 출발점 계산에 넣는다(10-18 C4) */
+const FOLLOW_BOX = '[id^="csb-think-"][id$="-box"]';
 /** 말 단위 하나. key = 타임라인 항목 번호 + 항목 안 순번 — 다시 그려져 요소가 바뀌어도 같은 말이면 같은 키다 */
 type FollowUnit = { el: ReadEl; key: string; root: ReadEl };
+/** 꺼낸 말이 아직 없는 생각 상자 — key 는 나중에 꺼낸 말이 생기면 그 말 단위의 키, at = 화면 순서상 이 상자 앞에 있는 말 단위 수 */
+type FollowBox = { key: string; at: number; root: ReadEl };
 type FollowState = {
   session: number;
-  /** 읽지 않는 말 — 켤 때 이미 있던 말(출발점 앞)과 그보다 앞에 뒤늦게 그려진 옛 말 */
+  /** 읽지 않는 말 — 켤 때 이미 있던 말(출발점 앞)과 그보다 앞에 뒤늦게 그려진 옛 말, 지나간 자리에 늦게 생긴 말(10-18 C4) */
   skip: Set<string>;
   /** 말 단위마다 넘긴 문단 수 */
   taken: Map<string, number>;
+  /** 문단을 하나라도 재생기에 넘긴 말 — 읽기 순서 커서(이보다 앞에 늦게 생긴 말은 끼워 넣지 않는다, shared/thinkingContract followPlan) */
+  pushed: Set<string>;
   /** 뒤에 다른 항목이 생겨 끝까지 넘긴 말 — 다시 화면 글을 모으지 않는다 */
   done: Set<string>;
   /** 넘긴 문단마다 (말 단위, 그 안 문단 번호) — 형광펜 자리를 다시 찾는다 */
   where: { key: string; part: number }[];
 };
-function followUnits(stream: string): FollowUnit[] {
-  const all = document.querySelectorAll(FOLLOW_UNITS) as unknown as ArrayLike<ReadEl>;
+/** 화면 순서대로 말 단위와, 꺼낸 말이 아직 없는 생각 상자를 한 번에 모은다(한 번 훑은 순서가 곧 앞뒤 비교 기준) */
+function followScan(stream: string): { units: FollowUnit[]; boxes: FollowBox[] } {
+  const all = document.querySelectorAll(`${FOLLOW_UNITS}, ${FOLLOW_BOX}`) as unknown as ArrayLike<ReadEl>;
   const units: FollowUnit[] = [];
+  const boxes: FollowBox[] = [];
   const perRow = new Map<string, number>();
   for (let i = 0; i < all.length; i++) {
     const el = all[i];
@@ -2292,11 +2452,24 @@ function followUnits(stream: string): FollowUnit[] {
     const row = timelineRow(el);
     if (!row) continue;
     const said = el.getAttribute("data-testid") !== "assistant-message";
+    if (said && (el.getAttribute("id") ?? "").endsWith("-box")) {
+      boxes.push({ key: `${row.id}#said`, at: units.length, root: row.root });
+      continue;
+    }
     const n = perRow.get(row.id) ?? 0;
     perRow.set(row.id, n + 1);
     units.push({ el, key: `${row.id}#${said ? "said" : n}`, root: row.root });
   }
-  return units;
+  const unitKeys = new Set(units.map((u) => u.key));
+  return { units, boxes: boxes.filter((b) => !unitKeys.has(b.key)) };
+}
+function followUnits(stream: string): FollowUnit[] {
+  return followScan(stream).units;
+}
+/** 상자가 대화의 맨 끝 항목인가(뒤에 항목 번호가 있는 행·꼬리 줄이 없다) — followClosed 와 같은 기준 */
+function followBoxLast(box: FollowBox, stream: string): boolean {
+  const next = adjacentTimeline(box.root, "nextElementSibling", stream);
+  return !next || (!timelineRow(next) && !footerProps(next));
 }
 /**
  * 끝난 말인가 — 뒤에 같은 대화의 다른 항목(다음 말·도구·생각 상자·꼬리 줄)이 있거나 대화가 쉬는 중. 아니면 마지막 문단은 아직 쓰는
@@ -2313,19 +2486,26 @@ function followClosed(units: readonly FollowUnit[], i: number, idle: boolean, st
  * 화면 마지막 말 단위가 아직 안 끝났다(도구를 돌리거나 생각하는 중이면 다음 말부터). Claude 말 블록이면 이어진 말 묶음의 첫 블록부터.
  * 켤 때 선택해 둔 글이 따라 읽을 말의 문단에 걸치면 그 문단부터 뒤를 모두 읽는다(10-16 리규형님 "선택된 글자가 있으면 그 문단부터,
  * 없을 시 기존대로") — taken 에 그 말의 시작 문단 번호를 미리 넣는다. picked = 그 말의 화면 순번(못 찾으면 null)
+ * 10-18 C4: 꺼낸 말이 아직 없는 생각 상자(boxes)도 출발점 앞이면 그 상자에서 나중에 꺼낼 말의 키를 skip 에 넣는다 — 켜기 전 상자가
+ * 나중에 풀려 새 말처럼 읽히지 않게. 대화가 일하는 중이고 맨 끝 항목인 상자(지금 생각 중)만 빼 둔다 — 거기서 나올 말은 다음 말이다
  */
-function followStart(units: readonly FollowUnit[], idle: boolean, stream: string, selection: unknown): { skip: Set<string>; taken: Map<string, number>; picked: { unit: number; part: number } | null } {
+function followStart(units: readonly FollowUnit[], idle: boolean, stream: string, selection: unknown, boxes: readonly FollowBox[] = []): { skip: Set<string>; taken: Map<string, number>; picked: { unit: number; part: number } | null } {
   if (selection) {
     for (let i = 0; i < units.length; i++) {
       const part = partIn(selection as RangeLike, screenParts(units[i].el).map((p) => p.block));
       if (part === null) continue;
-      return { skip: new Set(units.slice(0, i).map((u) => u.key)), taken: new Map([[units[i].key, part]]), picked: { unit: i, part } };
+      const skip = new Set(units.slice(0, i).map((u) => u.key));
+      for (const box of boxes) if (box.at <= i) skip.add(box.key);
+      return { skip, taken: new Map([[units[i].key, part]]), picked: { unit: i, part } };
     }
   }
   const skip = new Set(units.map((u) => u.key));
   const begin = { skip, taken: new Map<string, number>(), picked: null };
   const last = units.length - 1;
-  if (idle || last < 0 || followClosed(units, last, false, stream)) return begin;
+  if (idle || last < 0 || followClosed(units, last, false, stream)) {
+    for (const box of boxes) if (idle || !followBoxLast(box, stream)) skip.add(box.key);
+    return begin;
+  }
   let from = last;
   const group = units[last].key.endsWith("#said") ? null : speechGroup(units[last].el);
   if (group) {
@@ -2333,6 +2513,7 @@ function followStart(units: readonly FollowUnit[], idle: boolean, stream: string
     if (at >= 0) from = at;
   }
   for (let i = from; i < units.length; i++) skip.delete(units[i].key);
+  for (const box of boxes) if (box.at <= from) skip.add(box.key);
   return begin;
 }
 /** 새로 끝난 문단을 넘기고, 지금 읽는 문단의 화면 요소(형광펜 자리)를 돌려준다 */
@@ -2345,24 +2526,22 @@ function followStep(st: FollowState, follow: FollowBinding, stream: string, log:
     return list;
   };
   // 옛 말 거르기 — 화면에 읽지 않는 말이 보이면 그 마지막 것보다 앞, 안 보이면 넘긴 말 중 첫 것보다 앞에 새로 그려진 것은 켜기 전의
-  // 옛 말이다(위로 올려 가며 다시 그려진 것). 꺼낸 말처럼 넘긴 말 사이에 늦게 생긴 것은 새 말로 받는다
-  let lastSkip = -1;
-  let firstTaken = -1;
-  for (let i = 0; i < units.length; i++) {
-    if (st.skip.has(units[i].key)) lastSkip = i;
-    else if (firstTaken < 0 && st.taken.has(units[i].key)) firstTaken = i;
-  }
-  const oldBefore = lastSkip >= 0 ? lastSkip : firstTaken;
+  // 옛 말이다(위로 올려 가며 다시 그려진 것). 10-18 C4: 이미 재생기에 넘긴 말보다 앞에 늦게 생긴 말(생각 상자에서 늦게 꺼낸 말)은
+  // 지금 읽는 순서 뒤에 끼워 넣지 않고 건너뛴다 — 읽기 순서는 앞으로만 간다(shared/thinkingContract followPlan).
   // 아는 말이 하나도 안 보이면(위로 멀리 올려 화면이 옛 기록만 그림) 새로 넘기지 않는다 — 옛 말을 새 말로 잘못 읽지 않게
-  if (oldBefore >= 0 || (!st.skip.size && !st.taken.size)) {
+  const plan = followPlan(units.map((u) => u.key), st);
+  if (plan.scan) {
+    for (const key of plan.old) st.skip.add(key);
+    // 글 내용은 남기지 않고 항목 번호만(어느 말을 건너뛰었는지 기록으로 가린다)
+    for (const key of plan.late) {
+      st.skip.add(key);
+      log(`follow: 지나간 자리에 늦게 생긴 말 건너뜀 · ${key}`);
+    }
+    for (const key of plan.take) st.taken.set(key, 0);
     const texts: string[] = [];
     for (let i = 0; i < units.length; i++) {
       const u = units[i];
-      if (!st.skip.has(u.key) && !st.taken.has(u.key)) {
-        if (i < oldBefore) { st.skip.add(u.key); continue; }
-        st.taken.set(u.key, 0);
-      }
-      if (st.skip.has(u.key) || st.done.has(u.key)) continue;
+      if (!st.taken.has(u.key) || st.skip.has(u.key) || st.done.has(u.key)) continue;
       const list = partsOf(u);
       // 뒤에 다른 항목이 있으면 끝났다. 쉬는 중이라 끝난 것으로 본 마지막 말은 끝으로 치지 않고 다시 본다 — 상태가 글보다 먼저 바뀌었을 수 있다
       const after = followClosed(units, i, false, stream);
@@ -2372,7 +2551,10 @@ function followStep(st: FollowState, follow: FollowBinding, stream: string, log:
         texts.push(list[k].text);
         st.where.push({ key: u.key, part: k });
       }
-      if (ready > from) st.taken.set(u.key, ready);
+      if (ready > from) {
+        st.taken.set(u.key, ready);
+        st.pushed.add(u.key);
+      }
       if (after) st.done.add(u.key);
     }
     if (texts.length) {
@@ -2663,13 +2845,15 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           const log = (message: string) => b.log?.(message);
           let st = follows.get(b.hostId);
           if (!st || st.session !== b.follow.session) {
-            const units = followUnits(stream);
-            const begin = followStart(units, b.follow.idle, stream, b.follow.from);
-            st = { session: b.follow.session, skip: begin.skip, taken: begin.taken, done: new Set(), where: [] };
+            const { units, boxes } = followScan(stream);
+            const begin = followStart(units, b.follow.idle, stream, b.follow.from, boxes);
+            st = { session: b.follow.session, skip: begin.skip, taken: begin.taken, pushed: new Set(), done: new Set(), where: [] };
             follows.set(b.hostId, st);
             // 선택을 썼으면 푼다 — 선택 색이 형광펜을 덮지 않게(말 읽기 단추와 같다)
             if (begin.picked) clearSelection();
-            log(`follow: 시작 — 화면 말 ${units.length}개 중 ${units.length - st.skip.size}개부터${begin.picked ? ` · 선택한 ${begin.picked.unit + 1}번째 말의 ${begin.picked.part + 1}번째 문단부터` : ""}${b.follow.idle ? " · 쉬는 중" : ""}`);
+            const reading = units.filter((u) => !begin.skip.has(u.key)).length;
+            const boxesBefore = boxes.filter((box) => begin.skip.has(box.key)).length;
+            log(`follow: 시작 — 화면 말 ${units.length}개 중 ${reading}개부터${boxesBefore ? ` · 생각 상자 ${boxesBefore}개 출발점 앞` : ""}${begin.picked ? ` · 선택한 ${begin.picked.unit + 1}번째 말의 ${begin.picked.part + 1}번째 문단부터` : ""}${b.follow.idle ? " · 쉬는 중" : ""}`);
           }
           const block = followStep(st, b.follow, stream, log);
           lit ??= block;
@@ -2861,8 +3045,8 @@ export type ReadDockState = {
 };
 const DOCK_MARK = "data-csb-read-dock";
 // 판이 오르면 스타일 이름도 바꾼다 — 옛 판을 정리할 때 옛 이름 스타일만 지워지게(project_paseo_client_hub_stale)
-const DOCK_SHEET = "claude-state-bar-read-dock-v2";
-const DOCK_VERSION = 2; // 2: 가운데 배치(10-12)
+const DOCK_SHEET = "claude-state-bar-read-dock-v3";
+const DOCK_VERSION = 3; // 2: 가운데 배치(10-12) · 3: 좁은 화면은 두 줄 띠의 아랫줄 남는 공간 가운데(10-18)
 type DockHub = { version: number; users: Map<object, (() => ReadDockState) & { csbVersion?: number }>; stop: (() => void) | null; refresh: (() => void) | null };
 export function startReadDock(state: () => ReadDockState): { refresh(): void; dispose(): void } {
   const noop = { refresh: () => {}, dispose: () => {} };
@@ -2900,6 +3084,8 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
       // 알약 줄(Paseo 가 이미 position:relative)의 정가운데에 띄운다 — 알약 줄 흐름에 끼지 않아 다른 알약 자리를 밀지 않는다
       `[${DOCK_MARK}="dock"][data-place="center"]{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1}` +
       `[${DOCK_MARK}="dock"][data-place="below"]{align-self:center;margin-top:4px}` +
+      // 좁은 화면: 두 줄 띠(RAIL_CSS data-csb-rows)의 아랫줄 맨 뒤 — 세 알약 뒤 남는 공간 가운데(10-18 리규형님). 자리가 모자라면 셋째 줄 가운데
+      `[${DOCK_MARK}="dock"][data-place="row2"]{order:54;margin-left:auto;margin-right:auto}` +
       `[${DOCK_MARK}="button"]{display:flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;margin:0;border:0;border-radius:999px;background:transparent;cursor:pointer;color:var(--colors-foreground-muted, currentColor)}` +
       `[${DOCK_MARK}="button"]:hover{background:var(--colors-surface2, rgba(127,127,127,.15))}` +
       `[${DOCK_MARK}="button"]:focus-visible{outline:2px solid currentColor;outline-offset:1px}` +
@@ -2967,7 +3153,10 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
     };
     const place = (track: ReadEl) => {
       const row = track.firstElementChild;
-      if (!isCompactWidth() && row && fitsCenter(row)) {
+      if (isCompactWidth() && row) {
+        if (dock!.getAttribute("data-place") !== "row2") dock!.setAttribute("data-place", "row2");
+        if (dock!.parentElement !== row) row.appendChild(dock!);
+      } else if (row && fitsCenter(row)) {
         if (dock!.getAttribute("data-place") !== "center") dock!.setAttribute("data-place", "center");
         if (dock!.parentElement !== row) row.appendChild(dock!);
       } else {

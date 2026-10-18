@@ -6,6 +6,7 @@ import type { UsageSourceRegistration } from "@getpaseo/plugin/server";
 import { hashAccountKey, toneFromUsedPct, unavailable, windowFromUsedPct, type UsageReport, type UsageWindow } from "@getpaseo/plugin/server/usage";
 import { claudeProviders } from "./account";
 import { teamUsageSourceId } from "../shared/account";
+import { accountOrgKey } from "../shared/usageIdentity";
 
 // 팀 공급자(claude-yeogiaen) 한도를 Paseo 사용량 목록에 늘 올린다(10-15 리규형님 "Claude 공급자가 여러 개면 한도 상황판에
 // 언제든 표시"). Paseo 의 내장 Claude 사용량 원천은 데몬 자신의 로그인(~/.claude)만 찾아서, 다른 설정 폴더로 로그인한
@@ -31,7 +32,6 @@ const credentialsSchema = z.object({
   claudeAiOauth: z.object({ accessToken: z.string().optional(), refreshToken: z.string().optional(), expiresAt: z.number().optional(), scopes: z.array(z.string()).optional(), subscriptionType: z.string().optional() }).passthrough().optional(),
 }).passthrough();
 const tokenResponseSchema = z.object({ access_token: z.string().min(1), refresh_token: z.string().min(1).optional(), expires_in: z.coerce.number().positive() });
-const accountSchema = z.object({ oauthAccount: z.object({ emailAddress: z.string().optional(), accountUuid: z.string().optional() }).optional() });
 const windowSchema = z.object({ utilization: z.coerce.number().finite(), resets_at: z.string().nullish() });
 const responseSchema = z.object({ five_hour: windowSchema.nullish(), seven_day: windowSchema.nullish(), limits: z.array(z.unknown()).nullish() });
 const nameSchema = z.object({ id: z.string().nullish(), display_name: z.string().nullish() }).nullish();
@@ -200,18 +200,88 @@ function poolUsageSource(provider: string): UsageSourceRegistration {
   };
 }
 
+// 팀 카드의 계정 열쇠 = 내장 Claude 원천과 같은 `계정uuid.조직uuid`(10-18 C2 — shared/usageIdentity). 사용량 칸이 이 열쇠로 같은 계정의
+// 내장 카드를 숨긴다. 그래서 파일(.claude.json)에 적힌 값이 아니라 지금 열쇠로 /api/oauth/profile 에 물어 확인한 값만 쓴다 — 열쇠의
+// 활성 조직이 파일과 다를 수 있다(Codex 261018_052815 C2). 묻는 방법·헤더·15초 제한은 내장 원천 readProfile(설치본 usage.ts:654-698)과 같다.
+// 확인 결과는 열쇠 세대(액세스 열쇠 해시)별로 5분 기억한다 — 내장 원천 PROFILE_TTL_MS(300000)와 같은 값. 데몬은 사용량을 물을 때마다
+// discover 를 부르므로(사용량 칸 30초) 기억 없이 두면 profile 을 30초마다 두드린다. 실패(401·403·그 밖 응답·네트워크·형식)도 같은 시간
+// "미확인"으로 기억한다 — 미확인이면 내장 카드를 숨기지 않으니(두 장 그대로) 늦게 풀려도 카드가 사라지지는 않는다. 열쇠가 바뀌면 다시 묻는다.
+// 만료된 열쇠로는 묻지 않는다(내장 원천과 같게) — 사용량 조회(fetchTeamReport)가 열쇠를 갱신한 뒤 다음 discover 에서 확인된다
+const PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
+const IDENTITY_TTL_MS = 300_000;
+const PROFILE_TIMEOUT_MS = 15_000;
+const profileSchema = z.object({ account: z.object({ uuid: z.string().min(1) }), organization: z.object({ uuid: z.string().min(1) }) });
+const identities = new Map<string, { tokenHash: string; at: number; result: Promise<string | null> }>();
+
+/** 팀 로그인 폴더의 지금 열쇠로 확인한 계정+조직 열쇠 — 확인 못 하면 null. 열쇠 값은 어디에도 남기지 않는다(해시만 비교) */
+export function resolveUsageIdentity(dir: string, fetchApi: typeof fetch = fetch, now: () => number = Date.now): Promise<string | null> {
+  return resolveIdentityGeneration(dir, fetchApi, now).then((r) => r.key);
+}
+/** 위와 같고, 그 확인에 쓴(또는 쓰려던) 열쇠 세대(액세스 열쇠 해시)를 함께 — 같은 열쇠 한 번 읽기로 둘을 묶어, 조회 도중 파일이 바뀌어도
+ *  "어느 열쇠로 확인한 결과인지"가 어긋나지 않는다(10-18 Codex 261018_164051 F4). 열쇠가 없으면 세대도 null */
+function resolveIdentityGeneration(dir: string, fetchApi: typeof fetch, now: () => number): Promise<{ key: string | null; generation: string | null }> {
+  const login = readLogin(dir);
+  const token = login?.accessToken;
+  if (!token) return Promise.resolve({ key: null, generation: null });
+  const tokenHash = hashAccountKey(token);
+  const withGen = (result: Promise<string | null>) => result.then((key) => ({ key, generation: tokenHash }));
+  if (login?.expiresAt !== undefined && login.expiresAt <= now()) return Promise.resolve({ key: null, generation: tokenHash });
+  const cached = identities.get(dir);
+  if (cached && cached.tokenHash === tokenHash && now() - cached.at < IDENTITY_TTL_MS) return withGen(cached.result);
+  const result = (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROFILE_TIMEOUT_MS);
+    try {
+      const res = await fetchApi(PROFILE_URL, {
+        signal: controller.signal,
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "anthropic-beta": OAUTH_BETA },
+      });
+      if (!res.ok) return null;
+      const parsed = profileSchema.safeParse(await res.json().catch(() => null));
+      return parsed.success ? accountOrgKey(parsed.data.account.uuid, parsed.data.organization.uuid) : null;
+    } finally {
+      clearTimeout(timer);
+    }
+  })().catch(() => null);
+  identities.set(dir, { tokenHash, at: now(), result });
+  return withGen(result);
+}
+
+// 팀 카드가 두 장 나오던 것(10-18 2차 — 1차 검증 2 지적 3). 설치본 데몬(0.11.4 server/plugins/usage-sources/index.js)은
+// ① 대화 범위 발견(discoverAgent, 81-110줄) 결과를 그 대화가 같은 세션인 동안 다시 묻지 않고 그대로 쓰고(sameScope 88-92줄),
+// ② 전역 발견 결과와 보고 번호로 합친다(mergeKnown 111-131줄). 그래서 대화 범위 발견이 "미확인"(대체 열쇠) 순간에 일어나고
+// 뒤에 전역 발견이 "확인됨"(계정uuid.조직uuid)이면 두 번호가 함께 남아 같은 팀 카드가 두 장이 됐다.
+// 고침: 팀 카드는 전역 발견에만 낸다(대화 범위면 빈 목록). 전역 결과는 데몬이 사용량을 물을 때마다 통째로 새로 만들므로(listReports 58줄)
+// 열쇠가 바뀌어도 옛 번호가 남지 않는다. 팀 공급자 대화의 대화별 사용량은 내장 Claude 원천이 그 대화의 로그인 폴더로 같은 계정 카드를
+// 이미 만든다(Claude 대화는 provider "claude" 로 넘어온다 — 설치본 providers/claude/agent.js usageSession). 그래서 대화 범위에서
+// 빠져도 그 계정의 사용량은 사라지지 않고, 개인·Codex 대화의 대화별 목록에 상관없는 팀 카드가 끼던 것도 없어진다.
+// 보조: 한 번 확인한 열쇠는 같은 로그인 열쇠 세대 동안 그 폴더의 열쇠로 쓴다(아래 verifiedKeys) — SDK 약속 "열쇠는 고정"(plugin
+// server/usage.d.ts UsageAccount.key). 5분 기억이 풀린 뒤 같은 열쇠로 profile 이 한 번 실패(429·네트워크)해도 전역 카드 번호가 대체 열쇠로
+// 바뀌지 않아, 데몬 5분 기억(번호가 기억 열쇠에 들어감 — fetchId 192줄)이 깨져 사용량을 다시 묻거나 거르기가 잠깐 꺼지지 않는다.
+// 이 세대에서 확인하지 못했으면 대체 열쇠(계정+조직 모양이 아니라 어떤 카드도 숨기지 않음)를 쓴다.
+// 고정 열쇠는 그것을 확인한 열쇠 세대(액세스 열쇠 해시)가 지금과 같을 때만 쓴다 — 5분 기억이 풀린 뒤 같은 열쇠로 다시 물어 실패한
+// 경우·열쇠가 만료된 경우만 덮는다. 열쇠가 바뀐 뒤(갱신·다시 로그인·조직 바꾸기) 확인이 실패하면 대체 열쇠로 내려가 잠깐 두 장이 보인다
+// (안전한 쪽). 10-18 보수 2차 검증·Codex 261018_164051 F4: 계정 번호만 비교하면 같은 계정에서 조직만 바뀐 뒤 확인이 실패할 때 옛 조직
+// 열쇠를 새 조직 사용량에 붙여 옛 조직의 진짜 카드를 숨겼다. .claude.json 의 조직은 실제 활성 조직의 권위가 아니라 쓰지 않는다
+const verifiedKeys = new Map<string, { key: string; generation: string }>();
+type DiscoverScope = { kind?: string } | undefined;
+
 export function teamUsageSource(provider: string): UsageSourceRegistration {
   return {
     id: teamUsageSourceId(provider),
     label: teamUsageLabel(provider),
     input: inputSchema,
-    async discover() {
+    // 데몬은 discover(scope) 로 부른다(index.js 143줄) — 이 SDK 판(0.11.0-beta.3) 타입에는 인자가 없어 선택 인자로 받는다
+    async discover(scope?: DiscoverScope) {
+      if (scope?.kind === "session") return [];
       const dir = teamDir(provider);
       if (!dir || !existsSync(join(dir, ".credentials.json")) || !readLogin(dir)?.accessToken) return [];
-      const account = accountSchema.safeParse(readJson(join(dir, ".claude.json")));
-      const who = account.success ? account.data.oauthAccount : undefined;
       // 카드 제목에 메일을 붙이지 않는다 — 공급자 이름("Claude (como)")이 이미 계정을 가리킨다(10-15 리규형님 "너무 길어")
-      return [{ key: hashAccountKey(who?.accountUuid ?? dir), input: { dir } }];
+      const { key: identity, generation } = await resolveIdentityGeneration(dir, fetch, Date.now);
+      if (identity && generation) verifiedKeys.set(dir, { key: identity, generation });
+      const kept = verifiedKeys.get(dir);
+      const keptKey = kept && generation && kept.generation === generation ? kept.key : undefined;
+      return [{ key: identity ?? keptKey ?? hashAccountKey(`unknown:${dir}`), input: { dir } }];
     },
     async fetch(input): Promise<UsageReport> {
       return fetchTeamReport(inputSchema.parse(input).dir);

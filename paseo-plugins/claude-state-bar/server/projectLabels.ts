@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProjectEntry } from "../shared/projects";
 import { listProjects, onProjectsChange } from "./projects";
+import { globalClaudeHome } from "./claudePaths";
 
 // 폰·웹 세션 제목의 프로젝트 이름표(리규형님 10-07 결정 — 이름은 .vscode 대신 이 목록에서, 번호는 떼고, 서버에는 이름만 담은
 // 작은 파일을 자동으로 보낸다). 제목은 /start 의 ~/.claude/scripts/rc_title.js 가 짓고, 그 스크립트가 이 파일을 읽는다.
@@ -17,7 +18,7 @@ import { listProjects, onProjectsChange } from "./projects";
 
 const LABELS_NAME = "project-labels.json";
 /** 이 기기의 이름표 파일 — rc_title.js 와 위쪽 제목(server/headerTitles)이 읽는다 */
-export const LABELS_FILE = join(homedir(), ".claude", LABELS_NAME);
+export const LABELS_FILE = join(globalClaudeHome(), LABELS_NAME); // 홈 고정 — rc_title.js 가 읽는 전역 자리
 const PC = "PC";
 const SENT_FILE = join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "plugin-data", "claude-state-bar", "project-labels-sent.json");
 

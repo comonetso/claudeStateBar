@@ -14,9 +14,51 @@ export const STATES = ["ready", "waiting_provider", "waiting_external", "waiting
  */
 export const sameWindow = (a, b) => typeof a === "number" && typeof b === "number" && Math.abs(a - b) <= 60;
 export const validId = (id) => /^[A-Za-z0-9-]{1,64}$/.test(String(id ?? ""));
-export const workRoot = (env = process.env) => join(env.PASEO_HOME || join(homedir(), ".paseo"), "claude-work");
-/** 개인 계정 포함 스위치 파일 — <Paseo 홈>/claude-rc-relay-personal.json(root = <Paseo 홈>/claude-work). 있으면 켜짐 */
-export const personalSwitchPath = (root) => join(dirname(root), "claude-rc-relay-personal.json");
+
+// ── 경로(10-18 정리) — 실행기(relay.mjs)·kicker·문지기·감독자가 따로 적던 Paseo 홈·파일 이름의 정본. 한 곳만 고치면 모두 같은 파일을 본다 ──
+/** Paseo 홈 — PASEO_HOME, 없으면 ~/.paseo */
+export const paseoHome = (env = process.env) => env.PASEO_HOME || join(homedir(), ".paseo");
+/** 무중단 작업 상태 폴더 — <Paseo 홈>/claude-work */
+export const workRootOf = (home) => join(home, "claude-work");
+export const workRoot = (env = process.env) => workRootOf(paseoHome(env));
+/** 실행기 기록 — <Paseo 홈>/claude-rc-relay.log(kicker 도 같은 파일에 쓴다) */
+export const relayLogFile = (home) => join(home, "claude-rc-relay.log");
+/** 자동 전환 시험 덮어쓰기 파일(rotation.mjs readRotationTest) */
+export const rotationTestFile = (home) => join(home, "claude-rc-relay-test.json");
+/** 개인 계정 포함 스위치 파일 — <Paseo 홈>/claude-rc-relay-personal.json. 있으면 켜짐 */
+export const personalSwitchFile = (home) => join(home, "claude-rc-relay-personal.json");
+/** 같은 파일을 상태 폴더 기준으로(root = <Paseo 홈>/claude-work) */
+export const personalSwitchPath = (root) => personalSwitchFile(dirname(root));
+/** 넘김 안내 폴더·파일 — 대화 번호가 올바를 때만 경로를 준다(rotation.mjs saveHandoff/takeHandoff · resume-kicker.mjs) */
+export const handoffDir = (home) => join(home, "claude-rc-relay-handoff");
+export const handoffFile = (home, agentId) => (validId(agentId) ? join(handoffDir(home), `${agentId}.json`) : null);
+/** PC 팀 계정 설정 동기화 스크립트(실행기가 CLAUDE_CONFIG_DIR 로 띄울 때 한 번 돌린다) */
+export const teamSyncScript = () => join(homedir(), ".local", "bin", "claude-team-sync.js");
+/** Claude 설정 폴더 — CLAUDE_CONFIG_DIR, 없으면 ~/.claude */
+export const claudeConfigDir = (env = process.env) => env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+/** 옛 Remote Control 보관 상태 폴더 — PASEO_HOME 을 보지 않는 것은 예전 그대로다. 10-10 부터 RC 를 꺼 둬 쓰지 않는 경로(relay.mjs REMOTE_CONTROL) */
+export const legacyRcStateDir = () => join(homedir(), ".paseo", "claude-rc-state");
+
+/**
+ * 직원 데몬(울타리 안 팀원 — /team/paseo)인지. 감독자는 직원 데몬에서 하지 않는다(claude-state-bar sound.ts isTeamDaemon 과 같은 판정).
+ * 실행기도 이 판정 하나로 직원이면 계정 바꾸기·넘김·무중단 기록·자동 전환·계정 감시를 끈다(relay.mjs · rotation.mjs createRotation —
+ * 10-18 C7 에서 TEAM_UID 만 보던 자동 전환을 이것으로 모았다. 실서버 직원 유닛은 두 표식을 늘 같이 줘서 동작 차이는 없다)
+ */
+export const isStaffDaemon = (env = process.env) => !!env.TEAM_UID || env.PASEO_HOME === "/team/paseo";
+
+/**
+ * 실행기·감독자·문지기가 Claude 에 넣는 말의 머리. 감독자는 이 머리로 "누가 넣은 말인지"를 가른다(rotation.mjs mainInputKind ·
+ * supervisor.mjs WAKE_MARK·RESUME_MARK·USAGE_MARK) — 한쪽만 바꾸면 감독자가 이어 달리기 말을 못 알아본다. 바이트까지 바꾸지 마라
+ */
+export const MARK = Object.freeze({
+  rotation: "[rotation]",
+  resume: "[rotation] 자동 이어 달리기",
+  supervisor: "[supervisor]",
+  usage: "[supervisor:usage]",
+  peerMail: "[peer_mail/",
+});
+/** 이어 달리기 말 끝에 붙는 넘김 이행 번호 꼬리(resume-kicker.mjs 가 붙이고 supervisor.mjs 가 찾는다) */
+export const transitionTag = (tid) => `(이행 ${tid})`;
 
 /**
  * 계정별 5시간 사용률 기준(10-17 저녁 리규형님 — "개인 계정 맥스는 팀의 2배라" 개인을 5% 높게).
@@ -30,6 +72,15 @@ export const seatKind = (id) => (id === PERSONAL_SEAT ? "personal" : TEAM_SEAT_I
 export const idlePctOf = (id) => SEAT_PCT[seatKind(id)]?.idle ?? null;
 export const warnPctOf = (id) => SEAT_PCT[seatKind(id)]?.warn ?? null;
 export const SEAT_LABEL = { claude: "개인", "claude-yeogiaen": "팀(como)", "claude-hrg": "팀(hrg)" };
+// 좌석 목록의 정본은 여기 하나다 — rotation.mjs TEAM_PROVIDER_IDS·PERSONAL_PROVIDER_ID 와 stop-gate.mjs TEAM_SEATS 는 이 배열을 다시 내보낸다
+// (10-17 문지기 쪽 목록이 따로 있다 빠져 99% 강제 넘김까지 밀린 사고 — stop-gate.mjs judge 주석)
+
+/**
+ * 쉬는 틈에 끝나길 기다리지 않는 작업 종류(10-15 리규형님: 서브에이전트·워크플로우만 기다림) — 셸 명령과 감시.
+ * rotation.mjs NOT_WAITED_TASK_TYPES 가 이 배열이다. Stop 훅 입력은 친근한 이름(shell·monitor)으로 와서 문지기는 둘을 더해 본다
+ */
+export const NOT_WAITED_TASK_TYPES = ["local_bash", "monitor_mcp", "monitor_ws"];
+export const NOT_WAITED_HOOK_TYPES = [...NOT_WAITED_TASK_TYPES, "shell", "monitor"];
 
 export function paths(root) {
   const per = (sub) => (id) => (validId(id) ? join(root, sub, `${id}.json`) : null);
@@ -189,7 +240,7 @@ export function readTransition(root, agentId, tid) {
 }
 
 /**
- * 실행기(relay.mjs·launch.mjs)의 관측·이행 기록기. 팀 좌석을 쓰는 대화(rotation active)와 등록한 대화만 쓴다 — 그 밖의 대화엔 파일을 만들지 않는다.
+ * 실행기(relay.mjs — 10-18 부터 실행기는 이것 하나)의 관측·이행 기록기. 팀 좌석을 쓰는 대화(rotation active)와 등록한 대화만 쓴다 — 그 밖의 대화엔 파일을 만들지 않는다.
  * 쓰기 실패는 한 번만 기록하고 Claude 입출력 전달·넘김을 막지 않는다(무중단 기획 §3-5). 새 세대가 관측을 가져가면 이 실행기는 쓰기를 멈춘다
  */
 export function workRecorder({ agentId, log = () => {}, env = process.env, ephemeral = false }) {
@@ -199,8 +250,10 @@ export function workRecorder({ agentId, log = () => {}, env = process.env, ephem
   const failed = new Set();
   const fail = (what) => (e) => { if (!failed.has(what)) { failed.add(what); log(`work state ${what} write failed: ${e?.code ?? e?.message ?? e}`); } };
   let stale = false;
+  // 등록 여부는 쓸 때마다 다시 본다 — 떠 있는 동안 등록된 대화도 관측을 쓰게(10-18 Mesa d30c37a7: 실행기가 등록 6분 전에 떠
+  // 관측을 한 줄도 안 써서 감독자가 백그라운드 대기를 멈춤으로 보고 알림을 세 번 보냈다). 등록 파일은 작아 읽기 부담이 없다
   const writer = serialWriter((snap) => {
-    if (stale || (!snap.active && !registered)) return;
+    if (stale || (!snap.active && !isRegistered(root, agentId))) return;
     if (writeObserve(root, agentId, snap) === "stale") { stale = true; log("work state observe — a newer launcher owns this agent, stopped writing"); }
   }, fail("observe"));
   const onTransition = (t) => {

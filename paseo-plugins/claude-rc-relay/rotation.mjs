@@ -5,10 +5,10 @@ import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { accountEntry, accountEnv, isTeamProvider, providerForEnv, readProviders, writeAccount } from "./account.mjs";
-import { sameWindow, SEAT_PCT } from "./workstate.mjs";
+import { handoffDir, handoffFile, isStaffDaemon, MARK, NOT_WAITED_TASK_TYPES as NOT_WAITED_TYPES, PERSONAL_SEAT, sameWindow, SEAT_PCT, TEAM_SEAT_IDS } from "./workstate.mjs";
 
-// 설정 폴더만으로 구독 종류를 알아낼 수 없다. 사용자가 지정한 두 팀 좌석만 허용한다.
-export const TEAM_PROVIDER_IDS = ["claude-yeogiaen", "claude-hrg"];
+// 설정 폴더만으로 구독 종류를 알아낼 수 없다. 사용자가 지정한 두 팀 좌석만 허용한다(정책 허용 목록 — 값의 정본은 workstate.mjs TEAM_SEAT_IDS, 같은 배열).
+export const TEAM_PROVIDER_IDS = TEAM_SEAT_IDS;
 const isTeam = (p, ids = TEAM_PROVIDER_IDS) => ids.includes(p?.id) && isTeamProvider(p);
 const validPct = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
 /**
@@ -18,7 +18,7 @@ const validPct = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
  * 개인이 90% 미만이면 개인으로 돌아간다(개인을 90% 이상·한도로 본 뒤엔 그 리셋 시각까지 다시 재지 않는다). 개인에서 넘기는 규칙은 팀과 같고
  * 기준만 90% 다(IDLE_PCT)
  */
-export const PERSONAL_PROVIDER_ID = "claude";
+export const PERSONAL_PROVIDER_ID = PERSONAL_SEAT;
 export const isPersonal = (p) => p?.id === PERSONAL_PROVIDER_ID && !isTeamProvider(p);
 /**
  * 쉬는 틈에 넘기는 5시간 사용률 — 팀 85%, 개인 90%(10-17 리규형님 "개인 계정 맥스는 팀의 2배라 90%에서 전환").
@@ -66,7 +66,7 @@ export function trustedVersion(v) {
  * Claude Code 가 "활동이 아님"으로 표시한 작업(ambient — 상주 감시·기록 안 남기는 내부 작업)도 기다리지 않는다.
  * 그 밖(서브에이전트·워크플로우·원격 에이전트·팀메이트·MCP 작업)과 처음 보는 종류는 기다린다.
  */
-export const NOT_WAITED_TASK_TYPES = ["local_bash", "monitor_mcp", "monitor_ws"];
+export const NOT_WAITED_TASK_TYPES = NOT_WAITED_TYPES; // 정본 workstate.mjs(문지기 stop-gate.mjs 도 같은 배열에서 만든다)
 export const waitedTask = (t) => t?.ambient !== true && !NOT_WAITED_TASK_TYPES.includes(t?.task_type);
 
 /**
@@ -74,12 +74,11 @@ export const waitedTask = (t) => t?.ambient !== true && !NOT_WAITED_TASK_TYPES.i
  * 넘길 때 꺼지기 직전 목록을 남기고(saveHandoff), 같은 대화가 다시 뜰 때 한 번 꺼내(takeHandoff) 첫 사람 말 앞에 안내로 붙인다(withNotice).
  * 목록에는 명령 원문이 없다(Claude Code 가 종류·설명 글만 준다) — 명령은 새 Claude 가 대화 기록에서 찾는다.
  */
-const handoffFile = (home, agentId) => /^[A-Za-z0-9-]{1,64}$/.test(String(agentId ?? ""))
-  ? join(home, "claude-rc-relay-handoff", `${agentId}.json`) : null;
+// 넘김 파일 경로는 workstate.mjs handoffFile(대화 번호가 올바를 때만 경로를 준다)
 export function saveHandoff(home, agentId, info) {
   const file = handoffFile(home, agentId);
   if (!file) return false;
-  mkdirSync(join(home, "claude-rc-relay-handoff"), { recursive: true });
+  mkdirSync(handoffDir(home), { recursive: true });
   writeFileSync(file, JSON.stringify(info));
   return true;
 }
@@ -105,7 +104,7 @@ export function handoffNotice(info) {
   const list = (Array.isArray(info.tasks) ? info.tasks : []).map((t) =>
     `- ${TASK_NAMES[t?.type] ?? t?.type ?? "작업"}${t?.subagent ? `(${t.subagent})` : ""} · ${String(t?.description ?? "").slice(0, 200)}`);
   return [
-    `[rotation] 계정 자동 전환으로 이 대화의 Claude 가 다시 떴다 — ${info.fromLabel ?? info.from} → ${info.toLabel ?? info.to}(${why}${when ? `, ${when}` : ""}). 사람 말이 아니라 실행기(claude-rc-relay)가 다음 말 앞에 한 번 붙인 안내다.`,
+    `${MARK.rotation} 계정 자동 전환으로 이 대화의 Claude 가 다시 떴다 — ${info.fromLabel ?? info.from} → ${info.toLabel ?? info.to}(${why}${when ? `, ${when}` : ""}). 사람 말이 아니라 실행기(claude-rc-relay)가 다음 말 앞에 한 번 붙인 안내다.`,
     list.length ? `꺼지기 직전 살아 있던 백그라운드 작업이 모두 끝났다(종류 · 설명):\n${list.join("\n")}` : "꺼지기 직전 살아 있던 백그라운드 작업은 없었다.",
     list.length
       ? "할 일: 아래 말에 답하기 전에, 대화 기록에서 위 작업을 띄운 명령을 찾아 아직 필요한 것만 다시 건다. 서브에이전트·워크플로우는 끝나지 못했으니 결과 파일·중간 저장을 확인하고 이어서 돌린다. 다시 건 것과 안 건 것을 리규형님께 한 줄씩 알린다."
@@ -126,7 +125,7 @@ export function handoffNotice(info) {
 export function shouldResume({ reason, registered = false }) {
   return reason === "limit" || reason === "force" || registered === true;
 }
-export const RESUME_PROMPT = "[rotation] 자동 이어 달리기 — 사람 말이 아니라, 실행기(claude-rc-relay)가 공급자를 넘긴 뒤 다음 말을 기다리지 않도록 넣은 말이다. 바로 위 [rotation] 안내대로 끊긴 작업을 확인하고 하던 일을 이어서 한다. 리규형님께는 공급자가 바뀐 것과 다시 건 작업·안 건 작업을 한 줄씩 알린다.";
+export const RESUME_PROMPT = `${MARK.resume} — 사람 말이 아니라, 실행기(claude-rc-relay)가 공급자를 넘긴 뒤 다음 말을 기다리지 않도록 넣은 말이다. 바로 위 [rotation] 안내대로 끊긴 작업을 확인하고 하던 일을 이어서 한다. 리규형님께는 공급자가 바뀐 것과 다시 건 작업·안 건 작업을 한 줄씩 알린다.`;
 /** Paseo 명령 — PC 는 데스크톱 앱 안 resources\bin\paseo.cmd, 서버는 node 옆(nvm bin)의 paseo, 없으면 PATH. 시험은 CLAUDE_ROTATION_PASEO_CLI */
 export function paseoCli(env = process.env) {
   if (env.CLAUDE_ROTATION_PASEO_CLI) return env.CLAUDE_ROTATION_PASEO_CLI;
@@ -139,7 +138,8 @@ export function paseoCli(env = process.env) {
 }
 /**
  * 분리 프로세스를 띄운다. 실행기와는 표준 입력 파이프 하나로만 잇는다 — 실행기가 끝나면 그 파이프가 닫혀 바로 안다(시간 값 없음).
- * 실행기의 이벤트 루프는 붙잡지 않는다(PC 팀 실행기는 스스로 끝나길 기다리는 구조라 붙잡으면 서로 기다린다)
+ * 실행기의 이벤트 루프는 붙잡지 않는다(실행기가 kicker 를 기다리지 않고 끝나야 파이프가 닫혀 kicker 가 움직인다 — 붙잡으면 서로 기다린다.
+ * 10-18 전엔 스스로 끝나길 기다리는 PC 팀 실행기가 따로 있었다. 지금 실행기는 relay.mjs 하나다)
  */
 export function startResumeKicker({ agentId, home, logFile, tid = "", env = process.env }) {
   if (!handoffFile(home, agentId)) return null;
@@ -322,8 +322,8 @@ export function mainInputKind(msg) {
   const c = msg.message.content;
   if (Array.isArray(c) && c.some((b) => b?.type === "tool_result")) return null;
   const head = textOf(c).trimStart();
-  return head.startsWith("[rotation]") ? "rotation" : head.startsWith("[supervisor:usage]") ? "usage" : head.startsWith("[supervisor]") ? "supervisor"
-    : head.startsWith("[peer_mail/") ? "peer_mail" : "human";
+  return head.startsWith(MARK.rotation) ? "rotation" : head.startsWith(MARK.usage) ? "usage" : head.startsWith(MARK.supervisor) ? "supervisor"
+    : head.startsWith(MARK.peerMail) ? "peer_mail" : "human";
 }
 function sevenDay(info) {
   const w = info?.unifiedWindows?.seven_day;
@@ -341,7 +341,8 @@ export function createRotation({ real, env, initialEnv, agentId, log = () => {},
   const base = original?.base ?? providerForEnv(initialEnv, providers);
   const current = original?.to ?? providerForEnv(env, providers);
   const currentProvider = providers.find((p) => p.id === current);
-  const eligible = enabled && !!agentId && env.CLAUDE_TEAM_ROTATION !== "0" && !env.TEAM_UID
+  // 직원 판정은 workstate.mjs isStaffDaemon 하나(10-18 C7 — 실행기 relay.mjs 도 같은 판정으로 enabled 를 끈다)
+  const eligible = enabled && !!agentId && env.CLAUDE_TEAM_ROTATION !== "0" && !isStaffDaemon(env)
     && providerForEnv(env, providers) === current;
   // 개인 포함 스위치는 판정마다 다시 본다 — 떠 있는 실행기도 켜고 끄는 즉시 따른다(10-17)
   const personal = () => personalSwitchOn(personalFile);

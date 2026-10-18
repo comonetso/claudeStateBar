@@ -1,12 +1,11 @@
 import { readdir, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { claudeProjectsDir } from "../claudePaths";
 import { findAllCodexLogDirs, scanCodexRuns, scanSession, type ChimeItem } from "./scan";
 
 // Claude Code 가 대화 기록을 두는 곳. CLAUDE_CONFIG_DIR 를 쓰면 그 아래다.
-function projectsDir(): string {
-  return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
-}
+// 계산은 server/claudePaths.ts 한 곳에 있다(10-18 정리)
+const projectsDir = claudeProjectsDir;
 
 // 대화 번호 → 기록 파일. 대화 번호는 폴더가 달라도 겹치지 않는다.
 const located = new Map<string, string>();

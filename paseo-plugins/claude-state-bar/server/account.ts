@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, watchFile, unwatchFile } from "node:fs";
-import { mkdir, readFile, rename, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AccountKind } from "../shared/account";
@@ -9,16 +9,28 @@ import { isTeamDaemon } from "./sound";
 const PASEO_HOME = process.env.PASEO_HOME || join(homedir(), ".paseo");
 const FILE = join(PASEO_HOME, "plugin-data", "claude-state-bar", "accounts.json");
 const CONFIG = join(PASEO_HOME, "config.json");
-export const PERSONAL_PROVIDER = "claude";
+/**
+ * Claude 계열 공급자 판정 — 플러그인 쪽 정본(10-18 정리). 기본 공급자 claude 와 Paseo 설정에서 extends: "claude" 인 공급자(팀 등)가 Claude 계열이다.
+ * 판정할 때 공급자 이름("claude"·팀 이름)을 직접 비교하지 말고 isClaudeProvider·claudeProviders·baseOf 를 쓴다.
+ * 실행기 쪽 짝은 claude-rc-relay/account.mjs isClaudeProvider(둘이 같은 답을 내는지 docs tests-261018/launcher_unify_test.mjs 가 본다)
+ */
+export const CLAUDE_ROOT = "claude";
+/** 기본(개인) 공급자 번호 — CLAUDE_ROOT 와 같은 값의 별칭 */
+export const PERSONAL_PROVIDER = CLAUDE_ROOT;
 const WAIT_MS = 25_000;
 type Entry = { to: string; base: string; at: string };
 type Document = { entries: Record<string, Entry>; [key: string]: unknown };
 let entries: Record<string, Entry> = {};
 let rev = Date.now();
 const waiters = new Set<() => void>();
+// 옛 기록 값 이행용('team'·'personal' — 공급자 번호로 바꾸기 전 accounts.json). 판정이 아니라 데이터 변환이라 이름이 남는다
 export const normalizeProvider = (id: unknown): string | null => typeof id !== "string" ? null
-  : id === "team" ? "claude-yeogiaen" : id === "personal" ? "claude" : id || null;
+  : id === "team" ? "claude-yeogiaen" : id === "personal" ? CLAUDE_ROOT : id || null;
 export type ProviderConfig = { env?: Record<string, unknown>; label?: unknown; extends?: unknown; command?: unknown };
+/** Claude 계열인지 — 설정 칸이 비어 있으면(null 등) 아니다 */
+export function isClaudeProvider(id: string, p: ProviderConfig | null | undefined): boolean {
+  return !!p && (id === CLAUDE_ROOT || p.extends === CLAUDE_ROOT);
+}
 export function readProviders(): Record<string, ProviderConfig> {
   try {
     const doc = JSON.parse(readFileSync(CONFIG, "utf8")) as { agents?: { providers?: Record<string, ProviderConfig> } };
@@ -26,9 +38,8 @@ export function readProviders(): Record<string, ProviderConfig> {
   } catch { return {}; }
 }
 export function claudeProviders(): Record<string, ProviderConfig> {
-  const providers: Record<string, ProviderConfig> = { claude: {}, ...readProviders() };
-  return Object.fromEntries(Object.entries(providers)
-    .filter(([id, p]) => p && (id === PERSONAL_PROVIDER || p.extends === PERSONAL_PROVIDER)));
+  const providers: Record<string, ProviderConfig> = { [CLAUDE_ROOT]: {}, ...readProviders() };
+  return Object.fromEntries(Object.entries(providers).filter(([id, p]) => isClaudeProvider(id, p)));
 }
 export function baseOf(provider: string | null | undefined): AccountKind | null {
   const id = normalizeProvider(provider);
@@ -36,7 +47,7 @@ export function baseOf(provider: string | null | undefined): AccountKind | null 
 }
 function providerNames(): Record<string, string> {
   return Object.fromEntries(Object.entries(claudeProviders()).map(([id, p]) =>
-    [id, typeof p.label === "string" && p.label.trim() ? p.label : id === "claude" ? "Claude" : id]));
+    [id, typeof p.label === "string" && p.label.trim() ? p.label : id === CLAUDE_ROOT ? "Claude" : id]));
 }
 export function providerFromDisk(agentId: string): string | null {
   if (!/^[0-9a-f-]{36}$/i.test(agentId)) return null;
@@ -80,6 +91,24 @@ export function stopAccounts(): void { unwatchFile(FILE, onDiskChange); }
 // 실행기 account.mjs 와 같은 잠금. 잠금 안에서 최신 문서를 읽어 다른 대화 변경을 보존한다.
 // 죽은 프로세스의 잠금을 임의로 뺏지 않는다. 5초 안에 못 얻으면 실패를 반환한다.
 let writing: Promise<unknown> = Promise.resolve();
+// Windows 는 다른 프로세스가 대상 파일을 여는 순간 이름 바꾸기를 EPERM·EACCES·EBUSY 로 거부한다 — 이 파일은 실행기들이 감시하며 읽는다
+// (claude-rc-relay/account.mjs watchAccount). 10-18 18:08 PC: 거부가 처리되지 않아 플러그인 프로세스가 죽고 웹이 PC 를 "꺼짐"으로 봤다.
+// 잠깐 뒤 다시 하면 된다 — 25ms 씩 최대 40번(1초, 잠금 대기 5초 안). 끝내 안 되면 임시 파일을 지우고 오류를 넘긴다
+const RENAME_TRIES = 40;
+const RENAME_WAIT_MS = 25;
+async function renameRetry(from: string, to: string): Promise<void> {
+  for (let i = 1; ; i++) {
+    try { await rename(from, to); return; }
+    catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if ((code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") || i >= RENAME_TRIES) {
+        await rm(from, { force: true }).catch(() => {});
+        throw e;
+      }
+      await new Promise((resolve) => setTimeout(resolve, RENAME_WAIT_MS));
+    }
+  }
+}
 function save(change: (doc: Document) => void): Promise<void> {
   const run = async () => {
     await mkdir(dirname(FILE), { recursive: true });
@@ -101,7 +130,7 @@ function save(change: (doc: Document) => void): Promise<void> {
       change(doc);
       const tmp = `${FILE}.${process.pid}.tmp`;
       await writeFile(tmp, JSON.stringify(doc), { encoding: "utf8", mode: 0o600 });
-      await rename(tmp, FILE);
+      await renameRetry(tmp, FILE);
       load(); bump();
     } finally { await rmdir(lock); }
   };

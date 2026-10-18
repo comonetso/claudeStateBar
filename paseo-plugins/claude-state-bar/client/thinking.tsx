@@ -11,6 +11,7 @@ import { googleStatus, ttsSynthesize } from "../shared/tts";
 import { uiLanguage } from "./appLanguage";
 import { featureSwitches, onSharedSignal, speechOptions } from "./sounds";
 import { thinkingBoundary } from "../shared/thinkingBoundary";
+import { boundaryStep, boundaryTurnOf, classifyBoxTurn, newBoundaryTrack, type AgentTurnInfo } from "../shared/thinkingContract";
 import { boxPhase, boxText, normalizeRate, saidText, splitParagraphs, ThinkingController, watchThinking, type ThinkingBoxState } from "./thinkingPlayer";
 import { onThinkingAllOpen, thinkingAllOpen } from "./thinkingFold";
 import { translationCache } from "./translationCache";
@@ -65,9 +66,103 @@ const saidReader: { box?: ThinkingBoxState; owner?: string; serial: number } = {
 // 문단 요소 이름 머리 — 호스트마다 이 파일이 따로 올라와 번호가 겹치지 않게 올라올 때마다 다른 글자를 붙인다
 const DOM_PREFIX = `csb-think-${Math.random().toString(36).slice(2, 8)}-`;
 
-function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, owned }: PluginTimelineItemProps<Data> & {
+/**
+ * 대화마다 지금 상태와 턴(10-18 C3) — 꺼낼 자리를 "지금 턴 상자"만 이어 기다리게 하려고. 호스트마다 하나(registerThinking).
+ * Paseo 대화 갱신(agents.subscribe)을 듣고, 처음 묻는 대화는 한 번 받아 온다(agents.ref().refresh — ref 는 값을 기억하지 않는다).
+ * 알림은 그 대화의 상태·턴이 바뀔 때 그 대화 상자에만 — 대화 갱신마다 모든 상자를 다시 그리지 않게
+ */
+type AgentTurns = {
+  get(agentId: string): AgentTurnInfo | "loading" | "failed";
+  /** 대화 상태를 다시 받아 온다(10-18 2차) — 지금 턴 상자가 pending 을 받을 때마다. 대화 갱신이 안 와도 턴 끝을 알아채게 */
+  recheck(agentId: string): Promise<void>;
+  subscribe(agentId: string, listener: () => void): () => void;
+  dispose(): void;
+};
+type AgentLike = { id: string; status?: string | null; activeTurn?: { turnId?: string | null } | null };
+function watchAgentTurns(client: PluginClientContext): AgentTurns {
+  const info = new Map<string, AgentTurnInfo | "loading" | "failed">();
+  const listeners = new Map<string, Set<() => void>>();
+  // 대화 갱신을 받은 횟수 — 다시 받아 오는 사이 갱신이 먼저 왔으면 받아 온 값(더 옛것일 수 있다)을 버린다
+  const updates = new Map<string, number>();
+  const notify = (agentId: string) => { for (const listener of [...(listeners.get(agentId) ?? [])]) listener(); };
+  const take = (agent: AgentLike) => {
+    const before = info.get(agent.id);
+    const prev = typeof before === "object" ? before : undefined;
+    const status = agent.status ?? "";
+    const turnId = agent.activeTurn?.turnId ?? null;
+    const starts = (prev?.starts ?? 0) + (status === "running" && prev?.status !== "running" ? 1 : 0);
+    if (prev && prev.status === status && prev.turnId === turnId && prev.starts === starts) return;
+    info.set(agent.id, { status, turnId, starts });
+    notify(agent.id);
+  };
+  const fail = (agentId: string) => {
+    if (info.get(agentId) !== "loading") return;
+    info.set(agentId, "failed");
+    notify(agentId);
+  };
+  let stop = () => {};
+  try {
+    stop = client.paseo.agents.subscribe((update) => {
+      if (update.kind === "upsert") {
+        const agent = update.agent as AgentLike;
+        updates.set(agent.id, (updates.get(agent.id) ?? 0) + 1);
+        take(agent);
+      } else if (update.kind === "remove") {
+        updates.set(update.agentId, (updates.get(update.agentId) ?? 0) + 1);
+        info.delete(update.agentId);
+        notify(update.agentId);
+      }
+    });
+  } catch {
+    // 대화 갱신을 못 들으면 처음 받아 온 값만 쓴다(일하기 시작·끝을 못 봐 그 뒤 상자는 "턴 모름"으로 한 번만 묻는다)
+  }
+  return {
+    get(agentId) {
+      const known = info.get(agentId);
+      if (known !== undefined) return known;
+      info.set(agentId, "loading");
+      try {
+        void client.paseo.agents.ref(agentId).refresh().then((result) => {
+          // 받아 오는 사이 갱신이 먼저 왔으면 그것이 더 새것이다
+          if (info.get(agentId) !== "loading") return;
+          const agent = result?.agent as AgentLike | undefined;
+          if (agent) take(agent);
+          else fail(agentId);
+        }, () => fail(agentId));
+      } catch {
+        info.set(agentId, "failed");
+      }
+      return info.get(agentId)!;
+    },
+    recheck(agentId) {
+      const seen = updates.get(agentId) ?? 0;
+      try {
+        return client.paseo.agents.ref(agentId).refresh().then((result) => {
+          if ((updates.get(agentId) ?? 0) !== seen) return;
+          const agent = result?.agent as AgentLike | undefined;
+          if (agent) take(agent);
+        }, () => {});
+      } catch {
+        return Promise.resolve();
+      }
+    },
+    subscribe(agentId, listener) {
+      let set = listeners.get(agentId);
+      if (!set) listeners.set(agentId, (set = new Set()));
+      set.add(listener);
+      return () => { set!.delete(listener); };
+    },
+    dispose() {
+      stop();
+      listeners.clear();
+    },
+  };
+}
+
+function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, owned, turns }: PluginTimelineItemProps<Data> & {
   client: PluginClientContext;
   owned: Set<ThinkingBoxState>;
+  turns: AgentTurns;
 }) {
   const { text, phase } = item.data;
   const translate = useRpc(translateKo);
@@ -87,7 +182,25 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   const scrollRef = useRef<ScrollView>(null);
   const atBottom = useRef(true);
   const boundary = useRpc(thinkingBoundary);
-  const asking = useRef<{ busy: boolean; again: boolean; alive: boolean }>({ busy: false, again: false, alive: true });
+  // 이 상자가 지금 턴의 것인가(10-18 C3) — 대화 상태를 받은 뒤 처음 볼 때 한 번 정하고, 대화의 상태·턴이 바뀌면 다시 그린다
+  const [, bumpTurn] = useState(0);
+  const agentTurn = turns.get(agentId);
+  useEffect(() => {
+    const stop = turns.subscribe(agentId, () => bumpTurn((n) => n + 1));
+    // 그린 뒤 구독을 걸기 전에 대화 상태가 들어왔으면 한 번 다시 그린다 — 다시 그려질 일이 없는 지난 상자가 영영 안 묻지 않게
+    if (turns.get(agentId) !== agentTurn) bumpTurn((n) => n + 1);
+    return stop;
+  }, [turns, agentId]);
+  // 상자의 턴은 대화 상태를 받은 뒤 처음 볼 때 한 번 정한다. 묻기 함수도 이것을 불러 그 순간의 대화 상태로 판정한다(10-18 2차) —
+  // 답이 온 뒤 이어 물을 때 그려진 때의 값이 아니라 다시 받아 온(recheck) 값을 쓰게
+  const turnNow = () => {
+    const now = turns.get(agentId);
+    if (!box.turn && now !== "loading") box.turn = classifyBoxTurn(now, box.phase);
+    return boundaryTurnOf(box.turn, now);
+  };
+  const turn = turnNow();
+  const turnNowRef = useRef(turnNow);
+  turnNowRef.current = turnNow;
   const c = theme.colors;
   const px = readAppFontSizes().content ?? CONTENT_DEFAULT_PX;
   const web = Platform.OS === "web";
@@ -125,34 +238,36 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   }, [box, rpc, text, phase, agentId, client, domId, web]);
 
   // 상자에 섞인 Claude 의 말(마지막 생각 칸)이 어디서 시작하는지 데몬에 묻는다(10-09, shared/thinkingBoundary.ts).
-  // 한 번에 하나만 묻고, 답을 기다리는 사이 글이 늘었으면 답이 온 뒤 최신 글로 다시 묻는다(정해 둔 시간 간격 없음).
-  // 데몬이 원본 기록에서 못 찾으면 null — 상자를 통째로 둔다
-  useEffect(() => () => { asking.current.alive = false; }, []);
+  // 10-18 C3: 답이 상태(찾음·기다림·찾을 수 없음)를 갖고, 다음에 물을지는 shared/thinkingContract.ts boundaryBegin 이 정한다 —
+  // 한 상자에 한 번에 하나만, 계기는 글이 바뀜·턴 상태가 바뀜·앞 답이 옴뿐(정해 둔 시간 간격 없음). "아직 기록에 없음"을 이어
+  // 기다리는 것은 지금 턴 상자만이고(예전엔 글·phase 가 안 바뀌면 다시 묻지 않아 긴 도구 작업 뒤 진행 글이 상자에 남았다),
+  // 턴이 끝나면 한 번 더, 지난 상자는 기다리지 않고 한 번만 묻는다. 답이 온 사이 글이 바뀌었으면 그 답은 버리고 새 글로 다시 묻는다.
+  // 10-18 2차: 턴 중간에 연 화면에서 이미 끝난 상자(턴 모름)도 처음 본 턴을 적어 두어, 그 턴이 끝날 때 마지막 한 번을 쓴다.
+  // 지금 턴 상자가 pending 을 받으면 대화 상태를 다시 받아 온 뒤 이어 가고(recheck), 잇단 pending 은 ACTIVE_PENDING_LIMIT(24번)까지만.
+  // 진행은 상자 상태(box.boundary)에 두고, 답이 오면 그때 그려진 상자의 묻기 함수(box.boundaryAsk)로 이어 간다 — 가상 목록이 상자를
+  // 다시 그려도 같은 글로 또 묻지 않고, 그려진 상자가 없으면 멈춘다. 찾은 자리는 그려진 상자가 없어도 상자 상태에 넣는다.
+  // 상자 글은 기다림과 무관하게 실시간으로 보인다(아래 10-09 04:28 기각 참고)
   useEffect(() => {
+    const track = (box.boundary ??= newBoundaryTrack());
     const ask = () => {
-      const state = asking.current;
-      if (box.cut != null || !state.alive) return;
-      if (state.busy) {
-        state.again = true;
-        return;
-      }
-      state.busy = true;
-      state.again = false;
-      const sent = box.text.replace(/\r/g, "");
-      // 못 찾으면 데몬이 기록에 적힐 때까지 기다렸다 답한다(늘). 10-09: 처음엔 phase === "streaming" 일 때만 기다렸는데 Paseo 는
-      // 같은 턴이어도 맨 끝 몇 개가 아닌 항목은 "complete" 로 넘겨 대부분 기다리지 않았고, 기록이 늦게 적힌 상자가 남았다.
-      // 지난 대화 상자는 대개 기록에 이미 있어 바로 찾는다. 턴이 끝나면 한 번 더 묻는다(아래 phase)
-      void boundary({ agentId, text: sent, wait: true })
-        .then((result) => {
-          if (state.alive && result.cut != null && box.text.replace(/\r/g, "").startsWith(sent.slice(0, result.cut))) controller.setCut(box, result.cut);
-        }, () => {})
-        .finally(() => {
-          state.busy = false;
-          if (state.again) ask();
-        });
+      if (box.boundaryAsk !== ask) return;
+      boundaryStep({
+        track,
+        text: () => box.text.replace(/\r/g, ""),
+        cutKnown: box.cut != null,
+        turn: turnNowRef.current(), // null = 대화 상태를 받는 중 — 받으면 다시 그려져 다시 부른다
+        rpc: (input) => boundary({ agentId, ...input }),
+        apply: (cut) => controller.setCut(box, cut),
+        next: () => box.boundaryAsk?.(),
+        recheck: () => turns.recheck(agentId),
+      });
     };
+    box.boundaryAsk = ask;
     ask();
-  }, [box, box.text, phase, agentId, boundary]);
+    return () => {
+      if (box.boundaryAsk === ask) box.boundaryAsk = undefined;
+    };
+  }, [box, box.text, phase, agentId, boundary, turn, turns]);
 
   // 상자 글은 들어오는 대로 바로 보인다. 데몬 답이 오면 Claude 의 말 부분만 상자 밖으로 옮긴다.
   // 10-09 04:28 에 "답이 온 글까지만 상자에 보이기"를 넣었다가 걷었다 — 기록은 도구 호출 직전에야 적혀 생각 상자가 실시간으로
@@ -271,7 +386,8 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   // 예전엔 상자 위·아래 두 곳과 꺼낸 말 밑에 따로 있었다
 
   return (
-    <View style={{ marginVertical: 4 }}>
+    // 바깥 칸 이름(-box) — 따라 읽기가 켤 때 이미 있던 상자를 출발점 앞으로 넣는다(10-18 C4, web.ts followScan). 늦게 꺼낸 말을 새 말로 읽지 않게
+    <View nativeID={`${domId}-box`} style={{ marginVertical: 4 }}>
       <View style={{ borderRadius: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, overflow: "hidden" }}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6 }}>
           <Pressable accessibilityRole="button" accessibilityState={{ expanded: box.open }} onPress={() => controller.toggleOpen(box)} style={{ flexDirection: "row", alignItems: "center", flexShrink: 1, gap: 6 }}>
@@ -358,7 +474,8 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
 
 export function registerThinking(client: PluginClientContext): () => void {
   const owned = new Set<ThinkingBoxState>();
-  const Component = (props: PluginTimelineItemProps<Data>) => <ThinkingBox {...props} client={client} owned={owned} />;
+  const turns = watchAgentTurns(client);
+  const Component = (props: PluginTimelineItemProps<Data>) => <ThinkingBox {...props} client={client} owned={owned} turns={turns} />;
   const a = client.addTimelineTransformer({
     id: "thinking-ko",
     query: { itemType: "reasoning" },
@@ -397,6 +514,7 @@ export function registerThinking(client: PluginClientContext): () => void {
     saidReader.owner = undefined;
     controller.dispose(owned);
     for (const box of owned) statuses.delete(box.hostId);
+    turns.dispose();
     a();
     b();
   };

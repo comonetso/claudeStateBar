@@ -1,9 +1,9 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeStatsView, ModelShare } from "../../shared/stats";
 import { getShortModelName } from "../activity/modelName";
+import { claudeConfigDir, claudeProjectsDir } from "../claudePaths";
 import { cacheWriteCost, rateFor } from "./rates";
 
 // 작업 현황 "통계" 탭의 데몬 쪽(리규형님 10-08 결정: 확장 Claude Status 패널 통계 탭과 같은 내용).
@@ -25,10 +25,7 @@ const SCAN_CACHE_MS = 20_000;
 /** 확장 MTIME_SLACK_MS 의 "창보다 1시간 여유"와 같은 여유 — 경계 직전에 덧붙은 기록도 연다 */
 const MTIME_SLACK_MS = 60 * 60 * 1000;
 
-function claudeDir(): string {
-  // 다른 데몬 판독(server/activity/workflows.ts projectsDir)과 같게 CLAUDE_CONFIG_DIR 을 먼저 본다(확장은 늘 ~/.claude)
-  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
-}
+// 설정·기록 폴더는 server/claudePaths.ts 한 곳에서 계산한다 — CLAUDE_CONFIG_DIR 을 먼저 본다(확장은 늘 ~/.claude, 10-18 정리)
 
 // ── 날짜 ─────────────────────────────────────────────────────────────────────
 
@@ -76,7 +73,7 @@ interface RawStatsCache {
 
 async function readStatsCache(): Promise<RawStatsCache | null> {
   try {
-    const parsed = JSON.parse(await readFile(join(claudeDir(), "stats-cache.json"), "utf8"));
+    const parsed = JSON.parse(await readFile(join(claudeConfigDir(), "stats-cache.json"), "utf8"));
     if (!parsed || typeof parsed !== "object") return null;
     return parsed as RawStatsCache;
   } catch {
@@ -209,7 +206,7 @@ async function scanToday(now: number): Promise<{ messages: number; sessions: Set
   const mtimeFloor = from - MTIME_SLACK_MS;
 
   const res = { messages: 0, sessions: new Set<string>() };
-  const files = await listSessionLogs(join(claudeDir(), "projects"), []);
+  const files = await listSessionLogs(claudeProjectsDir(), []);
   const seen = new Set<string>();
   for (const file of files) {
     let info: { size: number; mtimeMs: number };

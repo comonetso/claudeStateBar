@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { LoginSnapshot, LoginTarget } from "../shared/claudeLogin";
-import { PERSONAL_PROVIDER, readProviders, switchedProvider, type ProviderConfig } from "./account";
+import { isClaudeProvider, PERSONAL_PROVIDER, readProviders, switchedProvider } from "./account";
 import { isTeamDaemon } from "./sound";
 
 // Claude 다시 로그인(shared/claudeLogin, 리규형님 10-14). 기기마다 돈다 — 이 기기 데몬의 대화와 이 기기 로그인 파일만 다룬다.
@@ -28,10 +28,6 @@ export function isAuthErrorText(text: string | null | undefined): boolean {
   return !!t && !t.includes("\n") && AUTH_ERROR.test(t);
 }
 
-function isClaudeProvider(id: string, p: ProviderConfig | undefined): boolean {
-  return id === PERSONAL_PROVIDER || p?.extends === PERSONAL_PROVIDER;
-}
-
 /** 공급자 실행 명령에서 진짜 claude 경로 — 중계 실행기를 거치면 `--real` 다음 값, 아니면 첫 값이 claude 일 때 그것 */
 function claudeFromCommand(command: unknown): string | null {
   if (!Array.isArray(command) || !command.every((v) => typeof v === "string")) return null;
@@ -48,7 +44,8 @@ function str(v: unknown): string | null {
 export function loginTargets(): Target[] {
   if (isTeamDaemon()) return [];
   const providers = readProviders();
-  const claudeIds = Object.keys(providers).filter((id) => isClaudeProvider(id, providers[id]));
+  // Claude 계열 판정은 account.ts 정본. 설정 칸이 비어 있어도(claude: null) 기본 공급자 자리는 그대로 두려고 빈 칸은 {} 로 본다(10-18 전 이 파일의 판정과 같은 답)
+  const claudeIds = Object.keys(providers).filter((id) => isClaudeProvider(id, providers[id] || {}));
   // 기본 Claude 공급자는 설정에 없어도 Paseo 가 띄운다
   if (!claudeIds.includes(PERSONAL_PROVIDER)) claudeIds.unshift(PERSONAL_PROVIDER);
   const fallbackClaude = claudeIds.map((id) => claudeFromCommand(providers[id]?.command)).find(Boolean) ?? "claude";

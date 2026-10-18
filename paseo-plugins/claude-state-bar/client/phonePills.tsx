@@ -1,17 +1,20 @@
-import type { PluginButtonContentProps, PluginButtonIconProps, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
+import type { PluginButtonBehavior, PluginButtonContentProps, PluginButtonIconProps, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useRef } from "react";
 import { Platform, View } from "react-native";
 import { openActivityFor } from "./activityButton";
+import { SETTINGS_TITLE } from "./settingsButton";
 import { UsageTable } from "./usageFooter";
 import { totalOf, useCounts } from "./useCounts";
-import { isCompactWidth, setPillBadge, watchCompactWidth } from "./web";
+import { phonePillsShown, setPillBadge, watchCompactWidth } from "./web";
 
 // 폰(좁은 화면) 입력창 위 알약 줄에 "사용량"·"작업 현황"(10-17 리규형님 — "오른쪽 위 세로 … 를 누르면 사용량·작업 현황이 아래에서 올라와
 // 자주 누르는데 졸라 불편, 각각 독립 아이콘으로"). Paseo 는 좁은 화면에서 머리줄 단추를 세로 점 메뉴로 접고, 접지 않게 하는 설정이
 // 플러그인 도구에 없어 알약으로 따로 꺼낸다(버튼 답 "입력창 위 알약 줄"). 넓은 화면은 머리줄 단추가 그대로 보이므로 알약을 감춘다.
-// 작업 현황 알약 바로 위에는 서브에이전트·백그라운드·Codex 개수를 프로젝트 목록과 같은 "(1, 0, 3)" 으로 작게 쓴다
-// (버튼 답 "입력창 위 알약 바로 위 작은 글씨" — 폰은 프로젝트 목록이 안 보여서). 셋 다 0 이면 숨긴다(목록과 같게).
+// 10-18: 좁은 화면에선 머리줄 단추를 아예 안 붙이고(activityButton.tsx — 세로 점 메뉴 제거), 이 두 알약과 컨텍스트 알약을 띠 아랫줄로
+// 내린다(web.ts RAIL_CSS data-csb-rows). 붙일지 판정은 둘이 같은 phonePillsShown 하나를 쓴다.
+// 알약 줄 위 왼쪽 끝에 서브에이전트·백그라운드·Codex 개수를 프로젝트 목록과 같은 "(1, 0, 3)" 으로 작게 쓴다
+// (폰은 프로젝트 목록이 안 보여서 · 10-18 리규형님 "왼쪽정렬"). 셋 다 0 이면 숨긴다(10-18 리규형님 "없으면 보여주지마").
 
 type AgentLike = { id: string; workspaceId?: string | null };
 // 글자는 폭 없는 공백 한 글자 — 빈 글자는 Paseo 가 거절한다(thinkingFoldPill.ts 와 같은 까닭). 아이콘만 보인다
@@ -20,7 +23,6 @@ const POPOVER_WIDTH = 300;
 // 알약 이름 = 접근성 이름(aria-label) — 개수 글씨를 달 알약을 이것으로 찾는다
 const ACTIVITY_TITLE = "작업 현황";
 
-const shownHere = () => (Platform.OS === "web" ? isCompactWidth() : true);
 
 function UsagePopover({ theme }: PluginButtonContentProps) {
   return (
@@ -40,20 +42,24 @@ function ActivityPillIcon({ workspaceId, size, color, theme }: PluginButtonIconP
     setPillBadge(node.current, ACTIVITY_TITLE, text, theme.colors.foregroundMuted, theme.colors.surface0);
   }, [text, theme]);
   useEffect(() => () => setPillBadge(node.current, ACTIVITY_TITLE, null, "", ""), []);
+  // 아이콘은 늘 작업 현황 화면과 같은 파형(10-18 리규형님 "아이콘을 통일" — 돌고 있을 때 LoaderCircle 로 바뀌어 화면 제목 아이콘과 달랐다).
+  // 돌고 있는지는 위 개수 글씨가 알려 준다
   return (
     <View ref={(n) => { node.current = n; }}>
-      <Icon name={total > 0 ? "LoaderCircle" : "Activity"} size={size} color={color} />
+      <Icon name="Activity" size={size} color={color} />
     </View>
   );
 }
 
-export function createPhonePills(client: PluginClientContext, log: (message: string) => void) {
+/** settings: 머리줄 톱니와 같은 동작(settingsButton.tsx settingsBehavior). 주면 좁은 화면에 설정 알약도 붙인다 — 좁은 화면엔 머리줄 단추를
+ *  안 붙여(activityButton.tsx) 톱니가 함께 빠졌다(10-18 리규형님 "상단 설정아이콘 사라짐 … 맨오른쪽에 설정아이콘", 자리는 web.ts RAIL_CSS) */
+export function createPhonePills(client: PluginClientContext, log: (message: string) => void, settings?: PluginButtonBehavior) {
   const pills = new Map<string, PluginButtonRegistration[]>();
   // 본 대화(대화 → 작업 공간) — 넓은 화면에선 알약을 떼 두었다가 좁아지면 다시 붙인다
   const agents = new Map<string, string>();
   // 숨김(visible:false)으로 붙였다가 보이게 바꾸는 갱신은 Paseo 가 반영하지 않았다(10-17 제 탭 실측 — 폭을 390 으로 줄여도 안 나옴) →
   // 좁은 화면일 때만 붙이고 넓어지면 뗀다
-  let shown = shownHere();
+  let shown = phonePillsShown();
 
   const detach = (agentId: string) => {
     for (const reg of pills.get(agentId) ?? []) reg.remove();
@@ -80,7 +86,16 @@ export function createPhonePills(client: PluginClientContext, log: (message: str
           behavior: { kind: "action", onPress: () => { if (!openActivityFor(workspaceId)) client.openPanel("activity", { workspaceId }); } },
         },
       });
-      pills.set(agentId, [usage, activity]);
+      const set = [usage, activity];
+      if (settings) {
+        set.push(client.addComposerPill({
+          id: "phone-settings",
+          workspaceId,
+          agentId,
+          button: { title: SETTINGS_TITLE, icon: "Settings", label: ICON_ONLY, visible: true, behavior: settings },
+        }));
+      }
+      pills.set(agentId, set);
     } catch (error) {
       log(`phone pills ${agentId.slice(0, 8)}: ${String(error)}`);
     }

@@ -8,11 +8,15 @@ import { onPageVisible, pageHidden } from "./pageVisible";
 import { soundProvider } from "./sounds";
 import { readAppFontSizes, readLocal, setNoTranslate, writeLocal } from "./web";
 import { isTeamUsageSource } from "../shared/account";
+import { usageFromReports } from "../shared/usageIdentity";
+import { reportUsageDedupe, type UsageDedupeView } from "./health";
 
 // 왼쪽 목록 칸 맨 아래에 Claude·Codex 사용량을 둔다(리규형님 10-05 결정 — Paseo 자체 "사용량" 줄은 눌러야 보인다).
 // 10-09 부터 처음엔 접혀 요약 한 줄만 보이고, 올리고 내린 것을 기억한다(아래 UsageFooter).
 // 값은 Paseo 데몬이 받아 둔 것을 쓴다(providers.listUsage). 표는 Paseo 가 주는 창 전부(10-07부터 — Fable 같은 모델별
 // 주간 창 포함), 상단 단추 글자는 Paseo 가 요약에 쓰라고 표시한 창(summary)만.
+// 같은 계정의 내장 Claude 카드와 우리 팀 카드가 겹치면 우리 팀 카드만 남긴다(10-18 C2 — 아래 readUsage). 묻기가 하나라서
+// 왼쪽 아래 표·접힌 줄 요약·위쪽 사용량 단추·폰 알약(UsageTable)이 모두 같은 거른 목록을 그린다.
 
 // 10-17: 30초마다 묻는다(읽기 실패하면 1분·2분, 받으면 30초) — 데몬이 기억한 값이라 바깥 조회는 Paseo 하던 대로 데몬이 5분에 한 번.
 // 리규형님 "Paseo 하던 대로 두고 내가 원할 때 즉시 갱신" → 펼친 칸 머리의 갱신 아이콘을 누를 때만 "기억 건너뛰고 새로 받기"
@@ -53,6 +57,41 @@ let usageStop: (() => void) | null = null;
 // 돌고 있는 묻기의 "지금 갱신" 입구 — 갱신 아이콘이 부른다. 묻기가 안 돌면 null
 let usageForceNow: (() => Promise<void>) | null = null;
 
+// 같은 계정 카드 두 장 거르기(10-18 C2 — 판정 규칙은 shared/usageIdentity). 거르려면 데몬 원본 보고(계정 열쇠가 든 보고 번호)가 있어야 해서
+// 공급자가 usageReports 를 줄 때만 한다(그 데몬의 listUsageReports, 기억 건너뛰기 없음). 없거나(옛 판·이 판에서 못 함) 실패하면 예전처럼
+// 옛 목록(providers.listUsage)을 그대로 써 두 장이 다 보인다 — 이름으로 대신 맞추지 않는다. 사용량과 판정이 늘 같은 데몬·같은 한 번의 묻기에서
+// 나오므로 PC↔서버 담당이 바뀌어도 섞이지 않는다. 지금 어느 쪽으로 그렸는지는 usageDedupeState 로 보고, 설정 화면 기능 상태 칸에도 알린다
+// (client/health.ts reportUsageDedupe — 못 한 이유: "no-provider" 공급자가 옛 판 · web.ts 의 연결 이유 · "shape-mismatch" 보고 모양이 다름 · 요청 오류 글)
+let dedupeState: UsageDedupeView = { mode: "legacy", hidden: 0, reason: null };
+/** 마지막 묻기가 같은 계정 거르기를 했는가 — mode "reports" = 원본 보고로 거름(hidden = 숨긴 카드 수: 내장 + 같은 계정 팀 카드) · "legacy" = 못 해서 옛 목록 그대로 */
+export function usageDedupeState(): UsageDedupeView {
+  return dedupeState;
+}
+function setDedupe(next: UsageDedupeView): void {
+  dedupeState = next;
+  reportUsageDedupe(next);
+}
+async function readUsage(provider: ReturnType<typeof uiProvider> | ReturnType<typeof soundProvider>, paseo: ReturnType<typeof usePaseo>): Promise<Usage> {
+  const reports = provider?.usageReports;
+  let reason = "no-provider";
+  if (reports) {
+    let raw: unknown = null;
+    try {
+      raw = await reports();
+      reason = raw === null || raw === undefined ? "no-client" : "shape-mismatch";
+    } catch (e) {
+      reason = e instanceof Error && e.message ? e.message : String(e);
+    }
+    const built = raw === null ? null : usageFromReports(raw);
+    if (built) {
+      setDedupe({ mode: "reports", hidden: built.hiddenIds.length, reason: null });
+      return built.usage as unknown as Usage;
+    }
+  }
+  setDedupe({ mode: "legacy", hidden: 0, reason });
+  return provider?.usage ? provider.usage() : paseo.providers.listUsage();
+}
+
 function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
   let alive = true;
   let generation = 0;
@@ -69,7 +108,7 @@ function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
     try {
       // 갱신 아이콘을 눌렀을 때만 데몬 기억(5분)을 건너뛴다 — 개인 Claude·Codex·팀 카드 모두
       if (force && provider?.refreshUsage) await provider.refreshUsage();
-      const next = provider?.usage ? await provider.usage() : await paseo.providers.listUsage();
+      const next = await readUsage(provider, paseo);
       if (alive && mine === generation) publish({ usage: next, error: null });
     } catch (e) {
       failed = true;

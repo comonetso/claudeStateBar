@@ -12,16 +12,22 @@ export const SETTINGS_SCREEN_ID = "sounds";
  * extra(웹·폰의 "PC 에서 가져오기")가 있으면 톱니는 [설정 열기 · extra] 메뉴가 된다 — 따로 단추를 두면 Paseo 가 셋까지만
  * 보여 줘 작업 현황이 ⋯ 로 접혀서 합쳤다(10-07). PC 앱은 extra 가 없어 지금처럼 바로 연다
  */
-export function createSettingsButtons(client: PluginClientContext, extra?: PluginButtonMenuEntry | null): HeaderButtonSet {
-  const registrations = new Map<string, PluginButtonRegistration>();
+/** 설정 단추 이름 = 접근성 이름. 폰 알약(phonePills.tsx)도 같은 이름이고, 두 줄 배치 CSS(web.ts RAIL_CSS)가 이 이름으로 찾는다 */
+export const SETTINGS_TITLE = "Claude State Bar 설정";
+/** 톱니를 눌렀을 때의 동작 — 머리줄 단추와 좁은 화면 알약(10-18 리규형님 "맨 오른쪽에 설정 아이콘")이 같은 것을 쓴다 */
+export function settingsBehavior(client: PluginClientContext, extra?: PluginButtonMenuEntry | null): PluginButtonBehavior {
   const open = () => {
     const provider = uiProvider() ?? soundProvider();
     if (provider?.openSettings) provider.openSettings();
     else client.openSettings(SETTINGS_SCREEN_ID);
   };
-  const behavior: PluginButtonBehavior = extra
-    ? { kind: "menu", items: [{ kind: "item", id: "open-settings", title: "Claude State Bar 설정", icon: "Settings", behavior: { kind: "action", onPress: open } }, extra] }
+  return extra
+    ? { kind: "menu", items: [{ kind: "item", id: "open-settings", title: SETTINGS_TITLE, icon: "Settings", behavior: { kind: "action", onPress: open } }, extra] }
     : { kind: "action", onPress: open };
+}
+export function createSettingsButtons(client: PluginClientContext, extra?: PluginButtonMenuEntry | null): HeaderButtonSet {
+  const registrations = new Map<string, PluginButtonRegistration>();
+  const behavior = settingsBehavior(client, extra);
   return {
     add(workspaceId) {
       if (registrations.has(workspaceId)) return;
@@ -30,7 +36,7 @@ export function createSettingsButtons(client: PluginClientContext, extra?: Plugi
         client.addHeaderButton({
           id: "settings",
           workspaceId,
-          button: { title: "Claude State Bar 설정", icon: "Settings", behavior },
+          button: { title: SETTINGS_TITLE, icon: "Settings", behavior },
         }),
       );
     },

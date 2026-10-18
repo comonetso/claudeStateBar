@@ -1,9 +1,9 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { AgentRow, BgCard, WorkflowCard } from "../../shared/activity";
 import { exitCodeFromOutputTail, parseBackgroundTasks } from "../chime/backgroundTasks";
 import { getShortModelName } from "./modelName";
+import { claudeProjectsDir } from "../claudePaths";
 import { addCleared, clearedFor } from "./bgCleared";
 import { parseSessionFacts, pickOpenSessions, pickOpenSessionsDetailed, type SessionFile } from "./openSessions";
 import { parseTaskNotices, type TaskNotices } from "../chime/notices";
@@ -21,9 +21,8 @@ const SETTLE_MS = 4000;
 const BATCH_GAP_MS = 5 * 60 * 1000;
 const LONG_COMMAND_MS = 2 * 60 * 1000;
 
-function projectsDir(): string {
-  return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
-}
+// Claude Code 대화 기록 폴더 — 계산은 server/claudePaths.ts 한 곳(10-18 정리)
+const projectsDir = claudeProjectsDir;
 
 // 확장 pathCodec.encodeWorkspacePath 와 같다(비교는 대소문자 무시)
 function encodeWorkspacePath(p: string): string {

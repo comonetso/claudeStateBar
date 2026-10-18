@@ -227,6 +227,7 @@ const ko = {
     layoutPull: "대표 디바이스의 화면 배치 바로 반영",
     settingsLive: "다른 기기 설정을 새로고침 없이 반영",
     settingsSync: "다른 기기와 설정 맞추기",
+    usageDedupe: "사용량 칸에서 같은 계정 카드 한 장만 보이기",
   } as Record<FeatureId, string>,
   healthState: { ok: "정상", limited: "제한", stopped: "중단", checking: "확인 중", na: "해당 없음" } as Record<HealthState, string>,
   healthReason: (reason: HealthReason, detail: string): string => {
@@ -257,6 +258,7 @@ const ko = {
     split: "대신 같은 칸의 탭으로 엽니다",
     layoutPull: "톱니 메뉴 '대표 배치 가져오기'(화면 새로 읽기)로는 됩니다",
     settingsLive: "대신 화면을 새로 읽어 반영합니다",
+    usageDedupe: "대신 같은 계정 카드 두 장을 그대로 보입니다",
   } as Partial<Record<FeatureId, string>>,
   healthEvidence: "내부 연결이 갖춰졌는지와 PC 데몬 응답만 본 것입니다 — 눌러서 실제로 되는지는 써 봐야 압니다",
   // 기준 브라우저(10-08 — client/screenRole). 10-09 리규형님 "기준 화면·대표 지정이 무슨 소리냐, 기준 브라우저라고 해야지" → 이름 통일
@@ -574,6 +576,7 @@ const en: SettingsText = {
     layoutPull: "Applying the main device's layout right away",
     settingsLive: "Applying other devices' settings without reloading",
     settingsSync: "Syncing settings with other devices",
+    usageDedupe: "Showing one usage card per account",
   },
   healthState: { ok: "OK", limited: "Limited", stopped: "Stopped", checking: "Checking", na: "Not used here" },
   healthReason: (reason, detail) => {
@@ -604,6 +607,7 @@ const en: SettingsText = {
     split: "Opens as a tab in the same pane instead",
     layoutPull: "The gear menu's 'Get main layout' (reloads the screen) still works",
     settingsLive: "Reloads the screen to apply them instead",
+    usageDedupe: "Both cards for the same account stay visible instead",
   },
   healthEvidence: "This only checks that the internal hooks are in place and the PC daemon answers — whether pressing it actually works shows when you use it",
   roleHead: "Main device (browser)",

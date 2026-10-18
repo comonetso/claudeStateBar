@@ -16,7 +16,7 @@ import { applyHeaderTitle, waitHeaderTitles } from "./server/headerTitles";
 import { headerTitleApply, headerTitlesWait } from "./shared/headerTitles";
 import { claimSound, markScreenUsed, createSoundRouter } from "./server/soundClaim";
 import { soundClaim, soundScreenUsed, soundPresence, soundReport, soundWait, soundTake, soundCancel, soundDropScreen, soundResult } from "./shared/soundClaim";
-import { createSoundOrigins } from "./server/soundEvents";
+import { createPushDisposition, createSoundOrigins } from "./server/soundEvents";
 import { soundOriginObserve, soundOriginPrepare, soundOriginValidate, soundOriginDrop } from "./shared/soundEvents";
 import { translateTexts } from "./server/translate";
 import { checkGoogleKeys, googleKeysState as readGoogleKeysState, saveGoogleKeys, speechKeysState as readSpeechKeysState, saveSpeechKeys, checkSpeechKeys } from "./server/googleCheck";
@@ -54,7 +54,7 @@ import {
 import { codexCleanCheck, codexCleanStart, codexCleanWait } from "./shared/codexClean";
 import { clientLog } from "./shared/log";
 import { thinkingBoundary } from "./shared/thinkingBoundary";
-import { thinkingCut } from "./server/thinkingBoundary";
+import { thinkingBoundaryOf } from "./server/thinkingBoundary";
 import { projectsEdit, projectsHosts, projectsManager, projectsWait, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsResetOrder } from "./shared/projects";
 import { editProjects, projectHosts } from "./server/projectsEdit";
 import { teamCategoryOrder, teamJobStart, teamJobWait, teamMemberRemove, teamMemberSave, teamProjectEdit, teamServerSkills, teamSkills, teamState } from "./shared/team";
@@ -73,15 +73,22 @@ import { importExtSettings } from "./server/extSettings";
 import { extSettingsImport } from "./shared/extSettings";
 import { collectClaudeStats } from "./server/stats/claudeStats";
 import { claudeStats } from "./shared/stats";
-import { forgetAccount, providerFromDisk, stopAccounts, switchAccount, waitAccounts } from "./server/account";
+import { baseOf, forgetAccount, providerFromDisk, stopAccounts, switchAccount, waitAccounts } from "./server/account";
 import { accountSwitch, accountsWait, personalLoginKeep } from "./shared/account";
 import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCode, waitLogin } from "./server/claudeLogin";
 import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
 import { keepPersonalLogin, teamUsageSources } from "./server/teamUsage";
-import { ackPush, createPush, registerPushToken } from "./server/push";
+import { ackPush, createPush, registerPushToken, soundPushLink } from "./server/push";
 import { pushCompactWait, pushReceived, pushRegister } from "./shared/push";
 
 export default function contribute(server: PluginServerContext) {
+  // 처리되지 않은 거부 하나로 플러그인 프로세스 전체가 죽지 않게 한다(10-18 18:08 PC — 공급자 기록 쓰기의 Windows 이름 바꾸기 거부가 처리되지
+  // 않아 플러그인이 죽고, 웹이 PC 를 "꺼짐"으로 봤다. 데몬은 멀쩡했다 — 플러그인 전용 프로세스라 이 안전망은 이 플러그인에만 걸린다).
+  // 원인을 숨기지 않도록 매번 기록에 남긴다. 플러그인을 내릴 때 걷는다
+  const onUnhandled = (reason: unknown) => {
+    console.log(`[plugin] 처리되지 않은 오류 — 플러그인은 계속 돈다: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
+  };
+  process.on("unhandledRejection", onUnhandled);
   const settings = server.registerSettings(soundSettings);
   const readSettings = async () => {
     const state = await settings.read();
@@ -110,7 +117,10 @@ export default function contribute(server: PluginServerContext) {
     return { platform: process.platform, canPlay: canPlayHere(), team, ...(team && process.env.HOME ? { home: process.env.HOME } : {}), ...(await hostIdentity()) };
   });
   server.handle(chimeCheck, async ({ clientId, sessionId, cwd }) => checkSession(clientId, sessionId, cwd));
-  server.handle(chimeCheckV2, async ({ clientId, sessionId, cwd, baseline }) => checkSessionV2(clientId, sessionId, cwd, baseline));
+  // provider 가 오면 Claude 계열(개인 claude·팀 공급자)만 본다 — 화면은 Paseo 설정을 몰라 이름만 실어 보낸다(10-18 전엔 화면이 "claude" 만 보내 팀 대화엔 작업 끝 소리가 없었다).
+  // 옛 화면은 provider 없이 claude 대화만 보낸다
+  server.handle(chimeCheckV2, async ({ clientId, sessionId, cwd, baseline, provider }) =>
+    provider !== undefined && !baseOf(provider) ? { events: [], found: false } : checkSessionV2(clientId, sessionId, cwd, baseline));
   server.handle(lastTurnCheck, async ({ sessionId }) => ({ commandOnly: await lastTurnCommandOnly(sessionId) }));
   server.handle(chimeForget, async ({ clientId }) => {
     forgetClient(clientId);
@@ -227,7 +237,9 @@ export default function contribute(server: PluginServerContext) {
     if (!canCoordinateSound() || !serverId) throw new Error("v2 소리 정본 호스트 아님/번호 미확인");
     return createSoundRouter(serverId);
   })();
-  const origins = createSoundOrigins();
+  // 폰 푸시 중앙 경로의 내구 판정(10-18) — 소리 확인과 폰 푸시가 같은 것을 쓴다(push-central.json 이 central 일 때만 쓰인다)
+  const pushDisposition = createPushDisposition();
+  const origins = createSoundOrigins(undefined, undefined, soundPushLink(pushDisposition));
   server.handle(soundPresence, async (input) => (await router()).presence(input));
   server.handle(soundReport, async (input) => (await router()).report(input));
   server.handle(soundWait, async ({ screenId }) => (await router()).wait(screenId));
@@ -242,8 +254,10 @@ export default function contribute(server: PluginServerContext) {
   // 위쪽 제목 "카테고리 - 이름"(10-08) — 이 기기 이름표의 제목을 주고, 원래 이름 기록·프로젝트 이름 바꾸기
   server.handle(headerTitlesWait, async ({ sig }) => waitHeaderTitles(sig));
   server.handle(headerTitleApply, async (input) => applyHeaderTitle(input));
-  // 생각 상자에서 Claude 의 말을 꺼낼 자리(10-09) — 이 기기의 Claude 원본 기록에서 생각 칸 경계를 찾는다
-  server.handle(thinkingBoundary, async ({ agentId, text, wait }, { paseo }) => ({ cut: await thinkingCut(paseo, agentId, text, wait === true).catch(() => null) }));
+  // 생각 상자에서 Claude 의 말을 꺼낼 자리(10-09) — 이 기기의 Claude 원본 기록에서 생각 칸 경계를 찾는다. 답에 상태(찾음·기다림·
+  // 찾을 수 없음+이유)를 함께 보낸다(10-18 C3) — cut 칸은 옛 화면이 그대로 읽는다
+  server.handle(thinkingBoundary, async ({ agentId, text, wait }, { paseo }) =>
+    thinkingBoundaryOf(paseo, agentId, text, wait === true).catch(() => ({ cut: null, state: "unavailable" as const, reason: "read_failed" as const })));
   server.handle(clientLog, async ({ message }) => {
     console.log(`[client] ${message}`);
     return { ok: true };
@@ -310,7 +324,9 @@ export default function contribute(server: PluginServerContext) {
   const stopAccountHooks: Array<() => void> = [];
   if (!teamDaemon) {
     stopAccountHooks.push(server.on("agent.archived", ({ agent }) => {
-      void forgetAccount(agent.id);
+      // 결과를 버리면(void) 기록 쓰기 실패가 처리되지 않은 거부가 되어 플러그인 프로세스가 죽는다(10-18 18:08 PC — Windows 이름 바꾸기 거부).
+      // 기록 정리 실패는 기록만 남긴다 — 다음 공급자 바꾸기·보관 때 다시 쓴다
+      forgetAccount(agent.id).catch((error) => console.log(`[account] ${agent.id.slice(0, 8)}: 보관한 대화의 공급자 기록을 못 지움 — ${String(error)}`));
       forgetLogin(agent.id);
     }));
     stopAccountHooks.push(server.on("agent.turn_ended", (event) => {
@@ -323,7 +339,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(pushReceived, async ({ eventId, receivedAt }) => (teamDaemon ? { ok: false } : ackPush(eventId, receivedAt)));
   if (teamDaemon) server.handle(pushCompactWait, async () => ({ rev: 0, agentIds: [] }));
   else {
-    const push = createPush();
+    const push = createPush({ disposition: pushDisposition });
     server.handle(pushCompactWait, async ({ rev }) => push.waitCompact(rev));
     const guard = (work: () => unknown) => {
       try {
@@ -341,6 +357,7 @@ export default function contribute(server: PluginServerContext) {
     );
   }
   return () => {
+    process.off("unhandledRejection", onUnhandled);
     for (const stop of stopAccountHooks) stop();
     stopAccounts();
     stopLogin();

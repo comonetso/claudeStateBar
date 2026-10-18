@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { paseoCli, RESUME_PROMPT } from "./rotation.mjs";
-import { appendEvent, pruneTransitions, readTransition, TRANSITION_OPEN, writeTransition } from "./workstate.mjs";
+import { appendEvent, handoffDir, handoffFile, pruneTransitions, readTransition, TRANSITION_OPEN, transitionTag, workRootOf, writeTransition } from "./workstate.mjs";
 
 const [agentId, home, logFile, tid] = process.argv.slice(2);
 const short = String(agentId ?? "").slice(0, 8);
@@ -23,8 +23,9 @@ const log = (message) => {
     appendFileSync(logFile, `${new Date().toISOString()} [${process.pid}] rotation resume ${message} (agent ${short})\n`);
   } catch { /* 기록 실패는 무시 */ }
 };
-const handoff = join(home, "claude-rc-relay-handoff", `${agentId}.json`);
-const root = join(home ?? "", "claude-work");
+// 경로 정본은 workstate.mjs — 실행기(rotation.mjs startResumeKicker)는 올바른 대화 번호일 때만 이 프로세스를 띄운다
+const handoff = handoffFile(home, agentId);
+const root = workRootOf(home ?? "");
 
 /** 이행 파일 단계 — 이 kicker 가 주인일 때만 바꾼다. 주인이 아니면 false(아무것도 하지 말라는 뜻) */
 function stage(state, extra = {}) {
@@ -69,9 +70,10 @@ function resume() {
     if (!status) { log(`failed — inspect exit=${inspect.status ?? inspect.error?.code ?? "?"}`); stage("unknown", { why: "inspect" }); return; }
     if (status === "running") { log("skipped — agent already running"); stage("admitted", { by: "running" }); return; }
     if (!existsSync(handoff)) { log("skipped — already restarted (handoff taken)"); stage("admitted", { by: "restarted" }); return; }
-    const promptFile = join(home, "claude-rc-relay-handoff", `${agentId}.resume.txt`);
-    // 이번 이행 번호를 말에 붙인다 — 감독자가 결과 모름 이행을 대화 기록에서 확인할 때 예전 넘김의 같은 문구와 섞지 않게(Codex 리뷰 261016_182309)
-    try { writeFileSync(promptFile, tid ? `${RESUME_PROMPT} (이행 ${tid})` : RESUME_PROMPT); } catch (error) {
+    const promptFile = join(handoffDir(home), `${agentId}.resume.txt`);
+    // 이번 이행 번호를 말에 붙인다 — 감독자가 결과 모름 이행을 대화 기록에서 확인할 때 예전 넘김의 같은 문구와 섞지 않게(Codex 리뷰 261016_182309).
+    // 꼬리 모양은 workstate.mjs transitionTag 하나 — 감독자(supervisor.mjs)가 같은 함수로 찾는다
+    try { writeFileSync(promptFile, tid ? `${RESUME_PROMPT} ${transitionTag(tid)}` : RESUME_PROMPT); } catch (error) {
       log(`failed — prompt file ${error?.code ?? error}`); stage("failed", { why: "prompt-file" }); return; // 아직 아무것도 안 보냈다
     }
     const sent = paseo(["send", agentId, "--prompt-file", promptFile, "--no-wait"]);
