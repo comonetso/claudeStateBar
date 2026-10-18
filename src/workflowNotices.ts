@@ -42,7 +42,10 @@ export interface TaskNotices {
 // this line into the conversation. On 2026-10-16 19:15 it cut two Mesa workflows mid-request, and the new process
 // left a "previous session" notice for a background shell it lost but none for the two runs — so they read as
 // running for six hours. Either signal now marks the process change (user's call, 2026-10-17: both).
-const ROTATION_RESTART = '[rotation] 팀 계정 자동 전환으로 이 대화의 Claude 가 다시 떴다';
+// The relay's wording dropped "팀 " when personal seats joined the rotation (rotation.mjs handoffNotice), so the old
+// prefix stopped matching and restarts went unseen (Codex 261018_052815 C1). Both wordings are accepted, as a prefix
+// of the prompt only — old transcripts keep the old one. The same pattern lives in the plugin's server/chime/notices.ts.
+const ROTATION_RESTART = /^\[rotation\] (?:팀 )?계정 자동 전환으로 이 대화의 Claude 가 다시 떴다(?:\s|$)/;
 
 /** The text the user (or the relay, typing as the user) sent on this line — not a tool result or a quote. */
 function promptText(entry: any): string {
@@ -79,11 +82,11 @@ export function parseTaskNotices(text: string): TaskNotices {
     for (const line of text.split('\n')) {
         if (!line) continue;
 
-        if (line.includes(ROTATION_RESTART)) {
+        if (line.includes('[rotation]')) {
             try {
                 const entry = JSON.parse(line);
                 const at = timeOf(entry);
-                if (at && promptText(entry).trimStart().startsWith(ROTATION_RESTART)) restarts.push(at);
+                if (at && ROTATION_RESTART.test(promptText(entry).trimStart())) restarts.push(at);
             } catch { /* not a whole line */ }
         }
 
