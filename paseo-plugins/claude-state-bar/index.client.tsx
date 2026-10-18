@@ -39,6 +39,7 @@ import { reportSoundEvent, startSoundPlayback } from "./client/soundPlayback";
 import type { RoutedSoundEvent } from "./shared/soundClaim";
 import { forceUsageRefresh, listUsageReportsRaw, listenGlobalKey, readAppFontSizes } from "./client/web";
 import { startDictationInsertOnly } from "./client/dictationInsertOnly";
+import { startJitterWatch } from "./client/jitterWatch";
 import { soundOriginObserve, soundOriginPrepare } from "./shared/soundEvents";
 
 import { clientLog } from "./shared/log";
@@ -95,6 +96,8 @@ export default function contribute(client: PluginClientContext) {
   cleanups.push(registerPeerMailCard(client, log));
   // Paseo "하위 에이전트 N개" 알약 숨기기(10-09 리규형님 — 워크플로우·백그라운드는 우리 작업 현황 패널에서 본다)
   cleanups.push(hideSubagentsPill());
+  // 화면 떨림 감지 기록(10-19 리규형님 — Mesa 대화에서만 진행 글이 가끔 떨린다) — 떨리는 순간의 화면 변화만 데몬 기록에 남긴다
+  cleanups.push(startJitterWatch(log));
   // 폰 푸시(10-15) — 폰 앱이 준 토큰을 호스트마다 자기 데몬에 맡긴다(데몬마다 자기 대화의 질문지·압축 준비를 보낸다)
   cleanups.push(startPushToken(client, log));
   // 폰 앱에 원래 소리(질문·압축 준비)를 맡긴다 — 소리 파일이 있는 PC 데몬을 맡은 화면만(10-17)

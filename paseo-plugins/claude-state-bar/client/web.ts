@@ -2285,7 +2285,7 @@ type SpeechGroup = { first: ReadEl; last: ReadEl; messages: ReadEl[] };
 /**
  * 대화 칸 식별 값(에이전트 번호 + 호스트 번호). fiber props 객체로 비교하면 안 된다 — Paseo 가 다시 그릴 때 요소마다 새 fiber·옛
  * fiber(alternate)가 섞여 같은 칸도 다른 객체로 나온다. 그래서 같은 말 여섯 블록이 프레임마다 한 묶음↔여섯 조각으로 번갈아
- * 판정돼 스피커를 지웠다 붙였다 했고 글이 떨렸다(10-09 리규형님 "졸라 떨린다", 실측 4초에 판정 60번 바뀜)
+ * 판정돼 스피커를 지웠다 붙였다 했고 글이 떨렸다(10-09 리규형님 "매우 떨린다", 실측 4초에 판정 60번 바뀜)
  */
 function streamKey(el: ReadEl): string | null {
   return once(readScan?.streams, el, () => streamKeyUncached(el));
