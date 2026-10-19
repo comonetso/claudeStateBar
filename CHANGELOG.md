@@ -170,6 +170,25 @@ Aside's own Start-menu shortcuts can't be written by the user and are reported a
 pinned to the taskbar or made by the user takes the flags. `doctor` and `setup` print a one-line warning
 when the running Aside lacks them.
 
+codex-rescue moved to 1.18.0 on 2026-10-20. A request could ask Codex to measure something by sending
+a test request to a staging server, but the plugin's own prompt said the network was read-only and Codex
+followed the plugin. A new setting, `CR_NET_POST="host[,host:port]"`, allows write requests (POST, PUT and
+the like) to exactly those hosts and nowhere else; an entry without a port covers only the default HTTP
+and HTTPS ports. Without it, every prompt and every argument handed to Codex is byte for byte what 1.17.3
+sent, apart from one added line asking Codex not to leave or send personal data such as phone numbers,
+names or addresses. With it, the run report and the pre-run question show the allowed hosts, and only the
+read-only clause of each mode's network rule is replaced, so the rest of the instructions stays as it was.
+Every run report now opens with a POST audit. It reads the commands of that turn and the scripts on the
+run's workbench, parses curl, wget and the PowerShell web cmdlets with their real option syntax, and
+flags in red any write request to a host off the list or one whose target it cannot pin down. It is a
+static check and says so on every report: an address assembled in variables, a call inside an SDK or a
+host read from another file can slip past it, and a count is a count of traces, not of requests sent. A
+CONSULT follow-up can be a measurement turn: `net: yes` in the follow-up file, confirmed with
+`CR_ALLOW_NET=1` on every turn, lets Codex write on its workbench and to a measurement log while the
+response document stays the script's to write, and any change outside those two is reported. The release
+also carries the fix for a run that died when another run removed a folder it was scanning, leaving its
+progress card stuck.
+
 Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
 reports every task the old process left behind in a single notification that names several tasks, and
 only the first one was read, so the rest kept running in the background tab for good. A monitor that

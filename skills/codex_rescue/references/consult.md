@@ -109,6 +109,16 @@
 
 **You choose the response file name and put it into the request's `response_path`.** Letting Codex name it breaks the pair (invented stamps, mismatched slugs).
 
+## 시험 서버 쓰기 요청 설정
+
+허용은 요청서가 아니라 실행 설정 **`CR_NET_POST="test.example,127.0.0.1:18080"`**로 전달한다. 이번 사례에서 요청서에 "시험 POST 해도 된다"고 적어도 플러그인의 조회 전용 문구가 우선되어 측정을 거부했다. 설정이 있으면 금지 문구 자체를 허용 문구로 교체하며 서로 충돌하는 예외 문장을 덧붙이지 않는다. 실행 전 사용자에게 실제 목록을 보여 준다(preflight.md ③).
+
+- 쉼표로 구분한 정확한 ASCII DNS 호스트·IPv4만 받는다. 필요하면 `host:port`(1~65535)를 쓴다. 공백·스킴·경로·사용자정보·와일드카드·IPv6·빈 항목·끝 점·선행 0 포트를 거부한다. 소문자로 정규화하고 중복은 제거한다.
+- 포트 없는 호스트는 HTTP 80/HTTPS 443만, 포트를 적으면 그 포트만 허용한다. 하위 도메인은 별도 항목이다. 쓰기 요청의 리다이렉트는 따라가지 않는다. 실제 운영 서버는 목록에 넣지 않는다.
+- 빈 설정은 기존 네트워크 프롬프트와 Codex 인자를 유지한다(개인정보 공통 문구 추가는 별도). 네트워크 비활성 실행과 설정을 함께 주면 거부한다. 옛 `codex exec review`와 일반 read-only 되묻기도 거부한다.
+- POST뿐 아니라 PUT/PATCH/DELETE 등 시험 쓰기 요청에 적용한다. 응답 1번 칸에 주소·방식·횟수를 남기되 개인정보는 외부 요청 어디에도 넣지 않고 자격증명 값은 요청 본문에도 넣지 않는다. 기존의 설정을 노출 없이 불러와 서비스에 연결하는 규칙은 유지한다.
+- 실행 끝 보고 맨 위의 POST 감사를 읽는다. 목록 밖·주소 미확정·검사 실패는 🔴. 횟수는 명령/작업대 스크립트의 **정적 흔적 수**이며 실제 전송 수가 아니다. 변수 조립·SDK 내부·다른 파일 주소를 놓칠 수 있다. Codex 0.163.0 주소별 메서드 방화벽은 적용하지 않으므로 문구·사후 감사에 의존한다.
+
 ## EDIT confirmation and gate
 
 Before an EDIT run, get one line of confirmation: "Codex will edit the code directly — changes I don't know about will break my context. If you have uncommitted work, commit it first. Go ahead?" Intent detection can misfire and code changes are costly to undo. After the run, check the changes yourself with `git diff` and record them in the response file.

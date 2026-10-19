@@ -34,6 +34,9 @@
 #                         🔴 danger-full-access 를 쓰지 마라 — 변경 감지가 cwd 기준 `find .` 이라
 #                           그 밖의 수정은 **원리적으로 못 본다.** 감시자가 눈을 감은 채
 #                           "변경 없음"을 보고하는 상태가 된다(이 스크립트가 가장 나쁘다고 한 것)
+#   CR_NET_POST=<목록>    시험 쓰기 요청을 허용할 정확한 host[,host:port]. 빈 값은 기존 조회 전용
+#                         공백·스킴·경로·와일드카드·IPv6 거부. 호스트만 쓰면 기본 80/443만 허용
+#   CR_ALLOW_NET=1        CONSULT 되묻기 net: yes 측정 턴 해금. 사용자 확인 뒤 매 턴 붙인다
 #   CR_NETWORK=false      네트워크를 이 실행에서만 차단한다 (기본: 허용)
 #   CR_GROUP=<이름>       한 번에 띄운 병렬 실행의 묶음 이름 (2026-10-01). 같은 이름·같은 대화의 실행을
 #                         확장이 묶음 카드 하나로 보여 준다. 되묻기는 비워 두면 앞 턴 것을 이어 쓴다
@@ -202,6 +205,724 @@ for _cr_v in CR_MODEL CR_EFFORT; do
   esac
 done
 unset _cr_v
+
+# ── 네트워크 허용 목록·감사 (2026-10-19) ───────────────────────
+# HTTP(S)의 정확한 호스트만 받는다. 호스트 단독은 기본 포트(80/443),
+# host:port 는 그 포트만 허용한다. 빈 설정은 기존 프롬프트/인자를 보존한다.
+cr_net_validate() {
+  [ -z "${CR_NET_POST:-}" ] && return 0
+  CR_NET_POST=$(node - "$CR_NET_POST" <<'NODE'
+const raw = process.argv[2];
+try {
+    const entries = raw.split(',').map(entry => {
+        const m = /^([a-zA-Z0-9.-]+)(?::([1-9][0-9]{0,4}))?$/.exec(entry);
+        if (!m || m[1].length > 253 || m[1].split('.').some(x =>
+            !/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(x))) throw 0;
+        if (/^[0-9.]+$/.test(m[1]) && (m[1].split('.').length !== 4 ||
+            m[1].split('.').some(x => String(Number(x)) !== x || Number(x) > 255))) throw 0;
+        if (m[2] && Number(m[2]) > 65535) throw 0;
+        return entry.toLowerCase();
+    });
+    process.stdout.write([...new Set(entries)].join(','));
+} catch { process.exitCode = 1; } // 잘못된 원문에 개인정보/제어문자가 있을 수 있어 출력하지 않는다.
+NODE
+  ) || die "invalid CR_NET_POST: use comma-separated exact ASCII hosts or host:port (1..65535); no spaces, schemes, paths, wildcards, IPv6 or empty entries"
+}
+
+# 네 히어독의 네트워크 문구는 여기 한 곳에서 만든다. 따옴표 있는 히어독을 유지한다.
+cr_network_text() {  # $1=consult|review|edit|edit-followup|measure
+  if [ -n "${CR_NET_POST:-}" ]; then
+    case "$1" in
+      edit) printf '%s\n' '- But **investigation and verification are free** — read the disk, query the network, run commands.' ;;
+      edit-followup) printf '%s\n' '- Investigation and verification are free — read the disk, query the network, run commands.' ;;
+      review) printf '%s\n' '- **You may use the network** — to check library docs, issues and release notes.' ;;
+      consult|measure) printf '%s\n' '- **You may use the network** — search docs, issues and release notes and check them yourself.' ;;
+      *) return 1 ;;
+    esac
+    printf '%s\n' "- Network: you may send test write requests (POST/PUT/PATCH/DELETE and other write methods) only to: $CR_NET_POST."
+    printf '%s\n' '  Exact HTTP(S) hosts only: an entry without a port allows only default HTTP/HTTPS ports; host:port allows that port only. Do not follow redirects for write requests.'
+    printf '%s\n' '  Production servers and every other destination remain read-only. No git push or publish.'
+    printf '%s\n' '  Record each request destination, method and count in response section 1 (final-message section 1 for follow-ups; the script appends it). Never put personal data or credential values in request bodies. Never send personal data in any external request.'
+    return
+  fi
+  case "$1" in
+    edit) printf '%s' '- But **investigation and verification are free** — read the disk, query the network, run commands (network is read-only).' ;;
+    edit-followup) printf '%s' '- Investigation and verification are free — read the disk, query the network, run commands (network is read-only).' ;;
+    review) printf '%s' '- **You may use the network** — to check library docs, issues and release notes. **Read-only** (no POST/PUT, git push, publish).' ;;
+    consult|measure) printf '%s\n%s' '- **You may use the network** — search docs, issues and release notes and check them yourself.' '  But it is **read-only.** Never upload data anywhere (no POST/PUT, git push, publish).' ;;
+    *) return 1 ;;
+  esac
+}
+
+# 정적 흔적 감사이며 방화벽/실제 송신 횟수 계측이 아니다. 본문·출력·URL 경로는 보고하지 않는다.
+cr_post_witness() {  # $1=events 미러 $2=app-server 원문 로그. 실행 시작 전에 RUN_DIR로만 저장한다.
+  node - "$(winp "$1")" "$(winp "$2")" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+function witness(file) {
+    let fd;
+    try {
+        fd = fs.openSync(file, 'r');
+        const st = fs.fstatSync(fd, {bigint:true});
+        const size = Number(st.size);
+        if (!Number.isSafeInteger(size)) throw Error();
+        function sample(position, length) {
+            const b = Buffer.alloc(length);
+            if (length && fs.readSync(fd, b, 0, length, position) !== length) throw Error();
+            return b.toString('base64');
+        }
+        const n = Math.min(64, size);
+        return {exists:true, size, dev:String(st.dev), ino:String(st.ino),
+            birthtimeNs:String(st.birthtimeNs), realpath:fs.realpathSync(file),
+            first:sample(0, n), last:sample(size - n, n)};
+    } catch (e) {
+        if (e.code === 'ENOENT') return {exists:false, size:0};
+        throw e;
+    } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+try { process.stdout.write(JSON.stringify({events:witness(process.argv[2]), raw:witness(process.argv[3])})); }
+catch { process.exitCode = 1; }
+NODE
+}
+
+cr_post_audit() {  # $1=events $2=작업대 $3=events 시작 바이트 $4=원문 로그 $5=원문 시작 바이트 $6=끼어들기 여부
+  node - "$(winp "$1")" "$(winp "$2")" "${CR_NET_POST:-}" "$3" "${4:+$(winp "$4")}" "$5" "$6" "${7:+$(winp "$7")}" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const [events, scratch, raw, eventStart = '0', rawLog = '', rawStart = '0', liveMode = '0', witnessFile = ''] = process.argv.slice(2);
+try {
+    const allow = raw ? raw.split(',') : [];
+    const counts = new Map();
+    let unknown = 0, commands = 0, scripts = 0;
+    const prior = witnessFile ? JSON.parse(fs.readFileSync(witnessFile, 'utf8')) : null;
+    // 파일 핸들에서 현재 턴 부분만 읽는다. 파일 id·생성 시각과 앞/경계의 작은 증인을 비교한다.
+    function newLines(file, startText, before) {
+        const fd = fs.openSync(file, 'r');
+        try {
+            const st = fs.fstatSync(fd, {bigint:true});
+            const size = Number(st.size);
+            const start = before ? before.size : Number(startText);
+            if (!Number.isSafeInteger(size) || !Number.isSafeInteger(start) || start < 0 || start > size) throw Error();
+            function sample(position, length) {
+                const b = Buffer.alloc(length);
+                if (length && fs.readSync(fd, b, 0, length, position) !== length) throw Error();
+                return b.toString('base64');
+            }
+            if (before && before.exists) {
+                const n = Math.min(64, start);
+                if (String(st.dev) !== before.dev || String(st.ino) !== before.ino ||
+                    String(st.birthtimeNs) !== before.birthtimeNs || fs.realpathSync(file) !== before.realpath ||
+                    sample(0, n) !== before.first || sample(start - n, n) !== before.last) throw Error();
+            } else if (before && start !== 0) throw Error();
+            if (start && sample(start - 1, 1) !== Buffer.from('\n').toString('base64')) throw Error();
+            const data = Buffer.alloc(size - start);
+            for (let n = 0; n < data.length;) {
+                const got = fs.readSync(fd, data, n, data.length - n, start + n);
+                if (!got) throw Error();
+                n += got;
+            }
+            const after = fs.statSync(file, {bigint:true});
+            if (after.dev !== st.dev || after.ino !== st.ino || after.birthtimeNs !== st.birthtimeNs || after.size !== st.size) throw Error();
+            return data.toString('utf8').split('\n').filter(line => line.trim());
+        } finally { fs.closeSync(fd); }
+    }
+    const readMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
+    // 실행 파일 basename과 각 도구의 쓰기 판정 규칙. 아래 parser가 이 규칙을 실행한다.
+    const HTTP_RULES = Object.freeze({
+        curl: {names:['curl','curl.exe'], writes:'-X/--request method; -d/-F/--json POST; -T/--upload-file PUT'},
+        wget: {names:['wget','wget.exe'], writes:'--method method; --post-data/--post-file POST'},
+        powershell: {names:['invoke-webrequest','invoke-restmethod','iwr','irm'], writes:'-Method method'}
+    });
+    const HTTP_TOOLS = Object.fromEntries(Object.entries(HTTP_RULES)
+        .flatMap(([kind, rule]) => rule.names.map(name => [name, kind])));
+    function words(unit) {
+        const out = [];
+        for (let i = 0; i < unit.length;) {
+            while (i < unit.length && /\s/.test(unit[i])) i++;
+            if (i >= unit.length) break;
+            const begin = i;
+            let quote = '';
+            while (i < unit.length) {
+                const ch = unit[i];
+                if (quote) {
+                    if (ch === quote) quote = '';
+                } else if (ch === '"' || ch === "'" || ch === '\x60') quote = ch;
+                else if (/\s/.test(ch)) break;
+                i++;
+            }
+            out.push(unit.slice(begin, i));
+        }
+        return out;
+    }
+    function plain(word) {
+        return word.length > 1 && (word[0] === '"' || word[0] === "'") && word.at(-1) === word[0]
+            ? word.slice(1, -1) : word;
+    }
+    function toolOf(tokens) {
+        let at = tokens[0] === '&' ? 1 : 0;
+        if (plain(tokens[at] || '').toLowerCase() === 'env') at++;
+        while (at < tokens.length && /^[A-Za-z_][A-Za-z_0-9]*=/.test(tokens[at])) at++;
+        const name = plain(tokens[at] || '').replace(/\\/g, '/').split('/').at(-1).toLowerCase();
+        return {kind:HTTP_TOOLS[name] || '', at};
+    }
+    function methodOf(value) {
+        return /^[A-Za-z]+$/.test(value || '') ? value.toUpperCase() : null;
+    }
+    // 로컬 curl 8.19.0(Git)·8.21.0(Windows) `--help all`의 전체 합집합: 값 받는지 여부.
+    // 공식 옵션 문서: https://curl.se/docs/manpage.html
+    const CURL_ARG_OPTIONS = new Set([
+        "--abstract-unix-socket", "--alt-svc", "--aws-sigv4", "--cacert", "--capath",
+        "--cert", "--cert-type", "--ciphers", "--config", "--connect-timeout",
+        "--connect-to", "--continue-at", "--cookie", "--cookie-jar", "--create-file-mode",
+        "--crlfile", "--curves", "--data", "--data-ascii", "--data-binary",
+        "--data-raw", "--data-urlencode", "--delegation", "--dns-interface", "--dns-ipv4-addr",
+        "--dns-ipv6-addr", "--dns-servers", "--doh-url", "--dump-header", "--ech",
+        "--egd-file", "--engine", "--etag-compare", "--etag-save", "--expect100-timeout",
+        "--form", "--form-string", "--ftp-account", "--ftp-alternative-to-user", "--ftp-method",
+        "--ftp-port", "--ftp-ssl-ccc-mode", "--happy-eyeballs-timeout-ms", "--haproxy-clientip", "--header",
+        "--help", "--hostpubmd5", "--hostpubsha256", "--hsts", "--interface",
+        "--ip-tos", "--ipfs-gateway", "--json", "--keepalive-cnt", "--keepalive-time",
+        "--key", "--key-type", "--knownhosts", "--krb", "--libcurl",
+        "--limit-rate", "--local-port", "--login-options", "--mail-auth", "--mail-from",
+        "--mail-rcpt", "--max-filesize", "--max-redirs", "--max-time", "--netrc-file",
+        "--noproxy", "--oauth2-bearer", "--output", "--output-dir", "--parallel-max",
+        "--parallel-max-host", "--pass", "--pinnedpubkey", "--preproxy", "--proto",
+        "--proto-default", "--proto-redir", "--proxy", "--proxy-cacert", "--proxy-capath",
+        "--proxy-cert", "--proxy-cert-type", "--proxy-ciphers", "--proxy-crlfile", "--proxy-header",
+        "--proxy-key", "--proxy-key-type", "--proxy-pass", "--proxy-pinnedpubkey", "--proxy-service-name",
+        "--proxy-tls13-ciphers", "--proxy-tlsauthtype", "--proxy-tlspassword", "--proxy-tlsuser", "--proxy-user",
+        "--proxy1.0", "--pubkey", "--quote", "--random-file", "--range",
+        "--rate", "--referer", "--request", "--request-target", "--resolve",
+        "--retry", "--retry-delay", "--retry-max-time", "--sasl-authzid", "--service-name",
+        "--sigalgs", "--socks4", "--socks4a", "--socks5", "--socks5-gssapi-service",
+        "--socks5-hostname", "--speed-limit", "--speed-time", "--ssl-sessions", "--stderr",
+        "--telnet-option", "--tftp-blksize", "--time-cond", "--tls-max", "--tls13-ciphers",
+        "--tlsauthtype", "--tlspassword", "--tlsuser", "--trace", "--trace-ascii",
+        "--trace-config", "--unix-socket", "--upload-file", "--upload-flags", "--url",
+        "--url-query", "--user", "--user-agent", "--variable", "--vlan-priority",
+        "--write-out",
+    ]);
+    const CURL_SWITCH_OPTIONS = new Set([
+        "--anyauth", "--append", "--basic", "--ca-native", "--cert-status",
+        "--compressed", "--compressed-ssh", "--create-dirs", "--crlf", "--digest",
+        "--disable", "--disable-eprt", "--disable-epsv", "--disallow-username-in-url", "--doh-cert-status",
+        "--doh-insecure", "--dump-ca-embed", "--fail", "--fail-early", "--fail-with-body",
+        "--false-start", "--follow", "--form-escape", "--ftp-create-dirs", "--ftp-pasv",
+        "--ftp-pret", "--ftp-skip-pasv-ip", "--ftp-ssl-ccc", "--ftp-ssl-control", "--get",
+        "--globoff", "--haproxy-protocol", "--head", "--http0.9", "--http1.0",
+        "--http1.1", "--http2", "--http2-prior-knowledge", "--http3", "--http3-only",
+        "--ignore-content-length", "--insecure", "--ipv4", "--ipv6", "--junk-session-cookies",
+        "--list-only", "--location", "--location-trusted", "--mail-rcpt-allowfails", "--manual",
+        "--metalink", "--mptcp", "--negotiate", "--netrc", "--netrc-optional",
+        "--next", "--no-alpn", "--no-buffer", "--no-clobber", "--no-keepalive",
+        "--no-npn", "--no-progress-meter", "--no-sessionid", "--ntlm", "--ntlm-wb",
+        "--out-null", "--parallel", "--parallel-immediate", "--path-as-is", "--post301",
+        "--post302", "--post303", "--progress-bar", "--proxy-anyauth", "--proxy-basic",
+        "--proxy-ca-native", "--proxy-digest", "--proxy-http2", "--proxy-http3", "--proxy-insecure",
+        "--proxy-negotiate", "--proxy-ntlm", "--proxy-ssl-allow-beast", "--proxy-ssl-auto-client-cert", "--proxy-tlsv1",
+        "--proxytunnel", "--raw", "--remote-header-name", "--remote-name", "--remote-name-all",
+        "--remote-time", "--remove-on-error", "--retry-all-errors", "--retry-connrefused", "--sasl-ir",
+        "--show-error", "--show-headers", "--silent", "--skip-existing", "--socks5-basic",
+        "--socks5-gssapi", "--socks5-gssapi-nec", "--ssl", "--ssl-allow-beast", "--ssl-auto-client-cert",
+        "--ssl-no-revoke", "--ssl-reqd", "--ssl-revoke-best-effort", "--sslv2", "--sslv3",
+        "--styled-output", "--suppress-connect-headers", "--tcp-fastopen", "--tcp-nodelay", "--tftp-no-options",
+        "--tls-earlydata", "--tlsv1", "--tlsv1.0", "--tlsv1.1", "--tlsv1.2",
+        "--tlsv1.3", "--tr-encoding", "--trace-ids", "--trace-time", "--use-ascii",
+        "--verbose", "--version", "--xattr",
+    ]);
+    const CURL_SHORT_OPTIONS = Object.freeze({
+        "#": "--progress-bar",
+        "0": "--http1.0",
+        "1": "--tlsv1",
+        "2": "--sslv2",
+        "3": "--sslv3",
+        "4": "--ipv4",
+        "6": "--ipv6",
+        ":": "--next",
+        "A": "--user-agent",
+        "B": "--use-ascii",
+        "C": "--continue-at",
+        "D": "--dump-header",
+        "E": "--cert",
+        "F": "--form",
+        "G": "--get",
+        "H": "--header",
+        "I": "--head",
+        "J": "--remote-header-name",
+        "K": "--config",
+        "L": "--location",
+        "M": "--manual",
+        "N": "--no-buffer",
+        "O": "--remote-name",
+        "P": "--ftp-port",
+        "Q": "--quote",
+        "R": "--remote-time",
+        "S": "--show-error",
+        "T": "--upload-file",
+        "U": "--proxy-user",
+        "V": "--version",
+        "X": "--request",
+        "Y": "--speed-limit",
+        "Z": "--parallel",
+        "a": "--append",
+        "b": "--cookie",
+        "c": "--cookie-jar",
+        "d": "--data",
+        "e": "--referer",
+        "f": "--fail",
+        "g": "--globoff",
+        "h": "--help",
+        "i": "--show-headers",
+        "j": "--junk-session-cookies",
+        "k": "--insecure",
+        "l": "--list-only",
+        "m": "--max-time",
+        "n": "--netrc",
+        "o": "--output",
+        "p": "--proxytunnel",
+        "q": "--disable",
+        "r": "--range",
+        "s": "--silent",
+        "t": "--telnet-option",
+        "u": "--user",
+        "v": "--verbose",
+        "w": "--write-out",
+        "x": "--proxy",
+        "y": "--speed-time",
+        "z": "--time-cond",
+    });
+    function parseCurl(tokens, at) {
+        let explicit = null, get = false, head = false, data = false, upload = false, uncertain = false;
+        const targets = [];
+        const postData = new Set(['--data','--data-ascii','--data-binary','--data-raw','--data-urlencode',
+            '--form','--form-string','--json']);
+        function apply(flag, value, negated = false) {
+            if (flag === '--request') explicit = methodOf(plain(value || '')) || (uncertain = true, null);
+            else if (flag === '--get') get = !negated;
+            else if (flag === '--head') head = !negated;
+            else if (flag === '--upload-file') upload = true;
+            else if (postData.has(flag)) data = true;
+            else if (flag === '--url') targets.push(value === undefined ? '' : value);
+            else if (flag === '--next' || flag === '--config') uncertain = true; // 다른 전송·설정 파일은 따로 풀지 않는다.
+        }
+        for (let i = at + 1; i < tokens.length; i++) {
+            const word = tokens[i];
+            if (word === '--') { targets.push(...tokens.slice(i + 1)); break; }
+            if (word.startsWith('--')) {
+                const eq = word.indexOf('='), flag = eq < 0 ? word : word.slice(0, eq);
+                const negated = !CURL_SWITCH_OPTIONS.has(flag) && flag.startsWith('--no-') &&
+                    CURL_SWITCH_OPTIONS.has('--' + flag.slice(5));
+                const knownArg = CURL_ARG_OPTIONS.has(flag), knownSwitch = CURL_SWITCH_OPTIONS.has(flag) || negated;
+                if (!knownArg && !knownSwitch) { uncertain = true; continue; }
+                if (knownSwitch && eq >= 0) { uncertain = true; continue; }
+                const value = knownArg ? (eq < 0 ? tokens[++i] : word.slice(eq + 1)) : undefined;
+                if (knownArg && value === undefined) { uncertain = true; continue; }
+                apply(negated ? '--' + flag.slice(5) : flag, value, negated);
+                continue;
+            }
+            if (word.startsWith('-') && word !== '-') {
+                const cluster = word.slice(1);
+                for (let j = 0; j < cluster.length; j++) {
+                    const flag = CURL_SHORT_OPTIONS[cluster[j]];
+                    if (!flag) { uncertain = true; continue; }
+                    if (CURL_ARG_OPTIONS.has(flag)) {
+                        const attached = cluster.slice(j + 1);
+                        const value = attached || tokens[++i];
+                        if (value === undefined) uncertain = true;
+                        else apply(flag, value);
+                        break; // 값 옵션 뒤 글자는 다음 플래그가 아니라 그 값에 속한다.
+                    }
+                    if (!CURL_SWITCH_OPTIONS.has(flag)) uncertain = true;
+                    else apply(flag);
+                }
+                continue;
+            }
+            targets.push(word);
+        }
+        if (upload && (get || head) && !explicit) uncertain = true;
+        return {method:explicit || (head ? 'HEAD' : get ? 'GET' : upload ? 'PUT' : data ? 'POST' : 'GET'), targets, uncertain};
+    }
+    // GNU Wget 1.25 매뉴얼: https://www.gnu.org/software/wget/manual/wget.html
+    // 이 머신에는 wget 실행 파일이 없어 자주 쓰는 조회/본문·방식 옵션을 공식 문서로 분류한다.
+    const WGET_ARG_OPTIONS = new Set(['--method','--post-data','--post-file','--body-data','--body-file',
+        '--output-document','--output-file','--append-output','--input-file','--header','--user-agent',
+        '--timeout','--dns-timeout','--connect-timeout','--read-timeout','--tries','--directory-prefix',
+        '--wait','--waitretry','--limit-rate','--quota','--bind-address','--max-redirect','--ca-certificate',
+        '--ca-directory','--secure-protocol','--http-user','--http-password','--user','--password',
+        '--proxy-user','--proxy-password','--referer','--domains','--exclude-domains','--accept',
+        '--reject','--accept-regex','--reject-regex','--execute','--compression','--progress',
+        '--cut-dirs','--default-page','--level']);
+    const WGET_SWITCH_OPTIONS = new Set(['--quiet','--no-verbose','--verbose','--server-response',
+        '--spider','--no-check-certificate','--continue','--recursive','--mirror','--timestamping',
+        '--no-clobber','--no-cache','--no-proxy','--inet4-only','--inet6-only','--https-only',
+        '--save-headers','--content-disposition','--trust-server-names','--adjust-extension',
+        '--no-parent','--no-directories','--force-directories','--background','--no-host-directories']);
+    const WGET_SHORT_OPTIONS = Object.freeze({
+        q:'--quiet', O:'--output-document', o:'--output-file', a:'--append-output',
+        i:'--input-file', c:'--continue', t:'--tries', T:'--timeout', U:'--user-agent',
+        P:'--directory-prefix', S:'--server-response', r:'--recursive', N:'--timestamping',
+        v:'--verbose', e:'--execute'
+    });
+    function parseWget(tokens, at) {
+        let explicit = null, post = false, body = false, uncertain = false;
+        const targets = [];
+        function apply(flag, value) {
+            if (flag === '--method') explicit = methodOf(plain(value || '')) || (uncertain = true, null);
+            else if (flag === '--post-data' || flag === '--post-file') post = true;
+            else if (flag === '--body-data' || flag === '--body-file') body = true;
+            else if (flag === '--execute') uncertain = true; // wgetrc 명령은 외부 파일/문장이라 해석 범위 밖이다.
+        }
+        for (let i = at + 1; i < tokens.length; i++) {
+            const word = tokens[i];
+            if (word === '--') { targets.push(...tokens.slice(i + 1)); break; }
+            if (word.startsWith('--')) {
+                const eq = word.indexOf('='), flag = eq < 0 ? word : word.slice(0, eq);
+                if (WGET_ARG_OPTIONS.has(flag)) {
+                    const value = eq < 0 ? tokens[++i] : word.slice(eq + 1);
+                    if (value === undefined) uncertain = true;
+                    else apply(flag, value);
+                } else if (!WGET_SWITCH_OPTIONS.has(word) || eq >= 0) uncertain = true;
+            } else if (word.startsWith('-') && word !== '-') {
+                if (word === '-nv') continue;
+                const cluster = word.slice(1);
+                for (let j = 0; j < cluster.length; j++) {
+                    const flag = WGET_SHORT_OPTIONS[cluster[j]];
+                    if (!flag) { uncertain = true; continue; }
+                    if (WGET_ARG_OPTIONS.has(flag)) {
+                        const attached = cluster.slice(j + 1);
+                        const value = attached || tokens[++i];
+                        if (value === undefined) uncertain = true;
+                        else apply(flag, value);
+                        break;
+                    }
+                    if (!WGET_SWITCH_OPTIONS.has(flag)) uncertain = true;
+                }
+            } else targets.push(word);
+        }
+        if (body && !explicit) uncertain = true;
+        return {method:explicit || (post ? 'POST' : 'GET'), targets, uncertain};
+    }
+    // 설치된 PowerShell Get-Command Invoke-WebRequest/Invoke-RestMethod 매개변수 메타데이터.
+    // 공식 문서: https://learn.microsoft.com/powershell/module/microsoft.powershell.utility/invoke-webrequest
+    const PS_ARG_OPTIONS = new Set([
+        "authentication", "body", "certificate", "certificatethumbprint", "connectiontimeoutseconds",
+        "contenttype", "credential", "custommethod", "erroraction", "errorvariable",
+        "form", "headers", "httpversion", "infile", "informationaction",
+        "informationvariable", "maximumfollowrellink", "maximumredirection", "maximumretrycount", "method",
+        "operationtimeoutseconds", "outbuffer", "outfile", "outvariable", "pipelinevariable",
+        "progressaction", "proxy", "proxycredential", "responseheadersvariable", "retryintervalsec",
+        "sessionvariable", "sslprotocol", "statuscodevariable", "token", "transferencoding",
+        "unixsocket", "uri", "useragent", "warningaction", "warningvariable",
+        "websession",
+    ]);
+    const PS_SWITCH_OPTIONS = new Set([
+        "allowinsecureredirect", "allowunencryptedauthentication", "debug", "disablekeepalive", "followrellink",
+        "noproxy", "passthru", "preserveauthorizationonredirect", "preservehttpmethodonredirect", "proxyusedefaultcredentials",
+        "resume", "skipcertificatecheck", "skipheadervalidation", "skiphttperrorcheck", "usebasicparsing",
+        "usedefaultcredentials", "verbose",
+    ]);
+    const PS_ALIASES = Object.freeze({
+        "cm": "custommethod",
+        "fl": "followrellink",
+        "ml": "maximumfollowrellink",
+        "rhv": "responseheadersvariable",
+        "sv": "sessionvariable",
+        "timeoutsec": "connectiontimeoutseconds",
+        "db": "debug",
+        "ea": "erroraction",
+        "ev": "errorvariable",
+        "infa": "informationaction",
+        "iv": "informationvariable",
+        "ob": "outbuffer",
+        "ov": "outvariable",
+        "proga": "progressaction",
+        "pv": "pipelinevariable",
+        "vb": "verbose",
+        "wa": "warningaction",
+        "wv": "warningvariable",
+    });
+    function parsePowerShell(tokens, at) {
+        let method = 'GET', uncertain = false, inputBody = false;
+        const targets = [];
+        // PowerShell은 모호하지 않은 매개변수 접두도 허용한다.
+        // https://learn.microsoft.com/powershell/scripting/learn/shell/using-aliases
+        function resolveName(name) {
+            const exact = PS_ALIASES[name] || name;
+            if (PS_ARG_OPTIONS.has(exact) || PS_SWITCH_OPTIONS.has(exact)) return exact;
+            const matches = new Set([...PS_ARG_OPTIONS, ...PS_SWITCH_OPTIONS, ...Object.keys(PS_ALIASES)]
+                .filter(option => option.startsWith(name)).map(option => PS_ALIASES[option] || option));
+            return matches.size === 1 ? [...matches][0] : '';
+        }
+        for (let i = at + 1; i < tokens.length; i++) {
+            const word = tokens[i];
+            if (!word.startsWith('-')) { targets.push(word); continue; }
+            const colon = word.indexOf(':'), name = (colon < 0 ? word.slice(1) : word.slice(1, colon)).toLowerCase();
+            const flag = resolveName(name);
+            if (PS_ARG_OPTIONS.has(flag)) {
+                const value = colon < 0 ? tokens[++i] : word.slice(colon + 1);
+                if (value === undefined) { uncertain = true; continue; }
+                if (flag === 'method' || flag === 'custommethod')
+                    method = methodOf(plain(value)) || (uncertain = true, 'GET');
+                else if (flag === 'uri') targets.push(value);
+                else if (flag === 'infile' || flag === 'body' || flag === 'form') inputBody = true;
+            } else if (!PS_SWITCH_OPTIONS.has(flag) || colon >= 0) uncertain = true;
+        }
+        if (inputBody && method === 'GET') uncertain = true;
+        return {method, targets, uncertain};
+    }
+    const TOOL_PARSERS = {curl:parseCurl, wget:parseWget, powershell:parsePowerShell};
+    function completeUrl(value) {
+        if (!/^https?:\/\//i.test(value) || /[\$\x60{}\\<>]/.test(value)) return null;
+        try {
+            const url = new URL(value);
+            return url.username || url.password ? null : url;
+        } catch { return null; }
+    }
+    function commandUrl(word) {
+        if (!word || word[0] === '\x60' || /^f["']/.test(word)) return null;
+        const value = plain(word);
+        if (/["'\x60]/.test(value) || (value === word && /[(),;|&]/.test(value))) return null;
+        return completeUrl(value);
+    }
+    function sourceUrl(unit) {
+        // 본문·헤더의 URL이 아니라 HTTP API 호출의 첫 대상 인자만 본다.
+        const calls = [...unit.matchAll(/\b(?:fetch|(?:requests|axios)\s*\.\s*(?:post|put|patch|delete|request)|https?\s*\.\s*request)\s*\(\s*/gi)];
+        if (calls.length !== 1) return null;
+        const start = calls[0].index + calls[0][0].length;
+        const quote = unit[start];
+        if (quote !== '"' && quote !== "'") return null;
+        if (/[fF]/.test(unit[start - 1] || '') && !/[A-Za-z0-9_]/.test(unit[start - 2] || '')) return null;
+        const hit = /^https?:\/\/[^\s"'\x60<>),}\]]+/i.exec(unit.slice(start + 1));
+        if (!hit) return null;
+        const end = start + 1 + hit[0].length;
+        if (unit[end] !== quote || !/^(?:[,)\]}]|;|$)/.test(unit.slice(end + 1).trimStart())) return null;
+        return completeUrl(hit[0]);
+    }
+    function hostUrl(unit) {
+        const keys = [...unit.matchAll(/["']?(?:hostname|host)["']?\s*:/gi)];
+        if (keys.length !== 1) return null;
+        const rest = unit.slice(keys[0].index + keys[0][0].length);
+        const h = /^\s*(["'])([a-z0-9.-]+(?::[0-9]+)?)\1\s*(?=[,}])/.exec(rest);
+        if (!h) return null;
+        const ports = [...unit.matchAll(/["']?port["']?\s*:/gi)];
+        if (ports.length > 1) return null;
+        let port = '';
+        if (ports.length) {
+            const p = /^\s*(?:["']([0-9]+)["']|([0-9]+))\s*(?=[,}])/.exec(unit.slice(ports[0].index + ports[0][0].length));
+            if (!p) return null;
+            port = ':' + (p[1] || p[2]);
+        }
+        return completeUrl((/\bhttps\s*\.\s*request\s*\(/i.test(unit) ? 'https://' : 'http://') + h[2] + port);
+    }
+    function record(method, url, source) {
+        const host = url.hostname.toLowerCase();
+        const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+        const ok = allow.includes(host + ':' + port) || (!url.port && allow.includes(host));
+        const address = url.protocol + '//' + host + (url.port ? ':' + url.port : '');
+        const key = JSON.stringify([ok, address, method, source]);
+        counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    function inspect(text, source, depth = 0) {
+        // 쉘 줄 결합·API 여러 줄만 묶는다. 데이터 흐름이나 SDK 내부 호출은 해석하지 않는다.
+        const units = text.replace(/\\\r?\n/g, ' ')
+            .replace(/\b(?:fetch|(?:https?|requests|axios)\s*\.\s*(?:request|post|put|patch|delete))\s*\([^;]*?\)/gi, x => x.replace(/\r?\n/g, ' '))
+            .split(/\n|;|&&|\|\|/);
+        for (const unit of units) {
+            const tokens = words(unit), tool = toolOf(tokens);
+            // 셸·PowerShell의 -Command/-c 한 겹은 실제 실행 명령으로 다시 분류한다.
+            if (!tool.kind && depth < 2) {
+                const executable = plain(tokens[tool.at] || '').replace(/\\/g, '/').split('/').at(-1).toLowerCase();
+                const shell = ['bash','sh','zsh','powershell','powershell.exe','pwsh','pwsh.exe'].includes(executable);
+                const flag = shell ? tokens.findIndex((t, i) => i > tool.at &&
+                    (['-c','-lc','-Command'].includes(t) || t.toLowerCase() === '-command')) : -1;
+                if (flag >= 0) {
+                    const inner = tokens.slice(flag + 1).map(plain).join(' ').replace(/^\{\s*|\s*\}$/g, '');
+                    if (inner) inspect(inner, source, depth + 1);
+                    else unknown++;
+                    continue;
+                }
+            }
+            if (tool.kind) {
+                const parsed = TOOL_PARSERS[tool.kind](tokens, tool.at);
+                if (parsed.uncertain) { unknown++; continue; }
+                if (readMethods.has(parsed.method)) continue;
+                if (!parsed.targets.length) { unknown++; continue; }
+                for (const token of parsed.targets) {
+                    const url = commandUrl(token);
+                    if (url) record(parsed.method, url, source);
+                    else unknown++;
+                }
+                continue;
+            }
+            const methods = [];
+            for (const m of unit.matchAll(/\b(?:requests|axios)\s*\.\s*(post|put|patch|delete)\s*\(/gi)) methods.push(m[1].toUpperCase());
+            for (const m of unit.matchAll(/["']?method["']?\s*:\s*["']([A-Z]+)["']/gi)) {
+                if (!readMethods.has(m[1].toUpperCase())) methods.push(m[1].toUpperCase());
+            }
+            const readMethod = /["']?method["']?\s*:\s*["'](?:GET|HEAD|OPTIONS)["']/i.test(unit);
+            const unresolved = /\b(?:https?|requests|axios)\s*\.\s*request\s*\(/i.test(unit) ||
+                (/\bfetch\s*\(/i.test(unit) && /["']?method["']?\s*:/.test(unit) && !readMethod);
+            if (!methods.length && !unresolved) {
+                if (/\bcurl(?:\.exe)?\s+.*(?:-X|--request|--data|--upload-file)/.test(unit)) unknown++;
+                continue;
+            }
+            if (!methods.length && readMethod) continue;
+            const url = sourceUrl(unit) || (/\bhttps?\s*\.\s*request\s*\(/i.test(unit) ? hostUrl(unit) : null);
+            if (!url || !methods.length) { unknown++; continue; }
+            for (const method of new Set(methods)) record(method, url, source);
+        }
+    }
+    const eventRows = newLines(events, eventStart, prior?.events).map(line => JSON.parse(line));
+    const live = liveMode === '1';
+    const turnIds = new Set(eventRows.filter(e => e.type === 'turn.started' && e.turn_id).map(e => e.turn_id));
+    if (live && turnIds.size > 1) throw Error();
+    const turnId = [...turnIds][0];
+    const threadIds = new Set(eventRows.filter(e => e.type === 'thread.started' && e.thread_id).map(e => e.thread_id));
+    if (live && threadIds.size > 1) throw Error();
+    let currentThread = [...threadIds][0] || '';
+    const rawCommands = new Map(), rawConflicts = new Set();
+    if (live) {
+        if (!rawLog) throw Error();
+        // app-server 원문 로그는 clip() 전 JSON-RPC 알림을 보존한다. 해당 턴의 명령만 받는다.
+        for (const line of newLines(rawLog, rawStart, prior?.raw)) {
+            const rec = JSON.parse(line);
+            if (rec.kind !== 'rpc-recv') continue;
+            const msg = JSON.parse(rec.raw);
+            if (!/^item\/(?:started|updated|completed)$/.test(msg.method || '')) continue;
+            const p = msg.params || {}, item = p.item || {};
+            if (item.type !== 'commandExecution') continue;
+            if (p.turnId === turnId && p.threadId) {
+                if (currentThread && p.threadId !== currentThread) { unknown++; continue; }
+                currentThread = p.threadId;
+            }
+            // threadId가 명시적으로 다른 하위 스레드만 제외한다(bridge.notificationOwnership 계약).
+            if (currentThread && p.threadId && p.threadId !== currentThread) continue;
+            if (!turnId || !p.turnId || !item.id) { unknown++; continue; }
+            if (p.turnId !== turnId) { unknown++; continue; } // 같은 thread의 턴 불일치는 미확정
+            if (typeof item.command !== 'string' || !item.command.trim()) { unknown++; continue; }
+            const key = `${p.turnId}:${item.id}`, command = item.command.trim();
+            if (rawCommands.has(key) && rawCommands.get(key) !== command) rawConflicts.add(key);
+            else rawCommands.set(key, command);
+        }
+    }
+    const eventCommands = new Map(), eventConflicts = new Set(), toolSignals = [];
+    for (const e of eventRows) {
+        // 도중에 깨진 기록과 빈 명령은 '흔적 없음'으로 조용히 흘리지 않는다.
+        const item = e.item || e.params?.item;
+        if (item && /command_execution|commandExecution/.test(item.type || '')) {
+            const cmd = item.command;
+            if (typeof cmd !== 'string') throw Error();
+            const key = item.id ? 'id:' + item.id : JSON.stringify([e.type, cmd]);
+            if (eventCommands.has(key) && eventCommands.get(key) !== cmd) eventConflicts.add(key);
+            else eventCommands.set(key, cmd);
+        } else if (e.type === 'cr.tool' && e.detail && typeof e.detail.command === 'string') {
+            toolSignals.push(e.detail.command);
+        }
+    }
+    const matchedRaw = new Set();
+    for (const [key, cmd] of eventCommands) {
+        commands++;
+        if (eventConflicts.has(key)) {
+            unknown++;
+            // 같은 id의 원문은 이미 이 충돌의 짝이다. 뒤의 '짝 없음'으로 중복 계산하지 않는다.
+            if (live && key.startsWith('id:') && turnId) {
+                const id = key.slice(3);
+                const rawKey = id.startsWith(turnId + ':') ? id : turnId + ':' + id;
+                if (rawCommands.has(rawKey)) matchedRaw.add(rawKey);
+            }
+            continue;
+        }
+        if (live) {
+            const id = key.startsWith('id:') ? key.slice(3) : '';
+            const rawKey = id.startsWith(`${turnId}:`) ? id : `${turnId}:${id}`;
+            const full = rawCommands.get(rawKey);
+            if (!id || !full || rawConflicts.has(rawKey) ||
+                (cmd !== full && !(cmd.endsWith('…') && full.length > 3999 && full.startsWith(cmd.slice(0, -1))))) {
+                unknown++; continue;
+            }
+            matchedRaw.add(rawKey);
+            inspect(full, 'command');
+        } else if (cmd.trim() && !cmd.endsWith('…')) inspect(cmd, 'command');
+        else unknown++;
+    }
+    for (const key of rawCommands.keys()) if (!matchedRaw.has(key)) unknown++;
+    for (const cmd of toolSignals) {
+        commands++;
+        if (!cmd.trim() || cmd.endsWith('…')) unknown++;
+        else inspect(cmd, 'command');
+        }
+    function walk(dir) {
+        for (const entry of fs.readdirSync(dir, {withFileTypes:true})) {
+            const file = path.join(dir, entry.name);
+            if (entry.isSymbolicLink()) throw Error(); // 읽지 못한 범위를 없음으로 처리하지 않는다
+            if (entry.isDirectory()) walk(file);
+            else if (/\.(?:[cm]?js|jsx|tsx?|py|ps1|sh|bash|zsh|cmd|bat|rb|pl)$/i.test(entry.name) || !path.extname(entry.name)) {
+                scripts++; inspect(fs.readFileSync(file, 'utf8'), 'workbench script');
+            }
+        }
+    }
+    walk(scratch);
+    if (!allow.length && commands && !counts.size && !unknown) {
+        console.log(`POST audit: no write-request traces found (${commands} commands, ${scripts} scripts) — static check only; addresses built in variables, SDK calls or other files can be missed.`);
+    } else {
+        if (!commands) console.log('⚠️ POST audit: 0 command events; command coverage is empty, so no-write cannot be concluded.');
+        if ([...counts.keys()].some(k => !JSON.parse(k)[0]) || unknown) console.log('🔴 POST audit: out-of-allowlist or unresolved write-request traces. Requests already sent cannot be undone.');
+        for (const [key, count] of counts) {
+            const [ok, address, method, source] = JSON.parse(key);
+            console.log(`${ok ? 'Allowed POST' : '🔴 Disallowed write request'}: ${address} × ${count} (${method}, ${source} static trace)`);
+        }
+        if (unknown) console.log(`🔴 POST audit: ${unknown} trace(s) with unresolved destination/method; inspect manually.`);
+        if (!counts.size && !unknown) console.log(`POST audit: no write-request traces found (${commands} commands, ${scripts} scripts).`);
+        console.log('⚠️ POST audit is a static check: addresses built in variables, SDK calls, or addresses read from other files can be missed. Counts are traces, not actual sends.');
+    }
+} catch {
+    console.log('🔴 POST audit failed — whether a write request occurred or where it went is unknown. Inspect events.jsonl and the workbench.');
+    console.log('⚠️ Static trace coverage is unknown; no conclusion about network writes can be drawn.');
+    process.exitCode = 1;
+}
+NODE
+}
+
+# 측정 턴은 mtime 대신 내용 지문을 비교한다. 응답 문서도 스크립트가 쓰기 전에 대조한다.
+# 감시자가 직접 바꾸는 이번 턴 telemetry만 정확한 이름으로 제외한다. 링크는 따라가지 않고 링크 자체 지문을 남긴다.
+cr_measure_fingerprint() {
+  node - "$(winp "$ROOT")" "$SCRATCH_REL" "$EDITLOG_REL" "$STAMP" "$FUP_TURN" "$$" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const {createHash} = require('node:crypto');
+const [root, scratch, log, stamp = path.posix.basename(scratch), turn = '2', watcherPid = ''] = process.argv.slice(2);
+const logdir = 'docs/codex_rescue/.log/';
+const ownTelemetry = new Set([
+    `${stamp}_events.jsonl`, `${stamp}_status.json`, `${stamp}_heartbeat`,
+    `${stamp}_appserver.jsonl`, `${stamp}_steers.jsonl`, `${stamp}_live.json`,
+    `${stamp}_t${turn}_launch.out`, `${stamp}_t${turn}_launch.err`, `.consult_${stamp}.inflight`,
+    `${stamp}_status.json.tmp`, `${stamp}_status.json.tmp.${watcherPid}`
+]);
+try {
+    const result = Object.create(null);
+    function walk(rel) {
+        if (rel === scratch || rel === log || (rel.startsWith(logdir) && ownTelemetry.has(rel.slice(logdir.length)))) return;
+        const file = path.join(root, rel), st = fs.lstatSync(file);
+        const hash = createHash('sha256');
+        hash.update(String(st.mode) + ':');
+        if (st.isSymbolicLink()) hash.update('link:' + fs.readlinkSync(file));
+        else if (st.isDirectory()) {
+            result[rel] = 'directory:' + st.mode;
+            for (const name of fs.readdirSync(file).sort()) walk(rel ? rel + '/' + name : name);
+            return;
+        } else if (st.isFile()) hash.update(fs.readFileSync(file));
+        else throw Error();
+        result[rel] = hash.digest('hex');
+    }
+    walk('');
+    process.stdout.write(JSON.stringify(result));
+} catch { process.exitCode = 1; }
+NODE
+}
+# ── 네트워크 허용 목록·감사 끝 ─────────────────────────────────
+
+cr_net_validate
+[ -n "${CR_NET_POST:-}" ] && [ "${1:-}" = --chat ] && die "CR_NET_POST is not available for read-only CHAT"
 
 # ═══════════════════════════════════════════════════════════════
 # CHAT — 핑퐁 (2026-08-22 신설)
@@ -993,7 +1714,7 @@ SUBJECT=""
 FUP=""; FUP_ABS=""; FUP_TURN=""; PARENT_MODE=""; THREAD=""; PREV_TURNS=0; RESP_DOC_ORIGIN=""
 FUP_DISCARDED=0; THREAD_SAVED=""; THREAD_WHY=""
 # ── EDIT 되묻기 · 끼어들기 리뷰 전용 (2026-09-15 신설) ─────────
-FUP_EDIT=0; EDITLOG_REL=""; REVIEW_REQ_AUTO=0; SCOPE_HINT=""; SCOPE_CMD=""
+FUP_EDIT=0; FUP_NET=0; EDITLOG_REL=""; REVIEW_REQ_AUTO=0; SCOPE_HINT=""; SCOPE_CMD=""
 
 # 분석·수정·리뷰·되묻기·재실행은 매번 확인한다. 인자가 없으면 아래 사용법 안내가 먼저 나가게 둔다.
 [ -n "${1:-}" ] && confirm_gate
@@ -1237,6 +1958,22 @@ elif [ "$KIND" = followup ]; then
   If this reruns the same turn, first check what is left (the last run may have half-edited the code)."
   fi
 
+  # 측정 턴: CONSULT의 되묻기에서만, 매번 별도 확인을 거친다.
+  FUP_NET_RAW=$(fmf "$FUP_ABS" net)
+  case "$FUP_NET_RAW" in
+    ''|no|false) ;;
+    yes|true) FUP_NET=1 ;;
+    *) die "invalid net value in the follow-up file (yes, or leave it out)" ;;
+  esac
+  if [ "$FUP_NET" = 1 ]; then
+    [ "$PARENT_MODE" = readonly ] && [ "$FUP_EDIT" = 0 ] \
+      || die "net: yes is only for follow-ups of a CONSULT (mode: readonly) case; it cannot be combined with edit: yes"
+    [ "${CR_ALLOW_NET:-}" = 1 ] || die "measurement follow-up is blocked: confirm this turn with the user, then set CR_ALLOW_NET=1 (required every turn)"
+    [ "${CR_NETWORK:-true}" != false ] || die "net: yes requires network; CR_NETWORK=false conflicts with this turn"
+    EDITLOG_REL="docs/codex_rescue/${STAMP}_net${FUP_TURN}_${SLUG}.md"
+    [ ! -e "$EDITLOG_REL" ] || die "the measurement log for this turn already exists: $EDITLOG_REL — check the previous run before retrying"
+  fi
+
   # ── 응답 문서 = 대화의 생명줄 ────────────────────────────────
   [ -f "$RESP_REL" ] || die "turn-1 response document not found: $RESP_REL
   No conversation to continue — start again from CONSULT turn 1."
@@ -1365,6 +2102,15 @@ else
   (stamp and slug must pair with the request, and the path must be relative to the root)"
 fi
 
+# 네트워크가 닫힌 경로에서 허용 목록을 조용히 무시하지 않는다.
+if [ -n "${CR_NET_POST:-}" ]; then
+  [ "${CR_NETWORK:-true}" != false ] || die "CR_NET_POST conflicts with CR_NETWORK=false"
+  if [ "$KIND" = review ] || { [ "$KIND" = followup ] && [ "$FUP_EDIT" = 0 ] && [ "$FUP_NET" = 0 ]; } \
+     || { [ "$KIND" = doc ] && [ "${CR_SANDBOX:-workspace-write}" != workspace-write ]; }; then
+    die "CR_NET_POST requires a network-enabled workspace-write run (use net: yes + CR_ALLOW_NET=1 for a CONSULT follow-up)"
+  fi
+fi
+
 LOGD="docs/codex_rescue/.log"
 mkdir -p -- "$LOGD" "$(dirname -- "$RESP_REL")" || die "cannot create the log/response directories"
 
@@ -1464,7 +2210,18 @@ RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex-rescue-${STAMP}.XXXXXX") \
 # heartbeat 자식이 남으면 고아가 되어 계속 파일을 만진다. 반드시 같이 정리한다.
 # 변수들이 아직 정의되기 전에 EXIT 가 걸릴 수 있으므로 전부 `${x:-}` 로 방어한다(set -u).
 cleanup() {
+  local rc=$?
   [ -n "${HB_PID:-}" ] && kill "$HB_PID" 2>/dev/null
+  # 🔴 status 를 running 으로 쓴 뒤 정상 끝(맨 아래 최종 기록)·신호(handle_signal) 말고 다른 길로 나가면 — 대개 die —
+  #    여기서 failed 로 닫는다 (2026-10-14). 예전엔 finalizing 에서 멈춘 채 heartbeat 만 지워져, 패널이 영원히
+  #    "응답 없음"이었다(서버 실측 2026-10-14). RUN_DIR 을 지우기 전에 stderr·최종 메시지도 .log 로 옮긴다 —
+  #    안 옮기면 Codex 가 이미 낸 답이 RUN_DIR 과 함께 사라진다.
+  if [ "${STATUS_OPEN:-0}" = 1 ]; then
+    STATUS_OPEN=0
+    [ -n "${ERR_DEST:-}" ] && [ -f "${ERRLOG:-}" ] && cp -f -- "$ERRLOG" "$ERR_DEST" 2>/dev/null
+    [ -n "${LAST_DEST:-}" ] && [ -s "${LASTMSG:-}" ] && cp -f -- "$LASTMSG" "$LAST_DEST" 2>/dev/null
+    write_status failed "\"$(date -u "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)\"" "${RC:-null}" "${TEE_RC:-null}" "\"exit_code\":$rc" 2>/dev/null
+  fi
   rm -rf -- "$RUN_DIR" 2>/dev/null
   rm -f -- "$LOCK" 2>/dev/null
   [ -n "${HEARTBEAT:-}" ] && rm -f -- "$HEARTBEAT" 2>/dev/null
@@ -1488,6 +2245,7 @@ handle_signal() {
       || echo "codex_rescue: could not preserve stderr: $err_dest" >&2
   fi
   [ -n "${HB_PID:-}" ] && kill "$HB_PID" 2>/dev/null
+  STATUS_OPEN=0   # interrupted 를 여기서 쓴다 — cleanup 이 failed 로 덮지 않게
   [ -n "${STATUS:-}" ] && write_status interrupted "\"$received_at\"" null null \
     "\"termination_signal\":\"$signal\",\"elapsed_ms\":$elapsed_ms,\"received_at\":\"$received_at\",\"limit_match\":$limit_match,\"exit_code\":130" 2>/dev/null
   cleanup
@@ -1585,10 +2343,29 @@ export CR_GROUP="$GROUP" CR_GROUP_SESSION="$GROUP_SESSION"
 # `-name build` 등에 `-type d` 를 붙인다. 안 붙이면 같은 이름의 **일반 파일**까지 prune 된다.
 # 제외 영역 안의 변경은 잡지 못한다 — 성능을 위한 의도된 절충이며, 보고에 함께 공개한다.
 PRUNED=".git node_modules .venv .dart_tool .gradle build .next __pycache__ docs/codex_rescue/.log"
+# 🔴 훑는 사이 사라진 경로(ENOENT)는 실패로 보지 않는다 (2026-10-14).
+#    Codex 의 리눅스 샌드박스는 명령을 돌릴 때마다 작업 폴더 맨 위에 빈 `.agents`·`.aws`·`.codex` 를
+#    만들었다 지운다(서버 실측). 같은 저장소에서 여러 건이 동시에 돌면 find 가 그 사라지는 순간을 밟아
+#    종료 코드 1 을 내고, 그 한 줄이 실행 전체를 죽였다(서버 실측 2026-10-14 — 실행 전 1건 · 실행 후 1건).
+#    GNU 의 -ignore_readdir_race 는 맥 find 에 없어서 쓰지 않는다. 오류 문구를 영어로 받으려고 find 만
+#    LC_ALL=C 로 돌린다 — -print 는 로캘과 무관하게 이름을 그대로 낸다. 다른 오류(권한 등)는 그대로 실패다.
+# 추가 조건(-newer 등)은 인자로 받아 -print 앞에 붙인다.
+# SCAN 은 파이프·$( ) 안(하위 셸)에서 돌아 변수로는 밖에 못 알린다 — 사라진 경로는 파일에 쌓는다.
+SCAN_ERR="$RUN_DIR/scan.err"
+SCAN_VANISHED_LOG="$RUN_DIR/scan.vanished"
 SCAN() {
-  find . \( -type d \( -name .git -o -name node_modules -o -name .venv -o -name .dart_tool \
+  local rc=0
+  LC_ALL=C find . \( -type d \( -name .git -o -name node_modules -o -name .venv -o -name .dart_tool \
             -o -name .gradle -o -name build -o -name .next -o -name __pycache__ \
-            -o -path ./docs/codex_rescue/.log \) -prune \) -o -type f -print
+            -o -path ./docs/codex_rescue/.log \) -prune \) -o -type f "$@" -print 2>"$SCAN_ERR" || rc=$?
+  if [ "$rc" != 0 ]; then
+    if [ ! -s "$SCAN_ERR" ] || grep -v ': No such file or directory$' "$SCAN_ERR" | grep -q .; then
+      cat -- "$SCAN_ERR" >&2 2>/dev/null
+      return "$rc"
+    fi
+    cat -- "$SCAN_ERR" >> "$SCAN_VANISHED_LOG" 2>/dev/null
+  fi
+  return 0
 }
 
 IS_GIT=0
@@ -1702,7 +2479,7 @@ Read both files first — especially the `## Claude 검토` sections of the resp
 🔴 This turn edits code. The boundaries:
 - **Make only the edits the follow-up file asks for.** Do not touch production files outside that target.
 - **Do not write the response document yourself.** The script appends your final message.
-- Investigation and verification are free — read the disk, query the network, run commands (network is read-only).
+__CR_NET_EDIT_FUP__
   Put temporary files for reproduction and verification inside __CR_SCRATCH_REL__/. That is your workbench.
   🔴 **Do not scatter backups or test files next to the files you edit** — all of them are reported as unauthorized changes.
 - 🔴 **Each time you edit a file, write it down right away in the edit log below.** This run can be cut off midway by the usage limit.
@@ -1718,6 +2495,32 @@ in the language the follow-up file itself is written in (not that of any quoted 
 1. 변경한 파일·라인
 2. 무엇을 왜 바꿨나 (before → after)
 3. 빌드·검증 방법과 실제로 돌려 본 결과
+4. 남은 리스크·확신도
+EOF
+    PROMPT=${PROMPT//__CR_EDITLOG_W__/"$EDITLOG_W"}
+    PROMPT=${PROMPT//__CR_SCRATCH_REL__/"$SCRATCH_REL"}
+  fi
+  if [ "$FUP_NET" = 1 ]; then
+    EDITLOG_W=$(winp "$ROOT/$EDITLOG_REL") || exit 2
+    read -r -d '' PROMPT <<'EOF' || :
+This continues the same CONSULT case for a measurement turn. Read both files first, especially `## Claude 검토`.
+Follow-up file: __CR_FUP_W__
+Conversation so far: __CR_RESP_W__
+
+- Do not edit production code or repository state. You may create, modify or delete files only inside __CR_SCRATCH_REL__/ and in the measurement log below.
+- Do not write the response document yourself. The script appends your final message.
+__CR_NET_MEASURE__
+  🔴 You may read credentials when needed, but never copy their values. Connecting with settings loaded without displaying them is allowed.
+     Never leave passwords, tokens or key values in the response document, workbench or command output. Do not print credential values; mask them if unavoidable.
+     Never leave or send personal data (phone numbers, names, addresses, etc.) in the response document, workbench, command output or external requests.
+- Create the measurement log before work, starting with `## 측정 기록`. Append each request destination, method and count, each workbench file created or modified, and each measurement immediately; this turn may be cut off.
+  Measurement log: __CR_EDITLOG_W__
+- If Claude misread your analysis, correct that first. Re-judge rejected points by evidence and score every completion-gate item met / not met.
+- Nobody can approve commands in this run (approval_policy=never). Use allowed means; state exactly what could not be checked.
+- In your final message use these exact Korean labels, with all other prose in the follow-up file's language:
+1. 보낸 요청과 작업대 변경 (request destination, method and count; workbench files created or modified)
+2. 측정 결과 (report the measured values as observed)
+3. 해석 (correct Claude's reading, re-judge rejected points, and mark every completion-gate item met / not met)
 4. 남은 리스크·확신도
 EOF
     PROMPT=${PROMPT//__CR_EDITLOG_W__/"$EDITLOG_W"}
@@ -1754,10 +2557,11 @@ Do not judge from diff fragments alone — "provable impact" needs the callers a
   Do not create, modify or delete files outside these two. Commands that change repository state are forbidden too
   (git commit, checkout, stash, reset, add, package installs, commands that leave build output in the workspace).
 - You may run tests and reproduction scripts on the workbench. If a finding can be **confirmed by running it**, do so.
-- **You may use the network** — to check library docs, issues and release notes. **Read-only** (no POST/PUT, git push, publish).
+__CR_NET_REVIEW__
   🔴 **You may read credentials, but never copy their values.** Connecting to a DB or service with the settings in `.env` and the like is allowed.
      But never leave passwords, tokens or key values in the response document, the workbench or command output (the response document goes to a remote via git).
      Do not use commands that print values (`cat .env` etc.); if unavoidable, mask them.
+     Never leave or send personal data (phone numbers, names, addresses, etc.) in the response document, workbench, command output or external requests.
 - Nobody is here to press approve in this run (approval_policy=never). If blocked, work around it with the allowed means,
   and whatever you still could not see, **say you could not see it.** Never pretend to have checked what you did not.
 
@@ -1795,7 +2599,7 @@ Request: __CR_REQ_W__
 
 - The request names the path and file name for your report. Save it at that path under that exact name.
 - Do not touch files other than the targets the request names.
-- But **investigation and verification are free** — read the disk, query the network, run commands (network is read-only).
+__CR_NET_EDIT__
   Put temporary files for reproduction and verification inside __CR_SCRATCH_REL__/. That is your workbench.
   🔴 **Do not scatter backups or test files next to the files you edit** — all of them are reported as unauthorized changes.
 - If saving fails, print the same content as your final message. It is collected automatically.
@@ -1839,13 +2643,13 @@ Any other investigation is **not restricted. Dig to the end.**
 - **Run the calculations, sorting, parsing and re-aggregation yourself.** You may write and run scripts. Do not guess numbers — extract them.
   Put their outputs (scripts, intermediate data, notes) on the workbench above **freely** — there is no limit on count or size,
   and you do not need to delete them. Leaving them lets Claude reproduce your calculations, which is better.
-- **You may use the network** — search docs, issues and release notes and check them yourself.
-  But it is **read-only.** Never upload data anywhere (no POST/PUT, git push, publish).
+__CR_NET_CONSULT__
   🔴 **You may read credentials when the investigation needs them. But never copy their values.** (user decision, 2026-09-16)
      Connecting to a DB with the settings in `.env` and the like to query the source is allowed — prefer the commands the request gives
      (ways that load values without showing them, like `node -r dotenv/config`).
      Never leave passwords, tokens or key values **in the response document, the workbench or command output.** The response document goes to a remote via git.
      Do not use commands that print values (`cat .env`, `echo $DB_PASSWORD` etc.); if unavoidable, mask them.
+     Never leave or send personal data (phone numbers, names, addresses, etc.) in the response document, workbench, command output or external requests.
 - Claude's hypotheses are reference material. **Drop them if wrong.** Do not spend all your time verifying them —
   a hypothesis may be meaningless altogether. If the source points elsewhere, follow it there.
 - "The existing analysis method failed" **does not mean "do not look at that data again."**
@@ -1877,6 +2681,15 @@ EOF
   PROMPT=${PROMPT//__CR_SCRATCH_REL__/"$SCRATCH_REL"}
 fi
 
+# 문구 생성은 한 곳, 치환은 quoted heredoc을 만든 뒤에만 한다.
+for _cr_pair in 'EDIT:edit' 'EDIT_FUP:edit-followup' 'REVIEW:review' 'CONSULT:consult' 'MEASURE:measure'; do
+  _cr_slot="__CR_NET_${_cr_pair%%:*}__"
+  _cr_text=$(cr_network_text "${_cr_pair#*:}") || die "cannot build the network prompt"
+  PROMPT=${PROMPT//$_cr_slot/"$_cr_text"}
+done
+unset _cr_pair _cr_slot _cr_text
+# 옛 review는 자체 프롬프트/고정 read-only라 허용 목록이 있으면 위에서 거부한다.
+
 if [ "$KIND" = review ]; then
   # 🔴 `codex exec review` 에는 `-s`(샌드박스)도 `-C`(작업 디렉토리)도 **없다.**
   #    항상 read-only 이고 cwd 를 기준으로 돈다. 이미 ROOT 로 cd 했으므로 cwd 가 맞다.
@@ -1900,14 +2713,15 @@ elif [ "$KIND" = followup ]; then
   # 🔴 이 오버라이드를 빼지 마라. 빼면 이 건이 각 머신 config.toml 기본값으로 떨어지고,
   #    mode:readonly 요청의 followup 이 CR_ALLOW_EDIT 게이트를 우회한다.
   #
-  # 2턴부터 Codex 가 파일을 쓸 이유가 없다 — 응답 문서는 **스크립트가** `-o` 회수분으로
+  # 일반 되묻기는 read-only다. EDIT/측정 턴도 응답 문서는 **스크립트가** `-o` 회수분으로
   # 이어 붙인다. 그래서 read-only 고정이 가능하고, 동시에 1턴 원문이 훼손될 수 없다.
   # cwd 는 이미 ROOT 다(위 `cd "$ROOT"`) — 그래서 `-C` 없이도 맞다.
-  if [ "$FUP_EDIT" = 1 ]; then
-    # EDIT 되묻기(`edit: yes` + CR_ALLOW_EDIT) 만 쓰기를 푼다 (2026-09-15). 위 검증을 통과해야 여기 온다.
+  if [ "$FUP_EDIT" = 1 ] || [ "$FUP_NET" = 1 ]; then
+    # EDIT(edit: yes + CR_ALLOW_EDIT) 또는 측정(net: yes + CR_ALLOW_NET)만 쓰기를 푼다. 위 검증을 통과해야 여기 온다.
     # 네트워크는 1턴 EDIT 와 같은 규칙이다(CR_NETWORK=false 로 끈다).
     SANDBOX_RAW=workspace-write
     SANDBOX="workspace-write (EDIT follow-up · -c sandbox_mode)"
+    [ "$FUP_NET" = 1 ] && SANDBOX="workspace-write (measurement follow-up · -c sandbox_mode)"
     set -- codex exec resume "$THREAD" --skip-git-repo-check --json \
            -c sandbox_mode="workspace-write" -o "$LASTMSG_W"
     if [ "${CR_NETWORK:-true}" != "false" ]; then
@@ -1945,7 +2759,9 @@ else
   #
   # ⚠️ 위험: 디스크 전체 읽기가 이미 열려 있으므로, 네트워크가 열리면 **읽기와 전송이 결합**된다.
   #    프롬프트로 "조회 전용·업로드 금지"를 지시하지만 그건 준수에 의존하는 층이다.
-  #    실효 방어는 `.log/<스탬프>_events.jsonl` 사후 감사다. 끄려면 CR_NETWORK=false.
+  #    CR_NET_POST 목록만 시험 쓰기를 허용한다. 문구와 사후 감사는 예방 방화벽이 아니다.
+  #    Codex 0.163.0 프록시는 주소별 메서드 예외와 Windows 실효성을 검증하지 못해 붙이지 않는다.
+  #    실행 끝 events+작업대 정적 감사를 확인해라. 끄려면 CR_NETWORK=false.
   if [ "$SANDBOX" != "read-only" ] && [ "${CR_NETWORK:-true}" != "false" ]; then
     set -- "$@" -c "sandbox_workspace_write.network_access=true"
     SANDBOX="$SANDBOX +net"
@@ -2079,21 +2895,28 @@ else
   SANDBOX_SHOWN="$SANDBOX"
 fi
 
+[ -n "${CR_NET_POST:-}" ] && SANDBOX_SHOWN="$SANDBOX_SHOWN / POST allowed: $CR_NET_POST"
+
 # 끼어들기 경로에서만 프롬프트 끝에 붙는 안내. 예전에는 중계기 내장 CONSULT 프롬프트 끝에 있었다 —
 # 프롬프트를 send.sh 한 곳에서 만들게 되면서 여기로 옮겼다(2026-09-15). 문구는 그대로다.
 LIVE_NOTE="── note for this run only ─────────────────────────────────────
 Extra instructions may arrive while this turn runs (the user is watching).
 When one arrives, **do not restart the command you were running** — carry on and apply it."
 
+if [ "$FUP_NET" = 1 ] && [ -z "${CR_DRYRUN:-}" ]; then
+  cr_measure_fingerprint > "$RUN_DIR/measure-before.json" || die "measurement pre-run fingerprint failed — not proceeding"
+fi
+
 if [ -n "${CR_DRYRUN:-}" ]; then
   echo "── DRYRUN — not running ──"
   echo "kind     : $KIND"
   echo "root     : $ROOT"
   echo "mode     : $MODE / sandbox: $SANDBOX_SHOWN"
+  [ -n "${CR_NET_POST:-}" ] && echo "POST allowed: $CR_NET_POST"
   echo "model    : ${CR_MODEL:-(codex config)} / reasoning: ${CR_EFFORT:-(codex config)}"
   { [ "$KIND" = review ] || [ "$MODE" = review ]; } && echo "review target: $SCOPE ${SCOPE_VAL:+($SCOPE_VAL)} — given by: $SCOPE_VIA"
   echo "response : $RESP_REL (existed before the run: $RESP_EXISTED)"
-  [ -n "$EDITLOG_REL" ] && echo "edit log : $EDITLOG_REL   (EDIT follow-up — Codex writes it on every edit)"
+  [ -n "$EDITLOG_REL" ] && echo "edit log : $EDITLOG_REL   ($([ "$FUP_NET" = 1 ] && printf 'measurement follow-up' || printf 'EDIT follow-up') — Codex writes it on every edit)"
   echo "run dir  : $RUN_DIR"
   if [ "$LIVE_STEER_ON" = 1 ]; then
     echo "path     : live steer (app-server) — the prompt below goes to the bridge via --prompt-file"
@@ -2112,6 +2935,16 @@ if [ -n "${CR_DRYRUN:-}" ]; then
     rm -f -- "$REQ_ABS"
   fi
   exit 0
+fi
+
+# 끼어들기 경로의 미러/원문 로그는 대화 전체에 append된다. 시작 위치·파일 증인을 별도로 기록한다.
+# exec 경로의 RUN_DIR/events.jsonl 은 매번 새 파일이므로 시작 바이트가 0이다.
+AUDIT_EVENTS_START=0; AUDIT_RAW_START=0; AUDIT_RAW_LOG=""; AUDIT_WITNESS=""
+if [ "$LIVE_STEER_ON" = 1 ]; then
+  AUDIT_RAW_LOG="$LOGD/${STAMP}_appserver.jsonl"
+  AUDIT_WITNESS="$RUN_DIR/post-audit-before.json"
+  cr_post_witness "$LIVE_EVENTS" "$AUDIT_RAW_LOG" > "$AUDIT_WITNESS" \
+    || die "cannot record the pre-run log identity and boundary — POST audit scope is unknown"
 fi
 
 if [ "$KIND" = review ]; then
@@ -2137,6 +2970,7 @@ PARENT_PID=$$
 #    이 순서를 지키면 "status 는 live 인데 heartbeat 가 없다" = 비정상 이라고 단정할 수 있다.
 : > "$HEARTBEAT" 2>/dev/null
 write_status running
+STATUS_OPEN=1   # 이제부터 어디서 끝나든 status 를 끝 상태로 닫아야 한다 — cleanup 참조
 ( while kill -0 "$PARENT_PID" 2>/dev/null; do : > "$HEARTBEAT" 2>/dev/null; sleep 5; done ) &
 HB_PID=$!
 
@@ -2258,15 +3092,39 @@ fi
 write_status finalizing null "$RC" "$TEE_RC"
 
 # ── 변경 감지 (로그를 workspace 로 복사하기 **전에** 한다) ──────
-TOUCHED=$(find . \( -type d \( -name .git -o -name node_modules -o -name .venv -o -name .dart_tool \
-                   -o -name .gradle -o -name build -o -name .next -o -name __pycache__ \
-                   -o -path ./docs/codex_rescue/.log \) -prune \) -o \
-                -type f -newer "$MARKER" -print) \
-  || die "post-run scan failed — changes cannot be judged. Codex already ran, so check $RUN_DIR directly"
+# 🔴 실행 뒤 훑기가 실패해도 멈추지 않는다 (2026-10-14 사용자 결정). Codex 는 이미 끝났고 멈춘다고 한 일이
+#    되돌려지지 않는다. 예전엔 여기서 die 해서 응답 회수·기록 보존을 통째로 건너뛰었고, status 가 finalizing 에
+#    갇혀 패널이 영원히 "응답 없음"이었다. 이제는 판정을 "모름"으로 두고 보고에서 직접 확인하라고 크게 알린다.
+#    (실행 **전** 훑기는 그대로 멈춘다 — 그때는 Codex 가 아직 시작하지 않아 잃는 것이 없다.)
+# 반드시 응답 회수(스크립트의 append) 전에 지문을 비교한다.
+MEASURE_ALERT=""
+if [ "$FUP_NET" = 1 ]; then
+  if cr_measure_fingerprint > "$RUN_DIR/measure-after.json"; then
+    MEASURE_ALERT=$(node - "$(winp "$RUN_DIR/measure-before.json")" "$(winp "$RUN_DIR/measure-after.json")" <<'NODE'
+const fs = require('node:fs');
+try {
+    const [a,b] = process.argv.slice(2).map(p => JSON.parse(fs.readFileSync(p,'utf8')));
+    const changed = [...new Set([...Object.keys(a),...Object.keys(b)])].filter(k => a[k] !== b[k]);
+    if (changed.length) console.log('🔴 Measurement turn: ' + changed.length + ' fingerprint change(s) outside the workbench and measurement log. Inspect without reverting.\n' + changed.map(x => '  ' + JSON.stringify(x)).join('\n'));
+} catch { process.exitCode = 1; }
+NODE
+    ) || MEASURE_ALERT="🔴 Measurement fingerprint comparison failed — changes outside the allowed files are unknown."
+  else
+    MEASURE_ALERT="🔴 Post-run measurement fingerprint failed — changes outside the allowed files are unknown."
+  fi
+fi
+AUDIT_EVENT_FILE="$EVENTS"
+[ "$LIVE_STEER_ON" = 1 ] && AUDIT_EVENT_FILE="$LIVE_EVENTS"  # 증인을 찍은 바로 그 파일을 대조한다.
+POST_AUDIT=$(cr_post_audit "$AUDIT_EVENT_FILE" "$SCRATCH_REL" "$AUDIT_EVENTS_START" "$AUDIT_RAW_LOG" "$AUDIT_RAW_START" "$LIVE_STEER_ON" "$AUDIT_WITNESS") \
+  || POST_AUDIT="🔴 POST audit failed — whether a write request occurred or where it went is unknown. Inspect events.jsonl and the workbench.
+⚠️ Static trace coverage is unknown; no conclusion about network writes can be drawn."
+
+SCAN_FAILED=""
+TOUCHED=$(SCAN -newer "$MARKER") || SCAN_FAILED="$SCAN_FAILED modified-files"
 TOUCHED=$(printf '%s\n' "$TOUCHED" | LC_ALL=C sort | sed 's|^\./||')
 
 AFTER="$RUN_DIR/after.list"
-SCAN | LC_ALL=C sort > "$AFTER" || die "post-run listing snapshot failed — deletions cannot be judged"
+SCAN | LC_ALL=C sort > "$AFTER" || SCAN_FAILED="$SCAN_FAILED file-list"
 DELETED=$(LC_ALL=C comm -23 "$BEFORE" "$AFTER" | sed 's|^\./||' \
           | grep -v '^docs/codex_rescue/\.scratch/' || true)
 
@@ -2275,6 +3133,8 @@ DELETED=$(LC_ALL=C comm -23 "$BEFORE" "$AFTER" | sed 's|^\./||' \
 #    (`cp -p`, `touch -r`, hard link, 압축 해제의 타임스탬프 보존). before/after 목록이
 #    이미 있으므로 비용은 0 이다.
 ADDED=$(LC_ALL=C comm -13 "$BEFORE" "$AFTER" | sed 's|^\./||')
+# 훑기가 하나라도 실패했으면 목록이 반쯤 찬 것이다 — 거짓 "삭제"·"추가"를 내지 않게 모두 비운다.
+[ -n "$SCAN_FAILED" ] && { TOUCHED=""; DELETED=""; ADDED=""; }
 
 # 정상 산출물(검증된 응답 경로 + Codex 작업 폴더)을 제외한다. 남은 것이 전제를 깬 변경이다.
 # `--` 로 선행 `-` 경로에도 안전하게.
@@ -2337,7 +3197,11 @@ if [ "$KIND" = followup ]; then
       echo
       # EDIT 되묻기면 Codex 가 고칠 때마다 적은 기록을 그 턴 아래에 옮겨 담는다 (2026-09-15).
       if [ -n "$EDITLOG_REL" ] && [ -s "$EDITLOG_REL" ]; then
-        echo "### ${FUP_TURN}턴 수정 기록 — Codex 가 고칠 때마다 적은 것"
+        if [ "$FUP_NET" = 1 ]; then
+          echo "### ${FUP_TURN}턴 측정 기록 — Codex 가 측정할 때마다 적은 것"
+        else
+          echo "### ${FUP_TURN}턴 수정 기록 — Codex 가 고칠 때마다 적은 것"
+        fi
         echo
         echo "> 원본: [\`$(basename "$EDITLOG_REL")\`](./$(basename "$EDITLOG_REL"))"
         echo
@@ -2366,9 +3230,19 @@ if [ "$KIND" = followup ]; then
       # EDIT 되묻기는 끊겨도 코드가 이미 바뀌었을 수 있다. 무엇을 고쳤는지 기록만은 남긴다 (2026-09-15).
       if [ -n "$EDITLOG_REL" ]; then
         echo
-        echo "🔴 EDIT 되묻기였다 — **코드가 반쯤 바뀐 상태일 수 있다.** 아래 수정 기록과 git diff 로 대조해라."
+        if [ "$FUP_NET" = 1 ]; then
+          echo "🔴 측정 턴이 중단됐다 — 아래 측정 기록과 작업대·POST 감사를 대조해라."
+        else
+          echo "🔴 EDIT 되묻기였다 — **코드가 반쯤 바뀐 상태일 수 있다.** 아래 수정 기록과 git diff 로 대조해라."
+        fi
         echo
-        if [ -s "$EDITLOG_REL" ]; then cat "$EDITLOG_REL"; else echo "(수정 기록이 비었거나 없다 — git diff 가 유일한 근거다)"; fi
+        if [ -s "$EDITLOG_REL" ]; then
+          cat "$EDITLOG_REL"
+        elif [ "$FUP_NET" = 1 ]; then
+          echo "(측정 기록이 비었거나 없다 — 작업대와 POST 감사·지문 비교 결과를 직접 확인해라)"
+        else
+          echo "(수정 기록이 비었거나 없다 — git diff 가 유일한 근거다)"
+        fi
       fi
     } >> "$RESP_REL" 2>/dev/null
     rm -f -- "$INFLIGHT" 2>/dev/null
@@ -2600,6 +3474,8 @@ fi
 # ── Claude 에게 보고 ────────────────────────────────────────────
 echo
 echo "════════ codex_rescue done ════════"
+printf '%s\n' "$POST_AUDIT"
+[ -n "$MEASURE_ALERT" ] && printf '%s\n' "$MEASURE_ALERT"
 if [ "$KIND" = review ]; then
   if [ "$SCOPE_VIA" = flag ]; then
     echo "review target: $SCOPE ${SCOPE_VAL:+$SCOPE_VAL}   (given by CLI flag — exact)"
@@ -2669,7 +3545,17 @@ case "$AUTHOR" in
 esac
 
 echo
-if [ -n "$STRAY" ] || [ -n "$DELETED" ]; then
+if [ -n "$SCAN_FAILED" ]; then
+  echo "🔴🔴 the post-run scan failed (${SCAN_FAILED# }) — **whether anything besides the response file changed is unknown.**"
+  echo "   The find error is in this run's stderr. Codex had already finished, so the response was still collected."
+  if [ "$IS_GIT" = 1 ]; then
+    echo "   → check git status and git diff yourself, then report to the user."
+  else
+    echo "   → not a git repository, so there is no diff — tell the user that changes could not be checked."
+  fi
+  [ "$MODE" = edit ] && echo "   🔴 this was an EDIT run — the list of edits cannot be shown here. Read the actual changes before reviewing."
+  echo "   🔴 **Do not revert on your own.** Whether to revert or keep is the decision of the user."
+elif [ -n "$STRAY" ] || [ -n "$DELETED" ]; then
   echo "🔴🔴 changes other than the response file detected — you must report them to the user"
   [ -n "$STRAY" ]   && { echo "   [created / modified]"; printf '%s\n' "$STRAY"   | sed 's/^/     /'; }
   [ -n "$DELETED" ] && { echo "   [deleted]";      printf '%s\n' "$DELETED" | sed 's/^/     /'; }
@@ -2684,6 +3570,8 @@ if [ -n "$STRAY" ] || [ -n "$DELETED" ]; then
     echo "   → Read each file to see what changed, then report (not a git repository, so no diff)."
   fi
   echo "   🔴 **Do not revert on your own.** Whether to revert or keep is the decision of the user."
+elif [ -n "$MEASURE_ALERT" ]; then
+  echo "🔴 Measurement fingerprint alert — inspect the change or failure above; do not conclude that nothing changed."
 else
   echo "✅ no changes besides the response file in the watched area."
 fi
@@ -2694,7 +3582,15 @@ if [ -n "$SCRATCH_MADE" ]; then
   echo "   Open it when checking how the numbers in the response came out. It is not committed to git."
   printf '%s\n' "$SCRATCH_MADE" | sed 's/^/     /'
 fi
-echo "   (not watched: $PRUNED — changes inside it, and create-then-delete or restored mtimes, are not caught)"
+if [ "$FUP_NET" = 1 ]; then
+  echo "   (measurement fingerprints compare cwd contents; only this workbench, the measurement log, and this turn's observer telemetry are excluded. Changes outside cwd, through links, or changed then restored are not detected.)"
+else
+  echo "   (not watched: $PRUNED — changes inside it, and create-then-delete or restored mtimes, are not caught)"
+fi
+if [ -s "$SCAN_VANISHED_LOG" ]; then
+  echo "   (ignored: $(wc -l < "$SCAN_VANISHED_LOG" | tr -d ' ') path(s) vanished while scanning — e.g. the empty .agents / .aws / .codex"
+  echo "    folders the Codex sandbox creates and removes around each command; another run in the same folder can cause this)"
+fi
 case "$SANDBOX" in
   *danger-full-access*)
     echo
@@ -2707,6 +3603,9 @@ esac
 echo
 echo "🔴 What Claude does next:"
 if [ "$KIND" = followup ] && [ "$AUTHOR" = codex ]; then
+  if [ "$FUP_NET" = 1 ]; then
+    echo "   0. This was a measurement turn — review the POST audit, fingerprint changes outside the workbench, and measurement log ($EDITLOG_REL) first."
+  fi
   if [ "$FUP_EDIT" = 1 ]; then
     echo "   0. 🔧 **This was an EDIT follow-up — Codex edited code.** The 'changes other than the response file' list above is this edit"
     echo "      **Check the actual changes yourself** $([ "$IS_GIT" = 1 ] && printf 'with git diff' || printf 'by reading each file'),"
@@ -2815,6 +3714,8 @@ case "$AUTHOR" in none|stale) FINAL_STATE=failed ;; esac
 # 후처리까지 전부 끝난 지금이 진짜 종료 시점이다 — 여기서 heartbeat 를 멈추고,
 # 그다음 최종 status 를 쓴다. 순서가 반대면 판독기가 "terminal 인데 heartbeat 가 계속 뛴다"를 본다.
 kill "${HB_PID:-}" 2>/dev/null; HB_PID=""
-write_status "$FINAL_STATE" "\"$(date -u "+%Y-%m-%dT%H:%M:%SZ")\"" "$RC" "$TEE_RC"
+STATUS_OPEN=0   # 끝 상태를 여기서 쓴다 — EXIT trap 이 failed 로 덮지 않게
+write_status "$FINAL_STATE" "\"$(date -u "+%Y-%m-%dT%H:%M:%SZ")\"" "$RC" "$TEE_RC" \
+  "$([ -n "$SCAN_FAILED" ] && printf '"change_detection":"failed"')"
 
 exit $RC

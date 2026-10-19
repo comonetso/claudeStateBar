@@ -49,6 +49,8 @@ Daily share = weekly headroom ÷ days until reset (less than a day counts as 1).
 
 ## ③ Ask the user once
 
+`CR_NET_POST`가 설정되면 ③ 질문 맨 위에 **"이번 실행 POST 허용: <정규화된 목록>"** 한 줄을 넣는다. 선택 UI가 위 설명을 숨기면 첫 질문 본문 맨 위에도 넣어 사용자가 목록을 확인하도록 한다. 설정이 비면 이 줄을 표시하지 않는다. `CR_NETWORK=false`, 고정 read-only 경로와 함께 지정하면 실행은 거부된다.
+
 Use the host's choice UI (`AskUserQuestion`): **all questions in one call**, `multiSelect: false`, in the user's language. A choice UI hides the text above it, so everything needed to decide goes **inside** the questions and option descriptions. There is no "stop" slot — the user types it in "Other".
 
 ```
