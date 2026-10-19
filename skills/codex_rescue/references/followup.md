@@ -28,6 +28,18 @@ Same detached launch as turn 1 (SKILL.md §3). The command time limit (30 minute
 - Codex **reads your previous `## Claude 검토` directly** — the follow-up is only as good as that review. **Your review is the next turn's input.**
 - When the answer comes, review it as in results.md §9, re-score the gate, and go back to the end table (results.md §10) to decide whether to end or ask once more.
 
+## 자문 되묻기 측정 턴 (`net: yes`)
+
+원 요청이 **`mode: readonly`(CONSULT)**인 대화에서만 반박서 frontmatter에 `net: yes`를 넣는다. `edit: yes`와 함께 쓸 수 없고 EDIT·REVIEW 원 요청에서는 거부한다. 매 턴 사용자에게 측정 및 POST 허용 목록을 확인받은 뒤 **`CR_CONFIRMED=1 CR_ALLOW_NET=1`**을 붙인다. 이전 턴 승인은 이어지지 않는다. `CR_NETWORK=false`와 충돌하면 거부한다.
+
+```
+CR_CONFIRMED=1 CR_ALLOW_NET=1 CR_NET_POST="127.0.0.1:18080" CR_LIVE_STEER=1 node "${CLAUDE_SKILL_DIR}/scripts/launch.mjs" --bash "$BASH" --followup <반박서>
+```
+
+반박서의 "너는 파일을 쓰지 않는다" 문장을 빼고, 이번 턴에 측정할 항목과 허용 작업대를 적는다. 샌드박스는 두 실행 경로 모두 workspace-write + 네트워크이고, 파일 쓰기는 **이번 건 `docs/codex_rescue/.scratch/<stamp>/`와 측정 기록 `docs/codex_rescue/<stamp>_net<N>_<slug>.md`만** 허용한다. 응답 문서는 Codex가 쓰지 않고 send.sh가 최종 답변과 측정 기록을 이어 붙인다. 기록 파일을 먼저 만들고 작업·측정마다 즉시 적는다.
+
+네트워크는 조회 전용이며 `CR_NET_POST`에 지정한 시험 주소에만 쓰기 요청을 허용한다. 빈 목록이면 쓰기는 허용되지 않는다. 응답 1번 칸에 주소·방식·횟수를 적고 개인정보를 외부로 보내지 않고 자격증명 값을 요청 본문에 넣지 않는다. 실행 후 POST 감사와 작업대 밖 지문 변경 🔴를 먼저 검토한다. 지문은 cwd의 내용/경로·디렉터리 모드를 비교하며, 감시자가 직접 갱신하는 이번 턴 telemetry 파일만 정확한 이름으로 제외한다(events·status·heartbeat·appserver·steers·live·launch 출력·inflight 및 status 임시 파일). 다른 `.log` 파일도 감시한다. 심볼릭 링크·worktree `.git` 포인터는 따라가지 않고 그 자체만 비교한다. cwd 밖·일시 변경 후 복원은 관측하지 못하며 예방 격리는 아니다.
+
 ## Follow-up template
 
 Write `docs/codex_rescue/<stamp>_followup<N>_<slug>.md`. 🔴 **Use the original case's stamp and slug.** `turn` = the response's `turns` + 1. Keep the template in Korean exactly as it is (same reason as request-template.md).

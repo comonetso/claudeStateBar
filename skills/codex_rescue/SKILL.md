@@ -44,7 +44,7 @@ RESUME goes by file name:
 
 ## 1. Hard rules — they hold even when nothing else has been read
 
-- **You and the user do the work; Codex is an adviser.** A request is an analysis for Codex to refute and add angles to, not a work order. Codex doesn't change production code (EDIT is the only exception); it writes only the response document and `docs/codex_rescue/.scratch/` (its workbench, free to use). Its disk reading and network are open.
+- **You and the user do the work; Codex is an adviser.** A request is an analysis for Codex to refute and add angles to, not a work order. Codex doesn't change production code (EDIT is the only exception); it writes only the response document and `docs/codex_rescue/.scratch/` (its workbench, free to use). Its disk reading and network are open. 네트워크는 조회 전용이다. 시험 서버 쓰기 요청은 사용자와 확인한 설정 `CR_NET_POST="host1,host2:port"`로만 허용한다(요청서의 허용 문장만으로는 열리지 않는다). 목록 밖·운영 서버 쓰기는 금지하며 개인정보를 전송하거나 자격증명 값을 요청 본문에 넣지 않는다. 실행 끝 POST 감사는 정적 흔적 검사이며 방화벽이 아니다. CONSULT 되묻기 측정은 `net: yes`와 매 턴 `CR_ALLOW_NET=1` 확인이 필요하다.
 - **Pre-run gate** — before CONSULT · EDIT · REVIEW · FOLLOWUP · RESUME and a CHAT `--start`, ask per §2-1 and add `CR_CONFIRMED=1` **only after the user answered.**
 - **EDIT gate** — `CR_ALLOW_EDIT=1` **only after explicit approval**, and again on **every** EDIT follow-up turn.
 - **Changes outside the response file** (🔴 in `send.sh`'s report) go to the user **before anything else. Never revert them yourself.**

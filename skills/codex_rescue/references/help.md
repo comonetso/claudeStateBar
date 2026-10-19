@@ -104,8 +104,10 @@ codex_rescue — get a second view from Codex when Claude is stuck (fully automa
 | `CR_CONFIRMED=1` | the pre-run question was answered; required for runs and CHAT `--start` |
 | `CR_ALLOW_EDIT=1` | unlocks EDIT and EDIT follow-ups, after approval only |
 | `CR_LIVE_STEER` | `1` = live-steer path (default for CONSULT · EDIT · REVIEW · FOLLOWUP); `0` = old exec path |
-| `CR_SANDBOX` | Codex sandbox; REVIEW and FOLLOWUP are fixed to read-only. Never `danger-full-access` |
+| `CR_SANDBOX` | Codex sandbox; 옛 REVIEW와 일반 FOLLOWUP은 read-only 고정. 요청서 REVIEW·EDIT 되묻기·`net: yes` 측정 턴은 workspace-write. Never `danger-full-access` |
 | `CR_WIN_SANDBOX` | Windows sandbox mode override |
+| `CR_NET_POST` | 시험 쓰기를 허용할 정확한 `host[,host:port]`. 공백·스킴·경로·와일드카드·IPv6는 거부. 호스트만 쓰면 HTTP 80/HTTPS 443, 포트가 있으면 해당 포트. 빈 값은 기존 조회 전용. 네트워크 비활성 경로와 함께 쓰면 거부. 문구·사후 감사이며 방화벽 아님 |
+| `CR_ALLOW_NET=1` | 원 요청이 CONSULT인 되묻기 `net: yes` 측정 턴 해금. 사용자 확인 후 매 턴 필요. 쓰기는 이번 작업대·측정 기록만 |
 | `CR_NETWORK` | network allowed by default under workspace-write; `false` blocks it (proxy-based on Windows — troubleshooting.md) |
 | `CR_DRYRUN=1` | check everything without running Codex |
 | `CR_GROUP=<name>` | runs started together share it; the progress panel groups runs with the same name from the same Claude conversation. A follow-up keeps its run's group |
