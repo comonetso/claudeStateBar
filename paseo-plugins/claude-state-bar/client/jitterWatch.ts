@@ -6,32 +6,41 @@
 // 오르내리면, 그 직전 2초 동안의 화면 변화를 세어 데몬 기록에 "[jitter]" 한 줄을 남긴다. 동작은 바꾸지 않고 글 내용도 남기지 않는다.
 // 폰 앱은 버벅임이 생길 수 있어 넣지 않는다. 끄기: localStorage "csb-jitter-watch" = "off"(새로고침 뒤 적용)
 // 이 플러그인은 DOM 타입 없이 컴파일하므로(폰과 같이 쓴다) 쓰는 것만 아래에 적는다 — client/web.ts 와 같은 방식
+import { timelineIdentity } from "./web";
 type Log = (message: string) => void;
 type El = {
   id: string;
   nodeType: number;
   parentElement: El | null;
+  textContent?: string | null;
   matches(selector: string): boolean;
   querySelector(selector: string): El | null;
   querySelectorAll(selector: string): Iterable<El>;
   getBoundingClientRect(): { top: number; bottom: number; height: number };
 };
-type Scroller = El & { scrollTop: number; scrollHeight: number };
+type Scroller = El & {
+  scrollTop: number; scrollHeight: number;
+  addEventListener?(type: string, listener: () => void, options?: { passive: boolean }): void;
+  removeEventListener?(type: string, listener: () => void): void;
+};
 type Change = { type: string; addedNodes: Iterable<El>; removedNodes: Iterable<El> };
 type Observer = { observe(target: El, options: Record<string, unknown>): void; disconnect(): void };
 type Page = {
   document?: { hidden: boolean; getElementById(id: string): Scroller | null; documentElement: { className: string } };
   MutationObserver?: new (callback: (list: Change[]) => void) => Observer;
+  ResizeObserver?: new (callback: () => void) => { observe(target: El): void; unobserve(target: El): void; disconnect(): void };
+  requestAnimationFrame?: (callback: () => void) => number;
+  cancelAnimationFrame?: (id: number) => void;
   localStorage?: { getItem(key: string): string | null };
   location?: { pathname: string };
   PaseoShell?: unknown;
   innerHeight?: number;
   innerWidth?: number;
 };
-type Track = { top: number; h: number; deltas: number[]; flips: number[]; lastDir: number };
+type Track = { top: number; h: number; deltas: number[]; flips: number[]; lastDir: number; el: El; seen: number; remounts: number[] };
 
 const SCROLLER_ID = "agent-chat-scroll-web-dom-scroll";
-const TARGETS = "[data-csb-turn-read=message-row], [id^=csb-think-][id$=-box], [id^=csb-think-][id$=-said]";
+const TARGETS = '[data-testid="assistant-message"], [id^=csb-think-][id$=-box], [id^=csb-think-][id$=-said]';
 const SAMPLE_MS = 150;
 const WINDOW_MS = 2000;
 const FLIPS = 3; // 2초 안에 오르내림 방향이 이만큼 바뀌면 떨림으로 본다
@@ -84,21 +93,33 @@ export function startJitterWatch(log: Log): () => void {
   let heightFlips: number[] = [];
   let lastEvent = -Infinity;
   let events = 0;
+  let frame: number | undefined;
+  let live = true;
+  let placeholders = 0;
+  let path = "";
+  const observed = new Set<El>();
+  const schedule = () => {
+    if (!live || frame !== undefined || !page.requestAnimationFrame) return;
+    frame = page.requestAnimationFrame(() => { frame = undefined; sample(); });
+  };
+  const resize = page.ResizeObserver ? new page.ResizeObserver(() => { sample(); }) : null;
 
   const note = (kind: string) => changes.push({ t: Date.now(), kind });
   const sort = (el: El, sign: string) => {
     if (el.nodeType !== 1) return;
+    if (sign === "+" && el.textContent?.trim() === "Plugin timeline item unavailable.") { note("placeholder"); placeholders++; }
     if (el.id?.startsWith("csb-think-") || el.querySelector("[id^=csb-think-]")) note("think" + sign);
     if (el.matches("[data-csb-turn-read=message-row]") || el.querySelector("[data-csb-turn-read=message-row]")) note("row" + sign);
     if (el.matches("[data-csb-turn-read=button]") || el.querySelector("[data-csb-turn-read=button]")) note("btn" + sign);
   };
   const attach = (next: Scroller | null) => {
     if (next === scroller) return;
+    scroller?.removeEventListener?.("scroll", schedule);
     observer?.disconnect();
     observer = null;
     scroller = next;
-    tracks.clear();
     if (!scroller) return;
+    scroller.addEventListener?.("scroll", schedule, { passive: true });
     scrollTop = scroller.scrollTop;
     scrollHeight = scroller.scrollHeight;
     observer = new Watch((list) => {
@@ -109,29 +130,33 @@ export function startJitterWatch(log: Log): () => void {
           for (const n of m.removedNodes) sort(n, "-");
         }
       }
+      schedule();
     });
-    observer.observe(scroller, { childList: true, subtree: true, attributes: true, attributeFilter: ["title"] });
+    observer.observe(scroller, { childList: true, subtree: true, attributes: true, attributeFilter: ["title", "style", "class"] });
   };
 
-  const report = (el: El, track: Track, now: number) => {
+  const report = (el: El, track: Track, now: number, cause = "position") => {
     if (now - lastEvent < EVENT_GAP_MS || events >= EVENT_CAP) return;
     lastEvent = now;
     events++;
     const recent = changes.filter((c) => now - c.t <= WINDOW_MS);
     const count = (kind: string) => recent.filter((c) => c.kind === kind).length;
-    const path = page.location?.pathname ?? "";
-    const host = (/\/h\/([^/]+)/.exec(path)?.[1] ?? "?").slice(0, 8);
-    const wks = (/\/workspace\/([^/]+)/.exec(path)?.[1] ?? "?").slice(0, 8);
+    const route = page.location?.pathname ?? "";
+    const host = (/\/h\/([^/]+)/.exec(route)?.[1] ?? "?").slice(0, 8);
+    const wks = (/\/workspace\/([^/]+)/.exec(route)?.[1] ?? "?").slice(0, 8);
+    const identity = timelineIdentity(el);
     const translated = /translated-/.test(doc.documentElement.className) || !!scroller?.querySelector("font") ? 1 : 0;
     log(
-      `[jitter] agent=${agentOf(el)} host=${host} wks=${wks} kind=${kindOf(el)} flips=${track.flips.length} d=${track.deltas.join(",")}` +
+      `[jitter] agent=${agentOf(el)} host=${host} wks=${wks} kind=${kindOf(el)} cause=${cause} item=${(identity?.id ?? "?").slice(0, 100)} flips=${track.flips.length} d=${track.deltas.join(",")}` +
         ` think+=${count("think+")} think-=${count("think-")} row+=${count("row+")} row-=${count("row-")} btn+=${count("btn+")} btn-=${count("btn-")}` +
-        ` redraw=${count("redraw")} scroll=${scrollMoves.length} heightFlips=${heightFlips.length} translated=${translated} w=${page.innerWidth ?? 0}`,
+        ` redraw=${count("redraw")} remount=${track.remounts.length} placeholder=${count("placeholder")} scroll=${scrollMoves.length} heightFlips=${heightFlips.length} translated=${translated} w=${page.innerWidth ?? 0}`,
     );
   };
 
   const sample = () => {
-    if (doc.hidden) return;
+    if (!live || doc.hidden) return;
+    const route = page.location?.pathname ?? "";
+    if (path !== route) { path = route; tracks.clear(); changes.length = 0; }
     attach(doc.getElementById(SCROLLER_ID));
     const box = scroller;
     if (!box) return;
@@ -151,18 +176,29 @@ export function startJitterWatch(log: Log): () => void {
     }
     const view = page.innerHeight ?? 0;
     const seen = new Set<string | El>();
+    const seenEls = new Set<El>();
+    const ordinals = new Map<string, number>();
     for (const el of box.querySelectorAll(TARGETS)) {
       const r = el.getBoundingClientRect();
       if (!r.height || r.bottom < 0 || r.top > view) continue;
-      const key = el.id || el;
+      const identity = timelineIdentity(el);
+      const base = identity ? JSON.stringify([identity.stream, identity.id, kindOf(el)]) : null;
+      const ordinal = base ? ordinals.get(base) ?? 0 : 0;
+      if (base) ordinals.set(base, ordinal + 1);
+      const key = base ? `${base}:${ordinal}` : el;
       seen.add(key);
+      seenEls.add(el);
+      if (!observed.has(el)) { observed.add(el); resize?.observe(el); }
       const top = Math.round(r.top + scrollTop);
       const h = Math.round(r.height);
       const track = tracks.get(key);
       if (!track) {
-        tracks.set(key, { top, h, deltas: [], flips: [], lastDir: 0 });
+        tracks.set(key, { top, h, deltas: [], flips: [], lastDir: 0, el, seen: now, remounts: [] });
         continue;
       }
+      track.remounts = track.remounts.filter((t) => now - t <= WINDOW_MS);
+      if (track.el !== el) { track.remounts.push(now); track.el = el; }
+      track.seen = now;
       track.flips = track.flips.filter((t) => now - t <= WINDOW_MS);
       const delta = top !== track.top ? top - track.top : h - track.h;
       if (delta) {
@@ -173,17 +209,32 @@ export function startJitterWatch(log: Log): () => void {
       }
       track.top = top;
       track.h = h;
-      if (track.flips.length >= FLIPS) {
-        report(el, track, now);
+      if (track.flips.length >= FLIPS || track.remounts.length >= FLIPS || placeholders) {
+        report(el, track, now, placeholders ? "placeholder" : track.remounts.length >= FLIPS ? "remount" : "position");
         track.flips = [];
       }
     }
-    for (const key of tracks.keys()) if (!seen.has(key)) tracks.delete(key);
+    if (placeholders) {
+      // 항목이 자리표시로 통째 바뀌어 표본이 0개여도 기록한다.
+      const track = [...tracks.values()][0];
+      if (track) report(track.el, track, now, "placeholder");
+      else report(box, { top: 0, h: 0, deltas: [], flips: [], lastDir: 0, el: box, seen: now, remounts: [] }, now, "placeholder");
+      placeholders = 0;
+    }
+    for (const el of observed) if (!seenEls.has(el)) { resize?.unobserve(el); observed.delete(el); }
+    for (const [key, track] of tracks) if (!seen.has(key) && now - track.seen > WINDOW_MS) tracks.delete(key);
   };
 
-  const timer = setInterval(sample, SAMPLE_MS);
+  // 간격 검사는 목록 교체 발견용. 실제 표본은 화면 변화 뒤 프레임과 ResizeObserver에서 얻는다.
+  const timer = setInterval(() => { if (!resize || doc.getElementById(SCROLLER_ID) !== scroller) schedule(); }, SAMPLE_MS);
+  sample();
   return () => {
+    live = false;
     clearInterval(timer);
+    if (frame !== undefined) page.cancelAnimationFrame?.(frame);
+    resize?.disconnect();
+    scroller?.removeEventListener?.("scroll", schedule);
+    observed.clear();
     observer?.disconnect();
     tracks.clear();
   };

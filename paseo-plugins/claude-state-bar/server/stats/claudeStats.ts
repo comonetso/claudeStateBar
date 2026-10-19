@@ -1,3 +1,4 @@
+import { createJsonlReader } from "../jsonlReader";
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -190,8 +191,9 @@ function tallyDay(content: string, from: number, to: number): DayTally {
   return { messages, sessions: [...sessions] };
 }
 
-// 파일별 셈 기억 — 대화 기록은 덧붙이기만 하므로 (크기, 수정 시각, 날짜)가 같으면 셈도 같다. 원문은 담지 않는다
-const tallyCache = new Map<string, { size: number; mtimeMs: number; day: string; value: DayTally }>();
+// 날짜마다 판독기를 새로 만든다. 첫 판독은 전체를 줄 단위로, 이후에는 증가분만 센다.
+let tallyDayKey = "";
+let readTally: ((file: string) => Promise<DayTally>) | undefined;
 
 async function scanToday(now: number): Promise<{ messages: number; sessions: Set<string> }> {
   const start = new Date(now);
@@ -201,13 +203,21 @@ async function scanToday(now: number): Promise<{ messages: number; sessions: Set
   const from = start.getTime();
   const to = end.getTime();
   const todayKey = dayKey(start);
+  if (!readTally || tallyDayKey !== todayKey) {
+    tallyDayKey = todayKey;
+    readTally = createJsonlReader({
+      create: () => ({ messages: 0, sessions: new Set<string>() }),
+      add(state, line) { const tally = tallyDay(line, from, to); state.messages += tally.messages; for (const id of tally.sessions) state.sessions.add(id); },
+      value: state => ({ messages: state.messages, sessions: [...state.sessions] }),
+    });
+  }
+  const reader = readTally;
   // 기록은 덧붙이기만 하므로 오늘 자정 전에 마지막으로 바뀐 파일엔 오늘 기록이 없다(확장과 같은 1시간 여유를 둔다).
   // 확장은 사용량 탭 24시간 기여도 때문에 25시간 안 파일을 다 열지만, 통계 탭이 쓰는 "오늘" 셈은 이것으로 같은 값이 나온다
   const mtimeFloor = from - MTIME_SLACK_MS;
 
   const res = { messages: 0, sessions: new Set<string>() };
   const files = await listSessionLogs(claudeProjectsDir(), []);
-  const seen = new Set<string>();
   for (const file of files) {
     let info: { size: number; mtimeMs: number };
     try {
@@ -216,25 +226,11 @@ async function scanToday(now: number): Promise<{ messages: number; sessions: Set
       continue;
     }
     if (info.mtimeMs < mtimeFloor) continue;
-    seen.add(file);
     let tally: DayTally;
-    const hit = tallyCache.get(file);
-    if (hit && hit.size === info.size && hit.mtimeMs === info.mtimeMs && hit.day === todayKey) {
-      tally = hit.value;
-    } else {
-      let content: string;
-      try {
-        content = await readFile(file, "utf8");
-      } catch {
-        continue;
-      }
-      tally = tallyDay(content, from, to);
-      tallyCache.set(file, { size: info.size, mtimeMs: info.mtimeMs, day: todayKey, value: tally });
-    }
+    try { tally = await reader(file); } catch { continue; }
     res.messages += tally.messages;
     for (const s of tally.sessions) res.sessions.add(s);
   }
-  for (const key of tallyCache.keys()) if (!seen.has(key)) tallyCache.delete(key);
   return res;
 }
 

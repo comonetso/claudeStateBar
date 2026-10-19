@@ -53,6 +53,9 @@ function log(msg) {
   }
 }
 
+// 감시 생성 뒤의 오류도 받는다. outbox는 기존 30초 scan으로 계속 확인한다.
+function watchError(error) { log("file watch stopped: " + (error.code || "error")); }
+
 // ── 한 대만: router.pid
 const PID = path.join(ROUTER_DIR, "router.pid");
 try {
@@ -226,7 +229,7 @@ function startLocal() {
     }
   };
   scan();
-  fs.watch(mailbox.dir("outbox"), () => scan());
+  fs.watch(mailbox.dir("outbox"), () => scan()).on("error", watchError);
   // 30초 훑기(기존 값)에 쌓아 둔 알림 다시 보내기를 얹는다 — PC 는 다시 붙는 순간(hello)이 없어서
   setInterval(() => {
     scan();
@@ -690,7 +693,7 @@ log("router starting (pid " + process.pid + ")");
 startLocal();
 reconcile();
 try {
-  fs.watch(path.dirname(projects.canonicalFile()), () => reconcile());
+  fs.watch(path.dirname(projects.canonicalFile()), () => reconcile()).on("error", watchError);
 } catch (e) {
   log("cannot watch the project list: " + e.message);
 }

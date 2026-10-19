@@ -15,43 +15,31 @@ export interface SessionFacts {
   lastRealTimestamp: number | null;
 }
 
-export function parseSessionFacts(content: string): SessionFacts {
-  const lines = content.trim().split("\n");
-  let lastClearIndex = -1;
-  let userMessagesAfterClear = 0;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (!lines[i].trim()) continue;
-    try {
-      const entry = JSON.parse(lines[i]);
-      if (entry.type === "user" && entry.message?.content) {
-        const msg = entry.message.content;
-        if (typeof msg === "string" && msg.includes("<command-name>/clear</command-name>")) {
-          lastClearIndex = i;
-          break;
-        }
-        userMessagesAfterClear++;
+export function createSessionFacts(): SessionFacts { return { totalTokens: 0, wasCleared: false, sessionCreated: null, lastRealTimestamp: null }; }
+
+export function addSessionFact(facts: SessionFacts, line: string): void {
+  if (!line.trim()) return;
+  try {
+    const entry = JSON.parse(line);
+    if (entry.type === "user" && entry.message?.content) {
+      const msg = entry.message.content;
+      if (typeof msg === "string" && msg.includes("<command-name>/clear</command-name>")) {
+        Object.assign(facts, createSessionFacts(), { wasCleared: true });
+        return; // /clear 줄 자체는 생성 시각·사용량에 포함되지 않는다
       }
-    } catch {
-      continue;
+      facts.wasCleared = false;
     }
-  }
-  const wasCleared = lastClearIndex !== -1 && userMessagesAfterClear === 0;
-  let sessionCreated: number | null = null;
-  let lastRealTimestamp: number | null = null;
-  let totalTokens = 0;
-  for (let i = lastClearIndex >= 0 ? lastClearIndex + 1 : 0; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    try {
-      const entry = JSON.parse(lines[i]);
-      if (sessionCreated === null && entry.timestamp) sessionCreated = new Date(entry.timestamp).getTime();
-      if (entry.timestamp && entry.type !== "last-prompt") lastRealTimestamp = new Date(entry.timestamp).getTime();
-      const u = entry.message?.usage || entry.usage;
-      if (u) totalTokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-    } catch {
-      continue;
-    }
-  }
-  return { totalTokens, wasCleared, sessionCreated, lastRealTimestamp };
+    if (facts.sessionCreated === null && entry.timestamp) facts.sessionCreated = new Date(entry.timestamp).getTime();
+    if (entry.timestamp && entry.type !== "last-prompt") facts.lastRealTimestamp = new Date(entry.timestamp).getTime();
+    const u = entry.message?.usage || entry.usage;
+    if (u) facts.totalTokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+  } catch { /* 건너뜀 */ }
+}
+
+export function parseSessionFacts(content: string): SessionFacts {
+  const facts = createSessionFacts();
+  for (const line of content.trim().split("\n")) addSessionFact(facts, line);
+  return facts;
 }
 
 export interface SessionFile {

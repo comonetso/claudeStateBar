@@ -2,6 +2,8 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { headerTitleApply, headerTitlesWait } from "../shared/headerTitles";
 import { norm } from "./projectsData";
 import { watchCompactHeader, watchTabTitle } from "./web";
+import { joinSharedDevice, type SharedDevice } from "./sharedDevice";
+import { runCleanups } from "./cleanup";
 
 // 위쪽 제목 "카테고리 - 이름"(리규형님 10-08 결정 — 이미 붙은 작업 공간 제목도 전부 덮고, 새 작업 공간·목록 변경도 자동으로).
 // 화면 플러그인은 기기마다 하나씩 올라오고(client.paseo = 그 기기), 각자 자기 기기 작업 공간만 맞춘다. 경로별 제목은 그 기기
@@ -17,7 +19,8 @@ type Ws = { id: string; projectId: string; projectDisplayName: string; projectRo
 
 // 폰(좁은 화면) 위 줄 줄이기(web.ts watchCompactHeader)는 화면에 하나만 돈다 — 기기마다 올라오는 플러그인이 같은 실행 공간
 // (globalThis)을 쓰므로 기기별 "위쪽 제목 → 이름"을 거기 모은다
-type CompactHub = { names: Map<object, Map<string, string>>; stop: (() => void) | null };
+const COMPACT_HEADER_VERSION = 2; // 2: 정지 때 글·display 복원, 옛 장치 인계.
+type CompactHub = SharedDevice & { names: Map<object, Map<string, string>> };
 function compactHub(): CompactHub {
   const g = globalThis as Record<string, unknown>;
   return (g.__claudeStateBar_compactHeader_v1 ??= { names: new Map(), stop: null }) as CompactHub;
@@ -57,6 +60,7 @@ function titleOfWorkspace(workspaceId: string): string | null {
 export function startHeaderTitles(client: PluginClientContext, log: (message: string) => void): () => void {
   const owner = {};
   let stopped = false;
+  let stopCompact: (() => void) | undefined;
   let titles: Map<string, string> | null = null; // 정리한 경로 → 제목
   const workspaces = new Map<string, Ws>();
   workspaceHub().set(owner, workspaces);
@@ -116,7 +120,9 @@ export function startHeaderTitles(client: PluginClientContext, log: (message: st
       check();
       const hub = compactHub();
       hub.names.set(owner, new Map(r.titles.map((t) => [t.title, t.name])));
-      hub.stop ??= watchCompactHeader(shortOf);
+      stopCompact ??= joinSharedDevice(hub, COMPACT_HEADER_VERSION, () => {
+        hub.stop = watchCompactHeader(shortOf);
+      }, () => { hub.names.delete(owner); return !hub.names.size; });
     }
   })();
 
@@ -148,8 +154,7 @@ export function startHeaderTitles(client: PluginClientContext, log: (message: st
         },
       });
       releases.push(() => {
-        stop();
-        void list.subscription.release();
+        runCleanups([stop, () => { void list.subscription.release(); }], (error) => log(`header titles cleanup failed: ${String(error)}`));
       });
     } catch (error) {
       log(`header titles: workspace list failed: ${String(error)}`);
@@ -157,15 +162,13 @@ export function startHeaderTitles(client: PluginClientContext, log: (message: st
   })();
 
   return () => {
+    if (stopped) return;
     stopped = true;
-    for (const release of releases) release();
-    workspaceHub().delete(owner);
-    tabTitle.stop();
-    const hub = compactHub();
-    hub.names.delete(owner);
-    if (!hub.names.size) {
-      hub.stop?.();
-      hub.stop = null;
-    }
+    runCleanups([
+      ...releases,
+      () => { workspaceHub().delete(owner); },
+      () => tabTitle.stop(),
+      () => stopCompact?.(),
+    ], (error) => log(`header titles cleanup failed: ${String(error)}`));
   };
 }

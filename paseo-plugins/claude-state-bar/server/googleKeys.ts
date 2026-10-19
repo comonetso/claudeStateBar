@@ -1,4 +1,5 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { renameRetry, serializeFileWrite } from "./renameRetry";
+import { chmodSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { KEY_FIELDS, type KeyField } from "../shared/speech";
@@ -66,8 +67,9 @@ export function isWritableKey(value: string): boolean {
  * 임시 파일에 다 쓴 뒤 바꿔 넣는다(쓰다 끊겨도 반쯤 쓴 파일이 남지 않게). 유닉스에서는 주인만 읽게(600) 둔다.
  * 🔴 키 값은 어디에도 기록하지 않는다 — 부르는 쪽도 로그에 남기지 않는다.
  */
-export function writeGoogleKeys(patch: GoogleKeys): void {
+export function writeGoogleKeys(patch: GoogleKeys): Promise<void> {
   const file = googleKeysFile();
+  return serializeFileWrite(file, async () => {
   let original = "";
   try {
     original = readFileSync(file, "utf8");
@@ -105,7 +107,7 @@ export function writeGoogleKeys(patch: GoogleKeys): void {
     } catch {
       /* 권한을 못 바꿔도 쓰기는 이어 간다 */
     }
-    renameSync(tmp, file);
+    await renameRetry(tmp, file);
   } catch (error) {
     // 키가 든 임시 파일을 남기지 않는다
     try {
@@ -115,4 +117,5 @@ export function writeGoogleKeys(patch: GoogleKeys): void {
     }
     throw error;
   }
+  });
 }

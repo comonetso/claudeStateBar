@@ -1,5 +1,5 @@
+import { watchSafe } from "./watchSafe";
 import { createHash } from "node:crypto";
-import { watch } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -40,10 +40,10 @@ function watchLabels(): void {
   if (watching) return;
   try {
     // ~/.claude 폴더에는 다른 파일도 자주 바뀐다 — 이름표 파일 알림만 깨운다(파일 이름을 안 주는 기기면 다 깨운다)
-    watch(dirname(LABELS_FILE), (_event, filename) => {
+    watchSafe(dirname(LABELS_FILE), (_event, filename) => {
       if (filename && String(filename) !== basename(LABELS_FILE)) return;
       for (const wake of [...waiters]) wake();
-    });
+    }, () => { watching = false; for (const wake of [...waiters]) wake(); });
     watching = true;
   } catch {
     /* 폴더가 아직 없으면 다음 요청 때 다시 */

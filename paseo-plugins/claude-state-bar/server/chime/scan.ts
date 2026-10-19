@@ -1,3 +1,4 @@
+import { readConversation } from "../conversationReader";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parseBackgroundTasks, type BgTask } from "./backgroundTasks";
@@ -42,6 +43,10 @@ async function readParsed<T>(path: string, kind: string, parse: (text: string) =
     const info = await stat(path);
     const hit = parsedCache.get(key);
     if (hit && hit.size === info.size && hit.mtimeMs === info.mtimeMs) return hit.value as T;
+    if (kind === "conversation") {
+      const value = await readConversation(path);
+      return { notices: value.notices, completedRuns: value.completedRuns, background: value.background } as T;
+    }
     const value = parse(await readFile(path, "utf8"));
     parsedCache.set(key, { size: info.size, mtimeMs: info.mtimeMs, value });
     return value;

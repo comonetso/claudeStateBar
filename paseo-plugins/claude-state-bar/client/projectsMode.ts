@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { listenGlobalKey, readLocal, setStyleSheet, writeLocal } from "./web";
 import { shortcutMatches } from "../shared/shortcuts";
+import { retainSharedStyle } from "./sharedStyle";
+import { runCleanups } from "./cleanup";
 
 // 왼쪽 목록 칸에 프로젝트 목록을 보일지 워크스페이스 목록을 보일지(리규형님 10-06 결정):
 //   프로젝트 매니저는 왼쪽 목록 안 맨 위에 두고, 보이는 동안 워크스페이스 목록은 웹·데스크톱에서 가린다.
@@ -12,35 +14,35 @@ export type ProjectsMode = "projects" | "workspaces";
 
 const MODE_KEY = "claude-state-bar:projects-mode";
 const STYLE_ID = "claude-state-bar-hide-workspace-list";
+const STYLE_VERSION = 1;
 // Paseo 왼쪽 목록의 워크스페이스 목록 스크롤 상자(앱 sidebar 의 testID, 0.11.0-beta.4)
 const HIDE_CSS = '[data-testid="sidebar-project-workspace-list-scroll"]{display:none !important}';
 
-let mode: ProjectsMode = readLocal(MODE_KEY) === "workspaces" ? "workspaces" : "projects";
-const listeners = new Set<(m: ProjectsMode) => void>();
-
-function apply(): void {
-  setStyleSheet(STYLE_ID, mode === "projects" ? HIDE_CSS : null);
-}
+type ModeHub = { mode: ProjectsMode; listeners: Set<(m: ProjectsMode) => void> };
+const g = globalThis as Record<string, unknown>;
+const hub = (g.__claudeStateBar_projectsMode_v1 ??= {
+  mode: readLocal(MODE_KEY) === "workspaces" ? "workspaces" : "projects",
+  listeners: new Set(),
+}) as ModeHub;
 
 export function setProjectsMode(next: ProjectsMode): void {
-  if (next === mode) return;
-  mode = next;
+  if (next === hub.mode) return;
+  hub.mode = next;
   writeLocal(MODE_KEY, next);
-  apply();
-  for (const l of listeners) l(next);
+  for (const l of hub.listeners) l(next);
 }
 
 export function toggleProjectsMode(): void {
-  setProjectsMode(mode === "projects" ? "workspaces" : "projects");
+  setProjectsMode(hub.mode === "projects" ? "workspaces" : "projects");
 }
 
 export function useProjectsMode(): ProjectsMode {
-  const [m, setM] = useState(mode);
+  const [m, setM] = useState(hub.mode);
   useEffect(() => {
-    listeners.add(setM);
-    setM(mode);
+    hub.listeners.add(setM);
+    setM(hub.mode);
     return () => {
-      listeners.delete(setM);
+      hub.listeners.delete(setM);
     };
   }, []);
   return m;
@@ -48,10 +50,16 @@ export function useProjectsMode(): ProjectsMode {
 
 /** 플러그인이 켜질 때 한 번 — 가리기를 지금 모드에 맞추고 단축키를 단다. 끌 때 가리기를 걷는다 */
 export function startProjectsMode(): () => void {
+  // 처음 배포 중 옛 판 모듈이 저장한 값도 담당을 넘겨받을 때 읽는다.
+  const saved = readLocal(MODE_KEY);
+  if (saved === "workspaces" || saved === "projects") setProjectsMode(saved);
+  const style = retainSharedStyle(STYLE_ID, STYLE_VERSION, setStyleSheet);
+  const apply = () => style.set(hub.mode === "projects" ? HIDE_CSS : "");
+  hub.listeners.add(apply);
   apply();
   const stopKey = listenGlobalKey((e) => shortcutMatches("projects-toggle", e), toggleProjectsMode);
   return () => {
-    stopKey();
-    setStyleSheet(STYLE_ID, null);
+    hub.listeners.delete(apply);
+    runCleanups([stopKey, style.dispose]);
   };
 }

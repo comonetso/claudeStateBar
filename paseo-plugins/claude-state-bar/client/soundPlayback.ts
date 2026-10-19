@@ -100,6 +100,13 @@ export function startSoundPlayback(provider: SoundProvider, log: (message: strin
     } catch (e) { if (!stopped) { connected = true; failed(e); } }
     finally { if (!stopped) retry = setTimeout(() => { void loop(); }, SOUND_RETRY_MS); }
   };
+  const pageWindow = (globalThis as { window?: {
+    addEventListener?(type: string, fn: () => void): void;
+    removeEventListener?(type: string, fn: () => void): void;
+  } }).window;
+  // visibilitychange와 달리 pagehide는 페이지 이탈이다. 종료 중 RPC는 최선 노력이며 서버의 대기 화면 우선 선택과 함께 쓴다.
+  const onPageHide = () => failed("pagehide");
+  pageWindow?.addEventListener?.("pagehide", onPageHide);
   const stopState = watchSoundScreen(() => { void sendPresence(); });
   const stopUse = watchScreenUse(markSoundScreenUse);
   heartbeat = setInterval(() => { void sendPresence(); }, SOUND_HEARTBEAT_MS);
@@ -108,6 +115,7 @@ export function startSoundPlayback(provider: SoundProvider, log: (message: strin
     stopped = true; connected = false; generation++;
     if (heartbeat) clearInterval(heartbeat);
     if (retry) clearTimeout(retry);
+    pageWindow?.removeEventListener?.("pagehide", onPageHide);
     stopState(); stopUse();
     void rpc(soundDropScreen, { screenId: screenId() }).catch(() => {});
   };

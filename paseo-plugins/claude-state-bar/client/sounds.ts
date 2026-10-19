@@ -42,6 +42,7 @@ export type SharedSignal = "settings" | "googleKeys";
 
 interface Shared {
   provider?: SoundProvider;
+  readingSettings?: Pick<SoundSettings, "translateEnabled" | "ttsEnabled" | "thinkingAutoTranslate" | "thinkingAutoTranslateExpand" | "thinkingAutoOpen" | "ttsSpeedStep">;
   // 옛 판 플러그인이 만든 공유 칸에는 없을 수 있다(그때 처음 쓰는 쪽이 만든다)
   signals?: Partial<Record<SharedSignal, Set<() => void>>>;
 }
@@ -67,8 +68,9 @@ export function registerProvider(provider: SoundProvider): (() => void) | undefi
   const s = shared();
   if (s.provider) return undefined;
   s.provider = provider;
+  readingSettings();
   return () => {
-    if (s.provider === provider) s.provider = undefined;
+    if (s.provider === provider) { readingSettings(); s.provider = undefined; }
   };
 }
 
@@ -76,10 +78,24 @@ export function currentSettings(): SoundSettings {
   return shared().provider?.settings() ?? uiProvider()?.settings() ?? DEFAULT_SETTINGS;
 }
 
+// 소리 배정/연결 설정에는 적용하지 않는다. 번역·읽기만 공급자 공백 중 마지막 받은 값을 쓴다.
+function readingSettings(): Partial<SoundSettings> {
+  const s = shared();
+  if (s.provider) {
+    const value = s.provider.settings();
+    s.readingSettings = {
+      translateEnabled: value.translateEnabled, ttsEnabled: value.ttsEnabled,
+      thinkingAutoTranslate: value.thinkingAutoTranslate, thinkingAutoTranslateExpand: value.thinkingAutoTranslateExpand,
+      thinkingAutoOpen: value.thinkingAutoOpen, ttsSpeedStep: value.ttsSpeedStep,
+    };
+  }
+  return s.readingSettings ?? uiProvider()?.settings() ?? DEFAULT_SETTINGS;
+}
+
 /** 번역·읽기 기능이 켜져 있는가(설정 화면 "번역·읽기" 칸, 10-08). 소리 담당(PC) 설정을 모든 호스트 화면이 같이 따른다.
  *  칸이 없는 옛 공급자 설정이면 켬(처음 값과 같다) */
 export function featureSwitches(): { translate: boolean; tts: boolean; autoTranslate: boolean; autoExpand: boolean } {
-  const s = currentSettings() as Partial<SoundSettings>;
+  const s = readingSettings();
   return {
     translate: s.translateEnabled !== false, tts: s.ttsEnabled !== false,
     autoTranslate: s.thinkingAutoTranslate === true, autoExpand: s.thinkingAutoTranslateExpand !== false,
@@ -88,8 +104,8 @@ export function featureSwitches(): { translate: boolean; tts: boolean; autoTrans
 
 /** 옛 공급자에도 새 읽기 설정의 기본값을 적용한다. 속도 값 자체는 기기 저장소에만 둔다. */
 export function speechOptions(): { autoOpen: boolean; speedStep: 0.1 | 0.25; ready: boolean } {
-  const s = currentSettings() as Partial<SoundSettings>;
-  return { autoOpen: s.thinkingAutoOpen !== false, speedStep: s.ttsSpeedStep === 0.1 ? 0.1 : 0.25, ready: !!shared().provider };
+  const s = readingSettings();
+  return { autoOpen: s.thinkingAutoOpen !== false, speedStep: s.ttsSpeedStep === 0.1 ? 0.1 : 0.25, ready: !!shared().readingSettings };
 }
 
 export function onSharedSignal(name: SharedSignal, listener: () => void): () => void {

@@ -41,9 +41,9 @@ export function googleKeysState(): GoogleKeysState {
 }
 
 /** 넣은 키만 바꾼다. 빈 칸(앞뒤 빈칸을 걷고 비면)은 그대로 둔다 */
-export function saveGoogleKeys(input: { gemini?: string; tts?: string }):
-  | { ok: true; state: GoogleKeysState }
-  | { ok: false; reason: "invalid" | "write"; field?: "gemini" | "tts" } {
+export async function saveGoogleKeys(input: { gemini?: string; tts?: string }):
+  Promise<{ ok: true; state: GoogleKeysState }
+  | { ok: false; reason: "invalid" | "write"; field?: "gemini" | "tts" }> {
   const patch: { gemini?: string; tts?: string } = {};
   for (const field of ["gemini", "tts"] as const) {
     const value = input[field]?.trim();
@@ -53,7 +53,7 @@ export function saveGoogleKeys(input: { gemini?: string; tts?: string }):
   }
   if (patch.gemini === undefined && patch.tts === undefined) return { ok: true, state: googleKeysState() };
   try {
-    writeGoogleKeys(patch);
+    await writeGoogleKeys(patch);
   } catch (error) {
     // 오류 글에는 경로만 들어 있다(키 값 없음) — 그래도 로그에는 코드만 남긴다
     console.log(`[google-keys] write failed: ${(error as NodeJS.ErrnoException).code ?? "error"}`);
@@ -97,7 +97,7 @@ export function speechKeysState(): SpeechKeysState {
     return [field, { saved: !!key, check: key && last?.fingerprint === fingerprint(key) ? { ok: last.ok, at: last.at } : null }];
   })) as SpeechKeysState;
 }
-export function saveSpeechKeys(input: Partial<Record<KeyField, string>>) {
+export async function saveSpeechKeys(input: Partial<Record<KeyField, string>>) {
   const patch: Partial<Record<KeyField, string>> = {};
   for (const field of KEY_FIELDS) {
     const value = input[field]?.trim();
@@ -105,7 +105,7 @@ export function saveSpeechKeys(input: Partial<Record<KeyField, string>>) {
     if (!isWritableKey(value)) return { ok: false as const, reason: "invalid" as const, field };
     patch[field] = value;
   }
-  try { if (Object.keys(patch).length) writeGoogleKeys(patch); }
+  try { if (Object.keys(patch).length) await writeGoogleKeys(patch); }
   catch { return { ok: false as const, reason: "write" as const }; }
   return { ok: true as const, state: speechKeysState() };
 }

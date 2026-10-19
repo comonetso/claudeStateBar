@@ -1,3 +1,4 @@
+import { renameRetry } from "./renameRetry";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -70,7 +71,7 @@ function save(state: State): Promise<void> {
     await mkdir(dirname(FILE), { recursive: true });
     const tmp = `${FILE}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify(state), "utf8");
-    await rename(tmp, FILE);
+    await renameRetry(tmp, FILE);
   };
   const done = writing.then(run, run);
   writing = done.catch(() => {});

@@ -1,4 +1,5 @@
 import { setStyleSheet } from "./web";
+import { retainSharedStyle } from "./sharedStyle";
 
 // Paseo 입력창 위 "하위 에이전트 N개" 알약 숨기기(10-09 리규형님 "끝난 하위 워크플로우를 왜 표시하냐 — 우리 플러그인이 붙어 있는
 // 데서는 없애 줘. 워크플로우 패널이 있는데 이게 백그라운드인지 워크플로우인지 헷갈렸다").
@@ -10,21 +11,13 @@ import { setStyleSheet } from "./web";
 // 좁은 화면(폰 모양)에서는 변경 줄 수 알약(testID composer-diff-stat-pill, "+38.7k -0")도 숨긴다(10-15 리규형님 "폰에서 디프로
 // 수정할 것도 아닌데 치우는 게 낫다, 너무 비좁아"). 폭 기준은 Paseo 의 좁은 화면 판정과 같은 720px 미만(web.ts COMPACT_MAX_WIDTH)
 const STYLE_ID = "claude-state-bar-hide-subagents-pill";
+const STYLE_VERSION = 1;
 const CSS = '[data-testid="subagents-track-header"],[data-testid="subagents-track-header-panel"]{display:none !important}' +
   '@media (max-width: 719.98px){[data-testid="composer-diff-stat-pill"]{display:none !important}}';
 
-/**
- * 숨김 스타일을 넣는다. 끊기 함수는 마지막에 넣은 쪽일 때만 스타일을 걷는다 — 플러그인을 다시 읽으면 옛 판 정리가 새 판보다 늦게
- * 돌아 같은 이름 스타일을 지운 일이 있었다(10-08, 메모리 project_paseo_client_hub_stale). 호스트마다 불러도 스타일은 하나다
- */
+/** 연결마다 소유권 하나. 마지막 연결이 내려갈 때만 숨김을 걷는다. */
 export function hideSubagentsPill(): () => void {
-  const g = globalThis as { __claudeStateBar_hideSubagents_v1?: object };
-  const token = {};
-  g.__claudeStateBar_hideSubagents_v1 = token;
-  setStyleSheet(STYLE_ID, CSS);
-  return () => {
-    if (g.__claudeStateBar_hideSubagents_v1 !== token) return;
-    delete g.__claudeStateBar_hideSubagents_v1;
-    setStyleSheet(STYLE_ID, null);
-  };
+  const style = retainSharedStyle(STYLE_ID, STYLE_VERSION, setStyleSheet);
+  style.set(CSS);
+  return style.dispose;
 }

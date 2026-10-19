@@ -12,7 +12,7 @@ import { uiLanguage } from "./appLanguage";
 import { featureSwitches, onSharedSignal, speechOptions } from "./sounds";
 import { thinkingBoundary } from "../shared/thinkingBoundary";
 import { boundaryStep, boundaryTurnOf, classifyBoxTurn, newBoundaryTrack, type AgentTurnInfo } from "../shared/thinkingContract";
-import { boxPhase, boxText, normalizeRate, saidText, splitParagraphs, ThinkingController, watchThinking, type ThinkingBoxState } from "./thinkingPlayer";
+import { boxPhase, boxText, normalizeRate, saidText, splitParagraphs, ThinkingController, watchThinking, type ThinkingBoxState, type ThinkingSnapshot } from "./thinkingPlayer";
 import { onThinkingAllOpen, thinkingAllOpen } from "./thinkingFold";
 import { translationCache } from "./translationCache";
 import { clearSelection, createThinkingAudio, elementText, readAppFontSizes, readLocal, listenTtsSpeedKeys, setHoverTitle, setNoTranslate, selectionStartIn, themeVar, watchSelection, writeLocal, type SelectionSnapshot } from "./web";
@@ -33,6 +33,9 @@ const RATE_KEY = "claude-state-bar:thinking-rate";
 let pendingSavedRate: number | undefined;
 export const thinkingController = new ThinkingController(createThinkingAudio(), (rate) => { pendingSavedRate = undefined; writeLocal(RATE_KEY, String(rate)); }, Date.now, uiLanguage);
 const controller = thinkingController;
+// 번들 교체에는 UI 값만 넘긴다. 오디오·RPC·구독·진행 중 요청은 이전 모듈이 정리한다.
+const uiRoot = globalThis as unknown as { __csb_thinkingUi_v1?: Map<string, ThinkingSnapshot[]> };
+const savedUi = (uiRoot.__csb_thinkingUi_v1 ??= new Map());
 // 받은 번역을 이 기기에 7일 담아 두고 번역 전에 먼저 본다(10-10 리규형님 "번역된 것은 다시 번역해서 비용이 나가지 않게")
 controller.cache = translationCache;
 const savedRate = Number(readLocal(RATE_KEY));
@@ -41,12 +44,15 @@ controller.rate = normalizeRate(savedRate > 0 ? savedRate : 1, controller.speedS
 pendingSavedRate = savedRate > 0 ? savedRate : undefined;
 function applyReadingSettings(): void {
   const options = speechOptions();
+  if (!options.ready) return;
   const value = options.ready && pendingSavedRate !== undefined ? pendingSavedRate : controller.rate;
   if (options.ready) pendingSavedRate = undefined;
   controller.applySpeedStep(options.speedStep, value);
 }
 applyReadingSettings();
 const statuses = new Map<string, Promise<{ translate: boolean; tts: boolean; settings: SpeechSettings }>>();
+const resolvedStatuses = new Map<string, { translate: boolean; tts: boolean; settings: SpeechSettings }>();
+const refreshSpeech = new Set<string>();
 // 생각 상자 자동 번역(10-12) — 설정 스위치 + 번역 켜짐 + 그 호스트의 번역 키가 있을 때만 켠다. 키 확인이 끝난 뒤와 설정이 바뀔 때만
 // 부른다: 상자가 처음 그려질 때 키 확인 전 값(없음)으로 부르면 같은 호스트의 다른 상자까지 껐다 켜진다
 function applyAutoTranslate(hostId: string, translateKey: boolean): void {
@@ -171,11 +177,13 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   const speechRpc = useRpc(speechGet);
   const rpc = useMemo(() => ({ translate, synthesize, speech: async () => (await speechRpc({ lang: uiLanguage() })).settings }), [translate, synthesize, speechRpc]);
   const [, bump] = useState(0);
-  const [keys, setKeys] = useState({ translate: false, tts: false });
+  const [keys, setKeys] = useState(() => resolvedStatuses.get(host.id) ?? { translate: false, tts: false });
   const [keysRev, setKeysRev] = useState(0);
   // 문단 요소 이름(웹에서 id) — 선택한 자리가 어느 문단인지 표준 Selection·Range 로 찾는다(10-08)
   const domId = useMemo(() => `${DOM_PREFIX}${++domSerial}`, []);
   const identity = useRef<ThinkingBoxState | undefined>(undefined);
+  const saved = savedUi.get(host.id);
+  if (saved) { savedUi.delete(host.id); controller.restore(saved); }
   const box = controller.box(host.id, agentId, timestamp.getTime(), text, phase, identity.current);
   identity.current = box;
   owned.add(box);
@@ -205,7 +213,11 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
   const px = readAppFontSizes().content ?? CONTENT_DEFAULT_PX;
   const web = Platform.OS === "web";
 
-  useEffect(() => controller.subscribe(() => bump((n) => n + 1)), []);
+  useEffect(() => {
+    const release = controller.retain(box);
+    const stop = controller.subscribe(() => bump((n) => n + 1), box.key);
+    return () => { stop(); release(); owned.delete(box); };
+  }, [box, owned]);
   useEffect(() => {
     const listener = () => setKeysRev((n) => n + 1);
     keyListeners.add(listener);
@@ -215,10 +227,17 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
     let live = true;
     let status = statuses.get(host.id);
     if (!status) {
-      status = Promise.all([statusRpc({}), speechRpc({ lang: uiLanguage() })]).then(([keys, speech]) => ({ ...keys, settings: speech.settings }));
+      status = Promise.all([statusRpc({}), speechRpc({ lang: uiLanguage() })]).then(([keys, speech]) => {
+        const result = { ...keys, settings: speech.settings };
+        if (statuses.get(host.id) === status) resolvedStatuses.set(host.id, result);
+        return result;
+      });
       statuses.set(host.id, status);
     }
-    void status.then((result) => { if (live) { controller.applySpeech(host.id, result.settings); applyAutoTranslate(host.id, result.translate); setKeys(result); } }, (error: unknown) => {
+    void status.then((result) => { if (live && statuses.get(host.id) === status) {
+      if (refreshSpeech.delete(host.id) || !controller.hasSpeech(host.id)) controller.applySpeech(host.id, result.settings);
+      applyAutoTranslate(host.id, result.translate); setKeys(result);
+    } }, (error: unknown) => {
       if (live) { box.error = `키 확인 실패: ${String(error)}`; bump((n) => n + 1); }
     });
     return () => { live = false; };
@@ -375,6 +394,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
     const next = controller.box(host.id, `said-${++saidReader.serial}`, Date.now(), said, "complete");
     // 재생용 상자 — 자동 번역 대상이 아니다(화면 글을 읽으므로 번역을 받아도 쓰지 않는다)
     next.said = true;
+    next.displayKey = box.key;
     next.translate = false;
     next.screenText = web ? (index) => elementText(`${saidId}-${index}`) : undefined;
     next.rpc = rpc;
@@ -462,9 +482,9 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
       ) : null}
       {/* 그 말 읽기(10-09 리규형님 "복사 버튼이 없는 경우도 TTS 버튼이 있어야" · 결정 "그 말 하나만") — Paseo 말 블록에 붙는
           "이 말 읽기"(web.ts 턴·말 읽기 단추)와 같은 이름·모양. 읽는 중 녹색·소리 만드는 중 빙글빙글(10-11), 조절은 입력창 위 */}
-      {said && canRead ? (
-        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 2 }}>
-          {plainIcon("Volume2", saidActive ? "이 말 읽기(읽는 중)" : "이 말 읽기", () => (saidActive ? controller.stop() : readSaid()), saidActive)}
+      {said && web && features.tts ? (
+        <View style={{ minHeight: px + 7, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 2 }}>
+          {canRead ? plainIcon("Volume2", saidActive ? "이 말 읽기(읽는 중)" : "이 말 읽기", () => (saidActive ? controller.stop() : readSaid()), saidActive) : null}
           {saidActive && saidState!.status === "loading" ? spinner("spin-said") : null}
         </View>
       ) : null}
@@ -500,10 +520,15 @@ export function registerThinking(client: PluginClientContext): () => void {
     for (const [hostId, status] of statuses) void status.then((result) => applyAutoTranslate(hostId, result.translate), () => {});
   });
   const stopKeys = onSharedSignal("googleKeys", () => {
+    for (const hostId of statuses.keys()) refreshSpeech.add(hostId);
     statuses.clear();
+    resolvedStatuses.clear();
+    // 명시적 키/공급자 저장 후의 새 응답은 이전 설정을 갱신해야 한다.
     for (const listener of [...keyListeners]) listener();
   });
   return () => {
+    const snapshots = controller.snapshot();
+    for (const hostId of new Set(snapshots.map((s) => s.hostId))) savedUi.set(hostId, snapshots.filter((s) => s.hostId === hostId));
     stopSpeedKeys();
     stopKeys();
     stopSettings();
@@ -512,7 +537,7 @@ export function registerThinking(client: PluginClientContext): () => void {
     if (saidReader.box) controller.dispose(new Set([saidReader.box]));
     saidReader.box = undefined;
     saidReader.owner = undefined;
-    controller.dispose(owned);
+    controller.dispose(new Set(controller.boxes.values()));
     for (const box of owned) statuses.delete(box.hostId);
     turns.dispose();
     a();

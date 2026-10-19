@@ -1,4 +1,5 @@
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { renameRetry } from "./renameRetry";
+import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -52,7 +53,7 @@ export class SoundJournal<T> {
       await handle.sync();
       await handle.close();
       handle = undefined;
-      await rename(temp, this.file);
+      await renameRetry(temp, this.file);
     } catch (e) {
       await handle?.close().catch(() => {});
       await rm(temp, { force: true }).catch(() => {});

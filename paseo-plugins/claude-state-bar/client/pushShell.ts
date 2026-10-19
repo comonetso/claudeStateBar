@@ -1,4 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { watchPluginSettings } from "./settingsCache";
+import { pageHidden } from "./pageVisible";
 import { pushReceived, pushRegister } from "../shared/push";
 import { hostInfo, soundDataV2 } from "../shared/sound";
 import { PROJECTS_SCREEN_ID } from "./projectsScreen";
@@ -58,38 +60,47 @@ export function startPushToken(client: PluginClientContext, log: (message: strin
 
 /**
  * 폰 앱에 원래 소리를 넘긴다(10-17 리규형님 "폰 알림 소리는 원래 소리 — 폰으로 모든 것을 판단"). 소리 파일이 있는 데몬(소리를 낼 수 있는 PC)을
- * 맡은 화면만 — 그 데몬 설정의 질문·압축 준비 소리를 받아 앱에 맡긴다. 처음 붙을 때와 화면이 다시 보일 때(PC 에서 소리를 바꾼 뒤 폰을 열면 맞춰진다),
- * 같은 소리면 다시 안 보낸다
+ * 맡은 화면만 — 그 데몬 설정의 질문·압축 준비 소리를 받아 앱에 맡긴다. 처음 붙을 때와 정본 설정이 바뀔 때 받는다. 뒤에 있으면 다음 전면 복귀까지 보류한다.
+ * 설정 변경 없는 앞뒤 전환은 다시 받지 않으며, 같은 길이로 바뀐 소리도 내용으로 비교한다
  */
 export function startAlertSounds(client: PluginClientContext, log: (message: string) => void, onVisible: (fn: () => void) => () => void): () => void {
   const w = win();
   if (typeof w?.PaseoShell?.setAlertSound !== "function") return () => {};
   const sent = new Map<string, string>();
-  let busy = false;
+  let busy = false, dirty = true, stopped = false, revision = 0;
   const sync = async () => {
-    if (busy) return;
-    busy = true;
+    if (busy || stopped || !dirty || pageHidden()) return;
+    busy = true; dirty = false;
+    const observed = revision;
+    let completed = false;
     try {
       const info = await client.rpc(hostInfo, {});
-      if (!info.canPlay || info.team) return;
+      if (stopped || !info.canPlay || info.team) return;
       for (const kind of ["question", "compact"] as const) {
         const { dataUrl, path } = await client.rpc(soundDataV2, { kind });
+        if (stopped) return;
         const m = /^data:([^;,]+);base64,(.*)$/.exec(dataUrl);
-        if (!m) continue;
-        const mark = `${path}#${m[2].length}`;
+        if (!m) { dirty = true; continue; }
+        const mark = `${path}#${dataUrl}`;
         if (sent.get(kind) === mark) continue;
         const ok = w.PaseoShell?.setAlertSound?.(kind, m[2], m[1]);
         if (ok) sent.set(kind, mark);
+        else dirty = true;
         log(`alert sound ${kind}: ${ok ? "handed to the phone app" : "refused by the phone app"} (${Math.round(m[2].length * 0.75 / 1024)}KB)`);
       }
+      completed = true;
     } catch (error) {
+      dirty = true;
       log(`alert sound: ${String(error)}`);
     } finally {
       busy = false;
+      if (completed && revision !== observed && !stopped) void sync();
     }
   };
+  const offSettings = watchPluginSettings(client, () => { revision++; dirty = true; void sync(); }, log);
+  const offVisible = onVisible(() => void sync());
   void sync();
-  return onVisible(() => void sync());
+  return () => { stopped = true; offSettings(); offVisible(); };
 }
 
 /** 알림을 누르면 그 대화로 — 화면 담당 하나만 단다. 프로젝트 관리 화면이 대화 번호를 받아 Paseo 대화 열기를 부른다(projectsScreen.tsx) */

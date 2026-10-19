@@ -10,10 +10,12 @@ import type { ActivityCounts } from "../shared/activity";
 import { ACTIVITY_PANEL_ID, KINDS } from "./activityKinds";
 import { mergeActivitySplit, openActivitySplit } from "./activitySplit";
 import { useActivityOpen } from "./activityVisible";
-import { clearMaximizedPane, paintMaximizedPane } from "./paneMaximized";
+import { retainMaximizedPane } from "./paneMaximized";
+import { retainSharedStyle } from "./sharedStyle";
+import { runCleanups } from "./cleanup";
 import { releaseMaximizedPane } from "./paneMaxWatch";
 import { currentSettings } from "./sounds";
-import { currentWorkspaceFromUrl, isCompactWidth, phonePillsShown, setStyleSheet, watchCompactWidth } from "./web";
+import { currentWorkspaceFromUrl, isCompactWidth, phonePillsShown, setStyleSheet, watchCompactWidth, watchWorkspaceInput } from "./web";
 
 /** paseo-plugin.json 의 id — Paseo 가 패널 탭에 이 이름을 붙인다 */
 const PLUGIN_ID = "claude-state-bar";
@@ -59,13 +61,8 @@ function summaryOf(c: ActivityCounts | null): string {
 // 웹·데스크톱만(setStyleSheet). 판이 올라 접근성 이름이 바뀌면 초록 글자만 안 나온다(아이콘 초록은 그대로)
 const OPEN_TITLE = "작업 현황 (열려 있음)";
 const OPEN_STYLE_ID = "claude-state-bar-activity-open";
+const OPEN_STYLE_VERSION = 1;
 const OPEN_BUTTON = `[aria-label^="${OPEN_TITLE}"]`;
-let paintedOpen: string | null = null;
-function paintActivityOpen(green: string): void {
-  if (paintedOpen === green) return;
-  paintedOpen = green;
-  setStyleSheet(OPEN_STYLE_ID, `${OPEN_BUTTON},${OPEN_BUTTON} *{color:${green} !important}${OPEN_BUTTON} svg,${OPEN_BUTTON} svg *{stroke:${green} !important}`);
-}
 
 /** 단추 글자: 돌고 있으면 합계, 아니면 이름만(글자 칸이 160px 라 종류별로는 못 넣는다) */
 function presentation(c: ActivityCounts | null, open = false): Pick<PluginButton, "label" | "title"> {
@@ -79,6 +76,9 @@ function presentation(c: ActivityCounts | null, open = false): Pick<PluginButton
  * leading: 작업 현황 단추 왼쪽에 둘 단추(사용량, 10-06) — Paseo 는 등록한 순서대로 왼쪽부터 그려서 먼저 등록한다.
  */
 export function createActivityButtons(client: PluginClientContext, log: (message: string) => void, leading?: HeaderButtonSet): () => void {
+  const stopInput = watchWorkspaceInput();
+  const maximized = retainMaximizedPane();
+  const openStyle = retainSharedStyle(OPEN_STYLE_ID, OPEN_STYLE_VERSION, setStyleSheet);
   const registrations = new Map<string, PluginButtonRegistration>();
   const shown = new Map<string, string>();
   let disposed = false;
@@ -99,8 +99,11 @@ export function createActivityButtons(client: PluginClientContext, log: (message
     const open = useActivityOpen(workspaceId);
     useEffect(() => present(workspaceId, counts, open), [workspaceId, counts, open]);
     // 칸 최대화 단추 주황(10-08) — 테마는 화면 부품만 받아서, 작업 공간 화면에 늘 있는 이 단추가 테마가 바뀔 때마다 칠한다
-    useEffect(() => paintMaximizedPane(theme), [theme]);
-    useEffect(() => paintActivityOpen(theme.colors.statusSuccess), [theme]);
+    useEffect(() => maximized.paint(theme), [theme]);
+    useEffect(() => {
+      const green = theme.colors.statusSuccess;
+      openStyle.set(`${OPEN_BUTTON},${OPEN_BUTTON} *{color:${green} !important}${OPEN_BUTTON} svg,${OPEN_BUTTON} svg *{stroke:${green} !important}`);
+    }, [theme]);
     return <Icon name={running ? "LoaderCircle" : "Activity"} size={size} color={open ? theme.colors.statusSuccess : running ? RUNNING_COLOR : color} />;
   }
 
@@ -208,9 +211,7 @@ export function createActivityButtons(client: PluginClientContext, log: (message
         else if (update.kind === "remove") drop(update.id);
       });
       release = () => {
-        stop();
-        stopSnapshots();
-        void list.subscription.release();
+        runCleanups([stop, stopSnapshots, () => { void list.subscription.release(); }], (error) => log(`header cleanup failed: ${String(error)}`));
       };
       log(`header buttons on ${registrations.size}/${known.size} workspaces`);
     } catch (error) {
@@ -219,13 +220,12 @@ export function createActivityButtons(client: PluginClientContext, log: (message
   })();
 
   return () => {
+    if (disposed) return;
     disposed = true;
-    release?.();
-    stopWidth();
-    for (const id of [...known]) drop(id);
-    leading?.dispose?.();
-    clearMaximizedPane();
-    paintedOpen = null;
-    setStyleSheet(OPEN_STYLE_ID, null);
+    runCleanups([
+      () => release?.(), stopWidth, stopInput,
+      ...[...known].map((id) => () => drop(id)),
+      () => leading?.dispose?.(), maximized.dispose, openStyle.dispose,
+    ], (error) => log(`header cleanup failed: ${String(error)}`));
   };
 }

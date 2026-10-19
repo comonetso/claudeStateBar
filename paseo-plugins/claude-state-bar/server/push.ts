@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { renameRetry } from "./renameRetry";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { PluginHookContext, PluginLifecycleEvents } from "@getpaseo/plugin/server";
@@ -90,7 +91,7 @@ function saveTokens(list: TokenEntry[]): Promise<void> {
     await mkdir(DIR, { recursive: true });
     const tmp = `${TOKENS_FILE}.tmp`;
     await writeFile(tmp, JSON.stringify({ tokens: list }, null, 2), { mode: 0o600 });
-    await rename(tmp, TOKENS_FILE);
+    await renameRetry(tmp, TOKENS_FILE);
   }).catch((error: unknown) => log(`token save failed: ${String(error)}`));
   return writing;
 }

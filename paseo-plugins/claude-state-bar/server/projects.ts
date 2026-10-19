@@ -1,5 +1,7 @@
-import { existsSync, watch } from "node:fs";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { renameRetry } from "./renameRetry";
+import { watchSafe } from "./watchSafe";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProjectEntry } from "../shared/projects";
@@ -63,7 +65,7 @@ function ensureProjectsFile(): Promise<void> {
       await mkdir(dirname(PROJECTS_FILE), { recursive: true });
       const tmp = `${PROJECTS_FILE}.${process.pid}.tmp`;
       await writeFile(tmp, JSON.stringify(converted, null, "\t"), "utf8");
-      if (!existsSync(PROJECTS_FILE)) await rename(tmp, PROJECTS_FILE);
+      if (!existsSync(PROJECTS_FILE)) await renameRetry(tmp, PROJECTS_FILE);
       console.log(`[projects] copied ${raw.length} projects from ${legacy}`);
       return;
     }
@@ -102,10 +104,10 @@ let watching = false;
 function watchProjectsFolder(): void {
   if (watching) return;
   try {
-    watch(dirname(PROJECTS_FILE), () => {
+    watchSafe(dirname(PROJECTS_FILE), () => {
       for (const wake of [...waiters]) wake();
       for (const listener of [...listeners]) listener();
-    });
+    }, () => { watching = false; for (const wake of [...waiters]) wake(); });
     watching = true;
   } catch {
     /* 폴더가 아직 없으면 다음 요청 때 다시 */

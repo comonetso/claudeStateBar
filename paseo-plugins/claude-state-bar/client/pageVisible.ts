@@ -6,14 +6,18 @@ declare const document:
   | undefined;
 
 export function pageHidden(): boolean {
-  return typeof document !== "undefined" && document.visibilityState === "hidden";
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") return true;
+  try {
+    const g = globalThis as { PaseoShell?: { isForeground?(): unknown }; window?: { PaseoShell?: { isForeground?(): unknown } } };
+    return (g.PaseoShell ?? g.window?.PaseoShell)?.isForeground?.() === false;
+  } catch { return false; }
 }
 
 /** 화면이 다시 보이는 순간마다 fn 을 부른다. 해제 함수를 돌려준다 */
 export function onPageVisible(fn: () => void): () => void {
   if (typeof document === "undefined" || typeof document.addEventListener !== "function") return () => {};
   const handler = () => {
-    if (document.visibilityState === "visible") fn();
+    if (document.visibilityState === "visible" && !pageHidden()) fn();
   };
   document.addEventListener("visibilitychange", handler);
   return () => document.removeEventListener("visibilitychange", handler);

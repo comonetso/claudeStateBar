@@ -287,7 +287,15 @@ export function startPaneMaxWatch(log: (message: string) => void, screenLabel: (
     observer = o;
   };
   const stopLocation = watchLocation(arm);
-  arm();
+  const page = globalThis as { __claudeStateBar_paneMaxStarted_v1?: boolean };
+  const firstOnPage = !page.__claudeStateBar_paneMaxStarted_v1;
+  page.__claudeStateBar_paneMaxStarted_v1 = true;
+  const current = wsKey();
+  const mark = current ? markOf(current) : null;
+  // 새 페이지의 옛 표식만 처음에 되살린다. 같은 페이지의 플러그인 재시작은 돌아온 것이 아니다.
+  // 감시가 없던 동안 직접 복원한 곳은 다시 들어가도 되살리지 않게 기억도 지운다.
+  if (firstOnPage && mark && mark.at < pageStart) arm();
+  else if (current && mark && !maximizedNow()) forgetMark(current);
 
   const sample = () => {
     const ws = wsKey();

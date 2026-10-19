@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync, chmodSync } from "node:fs";
+import { renameRetry } from "./renameRetry";
+import { existsSync, readFileSync, statSync, writeFileSync, chmodSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -99,7 +100,17 @@ export function refreshTeamLogin(dir: string, log: (m: string) => void = () => {
     try { mode = statSync(path).mode & 0o777; } catch { /* 없으면 600 */ }
     writeFileSync(tmp, JSON.stringify(next), { mode });
     try { chmodSync(tmp, mode); } catch { /* Windows */ }
-    renameSync(tmp, path);
+    let changed = false;
+    try {
+      await renameRetry(tmp, path, { beforeAttempt: () => {
+        if (readLogin(dir)?.refreshToken !== before.refreshToken) { changed = true; throw new Error("login file changed during rename retry"); }
+      } });
+    } catch (error) {
+      try { unlinkSync(tmp); } catch { /* 이미 없음 */ }
+      if (!changed) throw error;
+      const now = readLogin(dir);
+      return fresh(now) ? now!.accessToken! : tok.data.access_token;
+    }
     log(`[team-usage] refreshed, valid until ${new Date(next.claudeAiOauth.expiresAt).toISOString()}`);
     return tok.data.access_token;
   })().catch(() => { log("[team-usage] refresh error"); return null; }).finally(() => { refreshing.delete(dir); });

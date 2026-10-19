@@ -1,4 +1,5 @@
-import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { watchSafe } from "./watchSafe";
+import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { googleKeysFile } from "./googleKeys";
 import { isTeamDaemon } from "./sound";
@@ -58,7 +59,7 @@ export function startTeamKeySync(): () => void {
   const file = googleKeysFile();
   let watcher: FSWatcher | undefined;
   try {
-    watcher = watch(dirname(file), (_event, name) => {
+    watcher = watchSafe(dirname(file), (_event, name) => {
       if (!name || name === basename(file)) syncTeamKeys();
     });
   } catch { /* 폴더가 아직 없으면 시작할 때 한 번만 맞춘다 */ }

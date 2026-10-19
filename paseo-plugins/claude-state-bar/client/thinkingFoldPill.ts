@@ -1,6 +1,8 @@
 import type { PluginButton, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { onThinkingAllOpen, setThinkingAllOpen, thinkingAllOpen } from "./thinkingFold";
 import { setStyleSheet } from "./web";
+import { retainSharedStyle } from "./sharedStyle";
+import { runCleanups } from "./cleanup";
 
 // 입력창 위 "생각 상자 모두 접기·펼치기" 알약(10-08 리규형님: 채팅창 위 오른쪽, 생각 상자의 ↗ 같은 아이콘으로 토글,
 // 마우스를 올리면 풍선 도움말). 풍선 도움말은 단추 이름(title)이다 — Paseo 가 알약 이름을 마우스 올림 도움말로 띄운다
@@ -10,6 +12,7 @@ import { setStyleSheet } from "./web";
 type AgentLike = { id: string; workspaceId?: string | null };
 const TITLE_PREFIX = "생각 상자 모두";
 const STYLE_ID = "claude-state-bar-thinking-fold";
+const STYLE_VERSION = 1;
 
 function look(): Pick<PluginButton, "title" | "icon"> {
   const open = thinkingAllOpen();
@@ -18,7 +21,8 @@ function look(): Pick<PluginButton, "title" | "icon"> {
 
 export function createThinkingFoldPills(client: PluginClientContext, log: (message: string) => void) {
   const pills = new Map<string, PluginButtonRegistration>();
-  setStyleSheet(STYLE_ID, `[aria-label^="${TITLE_PREFIX}"]{margin-left:auto}`);
+  const style = retainSharedStyle(STYLE_ID, STYLE_VERSION, setStyleSheet);
+  style.set(`[aria-label^="${TITLE_PREFIX}"]{margin-left:auto}`);
   const stop = onThinkingAllOpen(() => {
     const next = look();
     for (const reg of pills.values()) reg.update(next);
@@ -47,10 +51,9 @@ export function createThinkingFoldPills(client: PluginClientContext, log: (messa
       }
     },
     remove,
-    // 오른쪽 정렬 스타일은 남긴다 — 기기마다 올라온 플러그인이 같은 스타일을 같이 쓴다(한 기기가 끊겨도 다른 기기 알약은 그대로)
+    // 오른쪽 정렬 스타일은 마지막 연결이 내려갈 때만 걷는다.
     dispose() {
-      stop();
-      for (const id of [...pills.keys()]) remove(id);
+      runCleanups([stop, ...[...pills.keys()].map((id) => () => remove(id)), style.dispose], (error) => log(`thinking fold cleanup failed: ${String(error)}`));
     },
   };
 }

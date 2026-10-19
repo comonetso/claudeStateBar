@@ -2,7 +2,9 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { APP_SETTINGS_KEY, isSyncKey, SHARED_APP_FIELDS, syncPut, syncWait, toShared } from "../shared/settingsSync";
 import { isPublisher, onOwnerChange, ownerState, screenKey } from "./screenRole";
-import { refreshSettingsCache } from "./settingsCache";
+import { refreshSettingsCache, watchPluginSettings } from "./settingsCache";
+import { soundProvider } from "./sounds";
+import { onPageVisible } from "./pageVisible";
 import { isTeamMember } from "./teamMode";
 import {
   appBundleId,
@@ -127,10 +129,26 @@ export function useSyncSlots(): SyncSlotsView | null {
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export function startSettingsSync(client: PluginClientContext, log: (message: string) => void): () => void {
+  let settingsStopped = false, refreshing = false, dirty = false;
+  const refresh = async () => {
+    dirty = true;
+    if (refreshing || settingsStopped) return;
+    refreshing = true;
+    try {
+      while (dirty && !settingsStopped) {
+        dirty = false;
+        await soundProvider()?.refreshSettings();
+      }
+    } catch (error) { log(`settings refresh: ${String(error)}`); }
+    finally { refreshing = false; }
+  };
+  const offSettings = watchPluginSettings(client, () => void refresh(), log);
+  const offVisible = onPageVisible(() => void refresh());
+  const stopSettings = () => { settingsStopped = true; offSettings(); offVisible(); };
   const slot = appBundleId();
   if (!slot) {
     log("settings sync: off (not web or app bundle unknown)");
-    return () => {};
+    return stopSettings;
   }
   const tag = slot.slice(0, 12);
   let firstSeen: Record<string, number> | null = null;
@@ -330,6 +348,7 @@ export function startSettingsSync(client: PluginClientContext, log: (message: st
 
   return () => {
     stopped = true;
+    stopSettings();
     stopWatch();
     stopInput();
     stopRole();

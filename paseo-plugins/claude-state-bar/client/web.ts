@@ -1,4 +1,5 @@
 import { Linking, Platform } from "react-native";
+import { pageHidden } from "./pageVisible";
 import type { Edit } from "./markdownList";
 import type { AudioFile, ThinkingAudio } from "./thinkingPlayer";
 import { shellMuted, watchShellMute } from "./shellMute";
@@ -6,6 +7,7 @@ import { createShellAudio, shellCanSpeak } from "./shellSpeech";
 import { comboOfKey, shortcutMatches, type KeyLike } from "../shared/shortcuts";
 import { joinSplitParens } from "./readParts";
 import { followPlan } from "../shared/thinkingContract";
+import { joinSharedDevice, type SharedDevice } from "./sharedDevice";
 
 /** 키 이벤트 → 단축키 표(shared/shortcuts.ts)가 보는 모양 */
 const keyLike = (e: { code?: string; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean; metaKey?: boolean }): KeyLike =>
@@ -419,7 +421,8 @@ export function setDraggableRow(node: unknown, key: string, group: string, color
  */
 export function setHoverTitle(node: unknown, text: string): void {
   if (!isWeb() || !node) return;
-  (node as { setAttribute?: (name: string, value: string) => void }).setAttribute?.("title", text);
+  const el = node as { getAttribute?: (name: string) => string | null; setAttribute?: (name: string, value: string) => void };
+  if (el.getAttribute?.("title") !== text) el.setAttribute?.("title", text);
 }
 
 // 알약 줄 위 왼쪽 끝 작은 글씨(10-17 폰 "작업 현황" 알약의 개수 — phonePills.tsx). Paseo 는 알약 아이콘을 16px 상자에 담고 그 밖을
@@ -453,7 +456,6 @@ export function setPillBadge(node: unknown, pillLabel: string, text: string | nu
   const old = badgeRows.get(pillLabel);
   if (old && old !== row) { old.removeAttribute("data-csb-badge"); old.removeAttribute("data-csb-badge-of"); badgeRows.delete(pillLabel); }
   if (!row) return;
-  document.getElementById("claude-state-bar-pill-badge")?.remove();
   if (!document.getElementById(PILL_BADGE_STYLE)) setStyleSheet(PILL_BADGE_STYLE, PILL_BADGE_CSS);
   if (text === null) { row.removeAttribute("data-csb-badge"); row.removeAttribute("data-csb-badge-of"); badgeRows.delete(pillLabel); return; }
   row.setAttribute("data-csb-badge", text);
@@ -488,7 +490,7 @@ export function setStyleSheet(id: string, css: string | null): void {
     return;
   }
   if (old) {
-    old.textContent = css;
+    if (old.textContent !== css) old.textContent = css;
     return;
   }
   const el = document.createElement("style");
@@ -761,6 +763,19 @@ export function markWorkspaceInteraction(): void {
   workspaceInteractionVersion();
   const g = globalThis as { __claudeStateBar_workspaceAction_v1?: { revision: number } };
   g.__claudeStateBar_workspaceAction_v1!.revision++;
+}
+
+/** 첫 연결부터 Paseo 자체 조작도 기록한다. PC가 늦게 붙어도 자동 배치가 쓰던 화면을 덮지 않게 한다. */
+export function watchWorkspaceInput(): () => void {
+  const g = globalThis as { __claudeStateBar_workspaceInput_v1?: { users: Set<object>; stop: (() => void) | null } };
+  const hub = (g.__claudeStateBar_workspaceInput_v1 ??= { users: new Set(), stop: null });
+  const token = {};
+  hub.users.add(token);
+  hub.stop ??= onUserInput(markWorkspaceInteraction);
+  return () => {
+    hub.users.delete(token);
+    if (!hub.users.size) { hub.stop?.(); hub.stop = null; }
+  };
 }
 
 /** 공개 navigation에는 파일 target이 없어 같은 앱 내부 정상 이동 함수를 사용한다. 주소 지시·가짜 popstate는 쓰지 않는다. */
@@ -1198,9 +1213,8 @@ function createWebThinkingAudio(): ThinkingAudio {
   let selfPause = false;
   const pauseOwn = () => { if (audio && !audio.paused) { selfPause = true; audio.pause(); } };
   // 폰 앱 음소거 중엔 소리만 끈다 — 읽기(형광펜·진행)는 그대로 가고, 풀면 그 자리부터 들린다(10-15)
-  watchShellMute(() => {
-    if (audio) audio.muted = shellMuted();
-  });
+  let stopMute: (() => void) | undefined;
+  const releaseMute = () => { stopMute?.(); stopMute = undefined; };
   const release = () => {
     if (url) URL.revokeObjectURL(url);
     url = undefined;
@@ -1225,15 +1239,16 @@ function createWebThinkingAudio(): ThinkingAudio {
       audio.playbackRate = rate;
       audio.preservesPitch = true;
       audio.muted = shellMuted();
-      audio.onended = () => { if (generation === token) ended(); };
-      audio.onerror = () => { if (generation === token) error(audio?.error?.message || `오디오 오류 ${audio?.error?.code ?? ""}`); };
+      stopMute ??= watchShellMute(() => { if (audio) audio.muted = shellMuted(); });
+      audio.onended = () => { if (generation === token) { releaseMute(); ended(); } };
+      audio.onerror = () => { if (generation === token) { releaseMute(); error(audio?.error?.message || `오디오 오류 ${audio?.error?.code ?? ""}`); } };
       // 끝까지 들려 멈춘 것(ended)·우리가 멈춘 것은 빼고, 바깥이 멈춘 것만 알린다 — 재생기는 일시정지로 바꿔 컨트롤러가 재생 단추를 보인다
       audio.onpause = () => {
         if (selfPause) { selfPause = false; return; }
         if (generation === token && audio && !audio.ended) interrupted?.();
       };
       selfPause = false;
-      await audio.play();
+      try { await audio.play(); } catch (error) { if (generation === token) releaseMute(); throw error; }
     },
     pause() { if (Platform.OS === "web") pauseOwn(); },
     async resume() {
@@ -1244,6 +1259,7 @@ function createWebThinkingAudio(): ThinkingAudio {
     stop() {
       if (Platform.OS !== "web") return;
       generation += 1;
+      releaseMute();
       if (audio) {
         pauseOwn();
         audio.onended = null;
@@ -1263,9 +1279,9 @@ function createWebThinkingAudio(): ThinkingAudio {
 }
 
 // ── 좁은 화면(폰 모양) 판정 ──
-// Paseo 는 폭 720px 미만을 좁은 화면으로 그린다(0.11.0-beta.5 styles/unistyles.ts breakpoints md: 720 ·
-// constants/layout.ts useIsCompactFormFactor = xs·sm). 좁은 화면은 칸을 하나만 보여 주고 탭 전환도 그 칸의 탭만 보여 준다
-const COMPACT_MAX_WIDTH = 720;
+// Paseo PluginHeaderButtons: compact || width < 1100 이면 단추 하나만 보인다.
+// 폰 가로·PC 반쪽 창도 같은 알약·두 줄·읽기 조절 배치를 쓴다(10-19 결정).
+const COMPACT_MAX_WIDTH = 1100;
 export function isCompactWidth(): boolean {
   return isWeb() && typeof window.innerWidth === "number" && window.innerWidth < COMPACT_MAX_WIDTH;
 }
@@ -1285,7 +1301,9 @@ export function watchCompactWidth(onChange: (compact: boolean) => void): () => v
     onChange(now);
   };
   window.addEventListener("resize", onResize);
-  return () => window.removeEventListener("resize", onResize);
+  // 크기 알림이 생략되는 웹뷰·폭 흉내에서도 두 줄 배치와 알약 등록이 함께 바뀌게 한다.
+  const timer = setInterval(onResize, 1000);
+  return () => { clearInterval(timer); window.removeEventListener("resize", onResize); };
 }
 
 // ── 브라우저 탭 제목(10-10 리규형님: Paseo 웹 탭이 전부 "/start"라 구별이 안 됨 → 위쪽 머리줄과 같은 "카테고리 - 이름") ──
@@ -1413,24 +1431,33 @@ const HEADER_SUBTITLE = '[data-testid="workspace-header-subtitle"]';
 /** shortOf(위쪽 제목 전체) → 좁은 화면에 쓸 이름, 모르는 제목이면 null. 끊기 함수를 돌려준다 */
 export function watchCompactHeader(shortOf: (full: string) => string | null): () => void {
   if (!isWeb() || typeof MutationObserver === "undefined") return () => {};
-  const fullOf = new WeakMap<object, string>(); // 바꾼 글 조각 → 원래 글
+  let live = true;
+  const fullOf = new Map<NodeLike, { full: string; written: string }>();
+  const displays = new Map<HeaderEl, { before: string; written: string }>();
   const firstText = (el: HeaderEl) => document.createTreeWalker(el as unknown as NodeLike, 4).nextNode(); // 글자 노드만
   /** 글 조각의 원래 글 — 우리가 바꾼 값 그대로면 기억한 원래 글, React 가 새로 썼으면 지금 글 */
-  const original = (node: NodeLike, changed: (full: string) => string | null) => {
+  const original = (node: NodeLike) => {
     const saved = fullOf.get(node);
     const now = node.nodeValue ?? "";
-    return saved !== undefined && changed(saved) === now ? saved : now;
+    return saved !== undefined && saved.written === now ? saved.full : now;
   };
   const setText = (node: NodeLike, full: string, value: string) => {
     if (node.nodeValue === value) return;
-    if (value !== full) fullOf.set(node, full);
+    if (value !== full) fullOf.set(node, { full, written: value });
+    else fullOf.delete(node);
     node.nodeValue = value;
   };
   const hide = (el: HeaderEl | null) => {
-    if (el && el.style.display !== "none") el.style.display = "none";
+    if (el && el.style.display !== "none") {
+      displays.set(el, { before: el.style.display, written: "none" });
+      el.style.display = "none";
+    }
   };
   const show = (el: HeaderEl | null) => {
-    if (el && el.style.display === "none") el.style.display = "";
+    if (!el) return;
+    const saved = displays.get(el);
+    if (saved && el.style.display === saved.written) el.style.display = saved.before;
+    displays.delete(el);
   };
   /** "카테고리 - 이름" 의 카테고리. 카테고리가 없는 제목이면 null */
   const categoryOf = (full: string) => {
@@ -1440,12 +1467,16 @@ export function watchCompactHeader(shortOf: (full: string) => string | null): ()
   let queued = false;
   const apply = () => {
     queued = false;
+    if (!live) return;
+    // 복원용 Map이 지나간 작업 공간의 DOM을 계속 붙잡지 않게 한다.
+    for (const node of fullOf.keys()) if ((node as NodeLike & { isConnected?: boolean }).isConnected === false) fullOf.delete(node);
+    for (const el of displays.keys()) if ((el as HeaderEl & { isConnected?: boolean }).isConnected === false) displays.delete(el);
     const titles = document.querySelectorAll(HEADER_TITLE);
     for (let i = 0; i < titles.length; i++) {
       const title = titles[i];
       const tNode = firstText(title);
       if (!tNode || tNode.nodeValue === null) continue;
-      const tFull = original(tNode, shortOf);
+      const tFull = original(tNode);
       // 같은 머리줄의 아래 줄만 — 올라가다 제목이 둘 이상 든 묶음(다른 작업 공간 화면까지 품은 곳)에 닿으면 멈춘다
       let sub: HeaderEl | null = null;
       for (let p = title.parentElement, n = 0; p && n < 3 && !sub; p = p.parentElement, n++) {
@@ -1453,7 +1484,7 @@ export function watchCompactHeader(shortOf: (full: string) => string | null): ()
         sub = p.querySelector(HEADER_SUBTITLE);
       }
       const sNode = sub ? firstText(sub) : null;
-      const sFull = sNode ? original(sNode, categoryOf) : null;
+      const sFull = sNode ? original(sNode) : null;
       const sep = sub?.nextElementSibling && sub.nextElementSibling.textContent?.trim() === "·" ? sub.nextElementSibling : null;
       const badge = sep?.nextElementSibling ?? null;
       const name = shortOf(tFull);
@@ -1488,7 +1519,15 @@ export function watchCompactHeader(shortOf: (full: string) => string | null): ()
   });
   observer.observe(document.body, { childList: true, subtree: true, characterData: true });
   apply();
-  return () => observer.disconnect();
+  return () => {
+    if (!live) return;
+    live = false;
+    observer.disconnect();
+    for (const [node, saved] of fullOf) if (node.nodeValue === saved.written) node.nodeValue = saved.full;
+    for (const [el, saved] of displays) if (el.style.display === saved.written) el.style.display = saved.before;
+    fullOf.clear();
+    displays.clear();
+  };
 }
 
 // ── 소리를 낼 화면 고르기(10-08 리규형님: 소리는 화면 하나에서만, 없으면 마지막으로 쓴 화면) ──
@@ -1537,7 +1576,7 @@ export function watchScreenUse(onUse: () => void): () => void {
 }
 
 // ── 입력창 위 단추 줄: 불투명 띠·맨 아래로 단추 띄우기·아이콘 가운데 유지 ──
-const RAIL_SHEET = "claude-state-bar-composer-rail-v9";
+const RAIL_SHEET = "claude-state-bar-composer-rail-v11";
 const RAIL_CSS =
   // 단추 안 아이콘·글을 가운데로(10-09 리규형님 "아이콘이 왼쪽으로 쏠렸어" — 폰에선 글 없이 아이콘만 남아 49px 단추 왼쪽에 붙었다)
   "[data-csb-track] [role=\"button\"]{justify-content:center !important}" +
@@ -1579,7 +1618,7 @@ type RailEl = Omit<HeaderEl, "style" | "parentElement"> & {
 
 /** 이 장치 코드를 고치면 올린다 — 플러그인을 다시 읽어도 같은 페이지에는 처음 시작한 옛 판 장치가 남아 새 코드가 안 돌았다
  *  (10-08 폰 진단). 더 높은 판이 오면 옛 판 장치를 멈추고 넘겨받는다. 판이 섞인 호스트들은 높은 판 하나를 같이 쓴다 */
-const RAIL_VERSION = 14; // 10: 10-18 좁은 화면 두 줄·목록 끝 여백·개수 글씨 정리 · 11: 윗줄 왼쪽 정렬·설정 알약 맨 오른쪽(10-18 저녁) · 12: 설정 알약 오른쪽 24px(폰 앱 떠 있는 단추) · 13: 넓은 화면 설정 알약 ⇆ 다음 · 14: 좁은 화면 알약 안쪽 여백 8px
+const RAIL_VERSION = 16; // 10: 10-18 좁은 화면 두 줄·목록 끝 여백·개수 글씨 정리 · 11: 윗줄 왼쪽 정렬·설정 알약 맨 오른쪽(10-18 저녁) · 12: 설정 알약 오른쪽 24px(폰 앱 떠 있는 단추) · 13: 넓은 화면 설정 알약 ⇆ 다음 · 14: 좁은 화면 알약 안쪽 여백 8px
 
 // 입력창 위 단추 줄(컨텍스트·목록·접기)을 대화 화면 바탕색 띠로 칠한다(10-09 리규형님 "아이콘 뒷배경이 투명이라 거슬려 — 글자가
 // 안 보여야 해, 헷갈리고 잘 안 보여" · "웹도 동일한 경험으로, 폰 분기 하지 말고"). 단추는 Paseo 가 불투명하게 칠하지만(composerPillStyles
@@ -1672,14 +1711,9 @@ function fitChatListToRail(track: RailEl, rows: boolean): void {
 export function startComposerRail(): () => void {
   if (!isWeb() || typeof MutationObserver === "undefined") return () => {};
   const g = globalThis as Record<string, unknown>;
-  const hub = (g.__claudeStateBar_composerRail_v2 ??= { users: 0, stop: null }) as { users: number; stop: (() => void) | null; version?: number };
-  if ((hub.version ?? 0) < RAIL_VERSION) {
-    hub.stop?.();
-    hub.stop = null;
-    hub.version = RAIL_VERSION;
-  }
+  const hub = (g.__claudeStateBar_composerRail_v2 ??= { users: 0, stop: null }) as SharedDevice & { users: number };
   hub.users += 1;
-  if (!hub.stop) {
+  return joinSharedDevice(hub, RAIL_VERSION, () => {
     const legacy = document.querySelectorAll("[data-csb-rail],[data-csb-ctl],[data-csb-ctl-first],[data-csb-ctl-last]") as unknown as ArrayLike<RailEl>;
     for (let i = 0; i < legacy.length; i++) for (const name of ["data-csb-rail", "data-csb-ctl", "data-csb-ctl-first", "data-csb-ctl-last"]) legacy[i].removeAttribute(name);
     setStyleSheet(RAIL_SHEET, RAIL_CSS);
@@ -1806,15 +1840,7 @@ export function startComposerRail(): () => void {
       }
 
     };
-  }
-  return () => {
-    hub.users -= 1;
-    if (hub.users <= 0 && hub.stop) {
-      hub.stop();
-      hub.stop = null;
-      hub.users = 0;
-    }
-  };
+  }, () => { hub.users = Math.max(0, hub.users - 1); return hub.users === 0; });
 }
 
 // ── 머리줄 단추의 Paseo 도움말 숨기기(10-09 리규형님: 사용량 단추에 마우스를 올리면 뜨는 도움말 "별 필요 없어 — 없애") ──
@@ -1824,22 +1850,17 @@ export function startComposerRail(): () => void {
 // 감추지 못해도(Paseo 가 구조를 바꾸면) 도움말이 다시 보일 뿐 다른 고장은 없다
 type TipEl = { nodeType: number; textContent: string | null; setAttribute(name: string, value: string): void };
 type OverEvent = { target: { closest?(selector: string): unknown } | null };
-const TIP_SHEET = "claude-state-bar-hidden-tip";
+const TIP_SHEET = "claude-state-bar-hidden-tip-v2";
 const TIP_ATTR = "data-csb-hidden-tip";
-const TIP_VERSION = 1;
+const TIP_VERSION = 2;
 
 /** titlePrefix 로 시작하는 설명을 가진 단추의 도움말을 감춘다. 화면에 한 벌만 돈다. 끊기 함수 */
 export function hideButtonTooltip(titlePrefix: string): () => void {
   if (!isWeb() || typeof MutationObserver === "undefined") return () => {};
   const g = globalThis as Record<string, unknown>;
-  const hub = (g.__claudeStateBar_hiddenTip_v1 ??= { users: 0, stop: null }) as { users: number; stop: (() => void) | null; version?: number };
-  if ((hub.version ?? 0) < TIP_VERSION) {
-    hub.stop?.();
-    hub.stop = null;
-    hub.version = TIP_VERSION;
-  }
+  const hub = (g.__claudeStateBar_hiddenTip_v1 ??= { users: 0, stop: null }) as SharedDevice & { users: number };
   hub.users += 1;
-  if (!hub.stop) {
+  return joinSharedDevice(hub, TIP_VERSION, () => {
     const trigger = `[aria-label^="${titlePrefix}"]`;
     setStyleSheet(TIP_SHEET, `[${TIP_ATTR}]{display:none !important}`);
     let observer: MutationObserver | null = null;
@@ -1872,32 +1893,23 @@ export function hideButtonTooltip(titlePrefix: string): () => void {
       observer = null;
       setStyleSheet(TIP_SHEET, null);
     };
-  }
-  return () => {
-    hub.users -= 1;
-    if (hub.users <= 0 && hub.stop) {
-      hub.stop();
-      hub.stop = null;
-      hub.users = 0;
-    }
-  };
+  }, () => { hub.users = Math.max(0, hub.users - 1); return hub.users === 0; });
 }
 
 // ── 대화의 턴·말 읽기(10-09) — Paseo 본문은 그대로 두고 웹 단추만 덧붙인다 ──
 type SpeedKeyBinding = { active: boolean; adjust(direction: -1 | 1): void };
-type SpeedKeyHub = { version: number; users: Map<object, () => SpeedKeyBinding>; stop: (() => void) | null };
+type SpeedKeyHub = SharedDevice & { users: Map<object, () => SpeedKeyBinding> };
 // 3(10-16): 키를 단축키 표에서 읽는다 — 옛 판(< > 고정) 듣기는 물러난다
-const SPEED_KEYS_VERSION = 3;
+const SPEED_KEYS_VERSION = 4;
 /** 같은 페이지의 호스트·옛 판이 남아도 키 듣기는 하나. 가장 나중에 등록한 읽기 중 재생기 하나만 조절한다.
  *  키 = 단축키 표(처음 값 Ctrl+← →, 10-17 — 옛 처음 값 < > 는 읽는 동안 입력창에 < > 를 못 쳤다). 읽는 중에만 가로챈다 */
 export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
   if (!isWeb()) return () => {};
   const g = globalThis as Record<string, unknown>;
   const hub = (g.__claudeStateBar_speedKeys_v1 ??= { version: SPEED_KEYS_VERSION, users: new Map(), stop: null }) as SpeedKeyHub;
-  if (hub.version < SPEED_KEYS_VERSION) { hub.stop?.(); hub.stop = null; hub.users.clear(); hub.version = SPEED_KEYS_VERSION; }
   const token = {};
   hub.users.set(token, binding);
-  if (!hub.stop) {
+  return joinSharedDevice(hub, SPEED_KEYS_VERSION, () => {
     const onKey = (event: KeyEventLike) => {
       // 키는 설정 화면 단축키 칸에서 바꾼다(10-16, 처음 값 Ctrl+← → 10-17)
       const slower = shortcutMatches("read-slower", keyLike(event));
@@ -1911,14 +1923,7 @@ export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
     };
     document.addEventListener("keydown", onKey, true);
     hub.stop = () => document.removeEventListener("keydown", onKey, true);
-  }
-  let disposed = false;
-  return () => {
-    if (disposed) return;
-    disposed = true;
-    hub.users.delete(token);
-    if (!hub.users.size) { hub.stop?.(); hub.stop = null; }
-  };
+  }, () => { hub.users.delete(token); return !hub.users.size; }, () => !hub.users.size);
 }
 
 type ReadSpeedState = { rate: number; options: number[]; color: string; background: string; border: string; px: number };
@@ -2039,8 +2044,8 @@ const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turn
 const READ_MARK = "data-csb-turn-read";
 // v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
 // v7(10-15): 턴 끝난 시각·내 말 시각 항상 보이기 규칙이 붙었다 — 판이 오르면 이름도 바꿔 옛 판이 지우는 스타일과 겹치지 않게
-const READ_SHEET = "claude-state-bar-turn-read-v7";
-const TURN_READ_VERSION = 18; // 18: 따라 읽기 켤 때 선택한 문단부터 — follow.from(10-16) · 17: 따라 읽기 — 바인딩에 follow(10-15) ·9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
+const READ_SHEET = "claude-state-bar-turn-read-v9";
+const TURN_READ_VERSION = 21; // 18: 따라 읽기 켤 때 선택한 문단부터 — follow.from(10-16) · 17: 따라 읽기 — 바인딩에 follow(10-15) ·9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
 /**
  * 꼬리 줄 "작업 시간" 단추의 이름표에서 끝난 시각만 — 0.11.1 AssistantTurnFooter(모듈 4880 Ue)는 작업 시간과 끝난 시각이 둘 다
  * 있을 때 이름표를 `${작업 시간}, ended ${시각}` 으로 만든다("ended" 는 번역 없는 고정 글). 시각은 Paseo formatMessageTimestamp
@@ -2317,6 +2322,12 @@ function timelineRowUncached(el: ReadEl): TimelineRow | null {
   while (root.parentElement && readProps(root.parentElement, (p) => p.itemId === rowProps.itemId && "gapBelow" in p)) root = root.parentElement;
   return { root, stream, kind: item.kind, id: rowProps.itemId as string };
 }
+/** 이미 검증하던 타임라인 행 정보만 노출한다. 모르는 항목은 추측하지 않는다. */
+export function timelineIdentity(node: unknown): { stream: string; id: string; kind: string } | null {
+  if (!isWeb() || !node) return null;
+  const row = timelineRow(node as ReadEl);
+  return row ? { stream: row.stream, id: row.id, kind: row.kind } : null;
+}
 function speechRow(el: ReadEl) {
   const row = timelineRow(el);
   return row?.kind === "assistant_message" ? row : null;
@@ -2591,6 +2602,7 @@ function readPalette(el: ReadEl): ReadPalette {
 
 type ReadRecord = {
   anchor: ReadEl;
+  target: string | ReadEl;
   hostId: string;
   kind: "turn" | "message";
   row: ReadEl;
@@ -2606,18 +2618,22 @@ type ReadRecord = {
   /** 읽기 시작 때 넘긴 문단마다의 화면 문단 요소 — 재생기 문단 번호로 형광펜을 칠한다 */
   blocks?: (ReadEl | null)[];
 };
-type ReadHub = { version: number; users: Map<object, (() => TurnReadBinding) & { csbVersion?: number }>; stop: (() => void) | null; refresh: (() => void) | null };
+type ReadHub = SharedDevice & { users: Map<object, (() => TurnReadBinding) & { csbVersion?: number }> };
 /** 한 페이지·한 장치. 호스트 번호가 맞고 읽기가 켜진 연결만 자기 데몬의 TTS 를 쓴다. */
 export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(): void; dispose(): void } {
   const noop = { refresh: () => {}, dispose: () => {} };
   if (!isWeb() || typeof MutationObserver === "undefined") return noop;
   const g = globalThis as Record<string, unknown>;
   const hub = (g.__claudeStateBar_turnRead_v1 ??= { version: TURN_READ_VERSION, users: new Map(), stop: null, refresh: null }) as ReadHub;
-  if (hub.version < TURN_READ_VERSION) { hub.stop?.(); hub.stop = null; hub.refresh = null; hub.users.clear(); hub.version = TURN_READ_VERSION; }
   const token = {};
   hub.users.set(token, Object.assign(binding, { csbVersion: TURN_READ_VERSION }));
-  if (!hub.stop) {
-    const records = new Map<ReadEl, ReadRecord>();
+  const dispose = joinSharedDevice(hub, TURN_READ_VERSION, () => {
+    const records = new Map<string | ReadEl, ReadRecord>();
+    const snapshots = new Map<string | ReadEl, string[]>();
+    const targetOf = (el: ReadEl): string | ReadEl => {
+      const row = timelineRow(el);
+      return row ? JSON.stringify([row.stream, row.id, "speech"]) : el;
+    };
     let live = true;
     let queued: "frame" | "timer" | false = false;
     // 지난 검사의 말 블록·복사 단추 — 화면 변화가 이것들과 관계있을 때만 검사를 깨운다(아래 relevant)
@@ -2627,13 +2643,13 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
     let followOn = false;
     // 화면 탐색 실패는 그릴 때마다 되풀이된다 — 같은 이유는 한 번만 서버 기록으로 보낸다
     let lastScanError = "";
-    const owner = (hostId: string) => [...hub.users.values()].filter((get) => get.csbVersion === TURN_READ_VERSION).map((get) => get()).find((b) => b.hostId === hostId && b.enabled);
-    const bindingFor = (hostId: string) => [...hub.users.values()].filter((get) => get.csbVersion === TURN_READ_VERSION).map((get) => get()).find((b) => b.hostId === hostId);
+    const owner = (hostId: string) => [...hub.users.values()].map((get) => get()).find((b) => b.hostId === hostId && b.enabled);
+    const bindingFor = (hostId: string) => [...hub.users.values()].map((get) => get()).find((b) => b.hostId === hostId);
     const trace = (r: ReadRecord, message: string) => (bindingFor(r.hostId) ?? [...hub.users.values()][0]?.())?.log?.(`${r.kind}: ${message}`);
     const fail = (r: ReadRecord, reason: string) => {
       r.failure = reason;
       trace(r, `중단: ${reason}`);
-      bindingFor(r.hostId)?.fail?.(r.anchor, reason);
+      bindingFor(r.hostId)?.fail?.(r.target, reason);
       hub.refresh?.();
     };
     // 옛 판 정리가 늦었던 요소도 전용 표식으로만 걷는다.
@@ -2669,13 +2685,11 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       return el;
     };
     const remove = (r: ReadRecord) => {
-      const b = owner(r.hostId);
-      if (b?.playing?.target === r.anchor) b.stop();
       r.spin?.remove();
       r.err?.remove();
       r.button.remove();
       r.group?.remove();
-      records.delete(r.anchor);
+      records.delete(r.target);
     };
     const start = (r: ReadRecord) => {
       try {
@@ -2684,8 +2698,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
         const b = bindingFor(r.hostId);
         if (!b) { fail(r, "이 호스트의 읽기 연결을 찾지 못했습니다"); return; }
         // 이 단추로 읽는 중(소리 만드는 중·일시정지 포함)이면 다시 누를 때 멈춘다(10-12 리규형님). 기준은 스피커 녹색과 같다(speaker)
-        if (b.playing?.target === r.anchor) { trace(r, "다시 눌러 중지"); b.stop(); return; }
-        if (!b.enabled) { b.read(r.anchor, ""); return; } // 키·설정의 정확한 이유는 연결 쪽에서
+        if (b.playing?.target === r.target) { trace(r, "다시 눌러 중지"); b.stop(); return; }
+        if (!b.enabled) { b.read(r.target, ""); return; } // 키·설정의 정확한 이유는 연결 쪽에서
         const group = r.kind === "turn" ? lastSpeech(r.anchor) : speechGroup(r.anchor);
         if (!group) { fail(r, "이 턴의 화면 본문을 찾지 못했습니다. 본문을 화면에 보이게 한 뒤 다시 눌러 주세요"); return; }
         tablesSeen = 0;
@@ -2694,10 +2708,11 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
         trace(r, `화면 본문 ${group.messages.length}블록·${parts.length}문단·${text.length}자·표 ${tablesSeen}개`);
         if (!text) { fail(r, "이 턴의 화면에 읽을 글이 없습니다"); return; }
         r.blocks = parts.map((p) => p.block);
+        snapshots.set(r.target, parts.map((p) => p.text));
         // 이 말 안에서 글을 선택해 두고 누르면 그 문단부터(재생기 문단 번호 = parts 번호). 선택을 썼으면 푼다 — 선택 색이 형광펜을 덮지 않게
         const from = selectedPart(r.blocks);
         if (from !== null) { trace(r, `선택한 ${from + 1}번째 문단부터`); clearSelection(); }
-        b.read(r.anchor, text, from ?? undefined);
+        b.read(r.target, text, from ?? undefined);
       } catch (error) { fail(r, `읽기 시작 실패: ${String(error)}`); }
     };
     const paintTurn = (r: ReadRecord) => {
@@ -2734,9 +2749,9 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       if (label.nextSibling !== span) row.insertBefore(span, label.nextSibling);
       return true;
     };
-    const make = (anchor: ReadEl, hostId: string, kind: ReadRecord["kind"], row: ReadEl) => {
+    const make = (anchor: ReadEl, hostId: string, kind: ReadRecord["kind"], row: ReadEl, target: string | ReadEl) => {
       const size = kind === "turn" ? anchor.querySelector("svg")?.getAttribute("width") ?? "14" : String((readAppFontSizes().content ?? 15) - 1);
-      const r: ReadRecord = { anchor, hostId, kind, row, button: null as unknown as ReadEl, group: null, spin: null };
+      const r: ReadRecord = { anchor, target, hostId, kind, row, button: null as unknown as ReadEl, group: null, spin: null };
       r.button = button(kind === "turn" ? "턴 읽기" : "이 말 읽기", "Volume2", () => start(r), size);
       if (kind === "turn") {
         paintTurn(r);
@@ -2747,12 +2762,17 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
         r.group.appendChild(r.button);
         row.appendChild(r.group);
       }
-      records.set(anchor, r);
+      records.set(target, r);
       return r;
     };
     // 스피커 상태만 — 읽는 중 녹색, 소리 만드는 중 옆에 빙글빙글(10-11). 이전·일시정지·중지·다음·속도는 입력창 위 한 곳(startReadDock)
     const speaker = (r: ReadRecord, b: TurnReadBinding) => {
-      const playing = b.playing?.target === r.anchor ? b.playing : null;
+      const playing = b.playing?.target === r.target ? b.playing : null;
+      if (playing && snapshots.has(r.target)) {
+        const group = r.kind === "turn" ? lastSpeech(r.anchor) : speechGroup(r.anchor);
+        const parts = group?.messages.flatMap(screenParts) ?? [];
+        r.blocks = snapshots.get(r.target)!.map((text, index) => parts[index]?.text === text ? parts[index].block : null);
+      }
       const on = playing ? "" : null;
       if (r.button.getAttribute("data-csb-read-on") !== on) {
         if (on === null) r.button.removeAttribute("data-csb-read-on");
@@ -2768,7 +2788,7 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       if (loading && r.spin && (r.spin.parentElement !== r.button.parentElement || r.button.nextSibling !== r.spin)) r.button.parentElement?.insertBefore(r.spin, r.button.nextSibling);
       if (!loading && r.spin) { r.spin.remove(); r.spin = null; }
       // 실패하면 단추 오른쪽에 빨간 글 — 생각 상자와 같은 문구(10-11, 전엔 마우스를 올려야만 보였다)
-      const error = r.failure || (!playing && b.failed?.target === r.anchor ? b.failed.error : playing?.error || "");
+      const error = r.failure || (!playing && b.failed?.target === r.target ? b.failed.error : playing?.error || "");
       const text = error ? (error.startsWith("소리 읽기 실패") ? error : `소리 읽기 실패: ${error}`) : "";
       if (text && !r.err) r.err = readNode("span", "error");
       if (text && r.err) {
@@ -2784,7 +2804,7 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       try {
         // 한 번의 검사 안에서만 탐색 결과를 공유한다(위 inReadScan — 끝나면 버림)
         inReadScan(() => {
-        const wanted = new Set<ReadEl>();
+        const wanted = new Set<string | ReadEl>();
         const lastWithFooter = new Set<ReadEl>();
         const copies = new Set(Array.from(document.querySelectorAll('[role="button"][aria-label]') as unknown as ArrayLike<ReadEl>).filter((el) => TURN_COPY_LABELS.has(el.getAttribute("aria-label") ?? "")));
         // 복사 직후 '복사됨' 이름표여도 기존 꼬리 줄 단추는 유지한다.
@@ -2800,10 +2820,11 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           if (!b) continue;
           const last = lastSpeech(copy);
           if (last) lastWithFooter.add(last.first);
-          wanted.add(copy);
-          let r = records.get(copy);
-          if (r && (r.hostId !== hostId || r.row !== row || !r.button.isConnected)) { remove(r); r = undefined; }
-          r ??= make(copy, hostId, "turn", row);
+          const target = targetOf(last?.first ?? copy);
+          wanted.add(target);
+          let r = records.get(target);
+          if (r && (r.kind !== "turn" || r.anchor !== copy || r.hostId !== hostId || r.row !== row || !r.button.isConnected)) { remove(r); r = undefined; }
+          r ??= make(copy, hostId, "turn", row, target);
           paintTurn(r);
           // 작업 시간 글자 등이 뒤늦게 붙으면 다시 맨 오른쪽으로(10-11)
           if (row.lastElementChild !== r.button && row.lastElementChild !== r.spin && row.lastElementChild !== r.err) row.appendChild(r.button);
@@ -2823,12 +2844,12 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           const hostId = messageProps(el)?.serverId as string | undefined;
           const b = hostId ? owner(hostId) : undefined;
           if (!b) continue;
-          let r = records.get(el);
-          const active = b.playing?.target === el;
-          if (lastWithFooter.has(el) && !active) continue;
-          wanted.add(el);
-          if (r && (r.hostId !== hostId || !r.group?.isConnected)) { remove(r); r = undefined; }
-          r ??= make(el, hostId!, "message", speech.last);
+          const target = targetOf(el);
+          if (lastWithFooter.has(el)) continue;
+          let r = records.get(target);
+          wanted.add(target);
+          if (r && (r.kind !== "message" || r.anchor !== el || r.hostId !== hostId || !r.group?.isConnected)) { remove(r); r = undefined; }
+          r ??= make(el, hostId!, "message", speech.last, target);
           // 같은 말에 블록이 늘어나면,재생은 유지하고 자기 조절만 마지막으로 옮긴다.
           if (r.row !== speech.last) { r.row = speech.last; r.row.appendChild(r.group!); }
           const muted = readPalette(r.row).muted;
@@ -2837,17 +2858,17 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           if (r.button.style.display !== display) r.button.style.display = display;
           speaker(r, b);
         }
-        for (const r of records.values()) if (!wanted.has(r.anchor)) remove(r);
+        for (const r of records.values()) if (!wanted.has(r.target)) remove(r);
+        for (const target of snapshots.keys()) if (![...hub.users.values()].some((get) => get().playing?.target === target)) snapshots.delete(target);
         // 읽는 문단 형광펜: 재생 중인 기록의 문단 번호 자리 하나만. 읽기가 끝나거나 다른 것을 읽으면 옮기거나 지운다
         let lit: ReadEl | null = null;
         for (const r of records.values()) {
           const playing = owner(r.hostId)?.playing;
-          if (playing?.target === r.anchor && typeof playing.index === "number") lit = r.blocks?.[playing.index] ?? null;
+          if (playing?.target === r.target && typeof playing.index === "number") lit = r.blocks?.[playing.index] ?? null;
         }
         // 따라 읽기(10-15) — 호스트마다 켜진 대화 하나. 형광펜은 턴·말 읽기가 먼저(한 호스트의 재생기는 하나라 같이 읽지 않는다)
         const followHosts = new Set<string>();
         for (const get of hub.users.values()) {
-          if (get.csbVersion !== TURN_READ_VERSION) continue;
           const b = get();
           if (!b.follow || !b.hostId || followHosts.has(b.hostId)) continue;
           followHosts.add(b.hostId);
@@ -2885,8 +2906,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
     const frame = (globalThis as { requestAnimationFrame?: (fn: () => void) => number }).requestAnimationFrame;
     // 화면이 숨으면(다른 탭·창 최소화) 브라우저가 그리기를 멈춰 위 맞춤 함수가 돌지 않는다. 따라 읽기가 켜진 동안만 그리기를 기다리지
     // 않고 다음 차례에 본다(10-15 리규형님 "숨어 있어도 계속 읽기"). 보일 때나 따라 읽기가 꺼졌을 때는 예전 그대로
-    const hidden = () => (document as unknown as { visibilityState?: string }).visibilityState === "hidden";
-    const following = () => [...hub.users.values()].some((get) => get.csbVersion === TURN_READ_VERSION && !!get().follow);
+    const hidden = pageHidden;
+    const following = () => [...hub.users.values()].some((get) => !!get().follow);
     // 걸어 둔 예약: 그리기 대기("frame")·다음 차례 대기("timer"). 그리기 대기는 숨은 화면에서 돌지 않으므로, 숨은 화면에서 따라 읽기
     // 중이면 그리기 대기가 걸려 있어도 다음 차례 대기를 하나 더 건다 — 안 그러면 처음부터 숨어 있던 화면은 켜기 전에 걸린 그리기
     // 예약 하나에 막혀 검사가 한 번도 돌지 않는다(10-15 실측). 두 예약이 다 돌면 검사가 한 번 더 돌 뿐이다
@@ -2938,18 +2959,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
       setStyleSheet(READ_SHEET, null);
     };
     apply();
-  } else hub.refresh?.();
-  let disposed = false;
-  return {
-    refresh: () => hub.refresh?.(),
-    dispose: () => {
-      if (disposed) return;
-      disposed = true;
-      hub.users.delete(token);
-      if (hub.version === TURN_READ_VERSION && ![...hub.users.values()].some((get) => get.csbVersion === TURN_READ_VERSION)) { hub.stop?.(); hub.stop = null; hub.refresh = null; }
-      else hub.refresh?.();
-    },
-  };
+  }, () => { hub.users.delete(token); return !hub.users.size; }, () => !hub.users.size);
+  return { refresh: () => hub.refresh?.(), dispose };
 }
 
 // ── 직전 내 말로(10-15 리규형님 "나의 턴을 찾으려면 스크롤을 엄청 올려도 구분이 안 된다 — 바로 직전 나의 발화로 올라가는 알약") ──
@@ -3055,18 +3066,17 @@ export type ReadDockState = {
 };
 const DOCK_MARK = "data-csb-read-dock";
 // 판이 오르면 스타일 이름도 바꾼다 — 옛 판을 정리할 때 옛 이름 스타일만 지워지게(project_paseo_client_hub_stale)
-const DOCK_SHEET = "claude-state-bar-read-dock-v6";
-const DOCK_VERSION = 6; // 2: 가운데 배치(10-12) · 3: 좁은 화면은 두 줄 띠의 아랫줄 남는 공간 가운데(10-18) · 4: 알약 줄 위(되돌림) · 5: 아랫줄에 작게(10-18 밤) · 6: 속도 칸 기본 모양 끔(폰 테두리 두 겹)
-type DockHub = { version: number; users: Map<object, (() => ReadDockState) & { csbVersion?: number }>; stop: (() => void) | null; refresh: (() => void) | null };
+const DOCK_SHEET = "claude-state-bar-read-dock-v8";
+const DOCK_VERSION = 8; // 2: 가운데 배치(10-12) · 3: 좁은 화면은 두 줄 띠의 아랫줄 남는 공간 가운데(10-18) · 4: 알약 줄 위(되돌림) · 5: 아랫줄에 작게(10-18 밤) · 6: 속도 칸 기본 모양 끔(폰 테두리 두 겹)
+type DockHub = SharedDevice & { users: Map<object, (() => ReadDockState) & { csbVersion?: number }> };
 export function startReadDock(state: () => ReadDockState): { refresh(): void; dispose(): void } {
   const noop = { refresh: () => {}, dispose: () => {} };
   if (!isWeb() || typeof MutationObserver === "undefined") return noop;
   const g = globalThis as Record<string, unknown>;
   const hub = (g.__claudeStateBar_readDock_v1 ??= { version: DOCK_VERSION, users: new Map(), stop: null, refresh: null }) as DockHub;
-  if (hub.version < DOCK_VERSION) { hub.stop?.(); hub.stop = null; hub.refresh = null; hub.users.clear(); hub.version = DOCK_VERSION; }
   const token = {};
   hub.users.set(token, Object.assign(state, { csbVersion: DOCK_VERSION }));
-  if (!hub.stop) {
+  const dispose = joinSharedDevice(hub, DOCK_VERSION, () => {
     let live = true;
     let queued = false;
     let dock: ReadEl | null = null;
@@ -3079,7 +3089,6 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
     // 호스트(PC·서버)마다 플러그인이 따로 올라와 재생기도 따로다 — 지금 읽는 쪽 하나를 고른다
     const current = () => {
       for (const get of hub.users.values()) {
-        if (get.csbVersion !== DOCK_VERSION) continue;
         const s = get();
         if (s.playing) return s;
       }
@@ -3226,18 +3235,8 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
       setStyleSheet(DOCK_SHEET, null);
     };
     apply();
-  } else hub.refresh?.();
-  let disposed = false;
-  return {
-    refresh: () => hub.refresh?.(),
-    dispose: () => {
-      if (disposed) return;
-      disposed = true;
-      hub.users.delete(token);
-      if (hub.version === DOCK_VERSION && ![...hub.users.values()].some((get) => get.csbVersion === DOCK_VERSION)) { hub.stop?.(); hub.stop = null; hub.refresh = null; }
-      else hub.refresh?.();
-    },
-  };
+  }, () => { hub.users.delete(token); return !hub.users.size; }, () => !hub.users.size);
+  return { refresh: () => hub.refresh?.(), dispose };
 }
 
 /** 화면 테마 색 변수 값(웹) — 플러그인 테마 값에 없는 색(밝은 녹색 등)을 생각 상자(react-native)에서도 같은 색으로 쓰려고(10-11) */

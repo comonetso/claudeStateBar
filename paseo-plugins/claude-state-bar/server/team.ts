@@ -1,3 +1,4 @@
+import { renameRetry } from "./renameRetry";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, posix } from "node:path";
@@ -175,7 +176,7 @@ function changeTeam(change: (members: TeamMember[]) => string | null): Promise<R
     // 임시 파일에 다 쓴 뒤 바꿔 끼운다 — 쓰다 끊겨도 반쯤 쓴 파일이 남지 않는다
     const tmp = `${FILE}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify({ members }, null, "\t"), "utf8");
-    await rename(tmp, FILE);
+    await renameRetry(tmp, FILE);
     return { ok: true, members };
   };
   const done = writing.then(run, run);

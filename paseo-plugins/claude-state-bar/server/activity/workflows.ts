@@ -1,3 +1,5 @@
+import { readConversation } from "../conversationReader";
+import { readTextTail } from "../jsonlReader";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AgentRow, BgCard, WorkflowCard } from "../../shared/activity";
@@ -41,12 +43,6 @@ async function listDir(path: string): Promise<string[]> {
 
 // 판독 결과 캐시: 크기·수정 시각이 같으면 다시 읽지 않는다(원문은 담지 않음)
 const cache = new Map<string, { size: number; mtimeMs: number; value: unknown }>();
-// 열린 대화의 두 판독은 같은 본문에서 계산한다. 진행 중 Promise에는 판독 결과만 남기고 원문은 버린다.
-const conversationReads = new Map<string, { size: number; mtimeMs: number; promise: Promise<{
-  facts: ReturnType<typeof parseSessionFacts>;
-  conversation: ConversationFacts;
-}> }>();
-
 async function readParsed<T>(path: string, kind: string, parse: (text: string) => T): Promise<T | null> {
   const key = `${kind}|${path}`;
   try {
@@ -54,24 +50,8 @@ async function readParsed<T>(path: string, kind: string, parse: (text: string) =
     const hit = cache.get(key);
     if (hit && hit.size === info.size && hit.mtimeMs === info.mtimeMs) return hit.value as T;
     if (kind === "session-facts" || kind === "conversation") {
-      let pending = conversationReads.get(path);
-      if (!pending || pending.size !== info.size || pending.mtimeMs !== info.mtimeMs) {
-        const promise: Promise<{ facts: ReturnType<typeof parseSessionFacts>; conversation: ConversationFacts }> =
-          readFile(path, "utf8").then((text) => {
-            const value = { facts: parseSessionFacts(text), conversation: conversationFacts(text) };
-            if (conversationReads.get(path)?.promise === promise) {
-              cache.set(`session-facts|${path}`, { size: info.size, mtimeMs: info.mtimeMs, value: value.facts });
-              cache.set(`conversation|${path}`, { size: info.size, mtimeMs: info.mtimeMs, value: value.conversation });
-            }
-            return value;
-          }).finally(() => {
-            if (conversationReads.get(path)?.promise === promise) conversationReads.delete(path);
-          });
-        pending = { size: info.size, mtimeMs: info.mtimeMs, promise };
-        conversationReads.set(path, pending);
-      }
-      const value = await pending.promise;
-      return (kind === "session-facts" ? value.facts : value.conversation) as T;
+      const value = await readConversation(path);
+      return (kind === "session-facts" ? value.facts : { notices: value.notices, background: value.background }) as T;
     }
     const value = parse(await readFile(path, "utf8"));
     cache.set(key, { size: info.size, mtimeMs: info.mtimeMs, value });
@@ -574,16 +554,10 @@ async function isDir(path: string): Promise<boolean> {
 // Claude Code 자기 작업 출력(…/tasks/<id>.output)처럼 생긴 경로만 연다(확장 bgOutputUri)
 const OUTPUT_PATH_RE = /[\\/]tasks[\\/][A-Za-z0-9_-]+\.output$/;
 
-/** 출력 끝의 종료 코드. 크기·수정 시각이 같으면 다시 읽지 않는다 */
+/** 최근 64KiB에서 출력 끝의 종료 코드를 확인한다. */
 async function outputTail(path: string): Promise<{ code: number | undefined; mtimeMs: number } | null> {
-  let mtimeMs = 0;
-  try {
-    mtimeMs = (await stat(path)).mtimeMs;
-  } catch {
-    return null;
-  }
-  const code = await readParsed(path, "bg-tail", (text) => exitCodeFromOutputTail(text) ?? -1);
-  return code === null ? null : { code: code === -1 ? undefined : code, mtimeMs };
+  try { const tail = await readTextTail(path); return { code: exitCodeFromOutputTail(tail.text), mtimeMs: tail.mtimeMs }; }
+  catch { return null; }
 }
 
 /**
@@ -633,7 +607,8 @@ export async function readBgOutput(cwd: string, sessionId: string, taskId: strin
   if (task.kind === "monitor" && !task.outputFile) return { text: task.events.join("\n"), gone: false };
   if (!task.outputFile || !OUTPUT_PATH_RE.test(task.outputFile)) return { text: "", gone: true };
   try {
-    return { text: await readFile(task.outputFile, "utf8"), gone: false };
+    const tail = await readTextTail(task.outputFile, 32 * 1024 * 1024);
+    return { text: (tail.clipped ? "[앞부분 생략 — 최근 32MiB 출력]\n" : "") + tail.text, gone: false };
   } catch {
     return events !== null ? { text: events, gone: false } : { text: "", gone: true };
   }

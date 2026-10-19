@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { renameRetry, serializeFileWrite } from "./renameRetry";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_STT_HINTS } from "../shared/stt";
@@ -23,10 +24,12 @@ export async function saveSttHints(hints: string):
   Promise<{ ok: true; hosts: { host: string; ok: boolean }[] } | { ok: false; reason: "write" }> {
   const text = `${hints.replace(/\s+/g, " ").trim()}\n`;
   try {
-    mkdirSync(DIR, { recursive: true });
-    const tmp = `${FILE}.${process.pid}.tmp`;
-    writeFileSync(tmp, text, "utf8");
-    renameSync(tmp, FILE);
+    await serializeFileWrite(FILE, async () => {
+      mkdirSync(DIR, { recursive: true });
+      const tmp = `${FILE}.${process.pid}.tmp`;
+      writeFileSync(tmp, text, "utf8");
+      await renameRetry(tmp, FILE);
+    });
   } catch (error) {
     console.log(`[stt-hints] write failed: ${(error as NodeJS.ErrnoException).code ?? "error"}`);
     return { ok: false, reason: "write" };

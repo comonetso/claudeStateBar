@@ -54,12 +54,16 @@ export function createSoundRouter(coordinatorId: string, file = soundDataFile("s
     const s = screens.get(screenId);
     if (s && s.seenAt !== Number.NEGATIVE_INFINITY) screens.set(screenId, { ...s, seenAt: now() });
   };
-  const choose = (projectKey: string | null) => {
+  const choose = (projectKey: string | null, taking?: string) => {
     // 음소거한 화면(폰 앱 단추)은 후보가 아니다 — 그 화면이 초록이어도 다른 화면이 울린다(리규형님 10-15 "다른 화면으로 넘긴다").
     // 이미 그 화면에 배정한 소리도 가져가는 순간(take) 다시 골라 넘어간다
     const all = [...screens.values()].filter((s) => live(s) && !s.muted);
-    const green = projectKey === null ? [] : all.filter((s) => s.projectKey === projectKey);
-    return (green.length ? green : all).sort((a, b) => b.useOrder - a.useOrder || a.screenId.localeCompare(b.screenId))[0]?.screenId;
+    // 현재 기다리는 화면을 먼저 고른다. take 중인 화면도 방금 응답을 받은 살아 있는 화면이다.
+    // 새로고침으로 사라진 옛 화면의 초록·사용 순서가 살아 있는 화면을 이기지 않게 한다.
+    const waiting = all.filter((s) => s.screenId === taking || waiters.get(s.screenId)?.size);
+    const eligible = waiting.length ? waiting : all;
+    const green = projectKey === null ? [] : eligible.filter((s) => s.projectKey === projectKey);
+    return (green.length ? green : eligible).sort((a, b) => b.useOrder - a.useOrder || a.screenId.localeCompare(b.screenId))[0]?.screenId;
   };
   const wake = (id?: string) => { if (id) for (const f of [...(waiters.get(id) ?? [])]) f(); };
   const save = async (r: RecordEntry) => { const e = { ...r, at: now() }; await journal.append(e); records.set(r.eventId, e); };
@@ -133,7 +137,7 @@ export function createSoundRouter(coordinatorId: string, file = soundDataFile("s
         const selected = screens.get(r.screenId);
         if (!selected || !live(selected) || now() >= r.expiresAt!) { await drop(r); return { ...envelope, play: false }; }
         // 승인 전 최신 초록과 사용 순서를 반영한다. 발급한 권리는 다시 옮기지 않는다.
-        const winner = choose(r.event!.projectKey);
+        const winner = choose(r.event!.projectKey, input.screen.screenId);
         if (winner !== r.screenId) {
           await save({ ...r, screenId: winner, token: randomUUID(), state: winner ? "queued" : "dropped" });
           wake(winner); return { ...envelope, play: false };
@@ -146,7 +150,12 @@ export function createSoundRouter(coordinatorId: string, file = soundDataFile("s
     async cancel(eventId: string) { return journal.serial(async () => { const r = records.get(eventId); if (r?.state === "issued") return { ok: false }; await drop(r ?? { eventId, state: "cancelled" }, "cancelled"); return { ok: true }; }); },
     // 지우지 않고 후보에서만 뺀다 — 지우면 다시 붙을 때 새 화면으로 받아 "가장 최근에 쓴 화면"으로 올라간다(잠깐 끊긴 폰이 소리를
     // 가져가던 것, 10-08 Claude). 사용 순서·번호는 남겨 두고 다시 등록하면 후보로 돌아온다
-    async dropScreen(screenId: string) { return journal.serial(async () => { const s = screens.get(screenId); if (s) screens.set(screenId, { ...s, seenAt: Number.NEGATIVE_INFINITY }); for (const r of records.values()) if (r.state === "queued" && r.screenId === screenId) await drop(r); wake(screenId); return { ok: true }; }); },
+    async dropScreen(screenId: string) { return journal.serial(async () => { const s = screens.get(screenId); if (s) screens.set(screenId, { ...s, seenAt: Number.NEGATIVE_INFINITY }); for (const r of records.values()) if (r.state === "queued" && r.screenId === screenId) {
+      // 발급 전이며 아직 유효한 소리만 지금 살아 있는 화면으로 넘긴다. issued·재시작·회복 후 재생은 대상이 아니다.
+      const winner = now() < r.expiresAt! ? choose(r.event!.projectKey) : undefined;
+      if (winner) { await save({ ...r, screenId: winner, token: randomUUID() }); wake(winner); }
+      else await drop(r);
+    } wake(screenId); return { ok: true }; }); },
     async result(input: { screenId: string; eventId: string; token: string; outcome: string }) { return journal.serial(async () => { const r = records.get(input.eventId); if (!r || r.state !== "issued" || r.token !== input.token || r.screenId !== input.screenId) return { ok: false }; await save({ ...r, outcome: input.outcome }); console.log(`[sound-v2] ${input.outcome} ${r.eventId}`); return { ok: true }; }); },
     dispose() { disposed = true; for (const id of [...waiters.keys()]) wake(id); },
   };

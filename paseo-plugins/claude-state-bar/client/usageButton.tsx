@@ -10,6 +10,7 @@ import { useEffect } from "react";
 import { View } from "react-native";
 import { availableProviders, shortName, shownWindows, summaryLabel, UsageTable, useUsage, windowName, windowPctText, type Usage } from "./usageFooter";
 import { hideButtonTooltip, setStyleSheet } from "./web";
+import { retainSharedStyle } from "./sharedStyle";
 
 // 작업 공간 머리줄 "사용량" 단추(리규형님 10-06 결정): 작업 현황 단추 왼쪽에 "Claude 1·31 │ Codex 13"(계정마다 Paseo 가
 // 요약으로 표시한 창 순서 — Claude 5시간·주간, Codex 주간), 누르면 왼쪽 아래 사용량 표와 같은 것을 작은 창으로 띄운다.
@@ -27,6 +28,7 @@ const POPOVER_WIDTH = 300;
 // 좁은 화면(폰)은 Paseo 가 단추에 글자 없이 아이콘만 그린다 — 숫자는 누르면 뜨는 창에서 본다
 const TITLE_PREFIX = "사용량 — ";
 const WIDTH_STYLE_ID = "claude-state-bar-usage-button-width";
+const WIDTH_STYLE_VERSION = 1;
 const WIDTH_CSS = `[aria-label^="${TITLE_PREFIX}"]{max-width:none !important}`;
 
 function presentation(usage: Usage | null): Pick<PluginButton, "label" | "title"> {
@@ -42,7 +44,8 @@ export type HeaderButtonSet = { add(workspaceId: string): void; drop(workspaceId
 export function createUsageButtons(client: PluginClientContext): HeaderButtonSet {
   const registrations = new Map<string, PluginButtonRegistration>();
   const shown = new Map<string, string>();
-  setStyleSheet(WIDTH_STYLE_ID, WIDTH_CSS);
+  const widthStyle = retainSharedStyle(WIDTH_STYLE_ID, WIDTH_STYLE_VERSION, setStyleSheet);
+  widthStyle.set(WIDTH_CSS);
   const stopTip = hideButtonTooltip(TITLE_PREFIX);
 
   function UsageIcon({ workspaceId, size, color }: PluginButtonIconProps) {
@@ -83,7 +86,7 @@ export function createUsageButtons(client: PluginClientContext): HeaderButtonSet
       shown.delete(workspaceId);
     },
     dispose() {
-      setStyleSheet(WIDTH_STYLE_ID, null);
+      widthStyle.dispose();
       stopTip();
     },
   };

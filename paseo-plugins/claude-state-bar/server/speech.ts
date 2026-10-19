@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { renameRetry, serializeFileWrite } from "./renameRetry";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { defaultSpeechSettings, speechSchema, type SpeechLang, type SpeechSettings } from "../shared/speech";
 import { googleKeysFile } from "./googleKeys";
@@ -25,11 +26,14 @@ export async function saveSpeechSettings(input: SpeechSettings) {
   const file = speechFile();
   const tmp = `${file}.${process.pid}.tmp`;
   try {
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(tmp, text, "utf8");
-    renameSync(tmp, file);
+    await serializeFileWrite(file, async () => {
+      mkdirSync(dirname(file), { recursive: true });
+      try {
+        writeFileSync(tmp, text, "utf8");
+        await renameRetry(tmp, file);
+      } catch (error) { try { unlinkSync(tmp); } catch { /* 이미 없음 */ } throw error; }
+    });
   } catch {
-    try { unlinkSync(tmp); } catch { /* 이미 없으면 그만 */ }
     return { ok: false as const, reason: "write" as const };
   }
   // sttHints.ts와 같은 대상·같은 SSH 전달 함수. 키 파일은 보내지 않는다.

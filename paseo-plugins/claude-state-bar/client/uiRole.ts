@@ -2,6 +2,7 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 import type { SoundSettings } from "../shared/settings";
 import { offlineProjectsStatus } from "../shared/offlineProjects";
 import type { Usage } from "./usageFooter";
+import { runCleanups } from "./cleanup";
 
 export interface UiProvider {
   settings(): SoundSettings;
@@ -46,7 +47,9 @@ function choose(): void {
       if (next === h.selected) break;
       const old = h.selected;
       h.selected = undefined;
-      old?.stop?.(); old && (old.stop = undefined);
+      const stop = old?.stop;
+      if (old) old.stop = undefined;
+      if (stop) runCleanups([stop], (error) => console.warn("[claude-state-bar] UI role cleanup failed", error));
       // 이전 역할의 화면·단축키·받아쓰기 감싸기를 먼저 걷고, 다음 하나만 붙인다.
       h.selected = next;
       try { if (next) next.stop = next.start(); }

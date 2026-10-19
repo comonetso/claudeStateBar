@@ -1,3 +1,4 @@
+import { renameRetry } from "../renameRetry";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -49,7 +50,7 @@ export function addCleared(projectDir: string, keys: string[], listedSessions: S
     // 임시 파일에 다 쓴 뒤 바꿔 끼운다 — 쓰다 끊겨도 반쯤 쓴 파일이 남지 않는다
     const tmp = `${FILE}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify(s), "utf8");
-    await rename(tmp, FILE);
+    await renameRetry(tmp, FILE);
   };
   const done = writing.then(run, run);
   writing = done.catch(() => {});

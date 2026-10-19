@@ -1,4 +1,5 @@
-import { existsSync, watch, type FSWatcher } from "node:fs";
+import { watchSafe } from "./watchSafe";
+import { existsSync, type FSWatcher } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -37,7 +38,7 @@ const waiters = new Set<() => void>();
 let copyWatcher: FSWatcher | undefined;
 export async function waitOfflineCopy(known?: number | null) {
   if (usesOfflineCopy() && !copyWatcher) {
-    try { copyWatcher = watch(dirname(OFFLINE_COPY_FILE), () => { for (const wake of [...waiters]) wake(); }); } catch { /* 다음 요청에서 다시 */ }
+    try { copyWatcher = watchSafe(dirname(OFFLINE_COPY_FILE), () => { for (const wake of [...waiters]) wake(); }, () => { copyWatcher = undefined; for (const wake of [...waiters]) wake(); }); } catch { /* 다음 요청에서 다시 */ }
   }
   if (known !== undefined && await copyMtime() === known) {
     await new Promise<void>(resolve => {
@@ -96,10 +97,10 @@ export function startOfflineProjectsCopy(): () => void {
             for (;;) {
               try {
                 const target = folder;
-                const watcher = watch(target, (_event, file) => {
+                const watcher = watchSafe(target, (_event, file) => {
                   const name = file?.toString();
                   if (!name || target !== orderFolder || name === "project-list" || name === "project-pins.json" || name === "project-order.json") kick();
-                });
+                }, () => { if (orderWatcher === watcher) { orderWatcher = undefined; watchedFolder = undefined; } });
                 orderWatcher?.close(); orderWatcher = watcher; watchedFolder = target;
                 break;
               } catch {

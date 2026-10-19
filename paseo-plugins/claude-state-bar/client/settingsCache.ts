@@ -1,3 +1,4 @@
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { appBundleId, paseoModuleIds, type InternalsReason } from "./web";
 
 // 다른 기기에서 받은 설정을 새로고침 없이 반영한다(리규형님 10-08 결정: "새로고침 없이 바로", 안 되는 판에서만 예전처럼 새로 읽기).
@@ -61,4 +62,23 @@ export async function refreshSettingsCache(keys: readonly string[]): Promise<str
   }
   const failed = keys.filter((k) => qc.getQueryState(QUERY_KEYS[k])?.status === "error");
   return failed.length > 0 ? `refetch ended in error: ${failed.join(",")}` : null;
+}
+
+/** 소리 정본의 설정 변경 알림. 현재 SDK의 구독 수명에 맞춰 해제한다. */
+export function watchPluginSettings(client: PluginClientContext, changed: () => void, log: (message: string) => void): () => void {
+  if (typeof client.paseo.observeEvents !== "function") return () => {};
+  try {
+    const sub = client.paseo.observeEvents(["status.plugin_settings_changed"]);
+    const off = sub.subscribe({
+      snapshot: () => changed(),
+      update: (message) => {
+        if (message.type !== "status") return;
+        const p = message.payload as { status?: string; pluginId?: string; settingsId?: string };
+        if (p.status === "plugin_settings_changed" && p.pluginId === "claude-state-bar" && p.settingsId === "sounds") changed();
+      },
+      error: (error) => log(`settings subscription: ${String(error)}`),
+    });
+    void sub.ready.catch((error: unknown) => log(`settings subscription: ${String(error)}`));
+    return () => { off(); void sub.release().catch(() => {}); };
+  } catch (error) { log(`settings subscription: ${String(error)}`); return () => {}; }
 }

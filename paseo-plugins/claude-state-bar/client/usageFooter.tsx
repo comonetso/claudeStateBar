@@ -51,27 +51,31 @@ type Window = Provider["windows"][number];
  * 리셋 직후 위 4%·아래 74% 처럼 달라 보였다 — 이제 한 번 받은 값을 모두가 같이 그린다
  */
 type UsageSnap = { usage: Usage | null; error: string | null };
-let usageSnap: UsageSnap = { usage: null, error: null };
-const usageSubs = new Set<(s: UsageSnap) => void>();
-let usageStop: (() => void) | null = null;
-// 돌고 있는 묻기의 "지금 갱신" 입구 — 갱신 아이콘이 부른다. 묻기가 안 돌면 null
-let usageForceNow: (() => Promise<void>) | null = null;
+type UsageHub = {
+  snap: UsageSnap; subs: Set<(s: UsageSnap) => void>;
+  stop: (() => void) | null; force: (() => Promise<void>) | null;
+  dedupe: UsageDedupeView;
+};
+// 연결마다 번들을 따로 평가하므로 화면 전체 상태는 globalThis에 둔다.
+const usageHub = ((globalThis as { __claudeStateBar_usage_v2?: UsageHub }).__claudeStateBar_usage_v2 ??= {
+  snap: { usage: null, error: null }, subs: new Set(), stop: null, force: null,
+  dedupe: { mode: "legacy", hidden: 0, reason: null },
+});
 
 // 같은 계정 카드 두 장 거르기(10-18 C2 — 판정 규칙은 shared/usageIdentity). 거르려면 데몬 원본 보고(계정 열쇠가 든 보고 번호)가 있어야 해서
 // 공급자가 usageReports 를 줄 때만 한다(그 데몬의 listUsageReports, 기억 건너뛰기 없음). 없거나(옛 판·이 판에서 못 함) 실패하면 예전처럼
 // 옛 목록(providers.listUsage)을 그대로 써 두 장이 다 보인다 — 이름으로 대신 맞추지 않는다. 사용량과 판정이 늘 같은 데몬·같은 한 번의 묻기에서
 // 나오므로 PC↔서버 담당이 바뀌어도 섞이지 않는다. 지금 어느 쪽으로 그렸는지는 usageDedupeState 로 보고, 설정 화면 기능 상태 칸에도 알린다
 // (client/health.ts reportUsageDedupe — 못 한 이유: "no-provider" 공급자가 옛 판 · web.ts 의 연결 이유 · "shape-mismatch" 보고 모양이 다름 · 요청 오류 글)
-let dedupeState: UsageDedupeView = { mode: "legacy", hidden: 0, reason: null };
 /** 마지막 묻기가 같은 계정 거르기를 했는가 — mode "reports" = 원본 보고로 거름(hidden = 숨긴 카드 수: 내장 + 같은 계정 팀 카드) · "legacy" = 못 해서 옛 목록 그대로 */
 export function usageDedupeState(): UsageDedupeView {
-  return dedupeState;
+  return usageHub.dedupe;
 }
 function setDedupe(next: UsageDedupeView): void {
-  dedupeState = next;
+  usageHub.dedupe = next;
   reportUsageDedupe(next);
 }
-async function readUsage(provider: ReturnType<typeof uiProvider> | ReturnType<typeof soundProvider>, paseo: ReturnType<typeof usePaseo>): Promise<Usage> {
+async function readUsage(provider: ReturnType<typeof uiProvider> | ReturnType<typeof soundProvider>, paseo: ReturnType<typeof usePaseo>): Promise<{ usage: Usage; dedupe: UsageDedupeView }> {
   const reports = provider?.usageReports;
   let reason = "no-provider";
   if (reports) {
@@ -84,12 +88,10 @@ async function readUsage(provider: ReturnType<typeof uiProvider> | ReturnType<ty
     }
     const built = raw === null ? null : usageFromReports(raw);
     if (built) {
-      setDedupe({ mode: "reports", hidden: built.hiddenIds.length, reason: null });
-      return built.usage as unknown as Usage;
+      return { usage: built.usage as unknown as Usage, dedupe: { mode: "reports", hidden: built.hiddenIds.length, reason: null } };
     }
   }
-  setDedupe({ mode: "legacy", hidden: 0, reason });
-  return provider?.usage ? provider.usage() : paseo.providers.listUsage();
+  return { usage: await (provider?.usage ? provider.usage() : paseo.providers.listUsage()), dedupe: { mode: "legacy", hidden: 0, reason } };
 }
 
 function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
@@ -97,7 +99,7 @@ function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
   let generation = 0;
   let step = 0; // POLL_STEPS_MS 몇 번째 간격인지 — 실패할 때마다 한 칸 물러나고 받으면 처음으로
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const publish = (next: UsageSnap) => { usageSnap = next; for (const fn of usageSubs) fn(next); };
+  const publish = (next: UsageSnap) => { usageHub.snap = next; for (const fn of usageHub.subs) fn(next); };
   const load = async (force = false) => {
     if (timer) { clearTimeout(timer); timer = null; }
     if (!alive || (!force && pageHidden())) return; // 다시 보이면 아래 onPageVisible 이 부른다
@@ -107,12 +109,19 @@ function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
     let failed = false;
     try {
       // 갱신 아이콘을 눌렀을 때만 데몬 기억(5분)을 건너뛴다 — 개인 Claude·Codex·팀 카드 모두
-      if (force && provider?.refreshUsage) await provider.refreshUsage();
+      if (force) {
+        if (!provider?.refreshUsage) throw new Error("사용량 공급자가 갱신을 지원하지 않습니다. 화면을 새로고침해 주세요");
+        const refreshed = await provider.refreshUsage();
+        if (refreshed !== true && refreshed !== undefined) throw new Error("사용량 즉시 갱신 연결을 확인할 수 없습니다");
+      }
       const next = await readUsage(provider, paseo);
-      if (alive && mine === generation) publish({ usage: next, error: null });
+      if (alive && mine === generation) {
+        setDedupe(next.dedupe);
+        publish({ usage: next.usage, error: null });
+      }
     } catch (e) {
       failed = true;
-      if (alive && mine === generation) publish({ usage: usageSnap.usage, error: String(e) });
+      if (alive && mine === generation) publish({ usage: usageHub.snap.usage, error: String(e) });
     }
     if (!alive || mine !== generation) return;
     step = failed ? Math.min(step + 1, POLL_STEPS_MS.length - 1) : 0;
@@ -122,31 +131,31 @@ function startUsagePoll(paseo: ReturnType<typeof usePaseo>): () => void {
   const off = onUiRole(() => { publish({ usage: null, error: null }); void load(); });
   const offVisible = onPageVisible(() => void load());
   const forceNow = () => load(true);
-  usageForceNow = forceNow;
+  usageHub.force = forceNow;
   return () => {
     alive = false;
     if (timer) clearTimeout(timer);
     off();
     offVisible();
-    if (usageForceNow === forceNow) usageForceNow = null;
+    if (usageHub.force === forceNow) usageHub.force = null;
   };
 }
 
 /** 사용량 칸 "지금 갱신" — 데몬 기억을 건너뛰고 바로 받아 모든 칸에 다시 그린다(10-17 리규형님) */
 export function refreshUsageNow(): Promise<void> {
-  return usageForceNow ? usageForceNow() : Promise.resolve();
+  return usageHub.force ? usageHub.force() : Promise.resolve();
 }
 
 export function useUsage(): UsageSnap {
   const paseo = usePaseo();
-  const [snap, setSnap] = useState<UsageSnap>(usageSnap);
+  const [snap, setSnap] = useState<UsageSnap>(usageHub.snap);
   useEffect(() => {
-    usageSubs.add(setSnap);
-    setSnap(usageSnap);
-    if (!usageStop) usageStop = startUsagePoll(paseo);
+    usageHub.subs.add(setSnap);
+    setSnap(usageHub.snap);
+    if (!usageHub.stop) usageHub.stop = startUsagePoll(paseo);
     return () => {
-      usageSubs.delete(setSnap);
-      if (!usageSubs.size && usageStop) { usageStop(); usageStop = null; }
+      usageHub.subs.delete(setSnap);
+      if (!usageHub.subs.size && usageHub.stop) { usageHub.stop(); usageHub.stop = null; }
     };
   }, [paseo]);
   return snap;

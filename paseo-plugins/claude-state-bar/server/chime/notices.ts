@@ -73,12 +73,18 @@ function noticeTaskIds(notice: string): string[] {
         .filter((id) => id && !id.startsWith('__orphan_summary'));
 }
 
-export function parseTaskNotices(text: string): TaskNotices {
-    const taskToRun = new Map<string, string>();
-    const byRun = new Map<string, string>();
-    const byTask = new Map<string, { status: string; at: number }>();
-    const runEnds = new Map<string, number>();
-    const restarts: number[] = [];
+export function createTaskNoticeState() {
+    return { taskToRun: new Map<string, string>(), byRun: new Map<string, string>(),
+        byTask: new Map<string, { status: string; at: number }>(), runEnds: new Map<string, number>(), restarts: [] as number[] };
+}
+
+export function parseTaskNotices(text: string, state = createTaskNoticeState()): TaskNotices {
+    addTaskNoticeLines(text, state);
+    return taskNoticesOf(state);
+}
+
+export function addTaskNoticeLines(text: string, state: ReturnType<typeof createTaskNoticeState>): void {
+    const { taskToRun, byRun, byTask, runEnds, restarts } = state;
     const timeOf = (entry: any): number => {
         const t = typeof entry?.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
         return Number.isFinite(t) ? t : 0;
@@ -142,6 +148,10 @@ export function parseTaskNotices(text: string): TaskNotices {
             if (at) runEnds.set(run, at);
         }
     }
+}
+
+export function taskNoticesOf(state: ReturnType<typeof createTaskNoticeState>): TaskNotices {
+    const { byRun, byTask, runEnds, restarts } = state;
     restarts.sort((a, b) => a - b);
     return { byRun, byTask, runEnds, restarts };
 }

@@ -98,13 +98,24 @@ const MONITOR_END = /^\s*\[Monitor (stopped|expired after|timed out)\b/;
  * @param longCommandMs a foreground command that finished is kept only if it took at least this
  *   long. One still running is always kept, with no result yet — the caller decides by its age.
  */
-export function parseBackgroundTasks(text: string, longCommandMs: number): BgTask[] {
+export function createBackgroundTaskState() {
     const launches = new Map<string, { kind: BgTaskKind; description: string; command: string; startedAt: number }>();
     const foreground = new Map<string, BgTask>();
     /** TaskStop calls waiting for their result: tool_use id → the task id it asked to stop. */
     const stops = new Map<string, string>();
     const byId = new Map<string, BgTask>();
     const order: BgTask[] = [];
+
+    return { launches, foreground, stops, byId, order };
+}
+
+export function parseBackgroundTasks(text: string, longCommandMs: number, state = createBackgroundTaskState()): BgTask[] {
+    addBackgroundTaskLines(text, longCommandMs, state);
+    return backgroundTasksOf(state);
+}
+
+export function addBackgroundTaskLines(text: string, longCommandMs: number, state: ReturnType<typeof createBackgroundTaskState>): void {
+    const { launches, foreground, stops, byId, order } = state;
 
     for (const line of text.split('\n')) {
         if (!line) continue;
@@ -254,9 +265,11 @@ export function parseBackgroundTasks(text: string, longCommandMs: number): BgTas
             if (out) task.outputFile = out;
         }
     }
+}
+
+export function backgroundTasksOf(state: ReturnType<typeof createBackgroundTaskState>): BgTask[] {
     // Foreground commands still waiting for a result: Claude is blocked on them right now.
-    for (const fg of foreground.values()) if (fg.startedAt) order.push(fg);
-    return order;
+    return [...state.order, ...[...state.foreground.values()].filter(fg => fg.startedAt)];
 }
 
 /** `[exited with code N]` closing an output file, or undefined while the task still writes. */

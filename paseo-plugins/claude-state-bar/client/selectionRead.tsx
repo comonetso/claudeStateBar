@@ -207,7 +207,7 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     if (!featureSwitches().tts && box && playing()?.active) controller.stop();
     refresh();
   });
-  const stopController = controller.subscribe(refresh);
+  const stopController = controller.subscribePlayback(refresh);
   // 불투명 띠·맨 아래로 단추 띄우기·아이콘 가운데는 선택 읽기 알약과 독립적으로 유지한다.
   const stopRail = startComposerRail();
   return {

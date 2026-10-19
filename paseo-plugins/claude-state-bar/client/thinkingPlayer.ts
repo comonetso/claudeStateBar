@@ -61,6 +61,8 @@ export type ThinkingBoxState = {
   original?: boolean;
   /** 상자에서 꺼낸 말을 읽으려고 만든 재생용 상자(thinking.tsx readSaid) — 자동 번역 대상이 아니다 */
   said?: boolean;
+  /** 꺼낸 말 재생의 상태를 표시하는 원래 생각 상자 */
+  displayKey?: string;
   /** 자동 번역 때 한 번 자동으로 펼쳤다(10-12) — 리규형님이 줄이거나 접은 뒤엔 다시 펼치지 않는다 */
   autoExpanded?: boolean;
   suspended: boolean;
@@ -84,6 +86,7 @@ export type ThinkingBoxState = {
   unwatch?: () => void;
 };
 type Slot = { text: string; live: boolean; promise: Promise<AudioFile> };
+export type ThinkingSnapshot = Pick<ThinkingBoxState, "hostId" | "agentId" | "firstStamp" | "text" | "phase" | "open" | "maximized" | "manual" | "translate" | "original" | "cut" | "autoExpanded" | "translatedLang" | "translatedProvider"> & { stamps: number[]; translations: [string, string | null][] };
 /** 읽는 문단 뒤로 몇 문단까지 미리 합성할지(리규형님 10-07 결정 2문단 — 한 문단만 미리 하니 짧은 문단 뒤 긴 문단에서 합성이 못 따라가 끊겼다) */
 const PREFETCH_AHEAD = 2;
 type Run = {
@@ -208,6 +211,13 @@ export function watchThinking(
 export class ThinkingController {
   readonly boxes = new Map<string, ThinkingBoxState>();
   private listeners = new Set<() => void>();
+  private boxListeners = new Map<string, Set<() => void>>();
+  private playbackListeners = new Set<() => void>();
+  private lastPlayback = "";
+  private changedAutoBoxes = new Set<ThinkingBoxState>();
+  private mounted = new Map<string, number>();
+  private unusedSince = new Map<string, number>();
+  private nextPrune = 0;
   private run?: Run;
   private serial = 0;
   rate = 1;
@@ -215,6 +225,7 @@ export class ThinkingController {
   /** 번역을 보내기 전에 먼저 보는 이 기기 보관(10-10). 없으면(폰·시험) 늘 번역을 보낸다 */
   cache?: TranslationCache;
   private speech = new Map<string, SpeechSettings>();
+  hasSpeech(hostId: string): boolean { return this.speech.has(hostId); }
   private language(box: ThinkingBoxState): Lang { return this.speech.get(box.hostId)?.lang ?? this.lang(); }
   private provider(box: ThinkingBoxState): TranslateProvider { return this.speech.get(box.hostId)?.translate ?? "google"; }
   /** 호스트별 설정을 반영한다. 공급자·언어가 달라지면 옛 문단을 지우고 새 보관 키로 다시 읽는다. */
@@ -238,16 +249,92 @@ export class ThinkingController {
     private lang: () => Lang = () => "ko",
   ) {}
 
-  subscribe(listener: () => void): () => void {
-    this.listeners.add(listener);
-    return () => { this.listeners.delete(listener); };
+  subscribe(listener: () => void, key?: string): () => void {
+    const listeners = key === undefined ? this.listeners : this.boxListeners.get(key) ?? new Set<() => void>();
+    if (key !== undefined) this.boxListeners.set(key, listeners);
+    listeners.add(listener);
+    return () => { listeners.delete(listener); if (key !== undefined && !listeners.size) this.boxListeners.delete(key); };
   }
 
-  private notify(): void { for (const listener of this.listeners) listener(); }
+  private notify(box?: ThinkingBoxState): void {
+    for (const listener of [...this.listeners]) listener();
+    const keys = box ? new Set([box.key, box.displayKey]) : this.boxListeners.keys();
+    for (const key of keys) if (key !== undefined) for (const listener of [...(this.boxListeners.get(key) ?? [])]) listener();
+    const playback = this.playbackKey();
+    if (playback !== this.lastPlayback) {
+      this.lastPlayback = playback;
+      for (const listener of [...this.playbackListeners]) listener();
+    }
+  }
+
+  private playbackKey(): string {
+    const run = this.run;
+    return run ? JSON.stringify([run.box.key, run.index, run.paused, run.status, run.box.error, this.rate, this.speedStep]) : "";
+  }
+
+  /** 읽기 도크와 화면 강조는 재생 상태가 달라졌을 때만 다시 검사한다. */
+  subscribePlayback(listener: () => void): () => void {
+    this.lastPlayback = this.playbackKey();
+    this.playbackListeners.add(listener);
+    return () => { this.playbackListeners.delete(listener); };
+  }
+
+  retain(box: ThinkingBoxState): () => void {
+    this.mounted.set(box.key, (this.mounted.get(box.key) ?? 0) + 1);
+    this.unusedSince.delete(box.key);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const count = (this.mounted.get(box.key) ?? 1) - 1;
+      if (count > 0) this.mounted.set(box.key, count);
+      else { this.mounted.delete(box.key); this.unusedSince.set(box.key, this.now()); }
+    };
+  }
+
+  /** 30분 동안 화면·읽기·번역·경계 요청 어느 쪽도 쓰지 않은 옛 상자만 정리한다.
+   * 대화의 마지막 상자는 남겨, 정리가 옛 상자를 자동 번역 대상으로 승격시키지 않게 한다. */
+  prune(): void {
+    if (this.now() < this.nextPrune) return;
+    this.nextPrune = this.now() + 30 * 60 * 1000;
+    const latest = new Map<string, ThinkingBoxState>();
+    for (const box of this.boxes.values()) {
+      const key = JSON.stringify([box.hostId, box.agentId]);
+      const prev = latest.get(key);
+      if (!prev || box.firstStamp > prev.firstStamp || (box.firstStamp === prev.firstStamp && box.order > prev.order)) latest.set(key, box);
+    }
+    for (const box of this.boxes.values()) {
+      if (this.mounted.has(box.key) || this.run?.box === box || box.busy || box.unwatch || box.boundaryAsk || box.boundary?.busy) continue;
+      if (latest.get(JSON.stringify([box.hostId, box.agentId])) === box) continue;
+      if (this.now() - (this.unusedSince.get(box.key) ?? this.now()) < 30 * 60 * 1000) continue;
+      this.dispose(new Set([box]));
+      this.unusedSince.delete(box.key);
+    }
+  }
+
+  snapshot(): ThinkingSnapshot[] {
+    return [...this.boxes.values()].filter((b) => !b.said).map((b) => ({
+      hostId: b.hostId, agentId: b.agentId, firstStamp: b.firstStamp, text: b.text, phase: b.phase,
+      open: b.open, maximized: b.maximized, manual: b.manual, translate: b.translate, original: b.original,
+      cut: b.cut, autoExpanded: b.autoExpanded, translatedLang: b.translatedLang, translatedProvider: b.translatedProvider,
+      stamps: [...b.stamps], translations: [...b.translations],
+    }));
+  }
+
+  restore(snapshots: ThinkingSnapshot[]): void {
+    for (const value of snapshots) {
+      const box = this.box(value.hostId, value.agentId, value.firstStamp, value.text, value.phase);
+      const { stamps, translations, ...state } = value;
+      Object.assign(box, state);
+      box.stamps = new Set(stamps);
+      box.translations = new Map(translations);
+    }
+  }
 
   // Paseo beta.4는 생각 델타마다 timestamp를 바꾼다. 에이전트 안에서 누적 텍스트가 이어지는 상자를 찾아
   // 최초 timestamp 키를 유지한다. 완료 상자는 timestamp 별로 구별하고, 웹 호스트도 키에 포함한다.
   box(hostId: string, agentId: string, stamp: number, text: string, phase: Phase, mounted?: ThinkingBoxState): ThinkingBoxState {
+    this.prune();
     // SDK는 같은 소스 행의 컴포넌트 identity를 유지한다. 그 동안에는 늦은 스냅샷도 같은 상태로 연결한다.
     if (mounted?.hostId === hostId && mounted.agentId === agentId) { mounted.stamps.add(stamp); return mounted; }
     const candidates = [...this.boxes.values()].filter((b) => b.hostId === hostId && b.agentId === agentId);
@@ -266,8 +353,14 @@ export class ThinkingController {
       open: this.openByDefault, maximized: false, translate: false, suspended: false, controls: false, error: "", translations: new Map(), failures: new Map(), pending: new Set(), epoch: 0,
     };
     this.boxes.set(box.key, box);
+    this.unusedSince.set(box.key, this.now());
     if (this.autoHosts.has(hostId)) {
       box.translate = this.isAutoBox(box);
+      // 렌더 중에는 알리지 않는다. 마운트 effect의 update에서 이전 마지막 상자의 단추만 갱신한다.
+      if (box.translate) {
+        const previous = candidates.filter((b) => !b.said).sort((a, b) => b.firstStamp - a.firstStamp || b.order - a.order)[0];
+        if (previous) this.changedAutoBoxes.add(previous);
+      }
       // 맨 마지막 자리를 내준 상자는 자동 번역을 멈춘다 — 받은 번역이 있거나 받는 중이면 보이던 대로 두고, 없으면 원문(번역 단추가 보인다).
       // 대화를 열 때 옛 상자가 먼저 그려져 잠깐 맨 마지막으로 잡혔던 것도 여기서 풀린다. 그리는 중이라 알림 없이 다음 그리기에 반영
       if (box.translate) for (const other of this.boxes.values()) {
@@ -297,14 +390,21 @@ export class ThinkingController {
   update(box: ThinkingBoxState, text: string, phase: Phase, stamp?: number): void {
     // 구독이 먼저 받은 델타를 뒤늦은 화면 렌더가 덮어쓰지 않는다.
     if (box.text.length > text.length && box.text.startsWith(text)) return;
+    const nextPhase = box.phase === "complete" ? "complete" : phase;
+    const changed = box.text !== text || box.phase !== nextPhase;
+    const pending = box.pending.size;
+    const epoch = box.epoch;
     if (box.phase === "streaming" && phase === "complete") box.awaitingCompleteStamp = true;
     if (stamp !== undefined) box.stamps.add(stamp);
     box.text = text;
-    box.phase = box.phase === "complete" ? "complete" : phase;
+    box.phase = nextPhase;
     this.syncWatch(box);
     this.translateMore(box);
     if (this.run?.box === box) void this.pump(this.run);
-    this.notify();
+    if (changed || pending !== box.pending.size || epoch !== box.epoch) this.notify(box);
+    const changedAuto = [...this.changedAutoBoxes];
+    this.changedAutoBoxes.clear();
+    for (const previous of changedAuto) if (this.boxes.has(previous.key)) this.notify(previous);
   }
 
   shown(box: ThinkingBoxState, paragraph: Paragraph): string {
@@ -352,6 +452,8 @@ export class ThinkingController {
       if (box.hostId !== hostId || box.said) continue;
       box.original = false;
       // 켜면 대화마다 맨 마지막 상자만 번역(10-17) — 다른 상자는 그대로 둔다(번역 단추로 켠 상자는 계속 번역)
+      // 끄면 단추로 켠 상자까지 모두 원문(정해 둔 동작 — 시험 tests-261017/thinking_latest_only.cjs). 공급자가 잠깐 없을 때 꺼지는 것은
+      // sounds.ts 가 마지막으로 받은 공급자 설정을 쓰게 해서 막는다(10-19 Codex 261019_165801 — 여기서 manual 을 건너뛰던 변경은 되돌림)
       if (on) { if (this.isAutoBox(box)) { box.translate = true; box.suspended = false; box.error = ""; if (box.phase === "streaming") this.autoOpen(box); } }
       else { box.translate = false; box.manual = false; this.cancelTranslation(box); }
       if (this.run?.box === box) { this.run.strict = false; this.seek(this.run.index); }
@@ -366,16 +468,17 @@ export class ThinkingController {
     return box.screenText?.(index) ?? (box.original ? paragraph.src : this.shown(box, paragraph));
   }
 
-  toggleOpen(box: ThinkingBoxState): void { box.open = !box.open; this.translateMore(box); this.notify(); }
+  toggleOpen(box: ThinkingBoxState): void { box.open = !box.open; this.translateMore(box); this.notify(box); }
   /** 새 상자가 펼친 채로 시작하는가 — 입력창 위 "모두 접기·펼치기" 알약이 정한다(10-08, thinkingFold) */
   openByDefault = true;
   /** 지금 있는 상자 전부와 앞으로 생길 상자를 접거나 펼친다 */
   setAllOpen(open: boolean): void {
+    const changed = this.openByDefault !== open || [...this.boxes.values()].some((box) => box.open !== open);
     this.openByDefault = open;
     for (const box of this.boxes.values()) { box.open = open; if (open) this.translateMore(box); }
-    this.notify();
+    if (changed) this.notify();
   }
-  toggleMaximized(box: ThinkingBoxState): void { box.maximized = !box.maximized; this.notify(); }
+  toggleMaximized(box: ThinkingBoxState): void { box.maximized = !box.maximized; this.notify(box); }
   /**
    * 누르면 자동으로 펼치기(설정 thinkingAutoOpen) — 접혀 있으면 열고 높이 제한도 푼다(10-10 리규형님 "텍스트 에어리어가 확장돼서
    * 펼쳐져야지 — 번역·읽기를 켜면 스크롤이 생겨 내용이 안 보인다"). 끝나도 원래 크기로 돌리지 않는다(접지 않는 것과 같게)
@@ -385,16 +488,16 @@ export class ThinkingController {
     box.open = true;
     box.maximized = true;
     this.translateMore(box);
-    this.notify();
+    this.notify(box);
   }
   /** 데몬이 알려 준 꺼낼 자리(10-09). 한 번 찾은 자리는 글이 늘어도 그대로다(앞 칸은 이미 끝났다) */
   setCut(box: ThinkingBoxState, cut: number | null): void {
     if (cut === (box.cut ?? null) || (cut === null && box.cut != null)) return;
     box.cut = cut;
     this.translateMore(box);
-    this.notify();
+    this.notify(box);
   }
-  toggleControls(box: ThinkingBoxState): void { box.controls = !box.controls; this.notify(); }
+  toggleControls(box: ThinkingBoxState): void { box.controls = !box.controls; this.notify(box); }
 
   toggleTranslation(box: ThinkingBoxState): void {
     box.translate = !box.translate;
@@ -407,14 +510,14 @@ export class ThinkingController {
     if (this.run?.box === box) { this.run.strict = false; this.seek(this.run.index); }
     this.syncWatch(box);
     this.translateMore(box);
-    this.notify();
+    this.notify(box);
   }
 
   /** 원문 보기 켜기·끄기(10-10). 읽는 중이면 그 문단을 바뀐 화면 글로 다시 읽는다(번역 켜기·끄기와 같게) */
   toggleOriginal(box: ThinkingBoxState): void {
     box.original = !box.original;
     if (this.run?.box === box) { this.run.strict = false; this.seek(this.run.index); }
-    this.notify();
+    this.notify(box);
   }
 
   private cancelTranslation(box: ThinkingBoxState): void {
@@ -455,7 +558,7 @@ export class ThinkingController {
       // 먼저 재생 실패를 판정한다. 번역읽기 중 실패하면 다음 번역 배치를 보내지 않는다.
       if (this.run?.box === box) void this.pump(this.run);
       this.translateMore(box);
-      this.notify();
+      this.notify(box);
     });
   }
 
@@ -528,7 +631,7 @@ export class ThinkingController {
     else if (!box.unwatch && box.watch) {
       box.unwatch = box.watch((text, phase, stamp) => this.update(box, text, phase, stamp), (reason) => {
         if (this.run?.box === box) this.stop(reason);
-        else { box.error = reason; box.suspended = true; this.cancelTranslation(box); this.syncWatch(box); this.notify(); }
+        else { box.error = reason; box.suspended = true; this.cancelTranslation(box); this.syncWatch(box); this.notify(box); }
       });
     }
   }
@@ -566,7 +669,7 @@ export class ThinkingController {
     this.syncWatch(box);
     this.translateMore(box);
     void this.pump(run);
-    this.notify();
+    this.notify(box);
   }
 
   /** 수동 중지는 번역 켜짐 표시를 유지하되 새 요청을 막는다. 다시 누르기 전까지 스트리밍도 요청하지 않는다. */
@@ -584,7 +687,7 @@ export class ThinkingController {
     if (reason) run.box.error = reason;
     this.syncWatch(run.box);
     if (keepTranslating) this.translateMore(run.box);
-    this.notify();
+    this.notify(run.box);
   }
 
   private finish(run: Run): void {
@@ -600,7 +703,7 @@ export class ThinkingController {
     if (!this.run) return;
     this.run.paused = true;
     this.audio.pause();
-    this.notify();
+    this.notify(this.run.box);
   }
 
   resume(): void {
@@ -618,7 +721,7 @@ export class ThinkingController {
         }
       }, (error: unknown) => { if (this.run === run && run.generation === generation) this.stop(`재생 실패: ${String(error)}`); });
     } else void this.pump(run);
-    this.notify();
+    this.notify(run.box);
   }
 
   previous(): void {
@@ -650,6 +753,8 @@ export class ThinkingController {
    * 읽기를 끄면 읽기를 멈추고, 번역을 끄면 번역읽기를 멈추고 모든 상자의 번역 표시를 끈다. 다시 켜도 저절로 돌아오지 않는다
    */
   applyFeatures(translate: boolean, tts: boolean): void {
+    const changed = this.features.translate !== translate || this.features.tts !== tts;
+    this.features = { translate, tts };
     if (this.run && (!tts || (!translate && this.run.strict))) this.stop();
     if (!translate) {
       for (const box of this.boxes.values()) {
@@ -660,8 +765,10 @@ export class ThinkingController {
         this.syncWatch(box);
       }
     }
-    this.notify();
+    if (changed) this.notify();
   }
+
+  private features = { translate: true, tts: true };
 
   private seek(index: number): void {
     const run = this.run;
@@ -675,7 +782,7 @@ export class ThinkingController {
     run.status = "loading";
     this.trimSlots(run);
     if (!run.paused) void this.pump(run);
-    this.notify();
+    this.notify(run.box);
   }
 
   speedOptions(): number[] { return rateOptions(this.speedStep, this.rate); }
@@ -756,9 +863,8 @@ export class ThinkingController {
     const paragraphs = splitParagraphs(boxText(run.box), boxPhase(run.box));
     const paragraph = paragraphs[run.index];
     if (!paragraph?.done) {
-      if (run.box.phase === "complete") { this.finish(run); this.syncWatch(run.box); }
-      else run.status = "waiting";
-      this.notify();
+      if (run.box.phase === "complete") { this.finish(run); this.syncWatch(run.box); this.notify(run.box); }
+      else if (run.status !== "waiting") { run.status = "waiting"; this.notify(run.box); }
       return;
     }
     if (run.strict && needsTranslation(paragraph.src, this.language(run.box)) && run.box.translations.get(paragraph.src) === null) {
@@ -766,7 +872,7 @@ export class ThinkingController {
       return;
     }
     const text = this.readable(run, run.index);
-    if (text === undefined) { run.status = "waiting"; this.notify(); return; }
+    if (text === undefined) { if (run.status !== "waiting") { run.status = "waiting"; this.notify(run.box); } return; }
     if (run.loaded && run.currentText === text) { this.prefetch(run); return; }
     if (run.loaded) { this.seek(run.index); return; }
     if (run.pumping?.generation === run.generation) return;
@@ -776,7 +882,7 @@ export class ThinkingController {
     const mine = { generation };
     run.pumping = mine;
     run.status = "loading";
-    this.notify();
+    this.notify(run.box);
     const slot = this.slot(run, run.index, text);
     try {
       const file = await slot.promise;
@@ -801,7 +907,7 @@ export class ThinkingController {
         if (this.run !== run || run.generation !== generation || run.paused) return;
         run.paused = true;
         run.box.controls = true;
-        this.notify();
+        this.notify(run.box);
       });
       if (this.run !== run || run.generation !== generation) return;
       if (run.paused) this.audio.pause();
@@ -821,7 +927,7 @@ export class ThinkingController {
       }
     } finally {
       if (run.pumping === mine) run.pumping = undefined;
-      this.notify();
+      this.notify(run.box);
     }
   }
 
@@ -833,6 +939,8 @@ export class ThinkingController {
       box.unwatch?.();
       box.unwatch = undefined;
       this.boxes.delete(box.key);
+      this.mounted.delete(box.key);
+      this.unusedSince.delete(box.key);
     }
   }
 }

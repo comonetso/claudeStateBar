@@ -164,6 +164,22 @@ export function startLayoutAutoPull(
     return () => {};
   }
   page.__claudeStateBar_layoutOpened_v1 = true;
+  // PC 인스턴스가 처음 붙기 전의 Paseo 자체 조작도 보호한다. 임의의 페이지 나이 제한은 두지 않는다.
+  // first-input은 performance.getEntriesByType에 들어가지 않는다. buffered 관찰의 큐를 동기로 꺼낸다.
+  const Observer = (globalThis as { PerformanceObserver?: new (fn: () => void) => {
+    observe(options: { type: string; buffered: boolean }): void; takeRecords(): unknown[]; disconnect(): void;
+  } }).PerformanceObserver;
+  let firstInput = false;
+  if (Observer) {
+    const observer = new Observer(() => {});
+    try { observer.observe({ type: "first-input", buffered: true }); firstInput = observer.takeRecords().length > 0; }
+    catch { /* 지원하지 않는 판은 먼저 붙은 연결의 입력 표식으로 보호한다. */ }
+    finally { observer.disconnect(); }
+  }
+  if (firstInput) {
+    log("layout sync: user acted before PC connected — keeping this screen's layout");
+    return () => {};
+  }
   let stopped = false;
   const interaction = workspaceInteractionVersion();
   if (interaction > 0) {

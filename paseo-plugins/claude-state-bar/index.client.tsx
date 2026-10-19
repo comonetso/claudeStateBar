@@ -1,6 +1,7 @@
 import { onUiRole, registerUiRole, startFallbackCandidate } from "./client/uiRole";
 import { settingsRpc } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { runCleanups } from "./client/cleanup";
 import { createActivityButtons, openActivityHere } from "./client/activityButton";
 import { ACTIVITY_PANEL_ID } from "./client/activityKinds";
 import { ActivityPanel } from "./client/activityShell";
@@ -171,7 +172,7 @@ export default function contribute(client: PluginClientContext) {
       if (disposed) return;
       const attachFour = (readOnly: boolean) => {
         const attached: (() => void)[] = [];
-        const stop = () => { for (const off of attached.reverse()) off(); };
+        const stop = () => { runCleanups(attached.splice(0).reverse(), (error) => log(`UI cleanup failed: ${String(error)}`)); };
         try {
           attached.push(client.addSettingsScreen({
             id: SETTINGS_SCREEN_ID,
@@ -365,18 +366,21 @@ export default function contribute(client: PluginClientContext) {
   })();
 
   return () => {
+    if (disposed) return;
     disposed = true;
-    release?.();
-    judge.dispose();
-    chimeWatcher.dispose();
-    pills.dispose();
-    jumpPills.dispose();
-    followPills.dispose();
-    listPills.dispose();
-    foldPills.dispose();
-    accountPills.dispose();
-    loginPills.dispose();
-    phonePills.dispose();
-    for (const cleanup of cleanups.reverse()) cleanup();
+    runCleanups([
+      () => release?.(),
+      () => judge.dispose(),
+      () => chimeWatcher.dispose(),
+      () => pills.dispose(),
+      () => jumpPills.dispose(),
+      () => followPills.dispose(),
+      () => listPills.dispose(),
+      () => foldPills.dispose(),
+      () => accountPills.dispose(),
+      () => loginPills.dispose(),
+      () => phonePills.dispose(),
+      ...cleanups.reverse(),
+    ], (error) => log(`cleanup failed: ${String(error)}`));
   };
 }
