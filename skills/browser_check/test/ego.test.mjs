@@ -18,7 +18,7 @@ test('ego: only the kits a script names travel with it', () => {
 
 test('ego: buildScript fills the settings line and includes named kits', () => {
   const s = buildScript("await bc.kit(page, 'perfdiag');", { url: 'https://x.invalid/', windowScript: 'C:\\w.ps1' });
-  const line = s.split('\n').find((l) => l.includes('/*__BC_CFG__*/'));
+  const line = s.split(/\r?\n/).find((l) => l.includes('/*__BC_CFG__*/'));
   const cfg = JSON.parse(line.replace(/^.*\/\*__BC_CFG__\*\/ /, '').replace(/;$/, ''));
   assert.equal(cfg.url, 'https://x.invalid/'); assert.equal(cfg.windowScript, 'C:\\w.ps1'); assert.equal(cfg.light, true);
   assert.ok(cfg.kit.perfdiag.length > 100);
