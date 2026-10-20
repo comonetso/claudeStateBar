@@ -1,20 +1,16 @@
 # "Check the screen" · "Take a look at this" — what a screen or element looks like right now
 
-Prerequisite: SKILL.md §0–§2 (doctor · classification · `K.prep` · login rules).
+Prerequisite: SKILL.md §0–§2 (doctor · classification · login rules · the template).
 
 ## Steps
-1. `openTab(url)` → `K.prep(tab, {darkReader: site.darkReader})` → `K.wake(tab)` if there is animation or lazy loading.
-2. Find the target ref with `snapshot(page, {interactive: true})`.
-   - 🔴 If the document was scrolled, `scrollTo(0,0)` first — **inputs, images and iframes scrolled past above drop out of the snapshot** (only what is below and to the right is included). For scroll boxes (chat timelines) use `showHidden: true`.
-   - On a large page, outline with `maxDepth: 2`, then narrow with `selector` (first match only) · `ref`.
-3. For a numbered picture: `annotatedScreenshot(page)` → `@@IMG` (number N = ref `eN`).
-4. Element photo: `page.locator('eN').scrollIntoViewIfNeeded()` → `boundingBox()` → a full `page.screenshot()` → crop it on the server at box × DPR (e.g. Pillow `Image.crop`; `image/crop.py` only handles `responsive-iframe.js` output). 🔴 `clip`, `locator.screenshot()` and `fullPage` are broken.
-5. Whether the user can actually click it: `K.canAct(tab, loc)` — unique · visible · not covered.
-6. SPA URL: `K.href(tab)`.
-7. Logged-in site ⇒ `K.safeClose(tab)`, otherwise `closeTab(tab)`.
+1. `bc.run(name, …)` → `page.goto(url)` → `page.waitForLoadState()`; for lazy content wait for the element (`page.waitForSelector`) rather than a fixed delay.
+2. Find the target with `page.snapshot()` (viewport) or `page.snapshot({ scope: 'full_page' })`. Refs (`@12`) are valid until the page changes. For a frame, reuse the ref on its `iframe` line: `page.snapshot({ scope: 'subtree', root: '@12' })`.
+3. Whole screen: `bc.shot(page, 'screen')`. Element photo: `page.evaluate(sel => { const r = document.querySelector(sel).getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, dpr: devicePixelRatio }; }, sel)` → shoot → crop the image at box × DPR with Pillow (a screencast frame is in device pixels).
+4. Whether the user could actually click it: unique match · visible box · `document.elementFromPoint(centre)` is the element or inside it (otherwise it is covered).
+5. State values from the accessibility tree: `page.cdp('Accessibility.getFullAXTree')` (expanded · checked · disabled · required).
 
 ## Verdict
-The element exists (count ≥ 1) · is visible (has a boundingBox and isn't covered) · its text and state (expanded · checked · disabled from the AX tree — `K.X(tab,'Accessibility.getFullAXTree')`).
+The element exists (one match) · is visible (non-empty box, not covered) · its text and state.
 
 ## Report
-Element capture + snapshot excerpt (ref lines) + state values. Any Dark Reader warning goes first.
+Capture (cropped) + snapshot excerpt (ref lines) + state values.

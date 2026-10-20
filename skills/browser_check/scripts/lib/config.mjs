@@ -2,36 +2,28 @@
  * Private config loader + validator. The public plugin ships only config/schema.json and config/example.json;
  * the real values live in ${CLAUDE_PLUGIN_DATA}/config.json (0600, parent 0700) or $BROWSER_CHECK_CONFIG.
  * Unknown keys are rejected (a typo must not silently disable a policy). No network, no browser contact.
+ *
+ * schemaVersion 2 = ego lite (2026-10-21). A schemaVersion 1 file is the old Aside layout: it is reported, never
+ * read as if it were current — `setup --migrate` rewrites it (site rules kept, the old file backed up).
  */
 import { readFileSync, lstatSync, existsSync } from 'node:fs';
 import { dirname, resolve, isAbsolute } from 'node:path';
 
 const ENUMS = {
-  mode: ['auto', 'local', 'remote'],
-  'cdp.remote.transport': ['unix', 'tcp'],
-  'cdp.policyProfile': ['safe-v1'],
   'sites[].login': ['none', 'rotating-refresh', 'session-cookie'],
-  'sites[].diag': ['none', 'vite-v2.1', 'cdp-inject'],
-  'sites[].darkReader': ['must-be-off-warn', 'tolerate', 'lock-silently'],
-  'sites[].deepL': ['hide-and-report', 'tolerate'],
 };
 
 const KNOWN = {
-  '': ['schemaVersion', 'mode', 'aside', 'cdp', 'artifacts', 'sites'],
-  aside: ['enabled', 'bin', 'remoteHost', 'maxConcurrent', 'evaluateTimeoutMs', 'callTimeoutMs'],
-  cdp: ['enabled', 'remote', 'local', 'policyProfile', 'connectTimeoutMs', 'commandTimeoutMs'],
-  'cdp.remote': ['transport', 'socketPath', 'tcpEndpoint'],
-  'cdp.local': ['endpoint', 'daemonEndpoint'],
-  artifacts: ['dir', 'retentionDays', 'storeRawProtocol', 'storeScreenshots'],
-  'sites[]': ['match', 'login', 'diag', 'darkReader', 'deepL', 'allowDataMutation', 'authPathPrefixes', 'borrow', 'guardWrites', 'writeAllow'],
-  'sites[].borrow': ['sameWindowAs'],
+  '': ['schemaVersion', 'ego', 'artifacts', 'sites'],
+  ego: ['enabled', 'bin', 'remoteHost', 'relayEntry', 'relayDir', 'callTimeoutMs', 'settleMs', 'light'],
+  artifacts: ['dir', 'retentionDays', 'storeScreenshots'],
+  'sites[]': ['match', 'login', 'allowDataMutation', 'authPathPrefixes', 'guardWrites', 'writeAllow'],
 };
 
 const DEFAULTS = {
-  aside: { enabled: true, maxConcurrent: 1, evaluateTimeoutMs: 25000, callTimeoutMs: 50000 },
-  cdp: { enabled: true, policyProfile: 'safe-v1', connectTimeoutMs: 1000, commandTimeoutMs: 10000, remote: { transport: 'unix' } },
-  artifacts: { retentionDays: 7, storeRawProtocol: false, storeScreenshots: true },
-  site: { login: 'none', diag: 'none', darkReader: 'must-be-off-warn', deepL: 'hide-and-report', allowDataMutation: false, authPathPrefixes: [], guardWrites: false, writeAllow: [] },
+  ego: { enabled: true, callTimeoutMs: 300000, settleMs: 15000, light: true },
+  artifacts: { retentionDays: 7, storeScreenshots: true },
+  site: { login: 'none', allowDataMutation: false, authPathPrefixes: [], guardWrites: false, writeAllow: [] },
 };
 
 export function configPath() {
@@ -44,46 +36,35 @@ function checkKeys(obj, scope, errors) {
   const allowed = KNOWN[scope] || [];
   for (const k of Object.keys(obj)) if (!allowed.includes(k)) errors.push(`unknown key "${scope ? scope + '.' : ''}${k}"`);
 }
-
 function checkEnum(path, val, errors) {
   const e = ENUMS[path];
   if (e && val !== undefined && !e.includes(val)) errors.push(`${path} must be one of ${e.join('|')}`);
 }
-
 function checkInt(path, val, min, max, errors) {
   if (val === undefined) return;
   if (!Number.isInteger(val) || val < min || val > max) errors.push(`${path} must be an integer in [${min},${max}]`);
 }
 
-/** Validate a parsed object. Returns { ok, errors[], config (with defaults applied) }. */
+/** Validate a parsed object. Returns { ok, errors[], config (with defaults applied), oldLayout? }. */
 export function validate(raw) {
   const errors = [];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, errors: ['config must be a JSON object'] };
+  if (raw.schemaVersion === 1) return { ok: false, oldLayout: true, errors: ['schemaVersion 1 is the old Aside layout — run `setup --migrate` (keeps the site rules, backs the old file up)'] };
   checkKeys(raw, '', errors);
-  if (raw.schemaVersion !== 1) errors.push('schemaVersion must be 1');
-  checkEnum('mode', raw.mode, errors);
-  if (raw.mode === undefined) errors.push('mode is required');
+  if (raw.schemaVersion !== 2) errors.push('schemaVersion must be 2');
 
-  const cfg = { schemaVersion: 1, mode: raw.mode, aside: { ...DEFAULTS.aside }, cdp: { ...DEFAULTS.cdp, remote: { ...DEFAULTS.cdp.remote }, local: {} }, artifacts: { ...DEFAULTS.artifacts }, sites: [] };
-
-  if (raw.aside) {
-    checkKeys(raw.aside, 'aside', errors);
-    Object.assign(cfg.aside, raw.aside);
-    if (cfg.aside.bin !== undefined && !isAbsolute(cfg.aside.bin)) errors.push('aside.bin must be an absolute path');
-    checkInt('aside.maxConcurrent', cfg.aside.maxConcurrent, 1, 4, errors);
-    checkInt('aside.evaluateTimeoutMs', cfg.aside.evaluateTimeoutMs, 1000, 30000, errors);
-    checkInt('aside.callTimeoutMs', cfg.aside.callTimeoutMs, 5000, 55000, errors);
+  const cfg = { schemaVersion: 2, ego: { ...DEFAULTS.ego }, artifacts: { ...DEFAULTS.artifacts }, sites: [] };
+  if (raw.ego) {
+    checkKeys(raw.ego, 'ego', errors);
+    Object.assign(cfg.ego, raw.ego);
+    if (cfg.ego.bin !== undefined && !isAbsolute(cfg.ego.bin)) errors.push('ego.bin must be an absolute path');
+    if (cfg.ego.remoteHost !== undefined && (typeof cfg.ego.remoteHost !== 'string' || !/^[\w.@-]+$/.test(cfg.ego.remoteHost))) errors.push('ego.remoteHost must be an ssh host name');
+    if (cfg.ego.relayEntry !== undefined && (typeof cfg.ego.relayEntry !== 'string' || /["\r\n]/.test(cfg.ego.relayEntry))) errors.push('ego.relayEntry must be a path without quotes');
+    checkInt('ego.callTimeoutMs', cfg.ego.callTimeoutMs, 5000, 1800000, errors);
+    checkInt('ego.settleMs', cfg.ego.settleMs, 1000, 120000, errors);
+    if (typeof cfg.ego.light !== 'boolean') errors.push('ego.light must be true or false');
   }
-  if (raw.cdp) {
-    checkKeys(raw.cdp, 'cdp', errors);
-    const { remote, local, ...rest } = raw.cdp;
-    Object.assign(cfg.cdp, rest);
-    if (remote) { checkKeys(remote, 'cdp.remote', errors); Object.assign(cfg.cdp.remote, remote); checkEnum('cdp.remote.transport', cfg.cdp.remote.transport, errors); if (cfg.cdp.remote.socketPath && !isAbsolute(cfg.cdp.remote.socketPath)) errors.push('cdp.remote.socketPath must be absolute'); }
-    if (local) { checkKeys(local, 'cdp.local', errors); Object.assign(cfg.cdp.local, local); }
-    checkEnum('cdp.policyProfile', cfg.cdp.policyProfile, errors);
-    checkInt('cdp.connectTimeoutMs', cfg.cdp.connectTimeoutMs, 200, 10000, errors);
-    checkInt('cdp.commandTimeoutMs', cfg.cdp.commandTimeoutMs, 1000, 60000, errors);
-  }
+  if (!cfg.ego.bin && !cfg.ego.remoteHost) errors.push('ego needs bin (ego lite on this machine) or remoteHost (the PC, over ssh)');
   if (raw.artifacts) {
     checkKeys(raw.artifacts, 'artifacts', errors);
     Object.assign(cfg.artifacts, raw.artifacts);
@@ -97,11 +78,7 @@ export function validate(raw) {
       checkKeys(s, 'sites[]', errors);
       if (!s.match) errors.push(`sites[${i}].match is required`);
       const site = { ...DEFAULTS.site, ...s };
-      for (const k of ['login', 'diag', 'darkReader', 'deepL']) checkEnum('sites[].' + k, site[k], errors);
-      if (s.borrow !== undefined) {
-        if (!s.borrow || typeof s.borrow !== 'object' || Array.isArray(s.borrow)) errors.push(`sites[${i}].borrow must be an object`);
-        else { checkKeys(s.borrow, 'sites[].borrow', errors); if (s.borrow.sameWindowAs !== undefined && (typeof s.borrow.sameWindowAs !== 'string' || !s.borrow.sameWindowAs)) errors.push(`sites[${i}].borrow.sameWindowAs must be a non-empty string`); }
-      }
+      checkEnum('sites[].login', site.login, errors);
       if (s.guardWrites !== undefined && typeof s.guardWrites !== 'boolean') errors.push(`sites[${i}].guardWrites must be true or false`);
       if (s.writeAllow !== undefined && (!Array.isArray(s.writeAllow) || s.writeAllow.some((p) => typeof p !== 'string' || !p))) errors.push(`sites[${i}].writeAllow must be an array of paths or URLs`);
       cfg.sites.push(site);
@@ -110,7 +87,7 @@ export function validate(raw) {
   return { ok: errors.length === 0, errors, config: cfg };
 }
 
-/** Load from disk with permission checks. Returns { ok, path, errors[], config } and never throws. */
+/** Load from disk with permission checks. Returns { ok, path, errors[], config, oldLayout?, raw? } and never throws. */
 export function load() {
   const p = configPath();
   if (!p) return { ok: false, path: null, errors: ['no CLAUDE_PLUGIN_DATA and no BROWSER_CHECK_CONFIG'] };
@@ -130,16 +107,22 @@ export function load() {
   let raw;
   try { raw = JSON.parse(readFileSync(p, 'utf8')); } catch (e) { return { ok: false, path: p, errors: [...errors, 'JSON parse: ' + e.message] }; }
   const v = validate(raw);
-  return { ok: v.ok && errors.length === 0, path: p, errors: [...errors, ...v.errors], config: v.config };
+  return { ok: v.ok && errors.length === 0, path: p, errors: [...errors, ...v.errors], config: v.config, oldLayout: !!v.oldLayout, raw };
 }
 
 /** Find the site policy for a URL (origin+path only; query/hash never considered). */
 export function siteFor(config, url) {
   let origin = '', path = '/';
   try { const u = new URL(url); origin = u.origin; path = u.pathname; } catch { return { ...DEFAULTS.site, match: null }; }
-  for (const s of config.sites || []) {
+  for (const s of (config && config.sites) || []) {
     const m = s.match.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
     if (new RegExp('^' + m + '$').test(origin) || new RegExp('^' + m + '$').test(origin + path)) return s;
   }
   return { ...DEFAULTS.site, match: null };
+}
+
+/** Site rules from an old (schemaVersion 1) file that still mean something with ego. */
+export function migrateSites(oldSites) {
+  const keep = KNOWN['sites[]'];
+  return (Array.isArray(oldSites) ? oldSites : []).filter((s) => s && s.match).map((s) => Object.fromEntries(Object.entries(s).filter(([k]) => keep.includes(k))));
 }

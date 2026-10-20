@@ -1,66 +1,54 @@
-# browser-check — 사용자의 실제 브라우저를 Claude 가 직접 보고·누르고·진단한다
+# browser-check — 실제 브라우저에서 Claude 가 웹 페이지를 직접 보고·누르고·진단한다
 
-서버 로그와 소스만 보고 "시험 통과"라 하지 않는다. Claude Code 가 사용자 PC 의 **실제 브라우저(Aside/Chromium)** 에서 화면을 열고, 눌러 보고, 콘솔·네트워크·CSS·반응형·접근성·성능을 직접 확인한다. 서버(원격)에서도, PC 자체(로컬)에서도 같은 플러그인이 돈다.
+서버 로그와 소스만 보고 "시험 통과"라 하지 않는다. Claude Code 가 **ego lite**(사용자 Windows PC 에 둔, 에이전트용 Chromium 브라우저)에서 페이지를 열고, 눌러 보고, 화면·콘솔·네트워크·CSS·반응형·접근성·성능을 직접 확인한다. PC 에서도, PC 의 작은 중계 프로그램을 거쳐 서버에서도(ssh) 같은 플러그인이 돈다.
 
 - 발동: 한국어 자연어 — "화면 확인해 봐", "CSS 깨졌는지 봐", "콘솔 에러 봐", "API 실패 봐", "반응형 봐", "다크모드 확인", "접근성 점검", "성능 봐", "이 버튼 눌러 봐", "실시간 동기화 확인", "로그인 풀렸어", "전체 흐름 시험해" (STT 받아쓰기 변형 포함)
 - 호출명: `browser-check:browser_check`
 
-## 통로 세 개 (정책층이 고른다 — 호출자가 고르지 않는다)
-| 통로 | 무엇 | 필요한 것 |
-|---|---|---|
-| **A** Aside 원격/로컬 repl | 탭 열기·스냅샷(ref)·클릭·입력·캡처·PDF | Aside CLI + (원격이면) Aside Pro 원격 호스트 |
-| **B** repl 안 날 CDP(`page._sendToTarget`) | 첫 로딩 전 주입·기기 폭·다크/인쇄·CSS 캐스케이드·AX 트리·프로파일 | A 와 같음 (비공개 메서드 — 매번 `typeof` 확인) |
-| **C** 직결 CDP(로컬 TCP 또는 서버의 역방향 SSH 유닉스 소켓) | 콘솔·네트워크 **이벤트**, 백그라운드 탭, 60초 넘는 작업 | 브라우저의 원격 디버깅 포트 + (서버면) 터널 |
+0.1.x 까지는 Aside 브라우저를 다뤘다. 0.2.0 부터는 ego lite 만 쓴다. Aside 는 사용자가 직접 쓰는 브라우저로 남고, "내가 Aside 에 열어 둔 탭을 봐 달라"는 Aside 안의 어시스턴트가 할 일이다.
 
-이벤트는 A/B 로 오지 않는다 — 페이지 안 기록기 v2.1(`scripts/kit/diag-v2.1.js`)을 첫 로딩 전에 넣어 회수하거나 C 를 쓴다. C 에서는 브라우저 확장 프로그램이 낸 오류가 페이지 오류와 함께 오는데, 녹화기가 따로 분류해(`ext-exception`·`ext-console`, 확장 이름 포함) 문제 목록에서 뺀다. C 는 보이지 않는 탭에서 일하는데, 이런 탭은 한 번 그려지기 전까지 클릭·키 입력을 오류 없이 버린다. 그래서 클라이언트가 문서마다 첫 입력 전에 작은 캡처 1장을 찍어 깨우고, 그 캡처가 실패하면 입력을 잃는 대신 오류로 거절한다. 또 C 는 Aside 를 실행 옵션 세 개(`--disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion --enable-features=CDPScreenshotNewSurface`)로 켜야 한다. 옵션이 없으면 Aside 창이 전부 가려지는 동안이나 창이 최소화된 동안 캡처(그래서 입력도)가 멈춘다(PC·터널 모두 실측). 옵션이 있으면 Windows 실측에서 둘 다 계속됐다(앞의 두 개는 가림, 세 번째는 최소화). Windows 에서는 `launch-flags` 가 실행 중인 Aside 를 점검하고 Aside 바로가기에 옵션을 넣어 준다. A·B 는 영향이 없다.
+## 점검이 도는 방식
+Claude 가 짧은 대본을 써서 `browser-check.mjs ego <대본>` 으로 돌린다. 대본은 ego-browser 자체의 Node 런타임 안에서, 자기 몫의 작업 공간(task space — 사용자 탭과 키보드 초점을 건드리지 않는 에이전트용 탭 묶음)에서 돈다. 플러그인은 대본 앞에 도우미(`bc.*`)를 붙인다 — 공간을 열고 반드시 다시 닫기, 닫기 전에 진행 중인 요청이 0 이 되기를 기다리기, 캡처, 콘솔·네트워크 문제 모으기, 쓰기 차단, 페이지 안 점검 도구 돌리기. 그림은 파일로, 데이터는 JSON 으로 돌아온다.
 
-## 사용자 탭 빌리기 · 쓰기 차단 · 분리 창 (C, 켜야 동작한다)
-운영 API 에 붙은 화면처럼 새 탭을 열면 안 되고 데이터도 바꾸면 안 되는 곳을 확인할 때 쓴다. 기본은 모두 꺼져 있어 기존 사용법은 그대로다.
-- **탭 빌리기** — `cdp <스크립트> --borrow <주소 패턴> [--same-window-as <주소 패턴>]`. 사용자가 이미 열어 둔 탭에 붙는다(예: 잔디 탭과 같은 창에 있는 Mesa 탭). 새로 만들지도, 앞으로 띄우지도, 닫지도 않는다. 맞는 탭이 없으면 그 창에 하나 열어 달라고 안내하고, 여럿이면 후보를 보여 주며 `--borrow-target` 으로 고르게 한다. 설정의 사이트 규칙에 `borrow` 가 있거나, 그때 사용자가 승인해 `--user-approved` 를 붙였을 때만 빌린다. 빌린 탭에서는 주소 이동(`Page.navigate`)이 되고, Aside 자동 채우기 메뉴·DeepL 같은 끼워 넣은 화면은 나중에 뜬 것까지 계속 숨긴다. 끝나면 숨김·화면 흉내(폭·테마·언어)·쓰기 차단을 모두 원래대로 돌리고 탭은 그대로 둔다. 붙은 직후 읽기만 하는 명령을 하나 보내고, 거기에 답하지 않는 탭(최소화된 창에서 겪었고 원인은 아직 모른다)은 그냥 시간 초과 대신 `tab-unresponsive` 와 그 창 상태로 실패한다. 그 창을 열어 탭을 한 번 눌러 달라고 사람에게 부탁하라는 안내가 붙는다. 탭을 깨우거나 새로 고치거나 앞으로 띄우지는 않는다.
-- **쓰기 차단** — `--guard-writes [--allow-write <경로>]…` 또는 사이트 규칙 `guardWrites: true` · `writeAllow`. 빌린 탭에서 GET·HEAD·OPTIONS 가 아닌 요청을 브라우저 밖으로 나가기 전에 막고, 허용 목록(로그인 유지·토큰 갱신 경로)만 통과시킨다. 막은 것과 통과시킨 것을 결과에 남긴다. 걸자마자 없는 경로로 POST 를 하나 쏘아 실제로 막히는지 스스로 시험하고, 안 막히면 진행하지 않는다. WebSocket 메시지와 서비스 워커가 스스로 보내는 요청은 못 막는다.
-- **분리 창** — 스크립트에서 `client.openIsolatedWindow(주소)`. 사용자 로그인·쿠키와 섞이지 않는 임시 프로필을 최소화된 새 창으로 연다(시험 계정 확인용). 쿠키는 `client.setIsolatedCookies` 로 그 프로필에만 넣고 값은 결과에 남기지 않는다. 끝나면(연결이 끊겨도) 프로필째 지운다. 최소화 창을 캡처하려면 위의 세 번째 실행 옵션이 필요하다.
-- **탭 목록** — `tabs [--match <패턴>] [--same-window-as <패턴>]`. 탭과 창 번호를 읽기만 한다.
+PC 에서는 대본이 `ego-browser` 로 바로 간다. 서버는 그렇게 못 한다 — ego lite 는 네트워크 포트를 열지 않고 관리자 권한으로 부르는 쪽을 거부한다("ego-browser is running as administrator"). 그런데 Windows 에서 관리자 계정의 ssh 접속은 늘 관리자 권한이다. 그래서 `relay install` 이 PC 에 중계 프로그램을 둔다. 이 프로그램은 사용자의 일반 권한 로그온 세션에서 돌고, 127.0.0.1 로만 받으며, 암호는 자기 폴더에 둔다. 서버는 ssh 로 중계의 진입 파일에 대본을 넘기고, 진입 파일이 중계에 건넨다. 결과도 같은 길로 돌아온다. ssh 연결은 2분 동안 다시 쓴다.
 
-주소 패턴은 `*` 가 없으면 "주소(쿼리 제외)에 이 글자가 들어 있음", 있으면 전체 일치다. 허용 경로는 `/`로 시작하면 어느 서버든 그 경로, `https://…` 면 서버까지 맞아야 하고, 끝의 `*` 는 앞부분 일치다.
+## 캡처
+ego 는 창이 최소화돼 있으면 보통 캡처를 거부하고, X 로 닫은 창은 실제로는 숨긴 것이라 그리지 않는다. `bc.shot` 은 세 경우를 다 다룬다. 먼저 보통 캡처를 해 보고, 거부되면 화면 연속 전송(screencast — 최소화 중에도 계속 그린다. 첫 그림은 마지막 변화 전 화면일 수 있어서 받은 그림마다 답을 보내고 잠깐 기다린 뒤 마지막 그림을 쓴다)으로 받는다. 그림이 한 장도 안 오면 ego 창이 전부 X 로 닫힌 것이라 ego 를 다시 불러 숨은 창을 띄우고 곧바로 최소화한 뒤(실측 화면 노출 65~185ms) 캡처한다. 그래서 사용자는 ego 를 최소화해 두든 닫아 두든 상관없다. 페이지 전체 캡처는 ego 가 최소화돼 있지 않을 때만 되고, 그 밖에는 나눠 찍어 이어 붙인다.
 
-## 설치 (서버·PC 공통)
-1. `claude plugin install browser-check@comonetso`
-2. **비공개 설정** — `${CLAUDE_PLUGIN_DATA}/config.json` (0600, 부모 0700. Windows 에는 이런 권한 숫자가 없어 이 검사를 하지 않는다). 처음 쓸 때 `browser-check.mjs setup` 이 이 기기를 살펴(Aside CLI · 실행 중인 Aside 의 포트 · 터널 소켓 · `aside host list`) 만들고, 넣은 값을 보여 준다. 이미 있는 파일은 덮어쓰지 않는다. Aside 에 원격 PC 가 여럿이면 어느 것인지 묻고, 쓸 수 있는 통로가 없으면 아무것도 쓰지 않고 사람이 할 일을 알려 준다. 사이트별 규칙은 비워 두며, 그러면 안전한 기본값으로 돈다. 직접 쓰려면 예시 `config/example.json`, 스키마 `config/schema.json`. 호스트 이름·CLI 절대경로·소켓 경로·사이트별 로그인 분류는 **여기에만** 둔다(공개 저장소에 올라가지 않는다).
-3. `node "${CLAUDE_PLUGIN_ROOT}/scripts/browser-check.mjs" doctor` — 설정·통로 표. 워크플로우 에이전트·크론·그냥 ssh 처럼 플러그인 밖 셸에는 `CLAUDE_PLUGIN_DATA` 가 없어 설정을 못 찾는다(`Config INVALID`). 그때는 `CLAUDE_PLUGIN_DATA=<Claude 설정 폴더>/plugins/data/browser-check-comonetso`(또는 `BROWSER_CHECK_CONFIG=<그 폴더>/config.json`)를 붙여 부른다. 통로가 없으면 표를 보고 사람이 켠다(처음 쓸 때 자기 설정 파일을 만드는 것 말고는, 플러그인은 설정·PC 상태를 바꾸지 않는다).
-4. 원격 서버 + Pro 없이 C 를 쓰려면: PC 에서 서버별 단일 소유 `ssh -NT -R <서버 유닉스 소켓>:127.0.0.1:<디버깅 포트> …`. Windows 작업 스케줄러라면 로그온 트리거 + 1분마다 반복하는 트리거 + "새 인스턴스 시작 안 함" 으로 둔다 — 창을 숨기려고 감싸면 "실패 시 다시 시작" 이 동작하지 않는다(실측). 서버 sshd 는 `AllowStreamLocalForwarding yes` + `StreamLocalBindUnlink yes` 필요. 🔴 CDP 는 인증이 없다 — TCP 포트로 열지 말 것.
+## 쓰기 차단
+`--guard-writes [--allow-write <경로>]…`, 또는 사이트 규칙 `guardWrites: true` 와 `writeAllow`. 페이지 안에서 GET·HEAD·OPTIONS 가 아닌 fetch·XMLHttpRequest·sendBeacon·폼 제출을 허용 경로가 아니면 막고, 막은 목록을 결과에 싣는다. 켜자마자 없는 경로로 POST 를 보내 막히는지 스스로 시험한다. 웹소켓 메시지, 서비스 워커가 스스로 보내는 요청, submit 이벤트 없는 최상위 POST 이동은 막지 못한다. 로그인 사이트에서는 토큰 갱신 경로를 허용해야 한다 — 차단을 켜자 사이트의 갱신 POST 가 막혀 페이지가 로그인 화면으로 떨어졌다(서버에는 아무것도 가지 않아 로그인 자체는 살아 있었다). 예전 차단이 쓰던 브라우저 단계 가로채기는 ego 에서 멈춤이 생겨 거부한다.
 
-## 🔴 안전 규칙 요약 (전문은 `skills/browser_check/SKILL.md` §1)
-자기 탭만(예외: 설정이나 그때의 승인으로 빌려 준 탭 — 위 절) · 로그인 사이트 탭은 **진행 중 요청 0 확인 뒤 닫기**(안 지키면 사용자 로그인 전체가 끊긴 실사고) · 한 호출 50초 · Aside 채우기 메뉴 금지(로그인 버튼을 스스로 누른다) · 데이터 변경은 승인된 것만 · 클립보드·다운로드·OS 창·브라우저 단축키 금지 · `fromSurface:false` 금지(사용자 화면이 찍힌다) · 비밀은 읽지도 남기지도 않는다(중앙 redactor) · 동시성 1.
+## 설치
+1. Windows PC 에 ego lite 를 설치하고(https://lite.ego.app/) 첫 설정을 마친 뒤, Claude 가 점검할 사이트에 ego 에서 로그인해 둔다. ego 는 Chrome·Edge 에서만 가져오기가 된다.
+2. PC 와 각 서버에서 `claude plugin install browser-check@comonetso`.
+3. PC 에서 `node "${CLAUDE_PLUGIN_ROOT}/scripts/browser-check.mjs" relay install` — 중계를 `%LOCALAPPDATA%\browser-check\relay` 에 복사하고 작업 스케줄러 항목 "browser-check ego relay"를 만든다(로그온 때와 1분마다, 이미 떠 있으면 바로 끝남, 시간 제한 없음, 일반 권한). `relay status`·`relay uninstall` 로 확인·제거한다.
+4. 각 서버에는 PC 로 키 로그인되는 ssh Host 가 있어야 한다. 처음 쓸 때 `setup` 이 `~/.ssh/config` 의 Host 마다 중계가 있는 PC 인지 물어본다. 하나가 답하면 설정을 쓰고, 여럿이면 어느 것인지 묻고, 없으면 무엇이 빠졌는지 알려 준다.
+5. **비공개 실행 설정**은 `${CLAUDE_PLUGIN_DATA}/config.json`(권한 0600, 상위 폴더 0700 — Windows 에는 이런 권한 비트가 없어 그쪽은 검사하지 않는다). 처음 쓸 때 `setup` 이 만들고, 넣은 값을 보여 주며, 지금 판 설정은 덮어쓰지 않는다. Aside 판 설정은 알려 주고, `setup --migrate` 가 사이트 규칙을 남긴 채 다시 쓴다(옛 파일은 백업). 사이트 규칙은 빈 채로 시작하며, 그것이 안전한 기본값이다. `config/example.json`·`config/schema.json` 참고.
+6. `doctor` 가 상태를 보여 준다 — PC 에서는 ego-browser·판 번호·창 상태·중계, 서버에서는 중계의 답. 플러그인 밖 셸(워크플로우 에이전트·cron·맨 ssh)에는 `CLAUDE_PLUGIN_DATA` 가 없으니 `CLAUDE_PLUGIN_DATA=<claude 설정 폴더>/plugins/data/browser-check-comonetso` 를 준다.
 
-## 구조
+## 안전 (전문: `skills/browser_check/SKILL.md` §1)
+자기 작업 공간만 · ego 창을 Claude 가 옮기거나 크기를 바꾸거나 최소화하지 않는다(캡처 때 닫힌 창을 최소화로 다시 띄우는 것 하나만 예외) · 로그인 사이트에서는 진행 중 요청이 0 이 된 뒤에만 공간을 닫고, 아니면 열어 둔 채 보고한다 · 데이터 변경은 그 대상에 대한 명시적 승인이 있을 때만 · 클립보드·다운로드·OS 선택 창·브라우저 단축키 금지 · 쿠키·저장소 명령, 브라우저 닫기, 창 크기, 요청 가로채기, 대상 만들기는 거부 · 비밀값은 읽지도 남기지도 않는다(중앙 가리기) · 로그인·2단계 인증·CAPTCHA 는 사용자에게 넘긴다.
+
+## 파일 배치
 ```
-.claude-plugin/plugin.json      매니페스트(version 필수)
-hooks/hooks.json                SessionStart — stat-only(설정·소켓 권한만, 브라우저 접촉 없음)
-skills/browser_check/SKILL.md   발동·안전 규칙·라우팅   recipes/*.md  지시별 절차 10개
-scripts/browser-check.mjs       진입점: setup(처음 설정) · doctor · cdp(--borrow · --guard-writes 선택) · tabs(탭·창 번호 읽기) · run(1회성 repl, 50초 가드, 잠금, @@IMG 저장, 가림) · unlock · launch-flags(Windows: 창이 가려지거나 최소화돼도 C 가 돌게 하는 실행 옵션 세 개가 Aside 에 붙어 있는지 · --apply 는 Aside 바로가기에 넣기 · --undo 는 되돌리기)
-scripts/lib/                    setup · config · capabilities(감지 순서) · policy(작업 5분류·CDP allow/deny) · redact · lock
-scripts/kit/                    head.js(공통 머리) · diag-v2.1.js(기록기) · webcheck*.js · vitals*.js · perfdiag · emu-lib · responsive-iframe
-scripts/image/                  decode · crop · stitch (Pillow 선택)
-scripts/session/                영구 세션 구동기(drv.py/run.sh) · MCP 중계기(aside_mcp_shim.py)
-test/                           basic.test.mjs(가림·정책·설정·누출 검사) · cdp-unit.test.mjs(WebSocket 프레임·CDP 클라이언트) · setup.test.mjs(처음 설정) · launch-flags.test.mjs(Aside 실행 옵션) · borrow.test.mjs(탭 빌리기·쓰기 차단·분리 창) · regress/(Aside 업데이트 뒤 회귀) · unix-bridge.mjs(TCP→소켓 다리, 시험 전용)
+.claude-plugin/plugin.json     매니페스트
+hooks/hooks.json               SessionStart — 파일만 본다(설정 판·ego-browser 경로, 브라우저 접촉 없음)
+skills/browser_check/          SKILL.md + recipes/*.md (작업별 레시피 10개)
+scripts/browser-check.mjs      입구: setup(첫 설정, --migrate) · doctor · ego(대본 실행) · relay install|status|uninstall
+scripts/ego/                   prelude.mjs(bc.* 도우미) · relay.mjs(PC 중계) · entry.cmd(서버가 부르는 곳) · window.ps1(ego 창 상태, 최소화로 다시 띄우기)
+scripts/lib/                   ego(실행기) · setup · config · capabilities · relay-install · redact
+scripts/kit/                   diag-v2.1.js · webcheck*.js · vitals*.js · perfdiag · emu-lib
+scripts/image/stitch.py        나눠 찍은 그림 이어 붙이기(Pillow)
+test/                          basic.test.mjs(가리기·설정·누출) · setup.test.mjs(첫 설정) · ego.test.mjs(실행기·도우미) · ego-example.mjs · ego-guard.mjs(`ego` 로 돌린다)
 ```
 
-`node --test test/basic.test.mjs test/cdp-unit.test.mjs test/setup.test.mjs test/launch-flags.test.mjs test/borrow.test.mjs` 는 브라우저 없이 돈다. 누출 검사는 막을 값 목록을 로컬 파일(`~/.claude/_private/browser_check_leak.txt`, 또는 `BROWSER_CHECK_LEAK_LIST` 에 적은 경로)에서 한 줄에 `/정규식/플래그` 하나씩 읽는다. 목록을 이 패키지에 넣으면 막으려는 값이 그대로 공개되므로 밖에 둔다. 목록이 없으면 이 검사는 통과가 아니라 건너뜀으로 나온다.
+`node --test test/basic.test.mjs test/setup.test.mjs test/ego.test.mjs` 는 브라우저 없이 돈다. 누출 검사는 패턴을 로컬 파일(`~/.claude/_private/browser_check_leak.txt` 또는 `BROWSER_CHECK_LEAK_LIST` 의 경로)에서 한 줄에 `/정규식/플래그` 하나씩 읽는다. 이 목록을 패키지에 넣으면 지키려는 값을 공개하게 되므로 밖에 둔다. 목록이 없으면 검사는 통과가 아니라 건너뛴다.
 
-## 실행 환경 — 낮은 Node 에서도 같은 기능
-- **외부 패키지 0**(package.json 없음). Node 코어 모듈만 쓴다. Node 22 전용 기능(전역 `WebSocket`·`fetch`)은 쓰지 않는다 — 유닉스 소켓 위 WebSocket 은 `lib/cdp-ws.mjs` 가 `net`+`crypto` 로 직접 구현.
-- **Node 18 이상**(`node:test` 때문에 시험만 18.1+). 실측: **Node 18.20.8 · 20.18.0 · 22.22.0** 세 버전에서 단위 시험 전부 통과 · doctor · run(Aside 원격) · cdp(TCP·유닉스 소켓) 동작 확인(2026-09-26).
-- Python 3 + Pillow 는 이미지 자르기·이어붙이기에만 필요(없으면 그 기능만 빠진다). doctor 가 찾은 명령(`python3`·`python`·`py -3`)을 표시하고, 스크립트는 그 명령으로 실행한다.
+## 실행 환경
+외부 패키지 없음, Node 기본 모듈만. 서버 쪽은 Node 18 이상(Node 20·22 에서 실측). 대본 자체는 ego 에 든 Node(ego lite 0.6 은 24)에서 돈다. Python 3 + Pillow 는 그림 이어 붙이기·자르기에만 쓴다(선택). doctor 가 찾은 명령을 알려 준다.
 
-## Windows PC 에서 실측한 것 (2026-09-26 · Aside 1.26.916 · Chrome 153 · Node 22.17)
-Aside Pro 없이 로컬 A·B: 자기 탭 · 스냅샷 ref · 클릭과 한글 입력 · 안전 닫기 · 첫 로딩 주입 · CSS 규칙 · 기기 폭·미디어 흉내와 되돌림 · 루프백 TCP 로 C: 백그라운드 탭 · 콘솔·네트워크 이벤트 · 명령 시간 초과 · 남는 탭 0 · 자동 깨우기 뒤 오른쪽 클릭 · 데몬은 틀린 Host 헤더를 거절(403)하고, 감지는 설정을 바꾸지 않는다 · 공백·한글 경로 · Python 없는 doctor · Dark Reader 켜짐(경고 뒤 플러그인 탭에서 잠금)과 사이트별 꺼짐(경고 없음) · DeepL 아이콘을 꺼도 `deepl-*` 요소는 페이지에 남는다 — 숨기고 알린다.
+## 실측 (2026-10-21 · Windows 11 · ego lite 0.6.0.16 · Chromium 154)
+PC: 열기, 스냅샷, 클릭, 입력, 첫 로딩 전 주입, 기기·미디어 흉내, CSS 규칙, 접근성 트리, 성능 수치, 3만 자 점검 도구, 콘솔·예외·404 이벤트, 작업 공간 셋 동시 실행 · 최소화 상태와 X 로 닫은 뒤의 연속 전송 캡처(빨강·초록·파랑 바탕으로 그림마다 확인) · 쓰기 차단이 fetch POST 와 폼 제출을 막고 GET 은 통과, 쿠키 읽기는 거부 · 로그인 사이트를 새 작업 공간에서 열면 로그인된 채로 뜨고, 진행 중 0 뒤에 닫힘 · ego 를 완전히 끈 뒤 다음 실행이 다시 켬. 리눅스 서버 셋에서 중계를 거쳐: setup 이 PC 를 스스로 찾음, 예제가 5.4~6.3초에 돌고 그림이 서버로 옴, ego 를 X 로 닫아 둔 상태에서 캡처가 창을 최소화로 다시 띄움, ego 가 꺼져 있을 때 중계가 먼저 최소화로 켬.
 
-## 실제 PC → 서버 터널에서 실측한 것 (2026-09-26)
-역방향 유닉스 소켓(root, 0600) 위 C: 예시 스크립트 전체가 약 3초, 오른쪽 클릭 포함(PC 의 Aside 창이 화면에 보이는 동안) · 작업 스케줄러가 맡은 터널은 끊긴 뒤 54초 만에 다시 붙었고, ssh 는 늘 하나, CPU 는 거의 쓰지 않았다 · 리눅스 서버 4대에서 `setup`: Aside·터널이 있는 곳은 설정을 만들고, 없는 곳은 `not-ready` 와 할 일을 알렸다.
-
-## 탭 빌리기·쓰기 차단·분리 창 실측 (2026-10-15 · Windows · Aside 시험 프로필 · Chrome 153)
-같은 창에 기준 탭과 앱 탭, 다른 창에 같은 앱 탭을 둔 시험 브라우저에서: 설정에 빌려 주기가 없고 승인도 없으면 거절 · 같은 창의 앱 탭 하나만 골라 붙음 · 계정 만들기 POST 와 비콘은 막히고 토큰 갱신 POST 와 GET 은 통과, 시험 서버에 실제로 닿은 쓰기는 허용한 것 하나뿐 · 1초 뒤에 생긴 자동 채우기 메뉴도 숨김, 주소 이동 뒤 새 페이지에서도 숨김 · 닫기·앞으로 띄우기·`Fetch` 직접 호출은 거절 · 분리 창은 최소화로 열려 캡처되고 쿠키는 그 창에만 보임 · 끝난 뒤 탭 셋 그대로, 화면 폭 흉내·숨김 표식 원복, 임시 프로필 0.
-
-## 아직 실측되지 않은 것 (짐작하지 말 것)
-분리 창이나 빌린 탭이 실제 사용자 화면에서 포커스를 가져가는지(사람이 봐야 한다) · 서버 터널 위의 탭 빌리기 ·
-재부팅 뒤(로그온 트리거)와 며칠에 걸친 터널 · `_sendToTarget` 의 Aside 업데이트 뒤 수명 · 기록기 v2.1 의 실제 앱 회귀 · 레시피를 통째로 돌린 것. 근거 문서: 조사·실측 결과 12편 + Codex 컨설팅(별도 보관).
+## 아직 안 잰 것 — 짐작하지 말 것
+최소화된 ego 창이 타이머·애니메이션 프레임을 늦추는지(그림 기반 수치·INP) · 재부팅 뒤(로그온 트리거)와 며칠 동안의 중계 · PC 절전 중 중계 동작 · 실행 중에 ego 업데이트가 현재 판 링크를 옮길 때 · 실제 앱에서 레시피 처음부터 끝까지.

@@ -4,13 +4,13 @@ Prerequisite: SKILL.md §0–§2.
 
 ## Steps
 1. **Plan first**: the step list · the expected result of each step · **which steps change data** → approval (test account, test data and how to clean up included).
-2. Setup: persistent session (`session/drv.py`; not on Windows — SKILL.md §3) · send `kit/head.js` as the first line (`K` stays on globalThis) · recorder v2.1 for logged-in apps · `K.prep` · `K.wake`.
-3. Each step: `__diag.mark(step)` → action → a snapshot with the same options + `diff` → `dump({since})` → `K.img` if needed. Follow the input rules in action.md. **≤ 50 s per line** (a 60 s cut kills the persistent session too — session, tabs and variables are all lost).
-4. Move between screens with SPA link clicks or `pushState` (no rotation). Read the URL with `K.href`.
-5. Clean up: delete the data created (within the approval) · revert emulation (width/media/CPU) · `K.safeClose` · confirm 0 own tabs in `listBrowserTabs()` (count by the opened tabs' `targetId`).
+2. One task space for the whole flow, resumed by name across runs (`taskSpace('flow-orders')` — tabs and pages survive between runs, variables don't). For a long flow use `bc.run` in the final run only; in the earlier runs call `bc.prep(page)` once and end each run with a snapshot so the next run starts from it.
+3. Each step: `__diag.mark(step)` (recorder injected before the first `goto`) → action → wait for its expected state → a new snapshot → `bc.problems(page)` / `dump({ since })` → `bc.shot` if needed. Follow the input rules in action.md. A run may take minutes (default limit 300 s, `--timeout` for more), but keep each `page.evaluate` bounded.
+4. Move between screens with SPA link clicks or `pushState` (no token rotation). Read the URL with `page.evaluate(() => location.href)`.
+5. Clean up: delete the data created (within the approval) · revert emulation (width/media/CPU) · the final `bc.run`/`bc.finish` settles and closes the space — confirm `CLOSED` in the result, or report `leftOpen`.
 
 ## Verdict
-Expected = actual at every step · 0 errors and failed requests · other tabs in sync (where it applies).
+Expected = actual at every step · 0 errors and failed requests · other pages in sync (where it applies).
 
 ## Report
-Step table (`action · expected · actual · evidence (diff · rid · capture)`) + defects found + cleanup confirmed.
+Step table (`action · expected · actual · evidence (snapshot · rid · capture)`) + defects found + cleanup confirmed.

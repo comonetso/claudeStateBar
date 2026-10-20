@@ -1,43 +1,22 @@
 {
-  "schemaVersion": 1,
-  "mode": "auto",
-  "aside": {
-    "enabled": true,
-    "bin": "<absolute-aside-cli-path>",
-    "remoteHost": "<private-aside-host-name>",
-    "maxConcurrent": 1,
-    "evaluateTimeoutMs": 25000,
-    "callTimeoutMs": 50000
-  },
-  "cdp": {
-    "enabled": true,
-    "remote": {
-      "transport": "unix",
-      "socketPath": "<absolute-private-unix-socket-path>"
-    },
-    "local": {
-      "endpoint": "http://127.0.0.1:<private-local-cdp-port>",
-      "daemonEndpoint": "http://127.0.0.1:<private-local-daemon-port>"
-    },
-    "policyProfile": "safe-v1",
-    "connectTimeoutMs": 1000,
-    "commandTimeoutMs": 10000
+  "schemaVersion": 2,
+  "ego": {
+    "bin": "<absolute path to ego-browser.exe on the PC — setup finds it; on a server use remoteHost instead>",
+    "callTimeoutMs": 300000,
+    "settleMs": 15000,
+    "light": true
   },
   "artifacts": {
-    "dir": "<absolute-plugin-data-dir>/artifacts",
     "retentionDays": 7,
-    "storeRawProtocol": false,
     "storeScreenshots": true
   },
   "sites": [
     {
-      "match": "https://dev.example.invalid:*",
+      "match": "https://dev.example.invalid:5173",
       "login": "rotating-refresh",
-      "diag": "vite-v2.1",
-      "darkReader": "must-be-off-warn",
-      "deepL": "hide-and-report",
-      "allowDataMutation": false,
-      "authPathPrefixes": ["/api/entry/", "/api/auth/"]
+      "authPathPrefixes": ["/api/auth"],
+      "guardWrites": true,
+      "writeAllow": ["/api/auth/refresh"]
     }
   ]
 }

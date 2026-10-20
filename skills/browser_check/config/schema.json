@@ -1,91 +1,50 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "browser-check/config/schema.json",
-  "title": "browser-check private runtime config",
-  "description": "Lives OUTSIDE the public plugin: ${CLAUDE_PLUGIN_DATA}/config.json (0600, parent 0700) or the path in BROWSER_CHECK_CONFIG. Holds every machine-specific value (host names, absolute paths, ports, socket paths, site classifications). Unknown keys are rejected so a typo cannot silently disable a policy.",
+  "title": "browser-check private config (ego lite)",
+  "description": "Lives in ${CLAUDE_PLUGIN_DATA}/config.json (0600, parent 0700). `browser-check.mjs setup` writes it; `setup --migrate` replaces an old Aside (schemaVersion 1) file. Unknown keys are rejected.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "mode"],
+  "required": ["schemaVersion", "ego"],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "mode": {
-      "type": "string",
-      "enum": ["auto", "local", "remote"],
-      "description": "auto = probe capabilities in the documented order; local = this machine runs the browser; remote = the browser is on another machine reached via Aside remote host and/or SSH-tunneled CDP"
-    },
-    "aside": {
+    "schemaVersion": { "const": 2 },
+    "ego": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Either bin (ego lite on this machine — the PC) or remoteHost (a server: the PC over ssh, through the browser_check relay).",
       "properties": {
         "enabled": { "type": "boolean", "default": true },
-        "bin": { "type": "string", "description": "absolute path of the aside CLI (non-interactive shells may not have it on PATH)" },
-        "remoteHost": { "type": "string", "description": "Aside remote host device name or remote:<id>; omit in local mode" },
-        "maxConcurrent": { "type": "integer", "minimum": 1, "maximum": 4, "default": 1, "description": "single-flight by default: CLI auth refresh has no lock and the relay rate-limits per account" },
-        "evaluateTimeoutMs": { "type": "integer", "minimum": 1000, "maximum": 30000, "default": 25000, "description": "one page.evaluate ≤ ~30 s (CDP timeout inside the daemon)" },
-        "callTimeoutMs": { "type": "integer", "minimum": 5000, "maximum": 55000, "default": 50000, "description": "one remote repl call ≤ ~60 s or the whole output is lost" }
-      }
-    },
-    "cdp": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": { "type": "boolean", "default": true },
-        "remote": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "transport": { "type": "string", "enum": ["unix", "tcp"], "default": "unix" },
-            "socketPath": { "type": "string", "description": "absolute path of the reverse-forwarded Unix socket (0600, parent 0700)" },
-            "tcpEndpoint": { "type": "string", "description": "http://127.0.0.1:<port> — test-only; every local process can reach a TCP listener" }
-          }
-        },
-        "local": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "endpoint": { "type": "string", "description": "http://127.0.0.1:<remote-debugging-port> of the local Aside/Chromium" },
-            "daemonEndpoint": { "type": "string", "description": "http://127.0.0.1:<aside-daemon-port> — probed for a health line only" }
-          }
-        },
-        "policyProfile": { "type": "string", "enum": ["safe-v1"], "default": "safe-v1" },
-        "connectTimeoutMs": { "type": "integer", "minimum": 200, "maximum": 10000, "default": 1000 },
-        "commandTimeoutMs": { "type": "integer", "minimum": 1000, "maximum": 60000, "default": 10000 }
+        "bin": { "type": "string", "description": "absolute path to ego-browser.exe (setup prefers ~/.local/share/ego/active_version_dir, which follows ego updates)" },
+        "remoteHost": { "type": "string", "description": "ssh Host of the PC (key login); the relay must be installed there (`relay install`)" },
+        "relayEntry": { "type": "string", "default": "%LOCALAPPDATA%\\browser-check\\relay\\entry.cmd", "description": "the PC path of the relay entry, as the PC's cmd.exe sees it" },
+        "relayDir": { "type": "string", "description": "the PC relay folder (setup reads it from the relay); window.ps1 there reopens a closed ego window minimized" },
+        "callTimeoutMs": { "type": "integer", "minimum": 5000, "maximum": 1800000, "default": 300000 },
+        "settleMs": { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 15000, "description": "how long bc.finish waits for 0 requests in flight before it leaves the space open instead of closing it" },
+        "light": { "type": "boolean", "default": true, "description": "force prefers-color-scheme: light in bc.prep (ego's own theme can be dark)" }
       }
     },
     "artifacts": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "dir": { "type": "string", "description": "absolute dir under the plugin data dir; screenshots, dumps, metrics (redacted) go here" },
+        "dir": { "type": "string", "description": "absolute; default ${CLAUDE_PLUGIN_DATA}/artifacts" },
         "retentionDays": { "type": "integer", "minimum": 1, "maximum": 90, "default": 7 },
-        "storeRawProtocol": { "type": "boolean", "default": false },
         "storeScreenshots": { "type": "boolean", "default": true }
       }
     },
     "sites": {
       "type": "array",
+      "description": "Per-site rules. setup never guesses them; without a rule the safe defaults apply.",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["match"],
         "properties": {
-          "match": { "type": "string", "description": "origin glob, e.g. https://dev.example.invalid:* — matched on normalized origin+path only, never query/hash" },
-          "login": { "type": "string", "enum": ["none", "rotating-refresh", "session-cookie"], "default": "none", "description": "rotating-refresh = closing a tab mid-request can revoke the whole session family" },
-          "diag": { "type": "string", "enum": ["none", "vite-v2.1", "cdp-inject"], "default": "none" },
-          "darkReader": { "type": "string", "enum": ["must-be-off-warn", "tolerate", "lock-silently"], "default": "must-be-off-warn" },
-          "deepL": { "type": "string", "enum": ["hide-and-report", "tolerate"], "default": "hide-and-report" },
+          "match": { "type": "string", "description": "origin or origin+path, * as wildcard" },
+          "login": { "enum": ["none", "rotating-refresh", "session-cookie"], "default": "none" },
           "allowDataMutation": { "type": "boolean", "default": false },
-          "authPathPrefixes": { "type": "array", "items": { "type": "string" }, "description": "request paths the plugin must never call via repl fetch (login/refresh/logout)" },
-          "borrow": {
-            "type": "object",
-            "additionalProperties": false,
-            "description": "the owner lends an existing tab of this site to transport C (cdp --borrow). Without it a run needs --user-approved. The tab is never created, raised or closed.",
-            "properties": {
-              "sameWindowAs": { "type": "string", "description": "only a tab in the same window as a tab matching this URL pattern, e.g. the site's tab in the JANDI window" }
-            }
-          },
-          "guardWrites": { "type": "boolean", "default": false, "description": "on C, fail every non-GET/HEAD/OPTIONS request from a borrowed tab of this site except writeAllow (self-tested before use)" },
-          "writeAllow": { "type": "array", "items": { "type": "string" }, "description": "write requests the guard lets through (keep-alive / auth refresh): a path matches on any origin, a full URL on origin+path; trailing * = prefix" }
+          "authPathPrefixes": { "type": "array", "items": { "type": "string" } },
+          "guardWrites": { "type": "boolean", "default": false, "description": "turn the in-page write guard on for this site" },
+          "writeAllow": { "type": "array", "items": { "type": "string" }, "description": "paths the guard lets through — on a logged-in site include its token-refresh path, or the page falls back to its login screen" }
         }
       }
     }
