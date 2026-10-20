@@ -374,6 +374,16 @@ is recorded in `<stamp>_edit<N>_<slug>.md` and copied under that turn in the res
 cannot be continued here even with the document present. The document records the machine it
 started on, so this is detected automatically.
 
+### A measurement turn (1.18.0)
+
+A consultation follow-up can let Codex measure instead of only read: put `net: yes` in the follow-up
+file. Claude asks you first and sets `CR_ALLOW_NET=1` for that turn only; every measurement turn needs
+it again. Codex may then write on its workbench and in a measurement log
+(`<stamp>_net<N>_<slug>.md`), use the network, and send write requests to the hosts in `CR_NET_POST`
+(§6). The response document is still appended by the script, and fingerprints taken before and after
+the turn report any change outside the workbench and the log. It works on consultations only and
+cannot be combined with `edit: yes`.
+
 ---
 
 ## 2-3. Cutting in while it works (new 2026-08-26, extended 2026-09-15, follow-ups 2026-09-17)
@@ -656,6 +666,22 @@ Windows sandbox blocks the network by pointing the proxy environment variables a
 a program that ignores proxy settings (Node's built-in `https`, for one) still got out with the
 network switched off.
 
+**Write requests to a staging server** (1.18.0). Writing in a request that Codex may send a test POST
+does not work: the plugin's read-only rule wins, and Codex says so. Allow it with a setting instead,
+`CR_NET_POST="staging.example,127.0.0.1:18080"`. Codex may then send write requests (POST, PUT, PATCH,
+DELETE) to exactly those hosts; an entry without a port covers only ports 80 and 443. Every other
+destination stays read-only, and Codex records each request's host, method and count in section 1 of
+its answer. The setting is refused on runs that cannot reach the network. The run report and the
+pre-run question show `POST allowed: …`.
+
+Every run report now opens with a **POST audit**. It reads that turn's commands and the scripts on the
+workbench, parses curl, wget and the PowerShell web cmdlets by their real option syntax, and marks in
+red a write request to a host off the list (or, with no list, any write request) and one whose target
+it cannot pin down. A request already sent cannot be taken back, which is why the audit sits at the
+top. It is a static check and the report says so: an address assembled in variables, a call inside an
+SDK or a host read from another file can slip past it, and counts are traces, not requests sent. With
+nothing found it is a single line.
+
 **Credentials can be read** (2026-09-16). Codex used to be told not to open `.env` or password
 files, and as a result it once could not run the database query a request spelled out and ended with
 `Access denied`. Reading them and connecting is now allowed, on one condition: **the values must not
@@ -723,6 +749,7 @@ recommended for everyday use.
 | **Pre-run question** | ✅ measured — lookup works locally and on a Node 20 server; a run without the confirmation mark is refused |
 | **Partial saves** | ✅ measured — a stopped turn kept its partial document, and a follow-up on a different model carried on from it.<br>❌ **a run actually cut off by a usage limit**, and partial saves in fix mode, are unverified |
 | **Credentials readable** | ❌ only the prompt wording was checked; whether Codex actually connects to a database is unverified |
+| **`CR_NET_POST` · POST audit · measurement turn (1.18.0)** | ✅ measured — with the setting unset, every mode's prompt and arguments match 1.17.3 byte for byte on 12 paths (one added personal-data line aside); the audit's verdicts on 40 common read and write commands; the measurement-turn gate and fingerprints on fixtures.<br>❌ a real model writing and handing back a measurement log, and the audit on a server run |
 | Progress panel over Remote-SSH | ✅ measured — needs claudeStateBar **1.9.2 or later** |
 | "review against main" / "just this commit" | ❌ dry-run (`CR_DRYRUN`) only; never actually run |
 | The panel's **unresponsive** verdict (30 s heartbeat) | ❌ unmeasured — reproducing it means killing the process. The `stale` that `send.sh` reports (response file unchanged) is **a different thing** and that one is measured |
@@ -770,6 +797,8 @@ recommended for everyday use.
 | `CR_DRYRUN=1` | Print the assembled command without running Codex. The log/scratch directories and their `.gitignore` may still be created |
 | `CR_WIN_SANDBOX=<mode>` | Windows sandbox implementation. Defaults to `unelevated` (the error-1332 workaround); leave it empty to keep whatever `config.toml` says |
 | `CR_NETWORK=false` | Block network access (default is **allowed**, read-only) — new 2026-08-25 |
+| `CR_NET_POST="host[,host:port]"` | Hosts Codex may send write requests to (new in 1.18.0). Unset keeps the network read-only exactly as before; no port means 80/443 only (§6) |
+| `CR_ALLOW_NET=1` | Confirms a measurement turn (`net: yes` in the follow-up file). Needed on every such turn, **only after approval** (new in 1.18.0, §2-2) |
 | `CR_GROUP=<name>` | Batch name for runs started together (new in 1.17.3). Claude puts the same name on every run it starts at once, never on a single run, and the progress panel shows runs with the same name from the same Claude conversation as one group card. A follow-up keeps its run's batch |
 | `CR_CONSULT_MAX_TURN=<n>` | Cap on push-back turns. Default **11** — the measured turn count at which a direct conversation reached its conclusion |
 | `CR_CHAT_LIMIT=<seconds>` | Ping-pong time limit. Default **60** (was 120). Opening exploration requires setting this **explicitly** |

@@ -16,7 +16,7 @@
     {
       "name": "browser-check",
       "source": "./skills/browser_check",
-      "description": "Let Claude look at, click through and diagnose your real browser (Aside/Chromium) from a server or the PC, behind a policy layer."
+      "description": "Let Claude look at, click through and diagnose web pages in ego lite, a Chromium browser on your PC kept for agents and signed in to your sites, from the PC or from a server. One command: browser-check look <url>."
     },
     {
       "name": "android-check",

@@ -15,6 +15,7 @@
     "exclude": [
         "node_modules",
         ".vscode-test",
-        "paseo-plugins"
+        "paseo-plugins",
+        "docs"
     ]
 }

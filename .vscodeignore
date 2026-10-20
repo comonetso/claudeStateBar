@@ -40,3 +40,6 @@ CLAUDE.md
 # Dev-only probe scripts compiled into out/ (underscore prefix = never shipped)
 out/_*.js
 tools/**
+# Personal API keys (also git-ignored) — never ship
+.env
+.env.*
