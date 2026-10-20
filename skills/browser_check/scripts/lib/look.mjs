@@ -24,7 +24,8 @@ export const LOOK_USAGE = 'look <url> [--click <selector>] [--fill <selector> <t
 
 /** args = everything after `look`. Returns { ok, spec } or { ok: false, error }. Steps keep the order they were given in. */
 export function parseLook(args) {
-  const spec = { url: null, steps: [], width: null, height: null, dark: false, full: false, shot: true, name: 'bc-look', guard: false, allow: [], timeout: null, textMax: 4000, out: null };
+  // A fresh space name per run: two agents running `look` at once must not share one space (it is closed at the end).
+  const spec = { url: null, steps: [], width: null, height: null, dark: false, full: false, shot: true, name: 'bc-look-' + Math.floor(Math.random() * 0x1000000).toString(16).padStart(6, '0'), guard: false, allow: [], timeout: null, textMax: 4000, out: null };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (STEPS[a]) {

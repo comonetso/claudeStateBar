@@ -24,6 +24,8 @@ test('look: steps keep their order, options are read, bad input is refused', () 
   assert.ok(p.spec.dark && p.spec.full && p.spec.shot);
   assert.equal(p.spec.name, 'my-check');
   assert.equal(parseLook(['https://x.invalid/', '--width', '390']).spec.height, 844);
+  const n1 = parseLook(['https://x.invalid/']).spec.name, n2 = parseLook(['https://x.invalid/']).spec.name;
+  assert.match(n1, /^bc-look-[0-9a-f]{6}$/); assert.notEqual(n1, n2, 'two look runs at once must not share a task space');
   for (const bad of [[], ['ftp://x/'], ['not a url'], ['https://x.invalid/', '--fill', 'only-selector'], ['https://x.invalid/', '--bogus'],
     ['https://x.invalid/', 'https://y.invalid/'], ['https://x.invalid/', '--allow-write', '/api'], ['https://x.invalid/', '--name', 'has space'], ['https://x.invalid/', '--width', 'wide']]) {
     assert.equal(parseLook(bad).ok, false, JSON.stringify(bad));
