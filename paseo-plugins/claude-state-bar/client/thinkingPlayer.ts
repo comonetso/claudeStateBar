@@ -105,6 +105,8 @@ type Run = {
   /** 선택한 자리부터 읽기(10-08): index 문단이 시작할 때 화면 글이 text 그대로면 at 번째 글자부터 읽는다.
    *  글이 바뀌었으면(번역이 와서 번역문이 됐다 등) 그 문단 처음부터. 이전·다음을 누르면 버린다 */
   from?: { index: number; text: string; at: number };
+  /** 보류(10-20 따라 읽기) — 새 소리를 만들지 않는다. 이미 만든(만드는 중인) 문단까지만 읽고 기다린다 */
+  held?: boolean;
 };
 
 /** 빈 줄만 문단 경계로 삼는다. 스트리밍 마지막 비어 있지 않은 문단은 보류한다. */
@@ -225,6 +227,10 @@ export class ThinkingController {
   /** 번역을 보내기 전에 먼저 보는 이 기기 보관(10-10). 없으면(폰·시험) 늘 번역을 보낸다 */
   cache?: TranslationCache;
   private speech = new Map<string, SpeechSettings>();
+  // 진단(10-20): 마지막으로 읽기가 멈춘 이유 — 따라 읽기가 켜자마자 오류 없이 꺼진 원인을 기록에서 찾으려고(selectionRead endFollow 가 함께 남긴다)
+  private stopWhy = "";
+  private lastStopWhy = "";
+  lastStop(): string { return this.lastStopWhy; }
   hasSpeech(hostId: string): boolean { return this.speech.has(hostId); }
   private language(box: ThinkingBoxState): Lang { return this.speech.get(box.hostId)?.lang ?? this.lang(); }
   private provider(box: ThinkingBoxState): TranslateProvider { return this.speech.get(box.hostId)?.translate ?? "google"; }
@@ -233,7 +239,7 @@ export class ThinkingController {
     const previous = this.speech.get(hostId);
     if (JSON.stringify(previous) === JSON.stringify(settings)) return;
     this.speech.set(hostId, settings);
-    if (this.run?.box.hostId === hostId) this.stop();
+    if (this.run?.box.hostId === hostId) { this.stopWhy = "음성 설정 바뀜"; this.stop(); }
     for (const box of this.boxes.values()) {
       if (box.hostId !== hostId) continue;
       this.translateMore(box);
@@ -649,7 +655,7 @@ export class ThinkingController {
 
   /** 읽기 시작. at 이 있으면 그 문단(가능하면 그 글자)부터 — 없으면 처음 문단부터(10-08 생각 상자 선택 읽기) */
   start(box: ThinkingBoxState, strict: boolean, at?: StartAt): void {
-    if (this.run) this.stop();
+    if (this.run) { this.stopWhy = `새 읽기 시작(${box.key.split("/").pop()?.slice(0, 40) ?? ""})`; this.stop(); }
     box.error = "";
     box.suspended = false;
     // 글자 자리는 누를 때 화면에 보이던 글 기준이다 — 번역읽기가 번역을 켜 화면 글이 바뀌기 전에 그 글을 잡아 둔다
@@ -675,7 +681,10 @@ export class ThinkingController {
   /** 수동 중지는 번역 켜짐 표시를 유지하되 새 요청을 막는다. 다시 누르기 전까지 스트리밍도 요청하지 않는다. */
   stop(reason = ""): void {
     const run = this.run;
+    const why = this.stopWhy;
+    this.stopWhy = "";
     if (!run) return;
+    this.lastStopWhy = reason || why || "바깥 중지(조절 단추·알약·다른 화면 요소)";
     this.finish(run);
     // 자동 번역 상자는 사용자가 읽기를 멈춰도 번역을 이어 간다(10-12) — 멈추면 그 상자의 새 문단이 더 번역되지 않았다.
     // 오류로 멈춘 때(reason 있음)와 그 밖의 상자는 전처럼 번역도 멈춘다
@@ -697,6 +706,15 @@ export class ThinkingController {
     run.slots.clear();
     run.box.controls = false;
     this.run = undefined;
+  }
+
+  /** 따라 읽기(10-20): 따라 읽는 대화 화면이 숨은 동안 보류 — 새 소리를 만들지 않고 이미 만든 문단까지만 읽는다. 풀면 이어 만든다 */
+  hold(box: ThinkingBoxState, on: boolean): void {
+    const run = this.run;
+    if (!run || run.box !== box || !!run.held === on) return;
+    run.held = on;
+    if (!on && !run.paused) void this.pump(run);
+    this.notify(box);
   }
 
   pause(): void {
@@ -755,7 +773,7 @@ export class ThinkingController {
   applyFeatures(translate: boolean, tts: boolean): void {
     const changed = this.features.translate !== translate || this.features.tts !== tts;
     this.features = { translate, tts };
-    if (this.run && (!tts || (!translate && this.run.strict))) this.stop();
+    if (this.run && (!tts || (!translate && this.run.strict))) { this.stopWhy = !tts ? "설정에서 읽기 꺼짐" : "설정에서 번역 꺼짐"; this.stop(); }
     if (!translate) {
       for (const box of this.boxes.values()) {
         if (!box.translate) continue;
@@ -841,7 +859,7 @@ export class ThinkingController {
   }
 
   private prefetch(run: Run): void {
-    if (this.run !== run || run.paused || !run.loaded) return;
+    if (this.run !== run || run.paused || !run.loaded || run.held) return;
     const paragraphs = splitParagraphs(boxText(run.box), boxPhase(run.box));
     for (let index = run.index + 1; index <= run.index + PREFETCH_AHEAD; index++) {
       const paragraph = paragraphs[index];
@@ -863,7 +881,7 @@ export class ThinkingController {
     const paragraphs = splitParagraphs(boxText(run.box), boxPhase(run.box));
     const paragraph = paragraphs[run.index];
     if (!paragraph?.done) {
-      if (run.box.phase === "complete") { this.finish(run); this.syncWatch(run.box); this.notify(run.box); }
+      if (run.box.phase === "complete") { this.lastStopWhy = "다 읽음"; this.finish(run); this.syncWatch(run.box); this.notify(run.box); }
       else if (run.status !== "waiting") { run.status = "waiting"; this.notify(run.box); }
       return;
     }
@@ -876,6 +894,10 @@ export class ThinkingController {
     if (run.loaded && run.currentText === text) { this.prefetch(run); return; }
     if (run.loaded) { this.seek(run.index); return; }
     if (run.pumping?.generation === run.generation) return;
+    // 보류 중(따라 읽는 대화 화면이 숨음)이면 다음 문단을 틀지 않고 기다린다 — 미리 만든 소리가 있어도. 읽던 문단은 위 loaded 분기에서
+    // 끝까지 간다(10-20 리규형님 "한 문단 읽다가 다른 세션으로 갔으면 그건 끝까지, 그다음 문단은 읽지 마라" — 미리 만든 두 문단까지
+    // 읽게 했다가 다른 대화에서 20초 가까이 읽혀 고침). 돌아오면 미리 만든 소리를 그대로 쓴다
+    if (run.held) { if (run.status !== "waiting") { run.status = "waiting"; this.notify(run.box); } return; }
     const generation = run.generation;
     // 이 작업만의 표(10-10) — 화면 글이 바뀌어 다시 시도로 넘긴 뒤 이 작업의 마무리가 새 작업의 표를 지우면, 다음 화면 갱신이
     // 같은 문단을 한 번 더 틀어 재생 장치가 앞 재생을 일시정지로 끊었다("소리 읽기 실패: AbortError", 번역을 켠 채 읽을 때)
@@ -889,6 +911,8 @@ export class ThinkingController {
       if (this.run !== run || run.generation !== generation || !slot.live) return;
       if (this.readable(run, run.index) !== text) { run.pumping = undefined; void this.pump(run); return; }
       if (run.paused) return;
+      // 소리를 만드는 사이 다른 대화로 갔으면 틀기 시작하지 않는다 — 돌아오면 이 소리로 이 문단부터(10-20)
+      if (run.held) { run.status = "waiting"; return; }
       run.loaded = true;
       run.currentText = text;
       run.startedAt = this.now();
@@ -932,7 +956,7 @@ export class ThinkingController {
   }
 
   dispose(boxes: Set<ThinkingBoxState>): void {
-    if (this.run && boxes.has(this.run.box)) this.stop();
+    if (this.run && boxes.has(this.run.box)) { this.stopWhy = "읽던 상자 정리"; this.stop(); }
     for (const box of boxes) {
       box.suspended = true;
       this.cancelTranslation(box);

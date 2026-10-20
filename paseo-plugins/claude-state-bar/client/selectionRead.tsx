@@ -116,7 +116,8 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
       box = undefined;
       target = undefined;
     }
-    if (follow && !controller.state(follow.box).active) endFollow(follow.box.error ? `읽기 멈춤: ${follow.box.error}` : "읽기 멈춤");
+    // 진단(10-20): 오류 없이 꺼질 때 재생기가 마지막으로 멈춘 이유를 같이 남긴다 — Mesa 따라 읽기가 켜고 0.05초 만에 꺼진 원인 찾기
+    if (follow && !controller.state(follow.box).active) endFollow(follow.box.error ? `읽기 멈춤: ${follow.box.error}` : `읽기 멈춤 · 마지막 멈춤 이유: ${controller.lastStop() || "모름"}`);
     else if (follow && !available()) endFollow("읽을 수 없게 됨");
     // 읽기가 소리를 내는 동안(소리 만드는 중 포함 — 문단 사이에 오르내리지 않게) 폰 앱에 다른 소리를 줄여 달라고 한다(shellDuck).
     // 따라 읽기만이 아니라 모든 읽기(생각 상자·말·선택·따라 읽기 — 같은 재생기 하나)다(10-17 리규형님 "따라읽기 뿐 아니고, 모든 TTS 에").
@@ -166,6 +167,7 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
       idle: statuses.get(follow.agentId) !== "running",
       index: controller.state(follow.box).active ? controller.state(follow.box).index : null,
       push: pushFollow,
+      hold: (on: boolean) => { if (follow) controller.hold(follow.box, on); },
     } : null,
   }));
   // 입력창 위 읽기 컨트롤러 하나(10-11) — 턴·말·생각 상자·꺼낸 말 무엇을 읽든 이 재생기의 지금 읽는 것을 본다

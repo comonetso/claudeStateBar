@@ -2005,6 +2005,8 @@ export type FollowBinding = {
   index: number | null;
   /** 새로 끝난 문단 글을 차례로 넘긴다 */
   push(texts: string[]): void;
+  /** 따라 읽는 대화 화면이 숨었다(true)·돌아왔다(false) — 재생기가 새 소리 만들기를 보류·재개한다(10-20). 옛 판 연결엔 없다 */
+  hold?(on: boolean): void;
 };
 type ReadEl = NodeLike & {
   tagName: string;
@@ -2044,8 +2046,8 @@ const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turn
 const READ_MARK = "data-csb-turn-read";
 // v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
 // v7(10-15): 턴 끝난 시각·내 말 시각 항상 보이기 규칙이 붙었다 — 판이 오르면 이름도 바꿔 옛 판이 지우는 스타일과 겹치지 않게
-const READ_SHEET = "claude-state-bar-turn-read-v9";
-const TURN_READ_VERSION = 21; // 18: 따라 읽기 켤 때 선택한 문단부터 — follow.from(10-16) · 17: 따라 읽기 — 바인딩에 follow(10-15) ·9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
+const READ_SHEET = "claude-state-bar-turn-read-v11";
+const TURN_READ_VERSION = 23; // 23: 숨으면 재생기 보류 — 이미 만든 소리까지만(10-20) · 22: 따라 읽는 대화 화면이 숨으면 새 문단을 안 넘기고 기다림(10-20) · 18: 따라 읽기 켤 때 선택한 문단부터 — follow.from(10-16) · 17: 따라 읽기 — 바인딩에 follow(10-15) ·9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
 /**
  * 꼬리 줄 "작업 시간" 단추의 이름표에서 끝난 시각만 — 0.11.1 AssistantTurnFooter(모듈 4880 Ue)는 작업 시간과 끝난 시각이 둘 다
  * 있을 때 이름표를 `${작업 시간}, ended ${시각}` 으로 만든다("ended" 는 번역 없는 고정 글). 시각은 Paseo formatMessageTimestamp
@@ -2460,6 +2462,8 @@ type FollowState = {
   done: Set<string>;
   /** 넘긴 문단마다 (말 단위, 그 안 문단 번호) — 형광펜 자리를 다시 찾는다 */
   where: { key: string; part: number }[];
+  /** 따라 읽는 대화 화면이 숨어 새 문단을 기다리는 중(10-20) — 바뀔 때만 기록에 남긴다 */
+  away?: boolean;
 };
 /** 화면 순서대로 말 단위와, 꺼낸 말이 아직 없는 생각 상자를 한 번에 모은다(한 번 훑은 순서가 곧 앞뒤 비교 기준) */
 function followScan(stream: string): { units: FollowUnit[]; boxes: FollowBox[] } {
@@ -2551,7 +2555,17 @@ function followStep(st: FollowState, follow: FollowBinding, stream: string, log:
   // 지금 읽는 순서 뒤에 끼워 넣지 않고 건너뛴다 — 읽기 순서는 앞으로만 간다(shared/thinkingContract followPlan).
   // 아는 말이 하나도 안 보이면(위로 멀리 올려 화면이 옛 기록만 그림) 새로 넘기지 않는다 — 옛 말을 새 말로 잘못 읽지 않게
   const plan = followPlan(units.map((u) => u.key), st);
-  if (plan.scan) {
+  // 다른 대화로 가 있는 동안(따라 읽는 대화 화면이 숨음 — Paseo 는 앞 대화 화면을 폭 0 으로 남겨 둔다)은 새 문단을 넘기지 않고 기다린다.
+  // 이미 넘긴 문단은 재생기가 계속 읽고, 돌아오면 그 사이 생긴 문단부터 넘긴다(10-20 리규형님 "내가 보지 않는 화면이 읽혀 불편 — 이전처럼").
+  // 다른 브라우저 탭·창 내림은 화면 크기가 그대로라 계속 읽는다(10-15 결정)
+  const shown = !units.length || units.some((u) => (u.el as unknown as { getBoundingClientRect(): { width: number } }).getBoundingClientRect().width > 0);
+  if (!shown !== !!st.away) {
+    st.away = !shown;
+    // 넘긴 문단도 소리를 새로 만들지 않게 재생기를 보류한다 — 켤 때 이미 있던 글을 한꺼번에 넘기면 다른 대화로 가도 계속 읽었다(10-20 실측 17문단)
+    follow.hold?.(!shown);
+    log(shown ? "follow: 화면으로 돌아옴 — 이어 읽음" : "follow: 다른 대화로 감 — 이미 만든 소리까지만 읽고 기다림");
+  }
+  if (plan.scan && shown) {
     for (const key of plan.old) st.skip.add(key);
     // 글 내용은 남기지 않고 항목 번호만(어느 말을 건너뛰었는지 기록으로 가린다)
     for (const key of plan.late) {
@@ -3066,8 +3080,8 @@ export type ReadDockState = {
 };
 const DOCK_MARK = "data-csb-read-dock";
 // 판이 오르면 스타일 이름도 바꾼다 — 옛 판을 정리할 때 옛 이름 스타일만 지워지게(project_paseo_client_hub_stale)
-const DOCK_SHEET = "claude-state-bar-read-dock-v8";
-const DOCK_VERSION = 8; // 2: 가운데 배치(10-12) · 3: 좁은 화면은 두 줄 띠의 아랫줄 남는 공간 가운데(10-18) · 4: 알약 줄 위(되돌림) · 5: 아랫줄에 작게(10-18 밤) · 6: 속도 칸 기본 모양 끔(폰 테두리 두 겹)
+const DOCK_SHEET = "claude-state-bar-read-dock-v9";
+const DOCK_VERSION = 9; // 2: 가운데 배치(10-12) · 3: 좁은 화면은 두 줄 띠의 아랫줄 남는 공간 가운데(10-18) · 4: 알약 줄 위(되돌림) · 5: 아랫줄에 작게(10-18 밤) · 6: 속도 칸 기본 모양 끔(폰 테두리 두 겹) · 9: 숨은 대화의 띠에 붙어 있으면 보이는 띠로 옮김(10-20)
 type DockHub = SharedDevice & { users: Map<object, (() => ReadDockState) & { csbVersion?: number }> };
 export function startReadDock(state: () => ReadDockState): { refresh(): void; dispose(): void } {
   const noop = { refresh: () => {}, dispose: () => {} };
@@ -3153,17 +3167,19 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
       select.addEventListener("change", (event) => { event.stopPropagation(); const s = current(); if (s && select) s.speed(Number(select.value)); });
       dock.appendChild(select);
     };
-    // 그 요소에서 위로 올라가며 처음 만나는 입력창 위 띠 — 칸이 나뉘어 있으면 그 칸의 것
+    // 화면에 보이는 띠인가 — Paseo 는 다른 대화로 옮겨도 앞 대화 화면을 숨긴 채 남겨 둔다(폭 0, 10-20 리규형님 화면에서 숨은 띠 넷 실측)
+    const shown = (el: ReadEl): boolean => (el as unknown as { getBoundingClientRect(): { width: number } }).getBoundingClientRect().width > 0;
+    // 그 요소에서 위로 올라가며 처음 만나는 보이는 입력창 위 띠 — 칸이 나뉘어 있으면 그 칸의 것
     const trackNear = (from: ReadEl | null): ReadEl | null => {
       for (let el = from; el; el = el.parentElement) {
-        const found = el.querySelector?.("[data-csb-track]") ?? null;
-        if (found) return found;
+        const all = (el.querySelectorAll?.("[data-csb-track]") ?? []) as unknown as ArrayLike<ReadEl>;
+        for (let i = 0; i < all.length; i++) if (shown(all[i])) return all[i];
       }
       return null;
     };
     const firstVisibleTrack = (): ReadEl | null => {
-      const all = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<ReadEl & { getBoundingClientRect(): { width: number } }>;
-      for (let i = 0; i < all.length; i++) if (all[i].getBoundingClientRect().width > 0) return all[i];
+      const all = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<ReadEl>;
+      for (let i = 0; i < all.length; i++) if (shown(all[i])) return all[i];
       return null;
     };
     type Boxed = ReadEl & { getBoundingClientRect(): { left: number; right: number; width: number } };
@@ -3192,6 +3208,13 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
         if (dock!.parentElement !== track || track.lastElementChild !== dock) track.appendChild(dock!);
       }
     };
+    // 읽는 동안만 1초마다 자리가 아직 보이는지 본다 — 감시(MutationObserver)는 요소가 생기고 없어지는 것만 봐서, 이미 열었던 대화로
+    // 돌아가 숨김만 풀릴 때는 알림이 없고, 따라 읽기가 다음 문단을 기다리는 동안엔 재생기 알림도 없다(10-20)
+    let watch: ReturnType<typeof setInterval> | null = null;
+    const watchHome = (on: boolean) => {
+      if (on && !watch) watch = setInterval(() => { if (!home || !shown(home)) refresh(); }, 1000);
+      else if (!on && watch) { clearInterval(watch); watch = null; }
+    };
     const apply = () => {
       queued = false;
       if (!live) return;
@@ -3199,12 +3222,16 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
         const s = current();
         const playing = s?.playing;
         if (!s || !playing) {
+          watchHome(false);
           dock?.remove();
           dock = toggle = select = null;
           home = null;
           return;
         }
-        if (!home || !home.isConnected) home = trackNear(pressed) ?? firstVisibleTrack();
+        watchHome(true);
+        // 자리가 숨으면(읽는 중에 다른 대화로 옮김) 보이는 띠로 옮긴다 — 옮기지 않으면 숨은 대화에 붙은 채 안 보였다(10-20 리규형님
+        // "STT 컨트롤러가 안 뜬다 · 중구난방"). 마지막으로 누른 곳 근처의 보이는 띠, 없으면 첫 보이는 띠. 다 숨었으면 그대로 둔다
+        if (!home || !home.isConnected || !shown(home)) home = trackNear(pressed) ?? firstVisibleTrack() ?? (home?.isConnected ? home : null);
         if (!home) return;
         if (!dock) build();
         place(home);
@@ -3228,6 +3255,7 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
     hub.refresh = refresh;
     hub.stop = () => {
       live = false;
+      watchHome(false);
       observer.disconnect();
       stopWidth();
       document.removeEventListener("pointerdown", press as unknown as (e: Event) => void, true);
