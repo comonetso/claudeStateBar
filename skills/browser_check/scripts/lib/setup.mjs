@@ -51,7 +51,7 @@ export function decide(found, wantHost, sites = []) {
   if (found.egoBin) {
     cfg.ego.bin = found.egoBin;
     notes.push('ego lite on this machine: ' + found.egoBin + (found.egoVersion ? ' (' + found.egoVersion + ')' : ''));
-    if (found.isWindows) notes.push('servers can use this PC once `browser-check.mjs relay install` has run here');
+    if (found.isWindows) notes.push('servers can use this PC once `browser-check relay install` has run here');
     return { status: 'created', config: cfg, notes, todo };
   }
   if (found.isWindows) {
@@ -67,7 +67,7 @@ export function decide(found, wantHost, sites = []) {
   } else if (ok.length === 1) pick = ok[0];
   else if (ok.length > 1) return { status: 'choose-host', candidates: ok.map((p) => p.host), notes, todo };
   if (!pick) {
-    todo.push('on the PC run `browser-check.mjs relay install` (ego lite installed there)');
+    todo.push('on the PC run `browser-check relay install` (ego lite installed there)');
     todo.push('this server needs an ssh Host for the PC with key login (a person sets it up)');
     return { status: 'not-ready', notes, todo };
   }

@@ -1,4 +1,4 @@
-// Example for `browser-check.mjs ego test/ego-example.mjs --url https://example.com/` — a harmless public page in our
+// Example for `browser-check run test/ego-example.mjs --url https://example.com/` — a harmless public page in our
 // own task space: watch → open → title → capture → problems → one kit → close (bc.run always closes the space).
 const r = await bc.run('bc-example', async ({ page }) => {
   await bc.watch(page);

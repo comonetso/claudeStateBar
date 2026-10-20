@@ -1,4 +1,4 @@
-// browser_check ego prelude — `browser-check.mjs ego` puts this in front of every script it sends to ego-browser.
+// browser_check ego prelude — `browser-check run` (and `look`) puts this in front of every script it sends to ego-browser.
 // It runs inside ego-browser's own Node runtime on the PC (top-level await works; taskSpace/listTaskSpaces/help are
 // ego globals). The script after it uses `bc.*`. The line below is replaced with this run's settings.
 const __bcCfg = /*__BC_CFG__*/ { windowScript: null, kit: {}, light: true, settleMs: 15000, url: null, guard: null };
@@ -201,6 +201,28 @@ const bc = {
     out.summary = { console: out.console.length, exceptions: out.exceptions.length, log: out.log.length, failed: out.failed.length, http: out.http.length, ext: out.ext.length };
     return out;
   },
+
+  /**
+   * What the page sent that could change something: every request other than GET/HEAD/OPTIONS seen since bc.watch,
+   * with its response status (null = no answer yet), oldest first. `since` = an index from bc.mark(page) to see only
+   * what one step sent. A click that saved or sent something shows up here.
+   */
+  async sent(page, { since = 0 } = {}) {
+    await bc.events(page);
+    const ev = (bc.__ev[page.label || 'p1'] || []).slice(since);
+    const list = []; const byId = {};
+    for (const e of ev) {
+      const p = e.params || {};
+      if (e.method === 'Network.requestWillBeSent' && p.request && !/^(GET|HEAD|OPTIONS)$/i.test(p.request.method)) {
+        const item = { method: p.request.method, url: String(p.request.url).slice(0, 200), type: p.type, status: null };
+        list.push(item); byId[p.requestId] = item;
+      } else if (e.method === 'Network.responseReceived' && byId[p.requestId]) byId[p.requestId].status = p.response.status;
+      else if (e.method === 'Network.loadingFailed' && byId[p.requestId]) byId[p.requestId].status = 'failed: ' + (p.blockedReason || p.errorText);
+    }
+    return list;
+  },
+  /** A position in this page's event record, for bc.sent(page, { since }). */
+  async mark(page) { await bc.events(page); return (bc.__ev[page.label || 'p1'] || []).length; },
 
   /**
    * Opt-in write guard for this page: non-GET fetch/XHR/sendBeacon and form submits are refused in the page unless

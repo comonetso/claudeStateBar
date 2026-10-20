@@ -1,0 +1,5 @@
+#!/bin/sh
+# browser-check — on the Bash tool's PATH while the plugin is enabled (the plugin's bin/ directory).
+# Finds its own plugin copy, so no ${CLAUDE_PLUGIN_ROOT} or CLAUDE_PLUGIN_DATA is needed in the shell.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec node "$here/../scripts/browser-check.mjs" "$@"

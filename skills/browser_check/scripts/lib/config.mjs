@@ -7,7 +7,11 @@
  * read as if it were current — `setup --migrate` rewrites it (site rules kept, the old file backed up).
  */
 import { readFileSync, lstatSync, existsSync } from 'node:fs';
-import { dirname, resolve, isAbsolute } from 'node:path';
+import { dirname, resolve, isAbsolute, join, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
+
+const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const ENUMS = {
   'sites[].login': ['none', 'rotating-refresh', 'session-cookie'],
@@ -26,10 +30,26 @@ const DEFAULTS = {
   site: { login: 'none', allowDataMutation: false, authPathPrefixes: [], guardWrites: false, writeAllow: [] },
 };
 
+/**
+ * The plugin's data dir. Claude Code exports CLAUDE_PLUGIN_DATA only to hooks and MCP servers, never to the Bash
+ * tool (plugins-reference, "Where each variable resolves") — 12 failed calls in the 2026-09/10 records came from
+ * shells without it. So when it is missing, work it out from where this copy is installed:
+ * <plugins>/cache/<marketplace>/<name>/<version>  →  <plugins>/data/<name>-<marketplace>.
+ */
+export function dataDirGuess(root = PLUGIN_ROOT, env = process.env) {
+  if (env.CLAUDE_PLUGIN_DATA) return resolve(env.CLAUDE_PLUGIN_DATA);
+  const ver = root, name = dirname(ver), market = dirname(name), cache = dirname(market);
+  if (basename(cache) === 'cache') {
+    const id = (basename(name) + '@' + basename(market)).replace(/[^A-Za-z0-9_-]/g, '-');
+    return join(dirname(cache), 'data', id);
+  }
+  // A working copy (not installed): the same id under the Claude config dir.
+  return join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'plugins', 'data', 'browser-check-comonetso');
+}
+
 export function configPath() {
   if (process.env.BROWSER_CHECK_CONFIG) return process.env.BROWSER_CHECK_CONFIG;
-  if (process.env.CLAUDE_PLUGIN_DATA) return resolve(process.env.CLAUDE_PLUGIN_DATA, 'config.json');
-  return null;
+  return join(dataDirGuess(), 'config.json');
 }
 
 function checkKeys(obj, scope, errors) {

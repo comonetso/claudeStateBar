@@ -56,7 +56,7 @@ export async function probe(config) {
     out.where = 'remote';
     const h = await remoteHealth({ host: e.remoteHost, entry: e.relayEntry });
     out.ego = h.ok ? { ok: true, host: e.remoteHost, relay: 'v' + h.version, running: h.ego && h.ego.running, bin: h.ego && h.ego.bin } : { ok: false, host: e.remoteHost, reason: h.why };
-    if (!h.ok) out.reasons.push('the PC relay did not answer — is the PC awake and logged in? (on the PC: `browser-check.mjs relay status`)');
+    if (!h.ok) out.reasons.push('the PC relay did not answer — is the PC awake and logged in? (on the PC: `browser-check relay status`)');
     else if (h.ego && !h.ego.bin) out.reasons.push('the PC relay answered but found no ego-browser.exe there');
   }
   out.ready = !!(out.ego && out.ego.ok);

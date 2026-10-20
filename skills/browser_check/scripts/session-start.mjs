@@ -35,7 +35,7 @@ try {
   const configPath = process.env.BROWSER_CHECK_CONFIG || (dataDir ? resolve(dataDir, 'config.json') : '');
 
   if (!configPath || !existsSync(configPath)) {
-    notes.push('no private config yet — on first use of `browser_check`, `scripts/browser-check.mjs setup` inspects this machine and writes it (to write it by hand, see config/example.json)');
+    notes.push('no private config yet — on first use of `browser_check`, `browser-check setup` inspects this machine and writes it (to write it by hand, see config/example.json)');
     emit();
     process.exit(0);
   }
@@ -54,7 +54,7 @@ try {
 
   if (cfg && Date.now() < deadline) {
     // light schema check — the full validator lives in scripts/lib/config.mjs (used by doctor)
-    if (cfg.schemaVersion === 1) notes.push('the config is the old Aside layout — before using browser_check run `scripts/browser-check.mjs setup --migrate` (keeps the site rules, backs the old file up)');
+    if (cfg.schemaVersion === 1) notes.push('the config is the old Aside layout — before using browser_check run `browser-check setup --migrate` (keeps the site rules, backs the old file up)');
     else if (cfg.schemaVersion !== 2) notes.push('schemaVersion is not 2');
     else if (cfg.ego && cfg.ego.bin && !existsSync(cfg.ego.bin)) notes.push('no ego-browser at the ego.bin path (ego lite moved or uninstalled?)');
   }

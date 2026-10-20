@@ -1,4 +1,4 @@
-// `browser-check.mjs ego test/ego-guard.mjs --guard-writes` — the write guard and the refused CDP commands, on a
+// `browser-check run test/ego-guard.mjs --guard-writes` — the write guard and the refused CDP commands, on a
 // harmless public page: a POST must be refused in the page, a GET must pass, cookie reads must be refused.
 const r = await bc.run('bc-guard-test', async ({ page }) => {
   await page.goto('https://example.com/');

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "browser-check private config (ego lite)",
-  "description": "Lives in ${CLAUDE_PLUGIN_DATA}/config.json (0600, parent 0700). `browser-check.mjs setup` writes it; `setup --migrate` replaces an old Aside (schemaVersion 1) file. Unknown keys are rejected.",
+  "description": "Lives in ${CLAUDE_PLUGIN_DATA}/config.json (0600, parent 0700). `browser-check setup` writes it; `setup --migrate` replaces an old Aside (schemaVersion 1) file. Unknown keys are rejected.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "ego"],
