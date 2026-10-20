@@ -354,9 +354,9 @@ Remote‑SSH에서도 동작합니다. 실행 기록은 `vscode.workspace.fs`로
 
 ## 🔍 browser_check — Claude가 실제 브라우저를 직접 확인 (플러그인)
 
-이 레포에서 함께 배포하는 세 번째 플러그인이며, 이것도 확장 기능은 아닙니다. 서버 로그와 소스만 보고 "시험 통과"라고 보고하는 대신, Claude Code가 사용자의 실제 브라우저(Chromium 기반인 Aside)를 열어 화면, 콘솔 오류, 실패한 요청, CSS, 반응형·다크 화면, 접근성, 성능을 직접 확인합니다. 서버 세션이 PC의 브라우저를 원격으로 다룰 수도 있고, PC에서 바로 돌 수도 있습니다. "화면 확인해 봐", "콘솔 에러 봐" 같은 한국어 말로 시작합니다.
+이 레포에서 함께 배포하는 세 번째 플러그인이며, 이것도 확장 기능은 아닙니다. 서버 로그와 소스만 보고 "시험 통과"라고 보고하는 대신, Claude Code가 ego lite(사용자 Windows PC 에 둔 에이전트용 Chromium 브라우저)에서 페이지를 열어 화면, 콘솔 오류, 실패한 요청, CSS, 반응형·다크 화면, 접근성, 성능을 직접 확인합니다. 사용자가 ego 에서 사이트에 한 번 로그인해 두면, Claude 의 점검은 사용자 탭을 건드리지 않는 자기 작업 공간에서 로그인된 채로 엽니다. PC에서 바로 돌 수도 있고, 서버 세션이 PC의 작은 중계 프로그램을 거쳐 쓸 수도 있습니다. "화면 확인해 봐", "콘솔 에러 봐" 같은 한국어 말로 시작합니다. 점검 대부분은 명령 하나, `browser-check look <주소>` 로 끝납니다. 화면 글·캡처·오류·페이지가 보낸 GET 이 아닌 요청을 모두 돌려주고, 누르기·입력은 단계로 덧붙입니다.
 
-Claude와 브라우저 사이에는 정책층이 있습니다. 자기가 연 탭에서만 작업하고, 데이터 변경은 그 변경 하나를 승인받았을 때만 하며, 비밀 값은 읽지도 남기지도 않습니다. 다른 머신의 브라우저를 다루려면 Aside Pro의 원격 호스트나 PC에서 서버로 여는 SSH 터널이 필요합니다. 설치는 `/plugin install browser-check@comonetso` 입니다. 처음 쓸 때 기기를 살펴 비공개 설정 파일을 만들고 무엇을 넣었는지 보여 줍니다. 터널·전체 안전 규칙은 [browser_check README](skills/browser_check/README.ko.md) ([English](skills/browser_check/README.md))에 있습니다. 아직 초기 버전이며, Windows PC 와 실제 PC → 서버 터널에서 실측했습니다. 확장의 자동 업데이트 알림이 이 플러그인에도 적용됩니다.
+Claude와 브라우저 사이에는 정책층이 있습니다. 자기 작업 공간에서만 작업하고, 데이터 변경은 그 변경 하나를 승인받았을 때만 하며, 누르기가 보낸 것을 목록으로 보여 주고, 비밀 값은 읽지도 남기지도 않습니다. ego 를 최소화하거나 닫아 두어도 캡처됩니다. PC 에 ego lite 를 설치해 로그인해 두고 `/plugin install browser-check@comonetso` 를 한 뒤, 서버에서도 쓰려면 PC 에서 `browser-check relay install` 을 합니다. 처음 쓸 때 기기를 살펴 비공개 설정 파일을 만들고 무엇을 넣었는지 보여 줍니다. 중계·전체 안전 규칙은 [browser_check README](skills/browser_check/README.ko.md) ([English](skills/browser_check/README.md))에 있습니다. 0.1.x 까지는 Aside 를 다뤘고, 0.2.0 부터는 ego lite 만 씁니다. Windows PC 와, 중계를 거친 리눅스 서버 세 대에서 실측했습니다. 확장의 자동 업데이트 알림이 이 플러그인에도 적용됩니다.
 
 ## 📱 android_check — Claude가 안드로이드 실기기를 직접 누르고 디버깅 (플러그인)
 

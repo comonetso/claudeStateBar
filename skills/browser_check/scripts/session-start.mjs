@@ -3,9 +3,9 @@
  * browser-check SessionStart hook — stat-only.
  *
  * Rules (Codex consult 2026-09-26, D4):
- *  - never contact the browser, the Aside daemon, `aside host list`, or the network here;
- *  - only: does the private config exist / parse / pass the schema, does the configured
- *    binary exist, and if a Unix socket path is configured, is it a socket with safe mode/owner;
+ *  - never contact the browser, ego, the PC relay, or the network here;
+ *  - only: does the private config exist / parse / have the current layout (schemaVersion 2 — ego lite),
+ *    and does the configured ego-browser exist;
  *  - hard 500 ms budget, every exception swallowed, exit 0 always;
  *  - silent when everything is fine — print one line of additionalContext only on a problem.
  *
@@ -35,7 +35,7 @@ try {
   const configPath = process.env.BROWSER_CHECK_CONFIG || (dataDir ? resolve(dataDir, 'config.json') : '');
 
   if (!configPath || !existsSync(configPath)) {
-    notes.push('no private config yet — on first use of `browser_check`, `scripts/browser-check.mjs setup` inspects this machine and writes it (to write it by hand, see config/example.json)');
+    notes.push('no private config yet — on first use of `browser_check`, `browser-check setup` inspects this machine and writes it (to write it by hand, see config/example.json)');
     emit();
     process.exit(0);
   }
@@ -54,15 +54,9 @@ try {
 
   if (cfg && Date.now() < deadline) {
     // light schema check — the full validator lives in scripts/lib/config.mjs (used by doctor)
-    if (cfg.schemaVersion !== 1) notes.push('schemaVersion is not 1');
-    if (cfg.aside && cfg.aside.enabled && cfg.aside.bin && !existsSync(cfg.aside.bin)) notes.push('no executable at the aside.bin path');
-    const sock = cfg.cdp && cfg.cdp.remote && cfg.cdp.remote.socketPath;
-    if (sock && existsSync(sock)) {
-      const ss = lstatSync(sock);
-      if (!ss.isSocket()) notes.push('cdp.remote.socketPath is not a socket');
-      else if ((ss.mode & 0o077) !== 0) notes.push('CDP Unix socket permissions are not 0600 (other users could attach)');
-      else if (typeof process.getuid === 'function' && ss.uid !== process.getuid()) notes.push('the CDP Unix socket is owned by another user');
-    }
+    if (cfg.schemaVersion === 1) notes.push('the config is the old Aside layout — before using browser_check run `browser-check setup --migrate` (keeps the site rules, backs the old file up)');
+    else if (cfg.schemaVersion !== 2) notes.push('schemaVersion is not 2');
+    else if (cfg.ego && cfg.ego.bin && !existsSync(cfg.ego.bin)) notes.push('no ego-browser at the ego.bin path (ego lite moved or uninstalled?)');
   }
   void root;
 } catch {

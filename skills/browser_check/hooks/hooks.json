@@ -1,5 +1,5 @@
 {
-  "description": "browser-check: validate the private runtime config and local file/socket permissions on session start — stat-only, never contacts the browser, Aside, or the network",
+  "description": "browser-check: check the private config on session start (exists, current layout, ego-browser present) — stat-only, never contacts ego, the PC relay or the network",
   "hooks": {
     "SessionStart": [
       {

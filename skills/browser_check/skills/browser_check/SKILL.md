@@ -1,46 +1,63 @@
 ---
 name: browser_check
-description: Look at, click through and diagnose the user's real browser (Aside/Chromium) on their PC, from a server or the PC — screen, CSS, console/network errors, responsive/dark mode, accessibility, performance, realtime sync, logouts, whole flows. Only when a page's real behaviour must be checked, not for source or logs alone. Korean triggers (incl. speech-to-text variants): "브라우저 체크/브라우저 첵/브라우저 책", "화면 확인해 봐/화면 좀 봐/실제 화면 봐 줘/페이지 봐 봐", "CSS 깨졌는지 봐/씨에스에스 오류/스타일 깨짐/레이아웃 이상해", "콘솔 에러 봐/컨솔 오류/자바스크립트 에러", "API 실패 봐/에이피아이 오류/요청 실패/네트워크 봐", "반응형 봐/모바일에서 어떻게 보여/좁은 화면", "다크모드 확인/테마 봐", "접근성 점검/접근성 봐", "성능 봐/느린지 봐/느려", "이 버튼 눌러 봐/클릭해 봐/눌러서 확인", "실시간 동기화 확인/두 탭 같이 바뀌나", "로그인 풀렸어/로그아웃 됐어/왜 튕겨", "전체 흐름 시험해/처음부터 끝까지 해 봐".
+description: The way to use ego lite here — use this instead of the ego-browser skill (that one drives ego directly: no server relay, no write guard, no capture while minimized). Look at, click through and diagnose web pages in ego lite — a Chromium browser on the user's PC kept for agents, with the sites the user signed in to once — from the PC or from a server over ssh. One command, `browser-check look <url>`, opens a page and returns its text, a capture, errors and the requests it sent. Screen, CSS, console/network errors, responsive/dark mode, accessibility, performance, realtime sync, whole flows. Only when a page's real behaviour must be checked, not for source or logs alone. Korean triggers (incl. speech-to-text variants): "브라우저 체크/브라우저 첵/브라우저 책", "화면 확인해 봐/화면 좀 봐/실제 화면 봐 줘/페이지 봐 봐", "CSS 깨졌는지 봐/씨에스에스 오류/스타일 깨짐/레이아웃 이상해", "콘솔 에러 봐/컨솔 오류/자바스크립트 에러", "API 실패 봐/에이피아이 오류/요청 실패/네트워크 봐", "반응형 봐/모바일에서 어떻게 보여/좁은 화면", "다크모드 확인/테마 봐", "접근성 점검/접근성 봐", "성능 봐/느린지 봐/느려", "이 버튼 눌러 봐/클릭해 봐/눌러서 확인", "실시간 동기화 확인/두 탭 같이 바뀌나", "로그인 풀렸어/로그아웃 됐어/왜 튕겨", "전체 흐름 시험해/처음부터 끝까지 해 봐".
 ---
 
-# browser_check — look at, operate and diagnose the real browser
+# browser_check — look at, operate and diagnose pages in ego lite
 
-> Why: a "tests pass" report built from server logs and source leaves the holes on screen for the user to find. Say "verified" only for what you checked **in the real browser**.
-> Every rule here comes from measurement (2026-09-26: 12 remote server→PC runs plus a Codex consult). Where a manual and a measurement disagree, follow the measurement.
+> Why: a "tests pass" report built from server logs and source leaves the holes on screen for the user to find. Say "verified" only for what you checked **in the browser**.
 
 Language: talk to the user in the user's language, report labels in §5 included.
 
-## 0. Start — every time, in order
-1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/browser-check.mjs" doctor --json` — reads the config and transports (A/B/C). **Do not change the config or start the browser/Aside.** If no transport is usable, report the table as is and stop (remote `disabled`/`offline` ⇒ the user must enable it on the PC).
-   - **No config (`config file not found`) ⇒ run `setup --json` first.** It inspects this machine (Aside CLI · the running Aside's port · tunnel socket · `aside host list`), writes the config and returns what it set (`notes`). **Show those values to the user** before going on. It never touches an existing config.
-   - `choose-host` ⇒ show `candidates` (remote PCs) and run `setup --remote-host "<name>"` with the name the user picks. Don't pick for them.
-   - `not-ready` ⇒ relay `todo` as is (install/log in to Aside, open the tunnel, start the Aside browser — human tasks) and stop.
-   - `launchFlags.missing` non-empty (Windows: the running Aside lacks C's launch flags — doctor/setup also print a `!` line) ⇒ tell the user that C stops capturing while every Aside window is covered or the window is minimized, and **only with their OK** run `launch-flags --apply` (adds the flags to the Aside shortcuts — taskbar, Start menu, desktop; old arguments saved, `launch-flags --undo` puts them back). **Never restart Aside yourself** — the user may be working in it; tell them the flags apply once Aside is fully closed and started again from a shortcut. Aside's own Start-menu shortcuts are write-protected for the user (and recreated on Aside updates), so they come back in `failed` — relay that as is; the taskbar-pinned or user-made shortcut is the one that takes the flags, so suggest starting Aside from it.
-2. Classify the target: URL (dev/prod) · **logged-in site?** (config `sites[].login`) · does it change data? · which recipe.
-3. Logged-in site ⇒ read the token rules in §1 first. Data change ⇒ **show a plan first (what · where · how to clean up) and get approval.**
+ego lite is not the user's main browser (that stays Aside) — it is kept for agents. The user signs in to the sites there once; your own task space then opens them signed in. The user's own Aside tabs are out of reach: "look at the tab I have open" is a job for the Claude inside Aside — say so.
 
-## 1. 🔴 Hard safety rules — breaking one damages the user's work (each comes from a real incident or measurement)
-- **Own tabs only**: use only tabs opened with `openTab`. Never `attachBrowserTab`/`attachActiveBrowserTab` (the user's tabs). Close with `closeTab(tab)`, not `page.close()`.
-- **Close a logged-in site's tab only after confirming 0 in-flight requests** (`K.safeClose`). Closing mid-request loses the refresh response; the server reads it as token theft and **logs the user out of the whole session family** (real incident). Reload, a new tab and a same-origin iframe all rotate the token — move between screens by SPA navigation, emulate widths with CDP.
-- **≤ 50 s per call · ≤ 25 s per evaluate** (the remote limit is about 60 s — past it all output is lost and a persistent session dies whole). Guard every step with `K.G`.
-- **Never click Aside's autofill menu (`aside-inline-menu`)** — after filling it **presses the login button itself** and revokes the existing session. Logins and passwords are the human's job.
-- **No data changes** (send · save · delete · invite · pay · settings) — only the approved target and action. Automation traps: `trial:true` really clicks · a covered element "succeeds" through a synthetic click · **`fill` on a hidden input types into whichever field has focus (a chat box), and Enter sends it** · `type('…\n')` sends · a repl `fetch` POST really sends · `selectOption` with a missing value picks the first option. Check `K.canAct` before input and `document.activeElement` after; send or break lines explicitly with `keyboard.press('Enter'|'Shift+Enter')`.
-- **Aside always answers "OK" to a native `confirm`** — call `K.denyConfirm` right before a destructive button (navigation clears it).
-- **Forbidden input**: Ctrl+V / Shift+Insert (pastes the user's real clipboard) · Ctrl+C / clipboard API · browser shortcuts (F5 · F11 · F12 · Ctrl+W …) · **clicking** `<select>`, date, color or file inputs (OS dialogs) · dragging draggable elements with `mouse.*` (OS drag) · download tests (the file stays in the user's download folder and can't be removed).
-- **Forbidden CDP**: `fromSurface:false` (captures the user's screen — this happened) · `Target.*` (on C only the three own-target calls) · `Browser.*` · cookies/storage · `Fetch.enable` · `Debugger.pause` · `Page.navigate/close`. `K.X` enforces an allow-list.
-- **Never read or keep secrets**: no password values (length only) · all output goes through the central redactor · never record Aside memory, settings values or auth file contents.
-- **Concurrency 1**: several servers and agents share one PC browser. At most 2 own tabs at once; when done, confirm 0 own tabs in the list — count by `tab.targetId`, not URL (the user may have the same URL open). On `Too many Remote Control RPCs`, retry once after a few seconds.
+## Quick use — usually all you need
+```bash
+browser-check look <url>                                       # open · page text · capture · errors · requests sent
+browser-check look <url> --fill "#q" "hello" --click "text=Search" --wait ".results"   # steps run in this order
+browser-check look <url> --width 390 --dark --full             # mobile width · dark scheme · whole page
+browser-check run - --url <url> <<'EOF'                        # anything else: a script (§2)
+const r = await bc.run('my-check', async ({ page }) => { await page.goto(bc.url); /* … */ });
+EOF
+browser-check api click                                        # what a function takes — never read the plugin's source
+```
+- `browser-check` is on the Bash tool's PATH (the plugin's `bin/`) on the PC and on servers; nothing to set first. `command not found` (a session that started before an update) ⇒ `node "${CLAUDE_PLUGIN_ROOT}/scripts/browser-check.mjs"` with the same arguments.
+- **No check step first.** If this machine is not set up, the answer is `status: "not-ready"` with `next` — do what it says (see "First use" below) and run again.
+- Steps: `--click <sel>` · `--fill <sel> <text>` · `--select <sel> <value>` · `--press <key>` · `--wait <sel>` · `--wait-ms <ms>`. Options: `--width <px>[x<h>]` · `--dark` · `--full` · `--no-shot` · `--name <space>` · `--guard-writes [--allow-write <path>]` · `--timeout <ms>` · `--text-max <chars>`. `browser-check help` prints all of it.
+- Selectors: `@12` / `ref=12` from the page text · `text=…` · `loc=role:button[name='Save']` · `loc=css:…` · raw CSS — exactly one match or the step fails. Refs change after any page change: look again.
+- The result (JSON): `page` (url, title, viewport) · `steps` (each `ok`/`error`, `ms`, and `sent` = what that step sent) · `text` (page text with refs; all of it in `textFile`) · `image` — **look at it with the image tool** · `problems` (console errors, exceptions, failed and 4xx/5xx requests) · `sent` (every non-GET request) · `closed` or `leftOpen` · `hints`.
+- Starting other agents (workflow, subagents) for browser work: tell them "run `browser-check help`, then `browser-check look …`" — they do not need this file.
 
-## 2. Environment prep — before any verdict
-- `K.prep(tab, {darkReader: site.darkReader})`: **detect before changing** → warn → lock Dark Reader and hide injected UI in your own tab only. On `@@WARN DARK_READER_ON`, **always tell the user** — with it on, colour and capture verdicts can't be trusted (which is why it is often kept off on sites under development). On transport C (`browser-check.mjs cdp`) use `client.prep(sessionId, {darkReader})` — same order; relay its `warnings` the same way.
-- Hide DeepL/Aside injected elements (`deepl-*`, `aside-inline-menu`, `bro-*`) and record them as `detected`. Pass them to axe as `exclude`.
-- In C recordings (`client.record`), **errors raised by browser extensions** are kept apart as `ext-exception`/`ext-console` (with the extension name) and left out of `summary().problems`. Don't report them as page errors (example.com: 2 of 3 exceptions came from DeepL).
-- C's own tab is a hidden tab: a document that was never painted **drops clicks and keys without an error** (measured: 0 left/right clicks before one capture). The client wakes each document with one capture before its first `Input.dispatch*` (70–550 ms; again after navigation). If waking fails it sends nothing and raises `input not sent` — retry.
-- 🔴 **C needs Aside started with three launch flags, or it stalls when the PC's Aside windows are covered or minimized** (`cdp timeout Page.captureScreenshot` / `input not sent`, on the PC and over the tunnel). Measured on Windows 2026-10-14 with a colour change before each capture so a stale frame could not pass: without flags C stops once **every** Aside window is covered (one visible Aside window was enough) and whenever the window is minimized · `--disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion` keep captures going with every Aside window covered (the page stays `visible`) but not when minimized · `--enable-features=CDPScreenshotNewSurface` (Chromium's screenshot path that copies a fresh surface instead of waiting for the next presented frame) made captures and real clicks/keys go through while minimized (isolated test browser; `--disable-renderer-backgrounding` did not help). A locked screen did not stall C even without flags. On those errors suspect this first: run `launch-flags` (§0) — if the running Aside lacks a flag, that is the cause; otherwise ask the user to restore the Aside window. macOS not measured. A/B (Aside) are unaffected.
-- Before measurements, colours or animation, `K.wake` (agent tabs are throttled to 2–4 fps — one capture lifts it; navigation brings it back).
-- Pick the transport from the doctor result: snapshot/interaction = A · imperative CDP (first-load injection, device width, dark mode, CSS cascade, AX tree) = B (check `K.hasX`) · events, background tabs, long jobs = C. Report the choice and the fallback. **Never auto-retry the same action on another transport.**
+## 1. 🔴 Safety rules — breaking one damages the user's work
+- **Clicks and typing are real.** `look` steps and scripts press the real buttons of the real site. Anything that saves, sends, deletes, invites, pays or changes settings needs the user's approval first — show the plan (what · where · how to clean up). Afterwards read `sent`: it lists every non-GET request the steps caused, so an unexpected save is visible — report it.
+- **Your own task space only.** `look` uses a fresh space each run (`bc-look-<random>`, or `--name`); scripts use `bc.run('<short-task-name>', …)`. Never `claimTaskSpace`, `takeOverTaskSpace` or `adopt` a user tab unless the user asked for exactly that. `EGO_TASK_SPACE_NAME_IN_USE` means the name is the user's — pick another.
+- **Leave ego's windows alone.** Never move, resize, raise, restore or minimize them — `Browser.setWindowBounds` is refused (a call meant for our space's window once minimized the user's window). Captures work while ego is minimized; when every window was closed with X, the capture reopens one minimized (about 0.1–0.2 s on screen — owner decision). Nothing else.
+- **Logged-in site: close only after 0 requests in flight** — `look` and `bc.run` wait for it. `leftOpen` in the result ⇒ report it and leave it; never force-close (a cut token-refresh response logs the whole session family out — a real incident). Avoid `reload()`.
+- **The write guard also stops a site's token refresh.** With `--guard-writes` on a logged-in site (Mesa, measured) the refresh POST is refused and the page falls to its login screen (nothing reached the server). The refresh path must be in the config's `sites[].writeAllow` — ask the user for it, never guess — or check without the guard and press nothing that writes. `guardBlocked` / `outs.GUARD_BLOCKED` lists what it refused.
+- **Dialogs:** a JavaScript dialog a `look` step opens is dismissed and reported in that step; in scripts handle `page.info().dialog` yourself (`page.dismissDialog()` unless accepting was approved).
+- **Forbidden input:** `keyboard.paste` (the user's real clipboard) · Ctrl+C/V/X · browser shortcuts (F5 · F11 · F12 · Ctrl+W …) · clicking `<select>`, date, colour or file inputs (OS dialogs) — use `--select`/`selectOption`/`setInputFiles` · downloads unless approved. `fill` on a hidden field types into whatever has focus (a chat box); `\n` in typed text and POST `page.fetch` really send.
+- **Refused CDP** (scripts throw on them): cookies and storage — read or clear · `Browser.close`/`setWindowBounds` · `Fetch.*` (deadlocks in ego) · `Target.createTarget`/`closeTarget` · `Page.close`. Don't route around a refusal.
+- **Never read or keep secrets:** no password values (length only) · results go through the redactor · never print cookies, tokens or the relay token.
+- **Logins, 2FA, CAPTCHA, permission prompts are the human's job:** in a script `await task.handOff()`, end the run, tell the user what to do in ego (open ego, go to the space named …); resume with `takeOverTaskSpace(<id>)` after they confirm.
+- **ego update notice** in `hints` ⇒ tell the user; `ego-browser upgrade` only with their approval.
 
-## 3. Request → recipe
+## 2. Scripts — `browser-check run <file.mjs>` or `run -` with a quoted heredoc (`<<'EOF'`)
+The script runs **inside ego-browser's own Node on the PC**: top-level `await` works · Node built-ins only by `await import('node:fs')` · the server's files and environment are not there — put every input in the script; `bc.url` is `--url` · page code goes in `page.evaluate`. Every run is a new process: spaces persist by name, variables don't. Default limit 300 s (`--timeout` up to 30 min).
+```js
+const r = await bc.run('check-orders-page', async ({ task, page }) => {
+  await bc.watch(page);                          // record console, exceptions, network from here on
+  await page.goto(bc.url); await page.waitForLoadState();
+  console.log(await page.snapshot());            // page text with refs (@12)
+  bc.out('SHOT', await bc.shot(page, 'orders')); // capture (works while ego is minimized)
+  bc.out('PROBLEMS', await bc.problems(page));
+  bc.out('SENT', await bc.sent(page));           // non-GET requests the page sent
+});
+bc.out('CLOSED', r.closed);
+```
+Result: `status` · `images` (files) · `outs` (every `bc.out(tag, value)`, by tag) · `leftOpen` · `guard` · `hints` · `tail` (other output).
+Helpers: `bc.run` · `bc.shot` · `bc.watch` · `bc.problems` · `bc.sent` / `bc.mark` · `bc.events` (never `page.events()` — it empties the buffer) · `bc.settle` · `bc.guardWrites` / `bc.guardReport` · `bc.kit(page, '<kit>')` · `bc.out` · `bc.img` · `bc.url`. ego's own: `page.goto/click/fill/press(selector, key)/keyboard.press(key)/selectOption/waitForSelector/evaluate/snapshot({scope:'full_page'})/info/screenshot/cdp`, `task.newPage()`. **For any signature: `browser-check api <part of a name>`** (it asks ego's own help, so it is always current).
+
+## 3. Request → recipe (`${CLAUDE_PLUGIN_ROOT}/skills/browser_check/recipes/`) — read one only when `look` is not enough
 | The user asks to… | Recipe |
 |---|---|
 | look at a screen or an element | `screen.md` |
@@ -51,27 +68,32 @@ Language: talk to the user in the user's language, report labels in §5 included
 | check performance · slowness | `performance.md` |
 | click or type something | `action.md` |
 | check realtime sync · two tabs | `realtime.md` |
-| find out why they got logged out | `login-incident.md` (🔴 don't open a new tab — it changes the evidence) |
+| find out why they got logged out | `login-incident.md` |
 | test a whole flow | `flow.md` |
 
-Recipes are in `${CLAUDE_PLUGIN_ROOT}/skills/browser_check/recipes/`. In them, `kit/`, `image/` and `session/` mean `${CLAUDE_PLUGIN_ROOT}/scripts/kit/` and so on.
+## 4. ego traps — measured 2026-10-21
+- `page.screenshot` is refused while ego is minimized and times out in a window closed with X — use `bc.shot` (`look` does). Full-page capture works only through `page.screenshot`; when refused, scroll and shoot tiles, then `scripts/image/stitch.py`.
+- A click or fill usually takes 0.1–0.6 s; a few took 6–11 s (2026-10-21, cause not found — ego waits until the element is usable, and a minimized window paints slowly). `steps[].ms` shows it; don't add your own sleeps for it.
+- The page text is the viewport only unless `--full` / `snapshot({ scope: 'full_page' })`.
+- ego's theme can be dark; `look`/`bc.run` force the light scheme unless `--dark`.
+- Extensions in ego (e.g. McAfee WebAdvisor) can throw — `problems` keeps `chrome-extension://` errors out of the page errors.
+- From a server a run is ~1–1.5 s slower (ssh + PC relay). When ego was not running the relay starts it minimized first (~25 s once). The PC must be awake and logged in; a server cannot wake it.
 
-How to run code:
-- One-shot: `node "${CLAUDE_PLUGIN_ROOT}/scripts/browser-check.mjs" run <body.js> --url <url>` (adds the common head, 50 s guard, lock, `@@IMG` saving, redaction). 🔴 On Windows the code travels as one command-line argument (limit about 32,767 characters) and the head plus the v2.1 recorder already exceed it — for work that injects the recorder, use C (`cdp`), which loads scripts from files.
-- Several steps / logged-in apps: the persistent session driver `session/drv.py` (one line = one run, each line ≤ 50 s; `ASIDE_BIN`/`ASIDE_HOST` come from the config). 🔴 `drv.py` does not run on Windows (Python `select()` fails on pipes) — on a Windows host use C, or report that a persistent session isn't available there.
-- Python scripts (`session/drv.py`, `image/*.py`) run with the command doctor found (`pythonCmd` — e.g. `python3`, or `py -3` on Windows). Without one, only those features are missing.
-
-## 4. Asidewright traps — before believing "it works"
-No auto-wait (fails in 1 ms when absent; `waitFor` defaults to 3 s) · no strict mode (several matches ⇒ the first) · `page.url()` misses SPA navigation (use `K.href`) · `reload()` returns before load · `waitForLoadState` doesn't guarantee 0 requests · `clip` ignores the origin, `fullPage` repeats the first screen, `locator.screenshot` is unavailable (take a full capture and crop it on the server; stitch scrolled tiles with `image/stitch.py`) · regex arguments silently match nothing · `keyboard.press('Space')` sends an empty key (use CDP `Input.dispatchKeyEvent`) · `locator.hover` doesn't move the mouse · `dragTo` drops twice · right-click is `page.mouse.click(x,y,{button:'right'})` · only `page.evaluate` runs in the main world (`locator.evaluate` is isolated) · Resource Timing stops at 250 entries (`setResourceTimingBufferSize`) · code containing an `import(` or `require(` shape anywhere is rejected before it runs.
-
-## 5. Report format (write the labels in the user's language)
+## 5. Report format (labels in the user's language)
 ```
-[Target] real URL (K.href) · dev/prod · logged in? · transport (A/B/C and why)
-[Conditions] window size · DPR · fps (after wake) · Dark Reader detected/locked · injected UI · visibility · cache · emulation used (width/media/CPU) — reverted?
-[Results] item | verdict (✅/❌/partial) | value · threshold | evidence (capture file · dump line · rid · sheet:line)
+[Target] real URL · dev/prod · logged in? · where (PC / server → PC)
+[Conditions] viewport · emulation (width/dark) · guard on/off · capture via screenshot/screencast
+[Results] item | verdict (✅/❌/partial) | value · threshold | evidence (image file · problems entry · request)
+[Sent] non-GET requests the steps caused (none expected for a read-only check)
 [Not checked] why, and what a person must do
-[Left behind] 0 open tabs confirmed · data created (approval) · cleanup done
+[Left behind] task space closed (or leftOpen) · data created (approval) · cleanup done
 ```
 
-## 6. Only a person can do these — hand them over, don't ask for them
-Whether agent tabs pop up in front of the user's screen · the cause of frame throttling · the real clipboard · OS file/date/colour pickers, the native context menu, permission prompts · real mouse drags · logging in or back in · approving data changes · real devices (mobile Safari etc.) · the final check of OS IME behaviour · PC settings (enabling remote, extensions, updates) · opening tunnels · cleaning the download folder · design judgement.
+## 6. Only a person can do these — hand them over
+Signing in to a site in ego · 2FA/CAPTCHA · permission prompts · approving data changes · the real clipboard · OS pickers · real devices · installing or updating ego lite · `browser-check relay install` on the PC · design judgement · anything in the user's own Aside tabs (the Claude inside Aside does that).
+
+## First use on a machine (only when an answer says `not-ready`)
+- `config file not found` ⇒ `browser-check setup`. It looks the machine over (ego-browser on the PC; on a server it asks each ssh Host whether it is a PC with the relay), writes the config and lists what it set — **show those values to the user**. It never touches a current config.
+- Old Aside config ⇒ `browser-check setup --migrate` (site rules kept, old file backed up) — show the user.
+- `choose-host` ⇒ show the candidates and run `browser-check setup --remote-host "<name>"` with the one the user picks.
+- Anything else ⇒ `browser-check doctor` and relay its `todo` (install ego lite and sign in · `relay install` on the PC · an ssh Host for the PC — human tasks).

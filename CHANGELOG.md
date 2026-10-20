@@ -189,6 +189,32 @@ response document stays the script's to write, and any change outside those two 
 also carries the fix for a run that died when another run removed a folder it was scanning, leaving its
 progress card stuck.
 
+browser-check moved to 0.2.0 on 2026-10-21 and now works in ego lite instead of Aside. ego lite is a
+Chromium browser kept on the user's PC for agents: the user signs in to the sites there once, and each
+check opens them signed in, in a task space of its own that never touches the user's tabs. ego opens no
+network port and refuses an elevated caller, and an administrator's ssh session on Windows is always
+elevated, so a server reaches it through a small relay that runs in the user's own logon session on the
+PC and listens on localhost only (`browser-check relay install` adds it to Task Scheduler). ego refuses an
+ordinary screenshot while its window is minimized, so captures fall back to screencast frames, which keep
+coming then; when every ego window was closed with X, ego is started again and its window minimized at
+once. The write guard now works inside the page, because browser-level request interception deadlocks in
+ego, and on a logged-in site it also stops the token refresh unless that path is allowed. The Aside
+transports, the tunnel, tab borrowing and the `launch-flags` command are gone; a tab the user has open in
+Aside is now for the assistant inside Aside. An old config is reported, and `setup --migrate` rewrites it
+with its site rules kept.
+
+The plugin is also much easier to call. In earlier session records agents read the plugin's own source
+152 times looking for function names, typed paths with a version number in them, and failed twelve times
+because the Bash tool has no `CLAUDE_PLUGIN_DATA`. The plugin now puts a `browser-check` command on the
+Bash tool's path that finds its own folder and data folder. `browser-check look <url>` opens a page, runs
+the steps it is given in order (click, fill, select, press a key, wait) and returns the page text with
+references to click next, a capture, console errors and failed requests, and every request other than
+GET the page sent, so a click that saved or sent something shows in the result; `--width`, `--dark` and
+`--full` cover mobile widths, dark mode and whole pages. `browser-check api click` answers what a function
+takes, from ego's own help, and `run` takes a script from a file or from stdin. A machine that is not set
+up answers "not-ready" with the next step, so there is no check to run first. Asked to check a page, a
+fresh session called the skill, ran one `look` and looked at the capture: three tool calls, 28 seconds.
+
 Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
 reports every task the old process left behind in a single notification that names several tasks, and
 only the first one was read, so the rest kept running in the background tab for good. A monitor that
