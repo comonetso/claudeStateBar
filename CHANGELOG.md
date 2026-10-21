@@ -225,6 +225,13 @@ rule. Refusals made before the page moved to a login page stay in the list. On W
 path that Git Bash rewrote into a folder under Git (`C:/Program Files/Git/api/…`) is put back; until now it
 allowed nothing.
 
+codex-rescue 1.18.1, peer-req 0.2.4, browser-check 0.2.2 and android-check 0.1.1 (2026-10-22) show up in
+the skill list again. Their `SKILL.md` description sat on one unquoted line holding a colon followed by a
+space and double quotes, which YAML does not allow. From 2026-10-14 the four were missing from the
+skill list: Claude Code reports `Failed to parse YAML frontmatter` for such a file and loads the skill
+without its name and description, so none of them could be picked or called by name. The description is now a folded block (`>-`) with
+the same text, and nothing else changed.
+
 Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
 reports every task the old process left behind in a single notification that names several tasks, and
 only the first one was read, so the rest kept running in the background tab for good. A monitor that

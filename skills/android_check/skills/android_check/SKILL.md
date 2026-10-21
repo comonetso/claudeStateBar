@@ -1,6 +1,7 @@
 ---
 name: android_check
-description: Tap, look at, read the logcat of, measure and debug a real Android device or emulator — Flutter apps and native (View/Compose) apps. Taps an element by name and in the same step captures the screen, cuts the logcat of that moment for the app process (errors and frame-skip warnings marked) and measures the response time; drives the app run itself (Flutter hot reload / native reinstall) so a fix can be checked without a human; explores multi-step flows with the ARTEMIS MCP. Use whenever the real device behaviour must be seen, not for source alone. Korean triggers (incl. speech-to-text variants): "폰 화면 봐/휴대폰 화면 봐/기기 화면 봐/에뮬레이터 화면", "눌러 봐/클릭해 봐/탭해 봐/눌러서 확인", "로그캣 봐/로그켓 봐/로켓 봐/로그 같이 봐", "반응 속도 재 봐/느린지 봐/반응 시간", "앱 테스트해/다 눌러 봐/전수 시험", "앱 디버깅해/오류 잡아/화면 틀어진 거 고쳐", "핫 리로드 해/다시 띄워/재설치", "아르테미스/알테미스로 해".
+description: >-
+  Tap, look at, read the logcat of, measure and debug a real Android device or emulator — Flutter apps and native (View/Compose) apps. Taps an element by name and in the same step captures the screen, cuts the logcat of that moment for the app process (errors and frame-skip warnings marked) and measures the response time; drives the app run itself (Flutter hot reload / native reinstall) so a fix can be checked without a human; explores multi-step flows with the ARTEMIS MCP. Use whenever the real device behaviour must be seen, not for source alone. Korean triggers (incl. speech-to-text variants): "폰 화면 봐/휴대폰 화면 봐/기기 화면 봐/에뮬레이터 화면", "눌러 봐/클릭해 봐/탭해 봐/눌러서 확인", "로그캣 봐/로그켓 봐/로켓 봐/로그 같이 봐", "반응 속도 재 봐/느린지 봐/반응 시간", "앱 테스트해/다 눌러 봐/전수 시험", "앱 디버깅해/오류 잡아/화면 틀어진 거 고쳐", "핫 리로드 해/다시 띄워/재설치", "아르테미스/알테미스로 해".
 ---
 
 # android_check — tap, look, read the logcat, measure, fix, re-check

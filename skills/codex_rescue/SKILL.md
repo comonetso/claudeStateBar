@@ -1,6 +1,7 @@
 ---
 name: codex_rescue
-description: Get a second view from the Codex CLI (OpenAI) in a fully automatic round trip — no pasting, no "done" notices. Picks the mode by meaning — CONSULT (default; Codex independently investigates a problem you're stuck on from a request file; follow-ups possible), REVIEW (Codex reviews the git diff by its official rubric), EDIT (Codex edits code after confirmation), CHAT (short ping-pong, only when explicitly asked), HELP, or RESUME (a request/response path). Codex is an adviser; send.sh measures and reports any file changed besides the response. Korean triggers: "리뷰시켜", "리뷰해줘", "바뀐 코드 봐줘", "커밋 전에 훑어줘", "검토요청해", "분석해줘", "분석요청해", "검토및 수정요청해", "분석하고 수정시켜", "수정시켜", "고쳐줘", "코덱스에 물어봐", "코덱스 질문지", "codex_rescue", "코덱스 사용법". Ping-pong only when explicit — "코덱스와 대화해", "핑퐁으로 물어봐"; every other phrase above stays CONSULT.
+description: >-
+  Get a second view from the Codex CLI (OpenAI) in a fully automatic round trip — no pasting, no "done" notices. Picks the mode by meaning — CONSULT (default; Codex independently investigates a problem you're stuck on from a request file; follow-ups possible), REVIEW (Codex reviews the git diff by its official rubric), EDIT (Codex edits code after confirmation), CHAT (short ping-pong, only when explicitly asked), HELP, or RESUME (a request/response path). Codex is an adviser; send.sh measures and reports any file changed besides the response. Korean triggers: "리뷰시켜", "리뷰해줘", "바뀐 코드 봐줘", "커밋 전에 훑어줘", "검토요청해", "분석해줘", "분석요청해", "검토및 수정요청해", "분석하고 수정시켜", "수정시켜", "고쳐줘", "코덱스에 물어봐", "코덱스 질문지", "codex_rescue", "코덱스 사용법". Ping-pong only when explicit — "코덱스와 대화해", "핑퐁으로 물어봐"; every other phrase above stays CONSULT.
 ---
 
 # codex_rescue — automatic round trip to Codex for a second view

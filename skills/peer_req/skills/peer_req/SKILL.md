@@ -1,6 +1,7 @@
 ---
 name: peer_req
-description: Ask (query), notify (notice) or leave a change request (change_request) for another open Claude Code session (a peer) — between repositories on the same PC or across machines over Remote Control. Also covers `here` (declare this conversation the peer), `status`, `inbox`, `doctor`, `discover` (sessions and folders running on this PC). 🔴 Always trigger when a message from another session starts with `[peer_req/1]` (receive and record procedure). Korean triggers: "/peer-req:peer_req <짝> <말>", "서버에 물어봐", "앱 쪽은 어떻게 받아?", "짝한테 알려줘", "고쳐달라고 남겨".
+description: >-
+  Ask (query), notify (notice) or leave a change request (change_request) for another open Claude Code session (a peer) — between repositories on the same PC or across machines over Remote Control. Also covers `here` (declare this conversation the peer), `status`, `inbox`, `doctor`, `discover` (sessions and folders running on this PC). 🔴 Always trigger when a message from another session starts with `[peer_req/1]` (receive and record procedure). Korean triggers: "/peer-req:peer_req <짝> <말>", "서버에 물어봐", "앱 쪽은 어떻게 받아?", "짝한테 알려줘", "고쳐달라고 남겨".
 ---
 
 # peer_req — peer sessions ask and notify each other directly
