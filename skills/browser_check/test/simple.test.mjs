@@ -10,6 +10,7 @@ import { parseLook, buildLookScript, shapeLook } from '../scripts/lib/look.mjs';
 import { parseHelp, answer, BC_API } from '../scripts/lib/api.mjs';
 import { dataDirGuess } from '../scripts/lib/config.mjs';
 import { buildScript, EGO_DIR } from '../scripts/lib/ego.mjs';
+import { guardHints, undoMsysPath } from '../scripts/lib/guardHints.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -87,4 +88,55 @@ test('bin: the shell launcher is LF and executable in git, the .cmd one is CRLF,
   let mode = null;
   try { mode = execFileSync('git', ['ls-files', '-s', 'bin/browser-check'], { cwd: ROOT, encoding: 'utf8' }).split(' ')[0]; } catch { /* not a git checkout (installed copy) */ }
   if (mode) assert.equal(mode, '100755', 'bin/browser-check needs the executable bit in git (git update-index --chmod=+x)');
+});
+
+// 10-21 (Mesa request): the guard also blocks a logged-in page's login refresh — the result must name the fix
+test('guard hints name a blocked login refresh and the --allow-write that fixes it', () => {
+  const site = { match: 'https://app.invalid', login: 'rotating-refresh', writeAllow: [] };
+  const blockedRefresh = guardHints({
+    guardOn: true, site, url: 'https://app.invalid/t/x',
+    outs: { GUARD_BLOCKED: [{ blocked: [{ kind: 'fetch', method: 'POST', url: 'https://app.invalid/__bc_guard_selftest' }, { kind: 'fetch', method: 'POST', url: 'https://app.invalid/api/v1/entry/resume?x=1' }], allow: [] }],
+      PAGE: [{ url: 'https://app.invalid/login' }] },
+  });
+  assert.equal(blockedRefresh.length, 1);
+  assert.match(blockedRefresh[0], /POST \/api\/v1\/entry\/resume, which looks like a login\/session refresh/);
+  assert.match(blockedRefresh[0], /--allow-write \/api\/v1\/entry\/resume/);
+  assert.match(blockedRefresh[0], /Keep the guard on/);
+  assert.ok(!/selftest/.test(blockedRefresh.join(' ')), 'the guard self-test request is not a hint');
+
+  const fellToLogin = guardHints({ guardOn: true, url: 'https://app.invalid/t/x',
+    outs: { GUARD_BLOCKED: [{ blocked: [{ method: 'POST', url: 'https://app.invalid/api/v1/hello' }] }], PAGE: [{ url: 'https://app.invalid/signin' }] } });
+  assert.match(fellToLogin[0], /ended on what looks like a login screen \(\/signin\)/);
+
+  const noGuard = guardHints({ guardOn: false, site, outs: { SENT: [[{ method: 'POST', url: 'https://app.invalid/api/v1/entry/resume', status: 200 }]] } });
+  assert.match(noGuard[0], /1 write request\(s\) went out without the write guard \(POST \/api\/v1\/entry\/resume 200\)/);
+  assert.match(noGuard[0], /--guard-writes --allow-write \/api\/v1\/entry\/resume/);
+
+  const markedNoGuard = guardHints({ guardOn: false, site, outs: {} });
+  assert.match(markedNoGuard[0], /without the write guard on a site marked logged-in/);
+
+  const worked = guardHints({ guardOn: true, site, allow: ['/api/v1/entry/resume'],
+    outs: { GUARD_BLOCKED: [{ blocked: [] }], SENT: [[{ method: 'POST', url: 'https://app.invalid/api/v1/entry/resume', status: 200 }]] } });
+  assert.match(worked[0], /--allow-write \/api\/v1\/entry\/resume worked here — ask the user to add it to the sites\[\]\.writeAllow of https:\/\/app\.invalid/);
+  const inRule = guardHints({ guardOn: true, site: { ...site, writeAllow: ['/api/v1/entry/resume'] }, allow: ['/api/v1/entry/resume'],
+    outs: { SENT: [[{ method: 'POST', url: 'https://app.invalid/api/v1/entry/resume', status: 200 }]] } });
+  assert.deepEqual(inRule, [], 'a path already in the site rule needs no hint');
+  const noRule = guardHints({ guardOn: true, site: { match: null, login: 'none', writeAllow: [] }, allow: ['/api/v1/entry/resume'],
+    outs: { SENT: [[{ method: 'POST', url: 'https://app.invalid/api/v1/entry/resume', status: 200 }]] } });
+  assert.match(noRule[0], /ask the user whether to add a sites\[\] rule for this site with guardWrites: true and writeAllow: \["\/api\/v1\/entry\/resume"\]/, 'no matching rule (default site object) — suggest a new rule, never "of null"');
+
+  assert.deepEqual(guardHints({ guardOn: false, outs: {} }), [], 'nothing happened, nothing to say');
+  assert.deepEqual(guardHints({ guardOn: true, outs: { GUARD_BLOCKED: [{ blocked: [{ method: 'POST', url: 'https://app.invalid/api/v1/posts' }] }], PAGE: [{ url: 'https://app.invalid/t/x' }] } }), [], 'an ordinary blocked write on a normal page is not a login problem');
+});
+
+// 10-21: Git Bash turned `--allow-write /api/x` into "C:/Program Files/Git/api/x" before node saw it — allowed nothing
+test('a Git Bash rewritten --allow-write path is put back; real values are left alone', () => {
+  assert.equal(undoMsysPath('C:/Program Files/Git/api/v1/entry/resume', {}), '/api/v1/entry/resume');
+  assert.equal(undoMsysPath('C:\\Program Files\\Git\\api\\auth\\refresh', {}), '/api/auth/refresh');
+  assert.equal(undoMsysPath('D:/tools/git/r', { EXEPATH: 'D:\\tools\\git' }), '/r');
+  assert.equal(undoMsysPath('/api/v1/entry/resume', {}), '/api/v1/entry/resume');
+  assert.equal(undoMsysPath('https://a.invalid/api', {}), 'https://a.invalid/api');
+  assert.equal(undoMsysPath('C:/data/file', {}), 'C:/data/file', 'no Git folder in it — not ours to change');
+  const p = parseLook(['https://x.invalid/', '--guard-writes', '--allow-write', 'C:/Program Files/Git/api/token']);
+  assert.ok(p.ok); assert.deepEqual(p.spec.allow, ['/api/token']);
 });
