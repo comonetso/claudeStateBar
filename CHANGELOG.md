@@ -215,6 +215,16 @@ takes, from ego's own help, and `run` takes a script from a file or from stdin. 
 up answers "not-ready" with the next step, so there is no check to run first. Asked to check a page, a
 fresh session called the skill, ran one `look` and looked at the capture: three tool calls, 28 seconds.
 
+browser-check 0.2.1 (the same day) makes the write guard easier to keep on for a logged-in site. On such a
+site the guard also refuses the POST a page sends to refresh its login, so the page falls to its login
+screen. `--allow-write <path>` lets only that path through, but nothing in the result pointed to it, and an
+agent kept the guard off on a real account instead. When the guard now refuses a request whose path looks
+like a login or session refresh, the result's hints name it with the exact `--allow-write` to add. They also
+report writes that went out with the guard off, and an allowed path that worked but is not yet in the site
+rule. Refusals made before the page moved to a login page stay in the list. On Windows, an `--allow-write`
+path that Git Bash rewrote into a folder under Git (`C:/Program Files/Git/api/…`) is put back; until now it
+allowed nothing.
+
 Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
 reports every task the old process left behind in a single notification that names several tasks, and
 only the first one was read, so the rest kept running in the background tab for good. A monitor that
