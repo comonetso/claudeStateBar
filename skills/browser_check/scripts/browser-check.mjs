@@ -20,6 +20,7 @@ import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load, siteFor, configPath, dataDirGuess } from './lib/config.mjs';
 import { redact, redactText, redactUrl } from './lib/redact.mjs';
+import { guardHints, undoMsysPath } from './lib/guardHints.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -93,6 +94,8 @@ async function execute(userScript, { url = null, guardFlag = false, allow = [], 
   if (/is not a function|is not defined/.test(err)) hints.push('a name the script used does not exist — `browser-check api <part of the name>` lists what does');
   if (/\[ego-browser:notice\]/.test(r.stdout)) hints.push('an ego lite update is available — tell the user; run `ego-browser upgrade` only with their approval');
   if (r.transportError) hints.push('the PC relay did not run it: ' + redactText(String(r.transportError)).slice(0, 200) + ' — is the PC awake and logged in? (`browser-check doctor`)');
+  // write guard ↔ login refresh (10-21): name a blocked refresh and the --allow-write that fixes it, right in the result
+  for (const h of guardHints({ outs: c.outs, guardOn, site, allow, url })) hints.push(redactText(h));
   const res = {
     status, where: local ? 'local' : 'remote:' + cfg.ego.remoteHost, ms: Date.now() - started, egoMs: r.egoMs || r.ms,
     url: url ? redactUrl(url) : null, site: site ? { match: site.match, login: site.login, guardWrites: site.guardWrites } : null,
@@ -158,7 +161,7 @@ if (cmd === 'run' || cmd === 'ego') {
   try { user = scriptPath === '-' ? readFileSync(0, 'utf8') : readFileSync(resolve(scriptPath), 'utf8'); } catch (e) { die('cannot read the script: ' + e.message); }
   if (!user.trim()) die('the script is empty');
   let res;
-  try { res = await execute(user, { url: opt('--url', null), guardFlag: flag('--guard-writes'), allow: optAll('--allow-write'), outDir: opt('--out', null), timeout: opt('--timeout', 0) }); }
+  try { res = await execute(user, { url: opt('--url', null), guardFlag: flag('--guard-writes'), allow: optAll('--allow-write').map(undoMsysPath), outDir: opt('--out', null), timeout: opt('--timeout', 0) }); }
   catch (e) { die(String(e.message)); }
   print(res);
   process.exit(res.status === 'ok' ? 0 : 1);

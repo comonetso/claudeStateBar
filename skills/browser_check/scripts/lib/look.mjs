@@ -8,6 +8,7 @@
  * through the same path as `run` (prelude, PC or relay). Clicking and typing are allowed here by owner decision
  * (2026-10-21); what they sent is reported in `sent` so a save or a send cannot pass unseen.
  */
+import { undoMsysPath } from './guardHints.mjs';
 
 const STEPS = {
   '--click': { do: 'click', n: 1 },
@@ -45,7 +46,7 @@ export function parseLook(args) {
       else if (a === '--name') { if (!/^[\w.-]{1,40}$/.test(v)) return { ok: false, error: '--name: letters, digits, . _ - (up to 40)' }; spec.name = v; }
       else if (a === '--timeout') spec.timeout = Number(v);
       else if (a === '--text-max') spec.textMax = Math.max(200, Math.min(200000, Number(v) || 4000));
-      else if (a === '--allow-write') spec.allow.push(v);
+      else if (a === '--allow-write') spec.allow.push(undoMsysPath(v));   // Git Bash may have rewritten it (10-21)
       else if (a === '--out') spec.out = v;
       continue;
     }

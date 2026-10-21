@@ -29,7 +29,7 @@ const __bcHook = `(() => {
   w.__bcGuard = w.__bcGuard || null;
   const safe = (m) => !m || /^(GET|HEAD|OPTIONS)$/i.test(m);
   const allowed = (u) => { const g = w.__bcGuard; if (!g) return true; try { const x = new URL(u, location.href); return g.allow.some((a) => x.pathname === a || x.pathname.startsWith(a.endsWith('/') ? a : a + '/') || x.href === a); } catch (e) { return false; } };
-  const note = (kind, m, u) => { const g = w.__bcGuard; if (g) g.blocked.push({ kind, method: String(m || ''), url: String(u || '').slice(0, 200) }); };
+  const note = (kind, m, u) => { const g = w.__bcGuard; if (!g) return; const b = { kind, method: String(m || ''), url: String(u || '').slice(0, 200) }; g.blocked.push(b); try { console.info('[bc-guard] blocked ' + JSON.stringify(b)); } catch (e) { /* console replaced */ } };
   const of = w.fetch;
   if (of) w.fetch = function (input, init) {
     const m = (init && init.method) || (input && input.method) || 'GET'; const u = (input && input.url) || String(input);
@@ -241,7 +241,23 @@ const bc = {
     await page.evaluate(() => { const g = window.__bcGuard; if (g) g.blocked = g.blocked.filter((b) => !/__bc_guard_selftest/.test(b.url)); });
     return { selfTest: 'passed', allow };
   },
-  async guardReport(page) { return page.evaluate(() => (window.__bcGuard ? { blocked: window.__bcGuard.blocked, allow: window.__bcGuard.allow } : null)); },
+  async guardReport(page) {
+    const here = await page.evaluate(() => (window.__bcGuard ? { blocked: window.__bcGuard.blocked, allow: window.__bcGuard.allow } : null));
+    // A page that moves to another document (a failed login refresh redirecting to /login) starts that document's list
+    // empty — the console marks every block leaves are collected too, so what was refused survives the move (10-21).
+    await bc.events(page);
+    const seen = new Set(); const blocked = [];
+    const add = (b) => { if (!b || /__bc_guard_selftest/.test(String(b.url))) return; const key = b.kind + ' ' + b.method + ' ' + b.url; if (!seen.has(key)) { seen.add(key); blocked.push(b); } };
+    for (const e of bc.__ev[page.label || 'p1'] || []) {
+      if (e.method !== 'Runtime.consoleAPICalled') continue;
+      const a = e.params && e.params.args && e.params.args[0];
+      const s = a && typeof a.value === 'string' ? a.value : '';
+      if (s.startsWith('[bc-guard] blocked ')) { try { add(JSON.parse(s.slice('[bc-guard] blocked '.length))); } catch { /* not ours */ } }
+    }
+    for (const b of (here && here.blocked) || []) add(b);
+    if (!here && !blocked.length) return null;
+    return { blocked, allow: here ? here.allow : null };
+  },
 
   /** Run one of the plugin's in-page kits (scripts/kit/*.js), sent along with this script. */
   async kit(page, name) { return page.evaluate(bc.kitSource(name)); },
