@@ -126,7 +126,7 @@ Codex 계정 사용량은 Claude의 5시간 / 주간 플랜 사용량과는 **�
 
 ### 개인정보
 
-Codex rollout 로그에는 대화 원문 전체가 들어 있지만 rollout 파서는 **구조적 필드(토큰/사용량 수치, 타임스탬프, 모델/effort, `cwd`, 작업 생명주기, 명시적인 spawned-agent 부모/thread ID)만** 추출합니다. 사이드바 대화를 식별할 때는 일치하는 로컬 또는 원격 OpenAI `Codex.log`에서 정확한 `thread_stream_view_activity_changed` 표식, 불리언 값, UUID만 찾고 나머지 로그 텍스트는 즉시 버립니다. 메시지 본문을 저장하거나 이 확장의 로그에 남기지 않습니다. `auth.json`은 절대 접근하지 않습니다.
+Codex rollout 로그에는 대화 원문 전체가 들어 있지만 rollout 파서는 **구조적 필드(토큰/사용량 수치, 타임스탬프, 모델/effort, `cwd`, 작업 생명주기, 명시적인 spawned-agent 부모/thread ID)만** 추출합니다. 사이드바 대화를 식별할 때는 일치하는 로컬 또는 원격 OpenAI `Codex.log`에서 정확한 `thread_stream_view_activity_changed` 표식, 불리언 값, UUID만 찾고 나머지 로그 텍스트는 즉시 버립니다. 메시지 본문을 저장하거나 이 확장의 로그에 남기지 않습니다. 모니터링은 `auth.json`을 열지 않습니다. 이 파일을 읽는 기능은 선택 기능인 Codex 자동 시작 하나뿐이며, 발사 전에 ChatGPT 플랜 로그인인지 확인하려고 읽습니다([Codex 5시간 리셋](#️-codex-5시간-리셋) 참고).
 
 ---
 
@@ -376,7 +376,6 @@ adb 가 있어야 하고, 반응 시간 측정에는 Pillow 가 있는 파이썬
 
 추가 속도 표시:
 - **⚡** — `/fast` 모드 활성화
-- **💭** — 최근 응답에 `thinking` 블록 포함 (확장 사고)
 
 ---
 
@@ -636,8 +635,8 @@ VS Code가 창이 열린 상태에서 확장을 업데이트하면, 이전 인�
 
 ## 크레딧
 
-원작 컨텍스트 모니터링 코어 by [Ed Zisk (@ezoosk)](https://github.com/ezoosk). 이 확장은 그 토대 위에 Claude.ai 플랜 사용량, Remote‑SSH 지원, 텔레그램 알림, 웹뷰 설정 패널, 워크플로우/에이전트 뷰어, 사운드 알림 등을 추가하여 **Blueming**이 유지보수합니다.
+원작 컨텍스트 모니터링 코어 by Ed Zisk — [Claude Context Bar](https://github.com/edenaion/claude-context-bar). 이 확장은 그 토대 위에 Claude.ai 플랜 사용량, Remote‑SSH 지원, 텔레그램 알림, 웹뷰 설정 패널, 워크플로우/에이전트 뷰어, 사운드 알림 등을 추가하여 **Blueming**이 유지보수합니다.
 
 ## 라이선스
 
-MIT © 2026 Blueming. 원작 코어 © 2025 Ed Zisk.
+MIT © 2026 Blueming. 원작 코어 © 2024 Ed Zisk.

@@ -509,7 +509,7 @@ claudeStateBar 확장을 쓰신다면 직접 지울 수도 있습니다.
 예전에는 Codex가 도는 몇 분 동안 무엇을 하는지 전혀 보이지 않았습니다.
 이제 확장이 **실행 중인 활동을 실시간으로** 보여줍니다.
 
-**여는 법** — 상태바 클릭 → `Codex 실행 N건`, 또는 `Ctrl+Shift+P` → `claudeStateBar: Show Codex Runs`
+**여는 법** — 상태바 클릭 → `작업 현황` → `Codex 진행` 탭, 또는 `Ctrl+Shift+P` → `claudeStateBar: Show Codex Runs`. 확장 1.17.2 전에는 메뉴 이름이 `Codex 실행 N건`이었습니다.
 
 보이는 것:
 

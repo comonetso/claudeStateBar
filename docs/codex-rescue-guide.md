@@ -558,8 +558,8 @@ With the claudeStateBar extension you can also delete by hand:
 Codex used to be a black box for the minutes it ran. The extension now shows its activity
 **live**.
 
-**Open it** — click the status bar → `Codex runs (N)`, or `Ctrl+Shift+P` →
-`claudeStateBar: Show Codex Runs`.
+**Open it** — click the status bar → `Activity` → the `Codex progress` tab, or `Ctrl+Shift+P` →
+`claudeStateBar: Show Codex Runs`. Before extension 1.17.2 the menu entry was `Codex runs (N)`.
 
 What you see:
 

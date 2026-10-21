@@ -126,7 +126,7 @@ Everything else is **shared between Claude and Codex** — warning/danger thresh
 
 ### Privacy
 
-Codex rollout logs contain the full text of your conversations, but the rollout parser extracts **only structural fields** — token/rate-limit counts, timestamps, model/effort, `cwd`, task lifecycle, and explicit spawned-agent parent/thread IDs. To identify a sidebar chat, the matching local or remote OpenAI `Codex.log` is scanned for the exact `thread_stream_view_activity_changed` marker, its boolean, and its UUID; all other log text is discarded immediately. Message bodies are never stored or written to this extension's log. `auth.json` is never accessed.
+Codex rollout logs contain the full text of your conversations, but the rollout parser extracts **only structural fields** — token/rate-limit counts, timestamps, model/effort, `cwd`, task lifecycle, and explicit spawned-agent parent/thread IDs. To identify a sidebar chat, the matching local or remote OpenAI `Codex.log` is scanned for the exact `thread_stream_view_activity_changed` marker, its boolean, and its UUID; all other log text is discarded immediately. Message bodies are never stored or written to this extension's log. Monitoring never opens `auth.json`; the only feature that reads it is the optional Codex auto-start, which checks it for a ChatGPT-plan login before firing (see [Codex 5‑hour resets](#️-codex-5hour-resets)).
 
 ---
 
@@ -418,7 +418,6 @@ The status bar and tooltip show Claude Code's current effort level:
 
 Additional speed indicators:
 - **⚡** — `/fast` mode is active
-- **💭** — the most recent response contained a `thinking` block (extended thinking)
 
 ---
 
@@ -679,8 +678,8 @@ Bug reports and feature requests are welcome in [Issues](https://github.com/como
 
 ## Credits
 
-Original context‑monitoring core by [Ed Zisk (@ezoosk)](https://github.com/ezoosk). This extension builds on that foundation, adding Claude.ai plan usage, Remote‑SSH support, Telegram notifications, a webview settings panel, workflow/agent viewer, sound alerts, and more — maintained by **Blueming**.
+Original context‑monitoring core by Ed Zisk — [Claude Context Bar](https://github.com/edenaion/claude-context-bar). This extension builds on that foundation, adding Claude.ai plan usage, Remote‑SSH support, Telegram notifications, a webview settings panel, workflow/agent viewer, sound alerts, and more — maintained by **Blueming**.
 
 ## License
 
-MIT © 2026 Blueming. Original core © 2025 Ed Zisk.
+MIT © 2026 Blueming. Original core © 2024 Ed Zisk.

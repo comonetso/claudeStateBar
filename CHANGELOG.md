@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.17.2] - 2026-09-30
+## [1.17.2] - 2026-10-22
 
 The workflow, background-task, Codex progress and Codex chat panels are now tabs of one panel, Claude
 Activity, and the session menu lists a single Activity entry where it used to list four. A tab with
@@ -251,6 +251,14 @@ since personal seats joined the rotation. The other way round, a run resumed und
 same id after a restart keeps its new agents running even though a stopped notification names the run. The
 rule for resumed runs above also failed for workflows until now, since their agents carried no time of
 last entry.
+
+Three statements in the documentation were wrong and are corrected. The READMEs listed a thinking
+marker (💭) next to the effort level, which the extension has never shown. The Codex privacy note said
+`auth.json` is never accessed; monitoring indeed never opens it, but the optional Codex auto-start reads
+it to confirm a ChatGPT-plan login before firing, and the note now says so. The codex_rescue guide sent
+readers to a `Codex runs (N)` menu entry that the Activity entry replaced. `LICENSE` now carries the
+maintainer's copyright line above the original author's, which is kept as it was, and the credits link
+to the original Claude Context Bar repository instead of a profile that no longer exists.
 
 ## [1.17.1] - 2026-09-30
 
