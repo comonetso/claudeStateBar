@@ -60,13 +60,15 @@ function useHub(): number {
 }
 
 /** 링크 받기 → 링크 열기 → 승인 코드 넣기. 알약 창과 설정 칸이 같이 쓴다 */
-function LoginPanel({ host, target, label, theme, t, intro, onClose }: {
+function LoginPanel({ host, target, label, theme, t, intro, usage = false, onClose }: {
   host: HostLogin;
   target: string;
   label: string;
   theme: PluginTheme;
   t: SettingsText;
   intro?: string;
+  /** 사용량 보기용 로그인(10-22 — shared/claudeLogin loginTarget.usage) — 제목·설명·끝 안내가 다르다 */
+  usage?: boolean;
   onClose: () => void;
 }) {
   useHub();
@@ -112,11 +114,11 @@ function LoginPanel({ host, target, label, theme, t, intro, onClose }: {
   };
   return (
     <View style={{ gap: 8, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: c.border, minWidth: 260, maxWidth: 380 }}>
-      <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>{t.claudeLoginTitle(label)}</Text>
-      {intro ? <Text style={muted}>{intro}</Text> : null}
+      <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>{usage ? t.claudeLoginUsageTitle(label) : t.claudeLoginTitle(label)}</Text>
+      {intro || usage ? <Text style={muted}>{intro ?? t.claudeLoginUsageIntro}</Text> : null}
       {done ? (
         <>
-          <Text style={{ color: c.statusSuccess, fontSize: 12 }}>{t.claudeLoginDone}</Text>
+          <Text style={{ color: c.statusSuccess, fontSize: 12 }}>{usage ? t.claudeLoginUsageDone : t.claudeLoginDone}</Text>
           <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>{button(t.claudeLoginClose, onClose)}</View>
         </>
       ) : link ? (
@@ -292,20 +294,25 @@ export function ClaudeLoginSection({ theme, t }: { theme: PluginTheme; t: Settin
               const key = `${h.serverId}\n${target.id}`;
               const name = `${hostName(h.serverId)} · ${target.label}`;
               const stopped = Object.values(h.snapshot?.needs ?? {}).filter((x) => x === target.id).length;
+              // 사용량 보기용 줄(10-22) — 승인한 계정이 공급자 이름과 맞는지 보이게 로그인한 메일을 이름 아래에 둔다
+              const usage = target.usage === true;
               return (
                 <View key={key} style={{ gap: 6 }}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <Text style={{ flex: 1, color: c.foreground, fontSize: 14 }}>
-                      {name}
-                      {stopped ? <Text style={{ color: c.statusDanger, fontSize: 13 }}>{`  ${t.claudeLoginNeeds(stopped)}`}</Text> : null}
-                    </Text>
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text style={{ color: c.foreground, fontSize: 14 }}>
+                        {name}
+                        {stopped ? <Text style={{ color: c.statusDanger, fontSize: 13 }}>{`  ${t.claudeLoginNeeds(stopped)}`}</Text> : null}
+                      </Text>
+                      {usage ? <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{t.claudeLoginUsageTag(target.loggedIn === true, target.account ?? null)}</Text> : null}
+                    </View>
                     {active === key ? null : (
                       <Pressable onPress={() => setActive(key)} style={buttonStyle(theme, "filled", true)}>
-                        <Text style={{ color: c.foreground, fontSize: 12 }}>{t.claudeLoginButton}</Text>
+                        <Text style={{ color: c.foreground, fontSize: 12 }}>{usage ? t.claudeLoginUsageButton(target.loggedIn === true) : t.claudeLoginButton}</Text>
                       </Pressable>
                     )}
                   </View>
-                  {active === key ? <LoginPanel host={h} target={target.id} label={name} theme={theme} t={t} onClose={() => setActive(null)} /> : null}
+                  {active === key ? <LoginPanel host={h} target={target.id} label={name} theme={theme} t={t} usage={usage} onClose={() => setActive(null)} /> : null}
                 </View>
               );
             }),

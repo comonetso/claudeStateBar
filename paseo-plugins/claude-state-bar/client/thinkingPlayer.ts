@@ -29,6 +29,8 @@ export type ThinkingBoxState = {
   key: string;
   hostId: string;
   agentId: string;
+  /** 턴·꺼낸 말의 재생용 상자가 속한 실제 대화 — 같은 대화의 따라 읽기만 끄는 데 쓴다(10-21) */
+  readAgentId?: string;
   stamps: Set<number>;
   /** 상자가 처음 생길 때의 생각 시각과 만든 순서 — 대화마다 맨 마지막 상자(자동 번역 대상, 10-17)를 가린다 */
   firstStamp: number;
@@ -107,6 +109,9 @@ type Run = {
   from?: { index: number; text: string; at: number };
   /** 보류(10-20 따라 읽기) — 새 소리를 만들지 않는다. 이미 만든(만드는 중인) 문단까지만 읽고 기다린다 */
   held?: boolean;
+  /** 보류 중에 바깥 멈춤으로 일시정지됐다(10-21 — 폰 앱은 소리를 하나만 틀어 다른 대화의 따라 읽기가 마무리 문단을 끊는다).
+   *  돌아오면(hold false) 이어 읽는다 — 사람이 누른 일시정지·이어서 읽기는 이 표시를 지운다(그 일시정지는 그대로 둔다) */
+  heldInterrupt?: boolean;
 };
 
 /** 빈 줄만 문단 경계로 삼는다. 스트리밍 마지막 비어 있지 않은 문단은 보류한다. */
@@ -215,6 +220,7 @@ export class ThinkingController {
   private listeners = new Set<() => void>();
   private boxListeners = new Map<string, Set<() => void>>();
   private playbackListeners = new Set<() => void>();
+  private startListeners = new Set<(box: ThinkingBoxState) => void>();
   private lastPlayback = "";
   private changedAutoBoxes = new Set<ThinkingBoxState>();
   private mounted = new Map<string, number>();
@@ -254,6 +260,21 @@ export class ThinkingController {
     private now = Date.now,
     private lang: () => Lang = () => "ko",
   ) {}
+
+  /** 따라 읽기는 대화마다 독립된 소리 장치·Run을 갖되 언어·속도 설정은 시작할 때 물려받는다(10-21). */
+  fork(audio: ThinkingAudio): ThinkingController {
+    const next = new ThinkingController(audio, this.saveRate, this.now, this.lang);
+    next.rate = this.rate;
+    next.speedStep = this.speedStep;
+    next.speech = new Map(this.speech);
+    next.features = { ...this.features };
+    return next;
+  }
+
+  subscribeStart(listener: (box: ThinkingBoxState) => void): () => void {
+    this.startListeners.add(listener);
+    return () => { this.startListeners.delete(listener); };
+  }
 
   subscribe(listener: () => void, key?: string): () => void {
     const listeners = key === undefined ? this.listeners : this.boxListeners.get(key) ?? new Set<() => void>();
@@ -647,6 +668,13 @@ export class ThinkingController {
     return { active: !!run, index: run?.index ?? -1, paused: run?.paused ?? false, status: run?.status ?? "", strict: run?.strict ?? false };
   }
 
+  /** 복귀 후 합성이 시작되지 않을 때만 읽는 진단 — 평소 UI 갱신에는 문단을 다시 세지 않는다(10-21). */
+  diagnostic(box: ThinkingBoxState) {
+    const run = this.run?.box === box ? this.run : undefined;
+    return { ...this.state(box), paragraphs: splitParagraphs(boxText(box), boxPhase(box)).length,
+      held: !!run?.held, loaded: !!run?.loaded, pumping: !!run?.pumping };
+  }
+
   /** 지금 읽는 것 — 입력창 위 읽기 컨트롤러 하나가 무엇을 읽든(턴·말·생각 상자·꺼낸 말) 이것을 본다(10-11 리규형님 "컨트롤러를 여기로 통일") */
   current(): { box: ThinkingBoxState; paused: boolean; status: string } | null {
     const run = this.run;
@@ -655,6 +683,7 @@ export class ThinkingController {
 
   /** 읽기 시작. at 이 있으면 그 문단(가능하면 그 글자)부터 — 없으면 처음 문단부터(10-08 생각 상자 선택 읽기) */
   start(box: ThinkingBoxState, strict: boolean, at?: StartAt): void {
+    for (const listener of [...this.startListeners]) listener(box);
     if (this.run) { this.stopWhy = `새 읽기 시작(${box.key.split("/").pop()?.slice(0, 40) ?? ""})`; this.stop(); }
     box.error = "";
     box.suspended = false;
@@ -713,6 +742,8 @@ export class ThinkingController {
     const run = this.run;
     if (!run || run.box !== box || !!run.held === on) return;
     run.held = on;
+    // 보류 중 다른 재생에 끊겨 일시정지됐으면 돌아올 때 이어 읽는다(10-21 리규형님 "1번에서는 계속 따라읽기함")
+    if (!on && run.paused && run.heldInterrupt) { run.heldInterrupt = false; this.resume(); return; }
     if (!on && !run.paused) void this.pump(run);
     this.notify(box);
   }
@@ -720,6 +751,7 @@ export class ThinkingController {
   pause(): void {
     if (!this.run) return;
     this.run.paused = true;
+    this.run.heldInterrupt = false;
     this.audio.pause();
     this.notify(this.run.box);
   }
@@ -728,6 +760,7 @@ export class ThinkingController {
     const run = this.run;
     if (!run) return;
     run.paused = false;
+    run.heldInterrupt = false;
     run.box.error = "";
     if (run.loaded && this.readable(run, run.index) !== run.currentText) { this.seek(run.index); return; }
     if (run.loaded) {
@@ -930,6 +963,8 @@ export class ThinkingController {
         // 같은 소리가 남아 있어 재생을 누르면 그 자리부터 이어진다(10-16 리규형님 "컨트롤러는 살아있고 실제로는 멈춤")
         if (this.run !== run || run.generation !== generation || run.paused) return;
         run.paused = true;
+        // 따라 읽는 대화를 떠나 있는 동안(보류) 끊긴 것이면 돌아올 때 이어 읽는다 — 다른 앱이 가져간 보통의 경우는 그대로 일시정지
+        if (run.held) run.heldInterrupt = true;
         run.box.controls = true;
         this.notify(run.box);
       });

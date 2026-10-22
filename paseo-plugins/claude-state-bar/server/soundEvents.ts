@@ -6,6 +6,7 @@ import { lastTurnCheckpointReady, lastTurnCommandOnly } from "./chime/lastTurn";
 import { SoundJournal, soundDataFile } from "./soundJournal";
 import { phoneTook } from "./push";
 import { baseOf } from "./account";
+import { waitedLong } from "./diagStall";
 
 // 서버 0.10.3 의 플러그인 묶기(paseo-plugin-server-runtime-boundary)는 @getpaseo/client 를 직접 가져오면 빌드를 거절한다
 // (10-08 서버 3대 배포 실패) — 늘 통과하던 서버 SDK 문맥 타입에서 꺼낸다
@@ -169,6 +170,19 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
     if (typeof r.key !== "string" || !Number.isSafeInteger(r.cycle) || r.cycle < 0 || typeof r.high !== "boolean") throw new Error("소리 발생 기록 형식 오류");
     cycles.set(r.key, r);
   });
+  // 줄에 세운다 — 5초 넘게 기다렸으면 진단에 남긴다(10-22 요청 시간 초과 조사, server/diagStall.ts). 순서·계산은 그대로
+  const QUEUE_WAIT_LOG_MS = 5_000;
+  const queued = <R>(what: string, run: () => Promise<R>): Promise<R> => {
+    const at = Date.now();
+    return journal.serial(() => {
+      const waited = Date.now() - at;
+      if (waited > QUEUE_WAIT_LOG_MS) waitedLong(`sound queue ${what}`, waited);
+      return run();
+    });
+  };
+  // 사용량 관찰은 화면마다(PC·서버 화면이 같은 플러그인에) 같은 대화를 거의 동시에 보낸다 — 줄에서 아직 시작하지 않은 같은 대화 관찰이
+  // 있으면 그 결과를 같이 쓴다. 시작한 뒤에 온 것은 새로 줄 선다(그사이 바뀐 사용량을 놓치지 않게). 판정 계산(sample)은 그대로다(10-22)
+  const observing = new Map<string, Promise<{ ok: boolean }>>();
   const incarnation = (a: PaseoAgent) => JSON.stringify([a.id, a.createdAt, a.persistence?.sessionId ?? null]);
   const percent = (a: PaseoAgent) => {
     const used = a.lastUsage?.contextWindowUsedTokens, max = a.lastUsage?.contextWindowMaxTokens;
@@ -214,9 +228,10 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
   const checkpointTurn = async (a: PaseoAgent) => { const s = claudeSession(a); return !!s && await lastTurnCheckpointReady(s); };
   const valid = async (a: PaseoAgent, kind: SoundKind, nativeId: string, cfg: Config, cycle: number, paseo: PaseoApi) => {
     if (a.archivedAt || a.status === "closed") return false;
-    if (kind === "question") return a.pendingPermissions.some((p) => p.id === nativeId && (p.kind === "question" || p.kind === "plan"));
+    // 허락 요청은 종류와 상관없이 질문이다 — 도구 사용 허락 포함(10-21 리규형님 "똑같이 질문으로 소리", client/judge.ts 와 같은 뜻)
+    if (kind === "question") return a.pendingPermissions.some((p) => p.id === nativeId);
     if (kind === "completion" || kind === "compact") {
-      if (a.status !== "idle" || !a.lastUserMessageAt || await completionId(paseo, a) !== nativeId || a.pendingPermissions.some((p) => p.kind === "question" || p.kind === "plan")) return false;
+      if (a.status !== "idle" || !a.lastUserMessageAt || await completionId(paseo, a) !== nativeId || a.pendingPermissions.length > 0) return false;
       const s = claudeSession(a);
       if (s && await lastTurnCommandOnly(s)) return false;
       return (await checkpointTurn(a)) === (kind === "compact");
@@ -227,10 +242,18 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
   };
   return {
     observe(agentId: string, cfg: Config, paseo: PaseoApi) {
-      return journal.serial(async () => { const a = await fresh(paseo, agentId); if (!a) return { ok: false }; await sample(a, cfg); return { ok: true }; });
+      const waiting = observing.get(agentId);
+      if (waiting) return waiting;
+      const next = queued("observe", async () => {
+        if (observing.get(agentId) === next) observing.delete(agentId); // 시작했다 — 이 뒤에 온 관찰은 새로 줄 선다
+        const a = await fresh(paseo, agentId); if (!a) return { ok: false }; await sample(a, cfg); return { ok: true };
+      });
+      observing.set(agentId, next);
+      void next.finally(() => { if (observing.get(agentId) === next) observing.delete(agentId); }).catch(() => undefined);
+      return next;
     },
     prepare(input: Config & { agentId: string; kind: SoundKind; nativeId: string }, paseo: PaseoApi) {
-      return journal.serial(async (): Promise<{ event: RoutedSoundEvent | null }> => {
+      return queued("prepare", async (): Promise<{ event: RoutedSoundEvent | null }> => {
         const a = await fresh(paseo, input.agentId); if (!a) return { event: null };
         const cycle = await sample(a, input);
         if (input.kind === "completion" && (!a.lastUserMessageAt || input.nativeId !== a.lastUserMessageAt)) return { event: null };
@@ -249,7 +272,7 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
       });
     },
     drop(eventId: string) {
-      return journal.serial(async () => {
+      return queued("drop", async () => {
         const { serverId } = await hostIdentity();
         const key: unknown = JSON.parse(eventId);
         if (!Array.isArray(key) || key[0] !== "sound-v2" || key[1] !== serverId) return { ok: false };
@@ -259,7 +282,7 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
     },
     async validate(event: RoutedSoundEvent, cfg: Config, paseo: PaseoApi) {
       const started = Date.now();
-      const check = () => journal.serial(async () => {
+      const check = () => queued("validate", async () => {
         const a = await fresh(paseo, event.agentId); if (!a) return { valid: false };
         const { serverId } = await hostIdentity();
         const expected = JSON.stringify(["sound-v2", serverId, event.kind === "workflow" ? "workflow" : incarnation(a), event.kind, event.nativeId]);

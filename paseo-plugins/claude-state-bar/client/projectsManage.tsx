@@ -33,6 +33,8 @@ export type EditScope = {
   categoryOrder: string[];
   /** 새 프로젝트를 둘 기기 */
   hosts: string[];
+  /** 머리에 보일 서버(팀원 프로젝트: 그 팀원의 실제 서버 — 10-20, 새 프로젝트 칸의 기기 목록과 다르다). 없으면 hosts */
+  shownHosts?: string[];
   /** 1단계 머리 오른쪽에 붙일 것(팀원 프로젝트: 서버 반영 상태·단추) */
   extra?: ReactNode;
   /** 1단계 머리 아래에 붙일 것(서버 작업 진행) */
@@ -42,6 +44,10 @@ export type EditScope = {
    * category 는 추가할 때 카테고리 선택지 맨 앞에 넣는다(리규형님 "홈도 선택할 수 있게")
    */
   pinned?: { name: string; host: string; path: string; category?: string }[];
+  /** 프로젝트 줄 이름 옆 짧은 글(팀원 프로젝트: 지금 준 권한 — 10-20). 리규형님 목록은 없다 */
+  rowNote?: (e: ProjectEntry) => string;
+  /** 있으면 줄에 "권한" 단추가 생기고, 누르면 줄 아래에 이것을 펼친다(팀원 프로젝트 권한 칸 — 10-20). close = 접기 */
+  rowPanel?: (e: ProjectEntry, close: () => void) => ReactNode;
 };
 
 type EditorProps = {
@@ -141,6 +147,8 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [catRenaming, setCatRenaming] = useState<{ key: string; draft: string } | null>(null);
   const [confirmCatDelete, setConfirmCatDelete] = useState<string | null>(null);
+  // 줄 아래 권한 칸(팀원 프로젝트, 10-20) — 한 번에 하나
+  const [panelKey, setPanelKey] = useState<string | null>(null);
   // 디바이스·경로는 평소 접어 두고 이름을 누르면 펼친다(10-12 리규형님: "평소에는 안 보는 정보" — 마우스 오버 말고 클릭).
   // 이름 바꾸기는 펼친 칸 안 단추로 옮겼다
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -160,6 +168,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
     setConfirmRemove(null);
     setCatRenaming(null);
     setConfirmCatDelete(null);
+    setPanelKey(null);
   };
 
   const muted = (text: string, size = 11) => <Text style={{ fontSize: fs(size), color: c.foregroundMuted }}>{text}</Text>;
@@ -186,6 +195,8 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
     const editingName = renaming?.key === rowKey;
     const movingHere = moving?.key === rowKey;
     const open = expanded.has(rowKey);
+    const panelOpen = !!s.rowPanel && panelKey === rowKey;
+    const note = s.rowNote?.(e);
     return (
       <View key={rowKey} style={{ gap: 6, paddingVertical: 6, paddingLeft: 12, borderBottomWidth: 1, borderColor: c.border }}>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -215,6 +226,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
                   {e.name}
                   {e.enabled ? "" : "  (숨김)"}
                   {e.missing ? <Text style={{ fontSize: fs(10), color: c.foregroundMuted }}>{"  · 폴더 없음"}</Text> : null}
+                  {note ? <Text style={{ fontSize: fs(10), color: c.foregroundMuted }}>{`  · ${note}`}</Text> : null}
                 </Text>
               </Pressable>
             )}
@@ -233,6 +245,13 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
             ) : null}
           </View>
           <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
+            {s.rowPanel
+              ? button("권한", () => {
+                  const show = !panelOpen;
+                  resetRow();
+                  if (show) setPanelKey(rowKey);
+                }, { on: panelOpen, hint: "이 팀원이 이 프로젝트에서 할 수 있는 것 — 읽기만·읽기쓰기·내가 쓴 파일만, 프로젝트 밖 경로, DB 접속, 기록" })
+              : null}
             {button("옮기기", () => {
               const open = !movingHere;
               resetRow();
@@ -280,6 +299,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
             />
           </View>
         ) : null}
+        {panelOpen ? s.rowPanel!(e, () => setPanelKey(null)) : null}
       </View>
     );
   };
@@ -464,7 +484,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
               >
                 {chevron(open, fs(14))}
                 <Text style={{ fontSize: fs(14), fontWeight: "700", color: c.foreground }}>{s.title ?? s.id}</Text>
-                {muted(`서버 ${s.hosts.join(", ") || "없음"} · 프로젝트 ${s.entries.length}`)}
+                {muted(`서버 ${(s.shownHosts ?? s.hosts).join(", ") || "없음"} · 프로젝트 ${s.entries.length}`)}
               </Pressable>
               {s.extra ? <View style={{ flex: 1 }} /> : null}
               {s.extra}
@@ -487,7 +507,8 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
                       >
                         <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>{p.name}</Text>
                       </Pressable>
-                      {muted("기본 프로젝트 · 지울 수 없음")}
+                      {/* 팀원 홈은 서버마다 하나씩이라 같은 이름이 여러 줄 — 어느 서버 홈인지 보인다(10-20) */}
+                      {muted(`기본 프로젝트 · ${p.host} · 지울 수 없음`)}
                     </View>
                     {open ? muted(`${p.host} · ${p.path}`) : null}
                   </View>

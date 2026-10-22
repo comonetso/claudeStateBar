@@ -34,6 +34,7 @@ type Draft = Record<SoundKind, { file: string; gain: string }> & {
   workflowBeep: boolean;
   followDuckPhone: boolean;
   followDuckWeb: boolean;
+  hapticPhone: boolean;
   syncWorkspaceOrder: boolean;
   syncLayout: boolean;
   activitySplitPercent: string;
@@ -58,6 +59,7 @@ function toDraft(values: SoundSettings): Draft {
     workflowBeep: values.workflowBeep,
     followDuckPhone: values.followDuckPhone,
     followDuckWeb: values.followDuckWeb,
+    hapticPhone: values.hapticPhone,
     syncWorkspaceOrder: values.syncWorkspaceOrder,
     syncLayout: values.syncLayout,
     activitySplitPercent: String(values.activitySplitPercent),
@@ -83,6 +85,7 @@ function fromDraft(draft: Draft) {
     workflowBeep: draft.workflowBeep,
     followDuckPhone: draft.followDuckPhone,
     followDuckWeb: draft.followDuckWeb,
+    hapticPhone: draft.hapticPhone,
     syncWorkspaceOrder: draft.syncWorkspaceOrder,
     syncLayout: draft.syncLayout,
     activitySplitPercent: Number(draft.activitySplitPercent),
@@ -726,6 +729,18 @@ export function createSettingsScreen(onSaved: () => void, readOnly = false) {
                 value={draft.workflowBeep}
                 onValueChange={(workflowBeep) => setDraft({ ...draft, workflowBeep })}
                 accessibilityLabel={t.workflowBeepTitle}
+              />
+            </View>
+
+            <View style={[styles.card, styles.switchRow]}>
+              <View style={styles.switchText}>
+                <Text style={styles.text}>{t.hapticTitle}</Text>
+                <Text style={styles.muted}>{t.hapticHint}</Text>
+              </View>
+              <Switch disabled={readOnly}
+                value={draft.hapticPhone}
+                onValueChange={(hapticPhone) => setDraft({ ...draft, hapticPhone })}
+                accessibilityLabel={t.hapticTitle}
               />
             </View>
           </>

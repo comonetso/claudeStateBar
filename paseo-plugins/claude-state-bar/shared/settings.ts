@@ -31,6 +31,9 @@ export const settingsSchema = z.object({
   // Chrome 확장이 있어야 해서 아직 효과 없음(자리만). 처음 값: 폰 켬("끌 수 있도록"), 웹 꺼짐
   followDuckPhone: z.boolean().default(true),
   followDuckWeb: z.boolean().default(false),
+  // 폰 앱에서 알약·입력창 둘레 단추·프로젝트 고르기를 누를 때 짧은 진동(리규형님 10-21). 폰 앱이 PaseoShell.haptic 을 줄 때만
+  // 울린다(client/haptics.ts) — 처음 값 켬, 끌 수 있게 설정 화면에 스위치(Claude 판단)
+  hapticPhone: z.boolean().default(true),
   // 웹·폰이 PC 앱에서 가져올 항목(리규형님 10-07 결정 — 처음 값은 모두 켬)
   syncWorkspaceOrder: z.boolean().default(true),
   syncLayout: z.boolean().default(true),

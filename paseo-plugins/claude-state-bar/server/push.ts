@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { PluginHookContext, PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import { isCheckpointReport } from "./chime/lastTurn";
+import { flipTitle } from "../shared/headerTitles";
+import { labelNameOf } from "./headerTitles";
 import { hostIdentity } from "./layoutSync";
 import { isTeamDaemon } from "./sound";
 import type { PushDisposition, SoundPushLink } from "./soundEvents";
@@ -183,9 +185,18 @@ export async function phoneTook(agentId: string, kind: "question" | "compact", n
   return r.ackedAt !== null;
 }
 
-/** 질문 글 — AskUserQuestion 이면 첫 질문, 여럿이면 개수를 붙인다 */
+/** 질문 글 — AskUserQuestion 이면 첫 질문, 여럿이면 개수를 붙인다.
+ *  도구 사용 허락(10-21 리규형님 "Paseo 가 띄우는 허락 창도 질문처럼 알려 달라")은 도구 이름과 사람용 설명만 쓴다 — 명령 원문은
+ *  구글 FCM 을 거쳐 폰에 남으므로 비밀 값이 섞일 수 있어 싣지 않는다 */
 export function questionText(request: PluginLifecycleEvents["agent.permission_requested"]["request"]): string {
   if (request.kind === "plan") return "계획 승인을 기다립니다";
+  if (request.kind !== "question") {
+    const name = (request as { name?: unknown }).name;
+    const about = (request.input as { description?: unknown } | undefined)?.description;
+    const tool = typeof name === "string" && name ? name : request.title || "도구";
+    const text = `도구 사용 허락을 기다립니다 — ${tool}${typeof about === "string" && about.trim() ? `: ${about.trim()}` : ""}`;
+    return text.length > 200 ? `${text.slice(0, 199)}…` : text;
+  }
   const questions = (request.input as { questions?: { question?: unknown }[] } | undefined)?.questions;
   const first = Array.isArray(questions) && typeof questions[0]?.question === "string" ? questions[0].question : "";
   const text = first ? first + (questions!.length > 1 ? ` (질문 ${questions!.length}개)` : "") : request.title || request.description || "질문에 답해 주세요";
@@ -247,6 +258,8 @@ export function createPush(options: { disposition?: PushDisposition } = {}) {
         // 이름은 보기 좋으라고 붙인다 — 못 읽으면 폴더 이름
       }
     }
+    // 작업 공간 제목 "카테고리 - 이름"을 "이름 - 카테고리"로 — 폰 알림 제목 끝이 잘려도 프로젝트 이름이 보이게(10-21 리규형님)
+    if (name) name = flipTitle(name, await labelNameOf(name).catch(() => null));
     const workspaceId = agent.workspaceId ?? "";
     return { serverId: id, workspaceId, agentId: agent.id, name: name || basename(agent.cwd) || agent.cwd, path: workspaceId ? `/h/${id}/workspace/${workspaceId}` : `/h/${id}` };
   };
@@ -337,8 +350,9 @@ export function createPush(options: { disposition?: PushDisposition } = {}) {
   const snapshot = () => ({ rev, agentIds: [...new Set([...open.values()].filter((m) => m.kind === "compact").map((m) => m.agentId))] });
 
   return {
+    // 허락 요청은 종류와 상관없이 질문으로 알린다 — 질문지·계획 승인뿐 아니라 "매번 묻기" 모드의 도구 사용 허락도
+    // (10-21 리규형님: 허락 창이 떴는데 알림이 없어 10~20분 몰랐다 · "똑같이 질문으로")
     onPermissionRequested({ agent, request }: PluginLifecycleEvents["agent.permission_requested"], { paseo }: { paseo: PaseoApi }) {
-      if (request.kind !== "question" && request.kind !== "plan") return;
       return raise("question", questionEventId(agent.id, request.id), agent, paseo, "질문", questionText(request));
     },
     // 답했을 때(버튼·말 모두) · 취소·새 말로 정리됐을 때 데몬이 낸다(agent-manager resolvePendingPermissionsForAgent)

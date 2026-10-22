@@ -7,7 +7,7 @@ import { Pressable, Text, View, type LayoutChangeEvent } from "react-native";
 import { onPageVisible, pageHidden } from "./pageVisible";
 import { soundProvider } from "./sounds";
 import { readAppFontSizes, readLocal, setNoTranslate, writeLocal } from "./web";
-import { isTeamUsageSource } from "../shared/account";
+import { isTeamUsageSource, TEAM_USAGE_SOURCE_ID } from "../shared/account";
 import { usageFromReports } from "../shared/usageIdentity";
 import { reportUsageDedupe, type UsageDedupeView } from "./health";
 
@@ -161,14 +161,24 @@ export function useUsage(): UsageSnap {
   return snap;
 }
 
-/** 카드 순서(리규형님 10-15 "Claude → Claude (como) → Claude (hrg) → Codex"): 개인 Claude → 팀 Claude(이름순) → 그 밖은 받은 순서.
- *  데몬은 원천을 등록한 순서(개인 Claude → Codex → 팀)로 주므로 여기서 맞춘다 — 사용량 칸·접힌 줄 요약·위쪽 단추가 모두 이 함수를 거친다 */
+/** 카드 순서(리규형님 10-15 "Claude → Claude (como) → Claude (hrg) → Codex"): 개인 Claude → 팀 Claude → 그 밖은 받은 순서.
+ *  사용량 칸·접힌 줄 요약·위쪽 단추가 모두 이 함수를 거친다.
+ *  팀 Claude 끼리는 10-22 리규형님 "como → hrg → hhs → hyj" 로 적어 둔 순서(TEAM_CARD_ORDER — 공급자 이름, como 는 claude-yeogiaen).
+ *  데몬은 원천을 원천 이름 가나다순으로 준다(10-22 화면 실측 hhs → hrg → hyj → como — "…-claude-yeogiaen" 이 맨 뒤)라 받은 순서로는 안 맞는다.
+ *  목록에 없는 공급자(새 좌석·팀원 데몬)는 그 뒤에 카드 이름순 */
+const TEAM_CARD_ORDER = ["claude-yeogiaen", "claude-hrg", "claude-hhs", "claude-hyj"];
 const usageRank = (p: Provider): number => (isTeamUsageSource(p.providerId) ? 1 : /^claude/i.test(p.providerId) ? 0 : 2);
+const teamCardRank = (p: Provider): number => {
+  const at = TEAM_CARD_ORDER.indexOf(p.providerId.slice(TEAM_USAGE_SOURCE_ID.length + 1));
+  return at < 0 ? TEAM_CARD_ORDER.length : at;
+};
 /** 보일 계정 — 사용량을 읽을 수 있고 창이 하나라도 있는 것 */
 export const availableProviders = (usage: Usage | null): Provider[] => (usage?.providers ?? [])
   .filter((p) => p.status === "available" && p.windows.length)
   .map((p, index) => ({ p, index, rank: usageRank(p) }))
-  .sort((a, b) => a.rank - b.rank || (a.rank === 1 ? a.p.displayName.localeCompare(b.p.displayName) : 0) || a.index - b.index)
+  .sort((a, b) => a.rank - b.rank
+    || (a.rank === 1 ? teamCardRank(a.p) - teamCardRank(b.p) || a.p.displayName.localeCompare(b.p.displayName) : 0)
+    || a.index - b.index)
   .map(({ p }) => p);
 /** 보일 창 — Paseo 가 요약에 쓰라고 표시한 것(summary)만, 없으면 전부 */
 export const shownWindows = (p: Provider): Window[] => (p.windows.some((w) => w.summary) ? p.windows.filter((w) => w.summary) : p.windows);
@@ -182,6 +192,17 @@ export const clampPct = (n: number | null | undefined): number | null => (typeof
 export function summaryLabel(providers: Provider[]): string {
   const now = Date.now();
   return providers.map((p) => `${shortName(p)} ${shownWindows(p).map((w) => windowPctText(w, now)).join("·")}`).join(" │ ");
+}
+
+/** 접어 두는 창 — Fable 주간 막대(10-22 리규형님: "Fable 은 거의 안 써서 복잡해지기만 한다"). 카드를 눌러 펼치고 다시 눌러 접는다 —
+ *  처음엔 웹에서 마우스를 올리면 펼쳤으나 같은 날 "마우스 오버로 나오니 나쁘다, 클릭하면 보이게"로 누를 때만(웹·PC 앱·폰 같음).
+ *  이름에 Fable 이 든 창만 — 다른 모델 전용 주간 창이 생기면 그대로 보인다 */
+export const foldedWindow = (w: Window): boolean => /\bfable\b/i.test(`${w.label} ${w.shortLabel ?? ""}`);
+/** 카드에 그릴 창 — 펼친 카드는 전부, 아니면 접어 두는 창을 뺀다. 다 빠지면 전부 둔다(빈 카드를 만들지 않는다) */
+export function cardWindows(windows: Window[], open: boolean): Window[] {
+  if (open) return windows;
+  const kept = windows.filter((w) => !foldedWindow(w));
+  return kept.length ? kept : windows;
 }
 
 /** 창 이름 — Paseo 가 주는 짧은 이름 그대로, 단 모델별 주간 창 "wk Fable" 은 "wkF" 로(리규형님 10-15: 이것만 길어 칸이
@@ -233,7 +254,8 @@ function leftText(iso: string | null | undefined, now: number): string {
 }
 
 // 한 줄 = 이름 · 막대 · % · 남은 시간 · 끝나는 시각(리규형님 10-07 결정: 막대를 짧게 하고 남은 시간과 끝나는 시각을 함께,
-// Paseo 가 주는 창 전부 — Fable 같은 모델별 주간 창 포함). 줄마다 막대가 같은 자리에서 시작하도록 칸을 세로 열로 나눈다.
+// Paseo 가 주는 창 전부 — 단 10-22 부터 Fable 주간 창은 접어 두고 카드를 누르면 펼친다(foldedWindow)).
+// 줄마다 막대가 같은 자리에서 시작하도록 칸을 세로 열로 나눈다.
 // 상단 사용량 단추의 작은 창도 이 표를 그대로 쓴다(단추 글자는 요약 창만 — usageButton).
 // action 은 첫 계정 이름 줄 오른쪽 끝에 붙는다(왼쪽 아래 칸의 접기 단추)
 // 다음 갱신까지 남은 시간(10-17 리규형님 "몇 분 몇 초 후 갱신" + 갱신 아이콘) — 데몬은 받아 온 사용량을 5분 기억한다(Paseo
@@ -262,7 +284,7 @@ function RefreshLine({ theme, ui, fetchedAt, busy, onPress }: Pick<PluginHostPro
   );
 }
 
-function UsageRows({ theme, usage, error, ui, action, top }: Pick<PluginHostProps, "theme"> & { usage: Usage | null; error: string | null; ui: number; action?: ReactNode; top?: ReactNode }) {
+export function UsageRows({ theme, usage, error, ui, action, top }: Pick<PluginHostProps, "theme"> & { usage: Usage | null; error: string | null; ui: number; action?: ReactNode; top?: ReactNode }) {
   const c = theme.colors;
   const toneColor = (w: Window) => (w.tone === "danger" ? c.statusDanger : w.tone === "warning" ? c.statusWarning : c.accent);
   const now = Date.now();
@@ -273,6 +295,13 @@ function UsageRows({ theme, usage, error, ui, action, top }: Pick<PluginHostProp
   // 최소 폭으로 준다. 재는 것은 칸 안쪽 글자 묶음이라 글자가 짧아지면 폭도 다시 줄어든다
   const widths = useRef(new Map<string, number>());
   const [, remeasured] = useState(0);
+  // Fable 창 펼치기(10-22 — foldedWindow): 카드를 누르면(폰의 탭·웹의 클릭) 다시 누를 때까지 펼쳐 둔다. 마우스를 올리는 것만으로는 안 펼친다
+  const [pinned, setPinned] = useState<ReadonlySet<string>>(() => new Set());
+  const togglePin = (id: string) => setPinned((s) => {
+    const next = new Set(s);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  });
   const widthOf = (column: string) => Math.max(0, ...providers.map((p) => widths.current.get(`${column}|${p.providerId}`) ?? 0));
   const onWidth = (column: string, providerId: string) => (e: LayoutChangeEvent) => {
     const key = `${column}|${providerId}`;
@@ -295,12 +324,21 @@ function UsageRows({ theme, usage, error, ui, action, top }: Pick<PluginHostProp
     <View ref={setNoTranslate} style={{ paddingHorizontal: 12, paddingVertical: 8, gap: 8 }} accessibilityLabel="Claude·Codex 사용량">
       {top}
       {providers.map((p, index) => {
-        const rows = p.windows;
+        const foldable = cardWindows(p.windows, false).length < p.windows.length;
+        const open = pinned.has(p.providerId);
+        const shown = new Set(cardWindows(p.windows, open));
         const cell = { height: rowH, justifyContent: "center" } as const;
+        // 접힌 줄도 높이 0 으로 그려 둔다 — 글자 칸 폭을 잴 때 늘 들어가서, 한 카드를 펼쳐도 모든 카드의 막대 시작·끝 자리가 그대로다
+        // (10-22 리규형님 "Fable 펼칠 때 막대 움찔" — 칸 높이가 느는 것은 그대로 둔다). 보이지 않고 눌리지 않으며 읽기 도구에도 숨긴다
+        const hiddenCell = { height: 0, overflow: "hidden", opacity: 0 } as const;
         // align = 글자 칸이 붙는 쪽(모든 카드가 같은 폭) · "bar" = 막대 칸(남는 폭을 다 쓴다, 폭을 맞추지 않는다)
         const column = (key: string, render: (w: Window) => ReactNode, align: "start" | "end" | "bar") => {
-          const cells = rows.map((w) => (
+          const cells = p.windows.map((w) => shown.has(w) ? (
             <View key={w.id} style={cell}>
+              {render(w)}
+            </View>
+          ) : (
+            <View key={w.id} style={hiddenCell} pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
               {render(w)}
             </View>
           ));
@@ -312,7 +350,14 @@ function UsageRows({ theme, usage, error, ui, action, top }: Pick<PluginHostProp
           );
         };
         return (
-          <View key={p.providerId} style={{ gap: 3 }}>
+          <Pressable
+            key={p.providerId}
+            style={{ gap: 3 }}
+            disabled={!foldable}
+            onPress={() => togglePin(p.providerId)}
+            accessibilityRole={foldable ? "button" : undefined}
+            accessibilityState={foldable ? { expanded: open } : undefined}
+          >
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <Text style={{ flex: 1, color: c.foregroundMuted, fontSize: ui, fontWeight: "600" }} numberOfLines={1}>
                 {p.displayName}
@@ -365,7 +410,7 @@ function UsageRows({ theme, usage, error, ui, action, top }: Pick<PluginHostProp
                 "end",
               )}
             </View>
-          </View>
+          </Pressable>
         );
       })}
     </View>

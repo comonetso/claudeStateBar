@@ -13,6 +13,8 @@ export const projectEntrySchema = z.object({
   path: z.string(),
   /** PC 경로인데 폴더가 없다 */
   missing: z.boolean().optional(),
+  /** 이 항목을 연 데몬 — 직원 화면이 직원 데몬 여럿의 목록을 합칠 때만 붙인다(10-20 client/staffProjects). 서버는 보내지 않는다 */
+  serverId: z.string().optional(),
 });
 export type ProjectEntry = z.infer<typeof projectEntrySchema>;
 

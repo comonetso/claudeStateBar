@@ -177,6 +177,8 @@ const ko = {
   followDuckHint: "소리 읽기(따라 읽기·생각 상자·말·선택 읽기)가 말하는 동안 유튜브 같은 다른 앱 소리를 낮춰 읽는 소리가 앞에 들리게 합니다",
   followDuckPhone: "폰 앱",
   followDuckWeb: "PC — 지원 안 함",
+  hapticTitle: "누를 때 진동(폰 앱)",
+  hapticHint: "알약·입력창 둘레 단추(받아쓰기 취소·넣기·넣고 보내기 등)·프로젝트 고르기를 누르면 짧게 진동합니다. 이 기능을 지원하는 폰 앱 판이어야 동작하고, 폰의 \"터치할 때 진동\" 설정을 따릅니다",
   followDuckHelp: "폰 앱: 안드로이드가 내비게이션 안내처럼 다른 앱 소리를 원래의 20% 로 줄였다가, 읽기가 멈추거나 읽을 글을 기다리면 되돌립니다. 이 기능을 지원하는 폰 앱 판이어야 동작합니다.\n\nPC: 지원하지 않습니다. 읽기 소리와 유튜브가 같은 브라우저 안에 있으면 Windows 가 둘을 한 앱으로 보아 유튜브만 따로 줄일 수 없습니다.",
 
   // ── VS Code 확장 설정 가져오기(10-08)
@@ -346,6 +348,11 @@ const ko = {
   claudeLoginDone: "로그인됐습니다. 멈춘 대화는 다음 말을 보내면 이어집니다.",
   claudeLoginPill: "Claude 로그인 풀림 — 눌러서 다시 로그인",
   claudeLoginPillLabel: "로그인",
+  claudeLoginUsageTag: (loggedIn: boolean, account: string | null) => `사용량 보기용 · ${!loggedIn ? "로그인 안 됨" : account ?? "로그인됨"}`,
+  claudeLoginUsageButton: (loggedIn: boolean): string => (loggedIn ? "다시 로그인" : "로그인"),
+  claudeLoginUsageTitle: (label: string) => `사용량 보기용 로그인 — ${label}`,
+  claudeLoginUsageIntro: "대화는 지금처럼 1년 열쇠로 돌고, 이 로그인은 PC 가 꺼졌을 때 사용량 카드를 보여 주는 데만 씁니다. 이 공급자와 같은 계정으로 승인하세요.",
+  claudeLoginUsageDone: "로그인됐습니다. 사용량 카드는 몇 분 안에 나오고, 사용량 칸의 갱신 아이콘을 누르면 바로 나옵니다.",
   // 단축키 칸(10-16)
   shortcutSection: "단축키",
   shortcutIntro: "플러그인 단축키 모음입니다. [바꾸기]를 누르고 쓸 키를 누르면 기록되고(Esc 는 취소), 아래 [저장]을 눌러야 적용됩니다. PC 앱·웹·폰 화면이 같은 키를 씁니다.",
@@ -529,6 +536,8 @@ const en: SettingsText = {
   followDuckHint: "While reading aloud (follow, thinking box, message or selection) speaks, other apps such as YouTube are turned down so the reading stays in front",
   followDuckPhone: "Phone app",
   followDuckWeb: "PC — not supported",
+  hapticTitle: "Vibrate on press (phone app)",
+  hapticHint: "A short vibration when you press a pill, a button around the message box (cancel, insert or insert and send dictation, and so on) or pick a project. Needs a phone app version that supports it and follows the phone's touch vibration setting",
   followDuckHelp: "Phone app: Android lowers other apps to 20% of their volume, as it does for navigation prompts, and restores them when reading pauses or waits for more text. Needs a phone app version that supports it.\n\nPC: not supported. When the reading and YouTube play in the same browser, Windows treats them as one app, so YouTube cannot be lowered alone.",
 
   importTitle: "Import VS Code extension settings",
@@ -693,6 +702,11 @@ const en: SettingsText = {
   claudeLoginDone: "Logged in. A stopped chat continues when you send the next message.",
   claudeLoginPill: "Claude logged out — press to log in again",
   claudeLoginPillLabel: "Log in",
+  claudeLoginUsageTag: (loggedIn: boolean, account: string | null) => `For usage · ${!loggedIn ? "not logged in" : account ?? "logged in"}`,
+  claudeLoginUsageButton: (loggedIn: boolean) => (loggedIn ? "Log in again" : "Log in"),
+  claudeLoginUsageTitle: (label: string) => `Login for usage — ${label}`,
+  claudeLoginUsageIntro: "Chats keep running on the one-year token. This login is used only to show the usage card while the PC is off. Approve it with the same account as this provider.",
+  claudeLoginUsageDone: "Logged in. The usage card appears within a few minutes, or right away when you press the refresh icon in the usage footer.",
   shortcutSection: "Shortcuts",
   shortcutIntro: "All plugin shortcuts. Press [Change] and then the key you want (Esc cancels); press [Save] below to apply. The PC app, web and phone screens use the same keys.",
   shortcutChange: "Change",

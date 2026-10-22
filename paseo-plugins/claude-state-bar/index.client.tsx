@@ -15,6 +15,7 @@ import { createJudge } from "./client/judge";
 import { createThinkingFoldPills } from "./client/thinkingFoldPill";
 import { createPhonePills } from "./client/phonePills";
 import { startHeaderTitles } from "./client/headerTitles";
+import { startOsNotifyTitle } from "./client/osNotifyTitle";
 import { startProjectsMode } from "./client/projectsMode";
 import { PROJECTS_SCREEN_ID, ProjectsScreen } from "./client/projectsScreen";
 import { ProjectsSidebarItem } from "./client/projectsSidebar";
@@ -32,6 +33,8 @@ import { registerThinking } from "./client/thinking";
 import { registerAskAnswer } from "./client/askAnswer";
 import { registerPeerMailCard } from "./client/peerMailCard";
 import { hideSubagentsPill } from "./client/hideSubagentsPill";
+import { fixAgentControlsValues } from "./client/agentControlsValues";
+import { startHaptics } from "./client/haptics";
 import { createUsageButtons } from "./client/usageButton";
 import { UsageFooter } from "./client/usageFooter";
 import { currentSettings, emitSharedSignal, registerProvider, soundProvider } from "./client/sounds";
@@ -46,7 +49,7 @@ import { soundOriginObserve, soundOriginPrepare } from "./shared/soundEvents";
 import { clientLog } from "./shared/log";
 import { DEFAULT_SETTINGS, settingsSchema, soundSettings, type SoundSettings } from "./shared/settings";
 import { hostInfo, soundDataV2, type SoundKind } from "./shared/sound";
-import { setTeamMember } from "./client/teamMode";
+import { markTeamHost } from "./client/teamMode";
 import { startAlertSounds, startPushOpen, startPushToken } from "./client/pushShell";
 import { onPageVisible } from "./client/pageVisible";
 import { startCompactReady } from "./client/compactReady";
@@ -97,6 +100,10 @@ export default function contribute(client: PluginClientContext) {
   cleanups.push(registerPeerMailCard(client, log));
   // Paseo "하위 에이전트 N개" 알약 숨기기(10-09 리규형님 — 워크플로우·백그라운드는 우리 작업 현황 패널에서 본다)
   cleanups.push(hideSubagentsPill());
+  // 폰 "모델 선택" 창의 모델·사고·모드 값이 "Opus …" 로 잘리던 Paseo 규칙을 그 창 안에서만 푼다(10-21 리규형님)
+  cleanups.push(fixAgentControlsValues());
+  // 폰 앱에서 알약·입력창 둘레 단추·프로젝트 고르기를 누를 때 짧은 진동(10-21 리규형님 — 앱이 PaseoShell.haptic 을 줄 때만)
+  cleanups.push(startHaptics(log));
   // 화면 떨림 감지 기록(10-19 리규형님 — Mesa 대화에서만 진행 글이 가끔 떨린다) — 떨리는 순간의 화면 변화만 데몬 기록에 남긴다
   cleanups.push(startJitterWatch(log));
   // 폰 푸시(10-15) — 폰 앱이 준 토큰을 호스트마다 자기 데몬에 맡긴다(데몬마다 자기 대화의 질문지·압축 준비를 보낸다)
@@ -146,8 +153,9 @@ export default function contribute(client: PluginClientContext) {
       const info = await client.rpc(hostInfo, {});
       if (disposed) return;
       if (info.serverId) cleanups.push(registerSoundOrigin(info.serverId, client));
-      // 직원용 Paseo(10-11)는 그 화면의 유일한 호스트라 PC 처럼 설정·사용량·프로젝트 목록을 붙인다(관리 탭은 projectsScreen 이 숨김)
-      setTeamMember(info.team === true, info.team === true && info.serverId && info.home ? { serverId: info.serverId, path: info.home } : null);
+      // 직원용 Paseo(10-11)는 PC 처럼 설정·사용량·프로젝트 목록을 붙인다(관리 탭은 projectsScreen 이 숨김). 직원 데몬은 여럿일 수 있다(10-20
+      // 대표님 IVR·콜어드민) — 데몬마다 그 플러그인 연결과 함께 기록해, 목록 칸을 맡은 쪽이 다른 직원 데몬 목록도 받게 한다(client/projectsData)
+      cleanups.push(markTeamHost(info.serverId, info.team === true, info.home ?? null, client));
       const primary = info.team === true || (info.canPlay && info.platform === "win32");
       if (!info.serverId) {
         log(`host ${info.platform}: sounds come from the providing host`);
@@ -265,6 +273,8 @@ export default function contribute(client: PluginClientContext) {
 
   // 위쪽 제목 "카테고리 - 이름"(10-08) — 기기마다 자기 기기 작업 공간 제목·프로젝트 이름을 이름표에 맞춘다
   cleanups.push(startHeaderTitles(client, log));
+  // PC 화면 알림("Agent finished" 등) 제목 끝에 프로젝트 이름(10-21) — 페이지에 하나만 감싼다
+  cleanups.push(startOsNotifyTitle(log));
 
   // 대화마다 입력창 위 "컨텍스트 N%" 알약
   const pills = createContextPills(client, log);

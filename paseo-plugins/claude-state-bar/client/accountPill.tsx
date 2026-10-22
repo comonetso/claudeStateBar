@@ -43,9 +43,16 @@ const subscribe = (fn: () => void) => {
 const notify = () => {
   for (const fn of listeners) fn();
 };
-const agentOf = (props: { context: "workspace" | "agent"; agentId?: string }) => (props.context === "agent" ? (props.agentId ?? "") : "");
+export const agentOf = (props: { context: "workspace" | "agent"; agentId?: string }) => (props.context === "agent" ? (props.agentId ?? "") : "");
 function useInfo(agentId: string) {
   return useSyncExternalStore(subscribe, () => infos.get(agentId), () => infos.get(agentId));
+}
+
+/** 이 대화가 지금 도는 공급자 이름(넓은 화면 알약 글자와 같다) — 공급자 알약이 붙지 않은 대화는 null.
+ *  폰은 알약이 아이콘만이라 작업 현황 알약의 개수 글씨 뒤에 붙인다(phonePills.tsx · 10-21 리규형님) */
+export function useProviderName(agentId: string): string | null {
+  const info = useInfo(agentId);
+  return (info && info.names[info.current]) || null;
 }
 
 function AccountIcon(props: PluginButtonIconProps) {

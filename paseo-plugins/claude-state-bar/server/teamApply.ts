@@ -3,9 +3,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ProjectEntry } from "../shared/projects";
-import type { TeamJobAction, TeamMember } from "../shared/team";
-import { defaultAccess, type AfterResult } from "../shared/teamAccess";
+import type { TeamJobAction, TeamMember, TeamProject } from "../shared/team";
+import { combineAccess, fileModeLabel } from "../shared/teamAccess";
 import { SAFE_HOST, sshExe } from "./projectLabels";
 import { memberSnapshot, recordJob, removeMember } from "./team";
 
@@ -94,7 +93,7 @@ export function linkName(server: string, id: string): string {
 }
 
 /** 메인이 정한 순서 — 끌어 놓은 카테고리 순서, 그다음 처음 나오는 순서, 카테고리 없음은 끝(화면 번호와 같은 계산) */
-function ordered(m: TeamMember): ProjectEntry[] {
+function ordered(m: TeamMember): TeamProject[] {
   const present: string[] = [];
   for (const p of m.projects) if (p.category && !present.includes(p.category)) present.push(p.category);
   const rank = (c: string) => {
@@ -106,34 +105,13 @@ function ordered(m: TeamMember): ProjectEntry[] {
 }
 
 /**
- * 서버 한 대에 보낼 spec(10-11 저녁 리규형님 "계정 만들 때 설정 먼저") — 홈은 쓰기 · 그 서버의 팀원 프로젝트는 읽기만이고
- * 권한의 "풀권한 폴더"만 쓰기·"계정파일만 폴더"는 서버 도구의 add(프로젝트 자체를 적으면 프로젝트 전체 쓰기) · 고른 기록은 읽기만 · 적은 포트만 열기 ·
- * 비밀 파일 가리기 · 그 서버에서 고른 스킬·명령어. outside = 팀원 프로젝트 밖이라 뺀 풀권한·계정파일만 폴더
+ * 서버 한 대에 보낼 spec — 10-20 리규형님 "팀원 관리 새로": 그 서버의 팀원 프로젝트마다 준 권한(읽기만·읽기쓰기·내가 쓴 파일만 ·
+ * 프로젝트 밖 경로 · 포트 · 기록 · 비밀 가리기)을 combineAccess 로 모은다(저장할 때 같은 함수로 검사했다) · 그 서버에서 고른 스킬·명령어.
+ * error = 모으다 겹침·한도에 걸림(저장 검사를 지나온 뒤라 옛 기록·손으로 고친 파일 정도) — 반영하지 않는다
  */
-export function specFor(m: TeamMember, server: string): { spec: Record<string, unknown>; skipped: string[]; outside: string[] } {
-  const home = `/home/${m.id}`;
+export function specFor(m: TeamMember, server: string): { spec: Record<string, unknown>; skipped: string[]; error?: string } {
   const projects = ordered(m).filter((p) => p.host === server);
-  const access = m.access?.[server] ?? defaultAccess();
-  const under = (path: string, parent: string) => path === parent || path.startsWith(`${parent}/`);
-  const mounts: { path: string; mode: "rw" | "ro" | "add" }[] = [{ path: home, mode: "rw" }];
-  const addOnly = access.addOnly ?? [];
-  for (const p of projects)
-    if (!mounts.some((x) => x.path === p.path))
-      mounts.push({ path: p.path, mode: access.writable.includes(p.path) ? "rw" : addOnly.includes(p.path) ? "add" : "ro" });
-  const outside: string[] = [];
-  // 풀권한 폴더 → 계정파일만 폴더(10-12) 차례. 둘 다 팀원 프로젝트 안이어야 한다
-  for (const [list, mode] of [[access.writable, "rw"], [addOnly, "add"]] as const) {
-    for (const w of list) {
-      // 홈 안은 이미 쓰기, 프로젝트 자체는 위에서 넣었다
-      if (under(w, home) || mounts.some((x) => x.path === w)) continue;
-      if (!projects.some((p) => under(w, p.path))) {
-        outside.push(w);
-        continue;
-      }
-      mounts.push({ path: w, mode });
-    }
-  }
-  for (const l of access.logs) if (!mounts.some((x) => x.path === l)) mounts.push({ path: l, mode: "ro" });
+  const combined = combineAccess(`/home/${m.id}`, projects);
   const skills: string[] = [];
   const commands: string[] = [];
   const skipped: string[] = [];
@@ -150,15 +128,20 @@ export function specFor(m: TeamMember, server: string): { spec: Record<string, u
   }
   const spec = {
     label: `${server} · ${m.id}`.slice(0, 100),
-    mounts,
+    mounts: combined.mounts,
     skills,
     commands,
-    net: { allowLocalPorts: [...access.ports] },
+    net: { allowLocalPorts: combined.ports },
+    // 팀원 화면 목록 = 팀원 프로젝트만(밖 경로·기록은 열기만 하고 목록에 올리지 않는다)
     projects: projects.map((p) => ({ name: p.name, category: p.category, path: p.path, enabled: p.enabled })),
     // 가릴 때만 싣는다 — 옛 서버 팀원 도구는 이 칸을 모르면 반영을 멈춘다(가리라고 했는데 안 가린 채 켜지지 않게)
-    ...(access.hideSecrets ? { hideSecrets: true } : {}),
+    ...(combined.hideSecrets ? { hideSecrets: true } : {}),
+    // 본인 로그인일 때만 싣는다(10-21) — 같은 이유로, 옛 도구가 모르는 채 회사 토큰을 넣고 켜지지 않게
+    ...(m.ownClaude ? { ownClaude: true } : {}),
+    // 부를 이름(10-21 팀원 표준판) — 정했을 때만. 비우면 서버 도구가 아이디 + "님"
+    ...(m.callName ? { callName: m.callName } : {}),
   };
-  return { spec, skipped, outside };
+  return { spec, skipped, ...(combined.error ? { error: combined.error } : {}) };
 }
 
 type Invite = { member: string; key: string; expiresAt: number; link: string };
@@ -278,13 +261,17 @@ async function resetJob(job: Job, m: TeamMember): Promise<boolean> {
 
 /** 서버 한 대에 팀원 Paseo 만들기·고치기 */
 async function applyOn(job: Job, m: TeamMember, server: string): Promise<boolean> {
-  const { spec, skipped, outside } = specFor(m, server);
+  const { spec, skipped, error } = specFor(m, server);
+  if (error) {
+    say(job, `${server}: 권한이 서로 겹쳐 반영하지 않았습니다 — ${error}`);
+    return false;
+  }
   if (skipped.length) say(job, `${server}: 하위 폴더 명령어·이름 규칙에 안 맞는 것은 넣지 못합니다 — ${skipped.join(", ")}`);
-  if (outside.length) say(job, `${server}: 풀권한·계정파일만 폴더 중 팀원 프로젝트 밖이라 뺀 것 — ${outside.join(", ")} (팀원 프로젝트를 먼저 넣으면 다음 반영 때 열립니다)`);
   say(job, `${server}: 팀원 Paseo 만들기·고치기 — 홈 /home/${m.id}, 프로젝트 ${(spec.projects as unknown[]).length}개, 스킬·명령어 ${(spec.skills as string[]).length + (spec.commands as string[]).length}개`);
-  const mounts = spec.mounts as { path: string; mode: string }[];
+  const mounts = spec.mounts as { path: string; mode: "ro" | "rw" | "add" }[];
   const ports = (spec.net as { allowLocalPorts: number[] }).allowLocalPorts;
-  say(job, `${server}: 권한 — 풀권한 ${mounts.filter((x) => x.mode === "rw").map((x) => x.path).join(", ")} · 계정파일만 ${mounts.filter((x) => x.mode === "add").map((x) => x.path).join(", ") || "없음"} · 읽기만 ${mounts.filter((x) => x.mode === "ro").map((x) => x.path).join(", ") || "없음"} · 열 포트 ${ports.join(", ") || "없음"} · 비밀 파일 ${spec.hideSecrets ? "가림" : "그대로"}`);
+  const list = (mode: "ro" | "rw" | "add") => mounts.filter((x) => x.mode === mode).map((x) => x.path).join(", ") || "없음";
+  say(job, `${server}: 권한 — ${fileModeLabel("rw")} ${list("rw")} · ${fileModeLabel("add")} ${list("add")} · ${fileModeLabel("ro")} ${list("ro")} · 포트 ${ports.join(", ") || "없음"} · 비밀 파일 ${spec.hideSecrets ? "가림" : "그대로"} · Claude ${spec.ownClaude ? "본인 로그인" : "회사 공용"}`);
   const b64 = Buffer.from(JSON.stringify(spec), "utf8").toString("base64");
   const command =
     `umask 077; [ -x ${CTL} ] || { echo '{"ok":false,"error":"이 서버에는 팀원 도구가 설치되지 않았습니다"}'; exit 3; }; ` +
@@ -297,6 +284,8 @@ async function applyOn(job: Job, m: TeamMember, server: string): Promise<boolean
   }
   const result = (j.result ?? {}) as { uid?: number; port?: number };
   say(job, `${server}: 준비됨(UID ${result.uid ?? "?"} · 포트 ${result.port ?? "?"})`);
+  const standard = standardText(resultField(j, "standard"));
+  if (standard) say(job, `${server}: ${standard}`);
   return true;
 }
 
@@ -395,38 +384,6 @@ async function gate(args: string): Promise<{ ok: boolean; text: string; code: st
   return { ok: j?.ok === true, text: failText(j, r), code: typeof j?.error === "string" ? j.error : "" };
 }
 
-/** 출력 끝 몇 줄만 — 화면에 보이고 팀원 기록 파일에 남는다 */
-function tail(out: string): string {
-  const lines = out.replace(/\r/g, "").split("\n").filter((l) => l.trim());
-  return lines.slice(-3).join("\n").slice(-300);
-}
-
-/**
- * 계정을 만든 뒤 실행할 명령(10-12 리규형님) — 그 서버에서 관리자 권한으로, 아직 성공한 적 없는 것만 적은 차례대로.
- * 실패하면 그 서버의 나머지는 멈추고 다음 반영 때 그 명령부터 다시 한다. 끝나면 명령이 팀원 홈에 만든 파일을 팀원 소유로
- * 돌린다(관리자 소유로 남으면 다음 반영의 권한 검사에 걸릴 수 있다)
- */
-async function runAfter(job: Job, m: TeamMember, server: string): Promise<AfterResult[]> {
-  const done = new Set((m.afterRan?.[server] ?? []).filter((r) => r.ok).map((r) => r.command));
-  const pending = (m.after?.[server] ?? []).filter((c) => !done.has(c));
-  const results: AfterResult[] = [];
-  if (!pending.length) return results;
-  say(job, `${server}: 생성 뒤 실행 명령어 ${pending.length}개를 실행합니다`);
-  for (const command of pending) {
-    const r = await ssh(server, `( ${command} ) 2>&1`, 120_000);
-    const ok = r.code === 0;
-    const out = tail(r.out);
-    results.push({ command, ok, code: r.code, out, at: Date.now() });
-    say(job, `${server}: ${ok ? "실행함" : `실패(종료 코드 ${r.code ?? "시간 초과"})`} — ${command}${out ? ` · ${out.replace(/\n/g, " / ")}` : ""}`);
-    if (!ok) {
-      say(job, `${server}: 나머지 명령은 멈췄습니다 — 고쳐서 저장하면 다음 반영 때 이 명령부터 다시 합니다`);
-      break;
-    }
-  }
-  await ssh(server, `chown -Rh --reference=/home/${m.id} /home/${m.id}`);
-  return results;
-}
-
 async function applyJob(job: Job, m: TeamMember): Promise<boolean> {
   for (const s of [...m.servers, ...m.applied]) if (!SAFE_HOST.test(s)) throw new Error(`서버 이름 형식 오류: ${s}`);
   const applied = new Set(m.applied);
@@ -469,8 +426,8 @@ async function applyJob(job: Job, m: TeamMember): Promise<boolean> {
     if (!r.ok) ok = false;
   }
   for (const server of dropped) {
-    say(job, `${server}: 더 이상 고르지 않은 서버라 지웁니다`);
-    // 팀원 고치기에서 서버를 뺀 것 — 묻지 않고 되돌릴 수 있는 쪽(홈 유지)으로 지운다
+    say(job, `${server}: 이 서버에 팀원 프로젝트가 더 없어 그 서버의 팀원 Paseo 를 지웁니다(/home/${m.id} 는 남김)`);
+    // 그 서버의 마지막 팀원 프로젝트를 뺀 것 — 묻지 않고 되돌릴 수 있는 쪽(홈 유지)으로 지운다
     const r = await ssh(server, `${CTL} remove ${m.id} --home keep --json`, 180_000);
     const j = lastJson(r.out);
     if (!j?.ok) {
@@ -484,19 +441,56 @@ async function applyJob(job: Job, m: TeamMember): Promise<boolean> {
       if (g.ok) delete links[server];
       else ok = false;
     }
-    say(job, `${server}: 지웠습니다(같은 아이디는 그 서버에서 다시 쓸 수 없습니다)`);
+    say(job, `${server}: 지웠습니다(그 서버에 다시 팀원 프로젝트를 넣으면 같은 아이디·같은 홈으로 다시 만듭니다)`);
   }
-  // 모든 단계가 끝난 뒤에만(10-12 리규형님 "모두 완료 후에") — 지금 고른 서버 중 만들어진 서버마다
-  const afterRan: Record<string, AfterResult[]> = {};
-  if (ok) {
-    for (const server of m.servers) {
-      if (!applied.has(server)) continue;
-      const results = await runAfter(job, m, server);
-      if (results.length) afterRan[server] = results;
-    }
-  }
-  await recordJob(m.id, m.rev, { applied: [...applied], links, loginAdded, complete: ok, afterRan });
+  if (!m.servers.length && !dropped.length) say(job, "아직 팀원 프로젝트가 없어 서버에 만들 것이 없습니다 — \"팀원 프로젝트 관리\" 탭에서 프로젝트를 넣으면 그 서버에 만들어집니다");
+  await recordJob(m.id, m.rev, { applied: [...applied], links, loginAdded, complete: ok });
   return ok;
+}
+
+/** 서버 도구가 돌려준 건너뛴 팀원판("skills/이름"·"commands/이름")을 "스킬 …· 명령어 …" 로 */
+function keptText(v: unknown): string {
+  const items = Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  const pick = (field: string) => items.filter((x) => x.startsWith(field + "/")).map((x) => x.slice(field.length + 1));
+  return [
+    ["스킬", pick("skills")],
+    ["명령어", pick("commands")],
+  ]
+    .filter(([, names]) => names.length)
+    .map(([label, names]) => `${label} ${(names as string[]).join(", ")}`)
+    .join(" · ");
+}
+
+/** 서버 도구 결과(j.result) 안의 칸 — 응답 모양은 {"ok": true, "result": {...}}(ctl.py main) */
+const resultField = (j: Record<string, unknown> | null, key: string): unknown =>
+  j && j.result && typeof j.result === "object" ? (j.result as Record<string, unknown>)[key] : undefined;
+
+const STANDARD_LABELS: Record<string, string> = {
+  "commands/korean-rule": "규칙",
+  "commands/start": "시작",
+  "commands/finish": "마무리",
+  "skills/start_compact": "압축 준비",
+  "hooks/ask_watch": "글 질문 막기",
+  "hooks/narrate_watch": "진행 알림 감시",
+};
+
+/** 표준판 넣기 결과(ctl.install_standard — 10-21) 한 줄. onlyChanges 면 새로 넣거나 더한 것이 없을 때 "" */
+function standardText(v: unknown, onlyChanges = false): string {
+  if (!v || typeof v !== "object") return "";
+  const s = v as { callName?: unknown; installed?: unknown; existing?: unknown; hooksAdded?: unknown };
+  const names = (x: unknown) => (Array.isArray(x) ? x.filter((k): k is string => typeof k === "string").map((k) => STANDARD_LABELS[k] ?? k) : []);
+  const installed = names(s.installed);
+  const existing = names(s.existing);
+  const hooks = s.hooksAdded === null ? "훅 설정이 JSON 이 아니라 손대지 않음" : typeof s.hooksAdded === "number" && s.hooksAdded > 0 ? `훅 ${s.hooksAdded}묶음 더함` : "";
+  if (onlyChanges && !installed.length && !hooks) return "";
+  return [
+    `표준판(부를 이름 "${typeof s.callName === "string" ? s.callName : "?"}")`,
+    installed.length ? `새로 넣음: ${installed.join("·")}` : "",
+    existing.length ? `이미 있어 그대로: ${existing.join("·")}` : "",
+    hooks,
+  ]
+    .filter(Boolean)
+    .join(" — ");
 }
 
 async function skillsJob(job: Job, m: TeamMember): Promise<boolean> {
@@ -507,13 +501,18 @@ async function skillsJob(job: Job, m: TeamMember): Promise<boolean> {
   }
   for (const server of m.applied) {
     if (!SAFE_HOST.test(server)) throw new Error(`서버 이름 형식 오류: ${server}`);
-    say(job, `${server}: 스킬·명령어를 서버 원본으로 다시 복사합니다(팀원이 고친 것은 서버 백업으로)`);
+    say(job, `${server}: 스킬·명령어를 서버 원본으로 다시 복사합니다(팀원판으로 적어 둔 것은 건너뜀 · 팀원이 고친 나머지는 서버 백업으로)`);
     const r = await ssh(server, `${CTL} skills-sync ${m.id} --json`, 180_000);
     const j = lastJson(r.out);
     if (!j?.ok) {
       say(job, `${server}: 실패 — ${failText(j, r)}`);
       ok = false;
-    } else say(job, `${server}: 다시 맞췄습니다`);
+    } else {
+      const kept = keptText(resultField(j, "memberCopiesKept"));
+      say(job, kept ? `${server}: 다시 맞췄습니다 — 팀원판이라 건너뜀: ${kept}` : `${server}: 다시 맞췄습니다`);
+      const standard = standardText(resultField(j, "standard"), true);
+      if (standard) say(job, `${server}: ${standard}`);
+    }
   }
   return ok;
 }

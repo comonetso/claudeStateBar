@@ -2,9 +2,9 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { projectEntrySchema, projectsEditOpSchema } from "./projects";
 
-// 팀원 관리(10-11) — 리규형님: 팀원을 추가할 때 서버(다중)를 고르고, 그 직원에게 맞는 스킬·명령어를 글로벌 것에서 골라
-// 프로젝트 스킬·명령어로 넣는다. 프로젝트는 리규형님 목록에서 고르지 않고 팀원 전용 프로젝트로 따로 둔다(10-11 오후 리규형님:
-// 직원 → 그 직원의 카테고리 → 프로젝트). 팀원 목록·팀원 프로젝트는 PC 데몬에 저장만 하고, 서버에 직원을 만드는 일은 아직 없다.
+// 팀원 관리(10-11 → 10-20 리규형님 "새로 만들자") — 팀원을 추가할 때는 아이디와 그 직원에게 맞는 스킬·명령어만 고른다
+// (서버마다 그 서버의 글로벌 것에서). 서버는 따로 고르지 않는다 — 팀원 프로젝트에 서버가 들어 있어 팀원 프로젝트가 있는 서버에만
+// 그 팀원의 Paseo 를 만든다. 권한은 "팀원 프로젝트 관리" 탭에서 프로젝트마다 준다(shared/teamAccess.ts). 리규형님 프로젝트 목록과는 따로다.
 
 const item = z.object({ kind: z.enum(["skill", "command"]), name: z.string(), description: z.string() });
 
@@ -23,38 +23,57 @@ export const teamServerSkills = defineRpc({
   output: z.object({ skills: z.array(item), logs: z.array(z.string()).optional(), error: z.string().nullable() }),
 });
 
-/** 서버 한 대에서 이 팀원에게 주는 권한 — 모양·기본값·기록 목록은 shared/teamAccess.ts */
-export const accessSchema = z.object({
-  writable: z.array(z.string()),
-  addOnly: z.array(z.string()).optional(),
+const fileMode = z.enum(["ro", "rw", "add"]);
+/** 팀원 프로젝트 하나의 권한 — 모양·기본값·검사는 shared/teamAccess.ts */
+export const projectAccessSchema = z.object({
+  file: fileMode,
+  outside: z.array(z.object({ path: z.string(), mode: fileMode })),
   ports: z.array(z.number()),
   logs: z.array(z.string()),
   hideSecrets: z.boolean(),
 });
-export { defaultAccess, TEAM_LOGS, AFTER_MAX, AFTER_LEN, type TeamAccess, type AfterResult } from "./teamAccess";
-const afterResultSchema = z.object({ command: z.string(), ok: z.boolean(), code: z.number().nullable(), out: z.string(), at: z.number() });
+export {
+  combineAccess,
+  defaultProjectAccess,
+  fileModeLabel,
+  FILE_MODES,
+  OUTSIDE_MAX,
+  TEAM_LOGS,
+  type FileMode,
+  type OutsidePath,
+  type ProjectAccess,
+} from "./teamAccess";
+
+/** 팀원 프로젝트 — 프로젝트 관리 화면의 항목 + 권한(10-20, 없으면 읽기만) */
+const teamProjectSchema = projectEntrySchema.extend({ access: projectAccessSchema.optional() });
+export type TeamProject = z.infer<typeof teamProjectSchema>;
 
 const memberSchema = z.object({
   /** 로그인 아이디 — 서버 직원 도구(team-daemon policy.py NAME)와 같은 규칙 */
   id: z.string(),
+  /** 팀원 프로젝트가 있는 서버(저장할 때마다 프로젝트에서 다시 셈 — 10-20 부터 고르지 않는다) */
   servers: z.array(z.string()),
-  /** "서버|skill:이름"·"서버|command:이름" — 서버가 달라도, 같은 이름이어도 안 섞이게 */
+  /** "서버|skill:이름"·"서버|command:이름" — 서버가 달라도, 같은 이름이어도 안 섞이게. 그 서버에 팀원 프로젝트가 생길 때 복사한다 */
   skills: z.array(z.string()),
   /** 이 직원의 카테고리 순서(끌어 놓은 순서 = 번호). 끌어 놓은 적 없는 카테고리는 프로젝트에 처음 나오는 순서로 뒤에 */
   categoryOrder: z.array(z.string()),
-  /** 팀원 전용 프로젝트 — 기기는 이 직원에게 고른 서버만 */
-  projects: z.array(projectEntrySchema),
-  /** 서버 → 그 서버에서 주는 권한(10-11 저녁에 더함 — 그 전 기록에는 없고, 없으면 기본값 defaultAccess) */
-  access: z.record(z.string(), accessSchema).optional(),
-  /** 서버 → 계정을 만든 뒤 그 서버에서 관리자 권한으로 한 번 실행할 명령(10-12, 최대 AFTER_MAX) */
-  after: z.record(z.string(), z.array(z.string())).optional(),
-  /** 서버 → 실행한 명령마다 마지막 결과 — 성공한 명령은 다시 실행하지 않는다 */
-  afterRan: z.record(z.string(), z.array(afterResultSchema)).optional(),
+  /** 팀원 전용 프로젝트와 프로젝트마다 준 권한 */
+  projects: z.array(teamProjectSchema),
+  /**
+   * 팀원 Claude 계정(10-21 리규형님) — false = 회사 공용(서버 리규형님 Paseo 의 회사 팀 공급자 토큰을 같이 쓴다, 기본) ·
+   * true = 본인 로그인(토큰을 넣지 않아 팀원이 자기 화면의 Claude 로그인 칸에서 서버마다 로그인한다. 풀려도 회사 공용으로 대신 돌리지 않는다)
+   */
+  ownClaude: z.boolean(),
+  /**
+   * 팀원 Claude 가 팀원을 부르는 이름(10-21 리규형님 — 팀원 표준판의 호칭 자리). "" = 아이디 + "님".
+   * 서버 팀원 도구가 표준판을 팀원 홈에 **처음 넣을 때만** 채운다 — 이미 넣은 표준판은 바꾸지 않는다
+   */
+  callName: z.string(),
   /** 서버에 직원 Paseo 를 만든 서버들(서버에 반영 작업이 끝난 것) */
   applied: z.array(z.string()),
   /** 서버 → 로그인 서버에 등록한 직원용 연결 이름 */
   links: z.record(z.string(), z.string()),
-  /** 로그인 서버에 직원 계정을 만들었는가(비밀번호·OTP 는 콜어드민 터미널에서 따로) */
+  /** 로그인 서버에 직원 계정을 만들었는가(비밀번호·OTP 는 팀원이 초대 키로 직접) */
   loginAdded: z.boolean(),
   /** 마지막 서버 반영 뒤 바뀐 것이 있다 */
   dirty: z.boolean(),
@@ -78,19 +97,19 @@ export const teamState = defineRpc({
   output: teamResult,
 });
 
-/** 팀원 추가·고치기 — previousId 가 있으면 그 팀원을 고친다(팀원 프로젝트는 그대로 따라간다) */
+/** 팀원 추가·고치기 — 아이디와 스킬·명령어만(10-20). previousId 가 있으면 그 팀원을 고친다(팀원 프로젝트는 그대로 따라간다) */
 export const teamMemberSave = defineRpc({
   name: "team.member_save",
   input: z.object({
     previousId: z.string().nullable(),
     id: z.string(),
-    servers: z.array(z.string()),
     skills: z.array(z.string()),
-    access: z.record(z.string(), accessSchema).optional(),
-    after: z.record(z.string(), z.array(z.string())).optional(),
+    /** 부를 이름(10-21) — 없으면 그대로 둔다(옛 화면) */
+    callName: z.string().optional(),
   }),
   output: teamResult,
 });
+// 표준판 이름·부를 이름 검사는 shared/teamStandard.ts(10-21 — 아무것도 가져오지 않는 파일)
 
 /** 팀원 삭제 — 그 직원의 팀원 프로젝트 목록도 함께 지운다(서버 폴더는 건드리지 않는다) */
 export const teamMemberRemove = defineRpc({
@@ -106,8 +125,22 @@ export const teamProjectEdit = defineRpc({
   output: teamResult,
 });
 
+/** 팀원 프로젝트 하나의 권한 바꾸기(10-20) — key = "<서버>|<경로>". 같은 서버의 다른 프로젝트와 겹치면 저장하지 않고 이유를 돌려준다 */
+export const teamProjectAccess = defineRpc({
+  name: "team.project_access",
+  input: z.object({ member: z.string(), key: z.string(), access: projectAccessSchema }),
+  output: teamResult,
+});
+
+/** 팀원 Claude 계정 바꾸기(10-21) — own = 본인 로그인. 서버에 반영해야 그 팀원 Paseo 에 먹는다 */
+export const teamMemberClaude = defineRpc({
+  name: "team.member_claude",
+  input: z.object({ member: z.string(), own: z.boolean() }),
+  output: teamResult,
+});
+
 /**
- * 서버 작업 시작(10-11) — apply: 고른 서버마다 직원 Paseo 만들기·고치기 + 로그인 서버 연결·계정, 뺀 서버에서는 지우기 ·
+ * 서버 작업 시작(10-11) — apply: 팀원 프로젝트가 있는 서버마다 직원 Paseo 만들기·고치기 + 로그인 서버 연결·계정, 프로젝트가 없어진 서버에서는 지우기 ·
  * skills: 스킬·명령어를 서버 원본으로 다시 복사 · remove-keep·remove-purge: 모든 서버와 로그인 서버에서 지우고
  * 팀원 목록에서도 지운다(홈 /home/<아이디> 를 남기거나 함께 지운다 — 어느 쪽이든 같은 아이디로 다시 만들 수 있다).
  * 서버 작업은 1분 넘게 걸릴 수 있어(Paseo 요청 한도 30초) 시작하고 기다리기를 되풀이한다

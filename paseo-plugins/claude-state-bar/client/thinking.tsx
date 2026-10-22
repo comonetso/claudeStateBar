@@ -28,7 +28,7 @@ const CONTENT_DEFAULT_PX = 15;
 const RATE_KEY = "claude-state-bar:thinking-rate";
 
 // 컴포넌트 수명과 독립된 상태. 호스트 키 확인도 한 번만 한다.
-// 입력창 위 선택 읽기 알약(selectionRead.tsx)도 이 재생기를 같이 쓴다 — 그래서 한 번에 하나만 읽힌다.
+// 일반 읽기(턴·말·생각 상자)는 이 재생기를 같이 쓰고, 따라 읽기는 대화마다 fork한다(10-21).
 // 번역 대상·읽기 음성 언어는 Paseo 언어 설정(10-08 — 한국어면 한국어로, 그 밖은 영어로). 부를 때마다 다시 읽는다
 let pendingSavedRate: number | undefined;
 export const thinkingController = new ThinkingController(createThinkingAudio(), (rate) => { pendingSavedRate = undefined; writeLocal(RATE_KEY, String(rate)); }, Date.now, uiLanguage);
@@ -394,6 +394,7 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
     const next = controller.box(host.id, `said-${++saidReader.serial}`, Date.now(), said, "complete");
     // 재생용 상자 — 자동 번역 대상이 아니다(화면 글을 읽으므로 번역을 받아도 쓰지 않는다)
     next.said = true;
+    next.readAgentId = agentId;
     next.displayKey = box.key;
     next.translate = false;
     next.screenText = web ? (index) => elementText(`${saidId}-${index}`) : undefined;

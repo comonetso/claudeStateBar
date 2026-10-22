@@ -5,48 +5,42 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Pressable, Text, View } from "react-native";
 import { projectsHosts } from "../shared/projects";
 import {
-  AFTER_MAX,
-  defaultAccess,
-  TEAM_LOGS,
   teamCategoryOrder,
   teamJobStart,
   teamJobWait,
+  teamMemberClaude,
   teamMemberRemove,
   teamMemberSave,
+  teamProjectAccess,
   teamProjectEdit,
   teamServerSkills,
   teamSkills,
   teamState,
-  type TeamAccess,
   type TeamJobAction,
   type TeamMember,
+  type TeamProject,
 } from "../shared/team";
-
-/** 화면에서 고치는 권한 — 풀권한·계정파일만 폴더·열 포트는 글로 받고 저장할 때 나눈다 */
-type AccessDraft = { writable: string; addOnly: string; ports: string; logs: string[]; hideSecrets: boolean };
-const toDraft = (a: TeamAccess): AccessDraft => ({ writable: a.writable.join("\n"), addOnly: (a.addOnly ?? []).join("\n"), ports: a.ports.join(", "), logs: [...a.logs], hideSecrets: a.hideSecrets });
+import { CALL_NAME_MAX, callNameProblem, isTeamStandard } from "../shared/teamStandard";
 import { scaled, useFontScale } from "./fontScale";
 import { type HostIndex, type ProjectsData } from "./projectsData";
 import { ProjectsEditor, type EditScope } from "./projectsManage";
+import { accessNote, TeamAccessPanel } from "./teamAccessPanel";
 import { FIELD_WIDTH, lineColor, UiButton, UiInput } from "./ui";
-import { copyText, setHoverTitle, setNoTranslate } from "./web";
+import { copyText, setNoTranslate } from "./web";
 
-// 팀원 관리(10-11 리규형님: "먼저 팀원관리 프로토타입을 제시하고, 내가 검토 후 수정").
-// 팀원 = 회사 팀원(외부인 아님). 팀원을 추가할 때 ① 서버(다중) ② 그 팀원에 맞는 글로벌 스킬·명령어를 고른다
-// (명령어는 10-11 리규형님 "command 도 나와야 돼"). 스킬·명령어는 고른 서버마다 그 서버의 ~/.claude 에서 읽는다(리규형님 "서버 특화
-// 스킬은 내가 추가하고 서버에서 직접 복사" · "서버 특화 커맨드가 있어") — PC 에 없는 것은 "이 서버에만". Paseo·Claude 가 깐 스킬은 뺀다.
-// 고른 것은 "서버|skill:이름"·"서버|command:이름" 키로 — 서버가 달라도, 같은 이름이어도 안 섞이게.
-// 10-11 리규형님 결정: 넣는 방법 = 복사 + "스킬 다시 맞추기" 단추(원본으로 다시 복사, 팀원 쪽 수정은 덮어씀 — 읽기 전용 연결 안 고름) ·
-// Claude 플러그인 칸은 지금 안 만든다(서버 세 플러그인 모두 리규형님 계정·세션에 묶여 있어 주면 울타리가 뚫림).
-// 서버 후보 = ~/.ssh/config 의 Host 중 프로젝트 목록에 프로젝트가 있는 서버(GitHub 같은 항목은 프로젝트가 없어 저절로 빠진다).
-// 10-11 오후 리규형님: 팀원 전용 프로젝트를 따로 만든다 — 팀원 관리 안에 "팀원 추가"·"팀원 프로젝트 관리" 두 탭, 팀원 프로젝트는
-// 팀원(1단계) → 그 팀원의 카테고리(2단계) → 프로젝트. 그래서 팀원 추가에서 리규형님 목록의 프로젝트를 고르던 단계는 뺐다.
-// 팀원·팀원 프로젝트는 PC 데몬의 team.json 에 저장한다(server/team).
-// 10-11 밤 리규형님 "계획대로 서버 작업까지": 저장하면 고른 서버에 팀원 Paseo 를 만들고(/home/<아이디> + 고른 스킬·명령어 복사,
-// 나눠 준 프로젝트만 열기·보기용 목록), 로그인 서버에 연결·계정을 등록한다(server/teamApply).
+// 팀원 관리(10-11 리규형님: "먼저 팀원관리 프로토타입을 제시하고, 내가 검토 후 수정") → 10-20 리규형님 "싹 갈아엎고 새로":
+// 팀원 = 회사 팀원(외부인 아님). 팀원을 추가할 때는 아이디와 그 팀원에 맞는 글로벌 스킬·명령어만 고른다(서버 고르기·서버별 권한·
+// 생성 뒤 실행 명령 칸은 없앴다). 스킬·명령어는 업무 서버마다 그 서버의 ~/.claude 에서 읽는다(리규형님 "서버 특화 커맨드가 있어") —
+// PC 에 없는 것은 "이 서버에만". Paseo·Claude 가 깐 스킬은 뺀다. 고른 것은 "서버|skill:이름"·"서버|command:이름" 키로.
+// 10-11 리규형님 결정: 넣는 방법 = 복사 + "스킬 다시 맞추기" 단추(원본으로 다시 복사, 팀원 쪽 수정은 덮어씀) ·
+// 10-21 리규형님: 다시 맞추기도 팀원판 목록(서버 /etc/paseo-team/<아이디>/member-copies.json)에 적힌 것은 건너뛴다 ·
+// Claude 플러그인 칸은 만들지 않는다(서버 세 플러그인 모두 리규형님 계정·세션에 묶여 있어 주면 울타리가 뚫림).
+// 업무 서버 = ~/.ssh/config 의 Host 중 리규형님 프로젝트 목록에 프로젝트가 있는 서버(GitHub 같은 항목은 저절로 빠진다).
+// 팀원 프로젝트는 리규형님 목록과 따로(팀원 → 그 팀원의 카테고리 → 프로젝트) — 리규형님만 넣고 고친다. 권한은 그 줄의 "권한" 단추로
+// 프로젝트마다 준다(읽기만·읽기쓰기·내가 쓴 파일만 · 밖 경로 두 칸 · DB 접속 · 서버 기록 · 비밀 가리기 — shared/teamAccess.ts).
+// 서버는 따로 고르지 않는다 — 팀원 프로젝트가 있는 서버에만 그 팀원 Paseo 를 만들고(server/teamApply), 마지막 프로젝트를 빼면 지운다(홈 유지).
 // 10-11 저녁 리규형님: "서버에 반영" 단추는 없앤다 — 저장·프로젝트 고치기가 곧 반영(실패했을 때만 "다시 시도") ·
-// 비밀번호·OTP 는 터미널이 아니라 초대 키(10-10 결정: 일회용·24시간)로 팀원이 로그인 페이지에서 직접 · 안내·진행 상자는 끝나면 접는다 ·
-// 삭제는 "완전 삭제"·"홈 디렉터리 유지" 중 고른다.
+// 비밀번호·OTP 는 초대 키(일회용·24시간)로 팀원이 로그인 페이지에서 직접 · 삭제는 "완전 삭제"·"홈 디렉터리 유지" 중 고른다.
 
 type Item = { kind: "skill" | "command"; name: string; description: string };
 type Props = { theme: PluginTheme; data: ProjectsData | null; index: HostIndex };
@@ -55,9 +49,12 @@ type JobView = { run: number; lines: string[]; done: boolean; ok: boolean };
 type RunJob = (member: string, action: TeamJobAction, onDone?: (ok: boolean, lines: string[]) => void) => void;
 /** 화면에 한 번 보여 주는 초대 키 — 저장하지 않는다(화면을 떠나거나 닫으면 사라진다) */
 type InviteView = { member: string; key: string; expiresAt: number; link: string };
+/** 서버 한 대에서 읽은 스킬·명령어와 기록 목록(두 탭이 같이 쓴다) */
+type ServerList = { skills: Item[]; logs?: string[]; error: string | null } | "loading";
 
-/** 서버 반영 상태 한 줄 */
+/** 서버 반영 상태 한 줄 — 팀원 프로젝트가 없으면 서버에 만들 것이 없다(경고 아님) */
 function serverState(m: TeamMember): { text: string; warn: boolean } {
+  if (!m.servers.length && !m.applied.length) return { text: "팀원 프로젝트 없음 — 넣으면 그 서버에 만들어집니다", warn: false };
   if (!m.applied.length) return { text: "서버에 아직 없음", warn: true };
   if (m.dirty) return { text: `반영이 끝나지 않음 · ${m.applied.join(", ")}`, warn: true };
   return { text: `서버 반영됨 · ${m.applied.join(", ")}`, warn: false };
@@ -152,6 +149,37 @@ export function TeamManage({ theme, data, index }: Props) {
     };
   }, [readTeam]);
   const [sub, setSub] = useState<Sub>("members");
+
+  // 업무 서버 — ~/.ssh/config 의 Host 중 리규형님 프로젝트가 있는 서버(팀원 추가의 스킬 묶음·팀원 프로젝트의 디바이스)
+  const readHosts = useRpc(projectsHosts);
+  const [hosts, setHosts] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void readHosts({})
+      .then((r) => alive && setHosts(r.hosts))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [readHosts]);
+  const entries = data?.entries ?? [];
+  const servers = useMemo(() => hosts.filter((h) => h !== "PC" && entries.some((e) => e.host === h)), [hosts, entries]);
+
+  // 서버마다 스킬·명령어·기록 목록 — 처음 필요할 때 한 번 SSH 로 읽는다(오류면 "다시 읽기")
+  const readServerSkills = useRpc(teamServerSkills);
+  const [serverLists, setServerLists] = useState<Record<string, ServerList>>({});
+  const asked = useRef(new Set<string>());
+  const loadServer = useCallback(
+    (h: string, again = false) => {
+      if (asked.current.has(h) && !again) return;
+      asked.current.add(h);
+      setServerLists((cur) => ({ ...cur, [h]: "loading" }));
+      readServerSkills({ host: h })
+        .then((r) => setServerLists((cur) => ({ ...cur, [h]: r })))
+        .catch((err) => setServerLists((cur) => ({ ...cur, [h]: { skills: [], error: `읽지 못했습니다 — ${String(err instanceof Error ? err.message : err)}` } })));
+    },
+    [readServerSkills],
+  );
 
   // 서버 작업 — 시작하고, 끝날 때까지 25초씩 기다리기를 되풀이한다(Paseo 요청 한도 30초). 끝나면 팀원 목록을 다시 읽는다
   const startJob = useRpc(teamJobStart);
@@ -272,21 +300,23 @@ export function TeamManage({ theme, data, index }: Props) {
       {guideShown ? (
         <View style={{ gap: 4, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: c.accent, backgroundColor: c.surface1 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Text style={{ flex: 1, fontSize: fs(12), color: c.accent, fontWeight: "600" }}>팀원을 저장하면 고른 서버에 그대로 만들어집니다</Text>
+            <Text style={{ flex: 1, fontSize: fs(12), color: c.accent, fontWeight: "600" }}>팀원은 아이디·스킬만, 권한은 팀원 프로젝트마다</Text>
             <Pressable accessibilityRole="button" onPress={() => setGuideOpen(false)}>
               <Text style={{ fontSize: fs(11), color: c.foregroundMuted }}>접기 ▴</Text>
             </Pressable>
           </View>
-          {muted("· 팀원과 팀원 프로젝트는 이 PC 에 저장되고, 저장하거나 팀원 프로젝트를 고치는 순간 고른 서버에 반영됩니다. 반영하는 동안 그 팀원의 Paseo 가 잠깐 다시 시작됩니다. 따로 누를 단추는 없고, 실패했을 때만 \"다시 시도\"가 나옵니다.")}
-          {muted("· 서버마다 그 팀원 전용 Paseo(울타리 안에서 도는 팀원용 Paseo)를 하나씩 만듭니다(하나당 메모리 110~140MB).")}
-          {muted("· 팀원 홈은 /home/<아이디> 한 곳입니다. 고른 스킬·명령어를 그 안 .claude 로 복사합니다. 리규형님이 원본을 고쳐도 팀원 쪽은 그대로이고, \"스킬 다시 맞추기\"를 누르면 원본으로 다시 복사합니다(팀원 쪽에서 고친 것은 서버 백업으로).")}
-          {muted("· 팀원 화면의 프로젝트 목록에는 \"팀원 프로젝트 관리\"에서 나눠 준 프로젝트만 보이고, 팀원은 보기만 합니다. 고르지 않은 스킬·명령어, Claude 플러그인, 리규형님 지시·메모리는 가지 않습니다.")}
-          {muted("· 처음 추가하면 초대 키가 나옵니다. 팀원에게 전하면 팀원이 로그인 페이지의 \"초대 키로 처음 등록\"에서 비밀번호와 자기 폰 OTP 를 직접 정합니다(24시간 안에 한 번만). 팀원이 로그인하면 고른 서버만 보입니다.")}
+          {muted("· \"팀원 추가\"에서는 아이디와 그 팀원에게 줄 스킬·명령어만 고릅니다. 서버는 고르지 않습니다.")}
+          {muted("· \"팀원 프로젝트 관리\"에서 리규형님이 그 팀원의 프로젝트를 넣으면, 그 프로젝트가 있는 서버에 팀원 전용 Paseo(울타리 안에서 도는 팀원용 Paseo, 하나당 메모리 110~140MB)가 만들어집니다. 처음이면 초대 키가 나옵니다. 그 서버의 마지막 프로젝트를 빼면 그 서버의 팀원 Paseo 를 지웁니다(홈은 남김).")}
+          {muted("· 권한은 프로젝트 줄의 \"권한\" 단추로 프로젝트마다 줍니다 — 읽기만 · 읽기쓰기(모든 권한) · 내가 쓴 파일만 쓰기, 프로젝트 밖 경로 두 칸, DB 접속, 서버 기록, 비밀 파일 가리기. 새로 넣은 프로젝트는 읽기만입니다.")}
+          {muted("· 저장하거나 고치는 순간 그 팀원의 서버에 반영됩니다. 반영하는 동안 그 팀원의 Paseo 가 잠깐 다시 시작됩니다. 실패했을 때만 \"다시 시도\"가 나옵니다.")}
+          {muted("· 팀원 홈은 /home/<아이디> 한 곳입니다. 고른 스킬·명령어를 그 안 .claude 로 넣습니다. 나중에 고른 목록을 바꿔도 팀원 홈에 이미 있는 것은 덮어쓰지 않고, 새로 고른 것만 넣고 뺀 것은 치웁니다(서버 백업으로). 원본으로 다시 덮어쓰려면 \"스킬 다시 맞추기\"를 누릅니다. 그때도 그 팀원에 맞춰 고쳐 둔 팀원판(서버의 팀원판 목록에 적힌 것 — 팀원을 부르는 이름·기록 폴더를 바꾼 규칙·시작·마무리 같은 것)은 건너뛰고, 건너뛴 이름을 결과에 보여 줍니다. 팀원은 프로젝트를 고칠 수 없고 보기만 합니다.")}
+          {muted("· 대화 규칙·시작·마무리·압축 준비는 고르지 않습니다 — 팀원 표준판(리규형님 개인 사정을 걷어낸 판, 팀원을 \"부를 이름\"으로 부름)을 서버에 반영할 때 팀원 홈에 없으면 넣고, 있으면 그대로 둡니다. 시작·마무리는 팀원 자기 기록(홈의 작업기록)만 읽고 씁니다.")}
+          {muted("· 팀원 Claude 는 자기 홈의 스킬·명령어·지침만 읽습니다. 넘겨받은 프로젝트 폴더 안에 있는 스킬·명령어·지침(CLAUDE.md)·설정은 읽지 않습니다.")}
           {muted("· 삭제할 때는 \"완전 삭제\"(홈까지 모두)와 \"홈 디렉터리 유지\" 중 고릅니다. 어느 쪽이든 같은 아이디로 다시 만들 수 있습니다.")}
         </View>
       ) : (
         <Pressable accessibilityRole="button" onPress={() => setGuideOpen(true)}>
-          <Text style={{ fontSize: fs(11), color: c.foregroundMuted }}>팀원을 저장하면 어떻게 되나요 ▸</Text>
+          <Text style={{ fontSize: fs(11), color: c.foregroundMuted }}>팀원 관리는 어떻게 되나요 ▸</Text>
         </Pressable>
       )}
       {invites.map((inv) => (
@@ -296,15 +326,26 @@ export function TeamManage({ theme, data, index }: Props) {
       {members === null ? (
         loadError ? null : muted("팀원 목록을 읽는 중…")
       ) : sub === "members" ? (
-        <MemberAdd theme={theme} data={data} index={index} members={members} onMembers={setMembers} jobs={jobs} runJob={runJob} />
+        <MemberAdd theme={theme} members={members} onMembers={setMembers} jobs={jobs} runJob={runJob} servers={servers} serverLists={serverLists} loadServer={loadServer} index={index} entries={entries} />
       ) : (
-        <TeamProjects theme={theme} members={members} onMembers={setMembers} onAddMember={() => setSub("members")} jobs={jobs} runJob={runJob} requestApply={requestApply} />
+        <TeamProjects
+          theme={theme}
+          members={members}
+          onMembers={setMembers}
+          onAddMember={() => setSub("members")}
+          jobs={jobs}
+          runJob={runJob}
+          requestApply={requestApply}
+          servers={servers}
+          serverLists={serverLists}
+          loadServer={loadServer}
+        />
       )}
     </View>
   );
 }
 
-// 팀원 프로젝트 관리 — 프로젝트 관리 탭과 같은 편집기를 팀원마다(1단계 = 팀원, 2단계 = 그 팀원의 카테고리)
+// 팀원 프로젝트 관리 — 프로젝트 관리 탭과 같은 편집기를 팀원마다(1단계 = 팀원, 2단계 = 그 팀원의 카테고리) + 줄마다 "권한"(10-20)
 function TeamProjects({
   theme,
   members,
@@ -313,6 +354,9 @@ function TeamProjects({
   jobs,
   runJob,
   requestApply,
+  servers,
+  serverLists,
+  loadServer,
 }: {
   theme: PluginTheme;
   members: TeamMember[];
@@ -321,11 +365,16 @@ function TeamProjects({
   jobs: Record<string, JobView>;
   runJob: RunJob;
   requestApply: (member: string, onFail?: (lines: string[]) => void) => void;
+  servers: string[];
+  serverLists: Record<string, ServerList>;
+  loadServer: (h: string) => void;
 }) {
   const c = theme.colors;
   const scale = useFontScale();
+  const fs = (px: number) => scaled(px + 3, scale);
   const editProject = useRpc(teamProjectEdit);
   const writeOrder = useRpc(teamCategoryOrder);
+  const writeAccess = useRpc(teamProjectAccess);
   const [notice, setNotice] = useState<string | null>(null);
   // 팀원 머리마다 서버 반영 상태 — 고치면 바로 반영하고(반영할 때마다 그 팀원 Paseo 가 잠깐 다시 시작), 실패했을 때만 "다시 시도"
   const scopes = useMemo<EditScope[]>(
@@ -333,29 +382,53 @@ function TeamProjects({
       members.map((m) => {
         const state = serverState(m);
         const running = !!jobs[m.id] && !jobs[m.id].done;
+        const logsOf = (h: string) => {
+          const got = serverLists[h];
+          return got && got !== "loading" ? (got.error ? [] : (got.logs ?? [])) : null;
+        };
         return {
           id: m.id,
           title: m.id,
           entries: m.projects,
           categoryOrder: m.categoryOrder,
-          hosts: m.servers,
+          // 새 프로젝트를 둘 서버 — 팀원 추가 때 고르지 않으므로 업무 서버 전부(10-20). 머리에는 팀원 프로젝트가 있는 서버만
+          hosts: servers,
+          shownHosts: m.servers,
           extra: (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <Text style={{ fontSize: scaled(13, scale), color: running ? c.foregroundMuted : state.warn ? c.statusWarning : c.statusSuccess }}>
                 {running ? "서버에 반영하는 중…" : state.text}
               </Text>
               {!running && state.warn ? (
-                <UiButton theme={theme} label="다시 시도" tone="accent" fontSize={scaled(14, scale)} hint="이 팀원의 프로젝트·스킬을 고른 서버에 다시 반영합니다(그 팀원 Paseo 가 잠깐 다시 시작)" onPress={() => runJob(m.id, "apply")} />
+                <UiButton theme={theme} label="다시 시도" tone="accent" fontSize={scaled(14, scale)} hint="이 팀원의 프로젝트·권한·스킬을 그 서버에 다시 반영합니다(그 팀원 Paseo 가 잠깐 다시 시작)" onPress={() => runJob(m.id, "apply")} />
               ) : null}
             </View>
           ),
           below: <JobLog theme={theme} job={jobs[m.id]} fontSize={scaled(13, scale)} />,
-          // 기본 프로젝트 = 서버마다 팀원 홈(서버 팀원 도구가 팀원 목록 맨 위에 넣는다 — 10-11 리규형님 "삭제 불가, 항상 최상위") ·
+          // 기본 프로젝트 = 팀원 프로젝트가 있는 서버마다 팀원 홈(서버 팀원 도구가 팀원 목록 맨 위에 넣는다 — 10-11 리규형님 "삭제 불가, 항상 최상위") ·
           // 카테고리 "홈" 아래 이름은 계정 아이디(리규형님 "홈 > {계정ID}")
           pinned: m.servers.map((host) => ({ name: m.id, host, path: `/home/${m.id}`, category: "홈" })),
+          rowNote: (e) => accessNote(e as TeamProject),
+          rowPanel: (e, close) => (
+            <TeamAccessPanel
+              theme={theme}
+              project={e as TeamProject}
+              serverLogs={logsOf(e.host)}
+              fontSize={fs}
+              onOpen={() => loadServer(e.host)}
+              onSave={async (access) => {
+                setNotice(null);
+                const r = await writeAccess({ member: m.id, key: `${e.host}|${e.path}`, access });
+                onMembers(r.members);
+                if (r.ok) requestApply(m.id);
+                return r;
+              }}
+              onClose={close}
+            />
+          ),
         };
       }),
-    [members, jobs, theme, scale],
+    [members, jobs, theme, scale, servers, serverLists],
   );
   if (members.length === 0) {
     return (
@@ -382,7 +455,7 @@ function TeamProjects({
         // 새로 만든 카테고리는 그 프로젝트 하나뿐이라 함께 사라진다
         if (op.op === "add") {
           requestApply(member, (lines) => {
-            const why = [...lines].reverse().find((l) => / 실패|못했습니다|거절|위험/.test(l)) ?? "서버 반영 실패";
+            const why = [...lines].reverse().find((l) => / 실패|못했습니다|거절|위험|겹쳐/.test(l)) ?? "서버 반영 실패";
             void editProject({ member, op: { op: "remove", key: `${op.host}|${op.path}` } }).then((back) => {
               onMembers(back.members);
               setNotice(`서버에 반영하지 못해 방금 추가한 ${op.name || op.path} 를 목록에서 뺐습니다 — ${why}`);
@@ -402,42 +475,55 @@ function TeamProjects({
           })
           .catch(() => onMembers(members));
       }}
-      intro="팀원마다 따로 두는 프로젝트입니다. 리규형님 프로젝트 목록과 섞이지 않고, 팀원 → 그 팀원의 카테고리 → 프로젝트로 묶입니다. 고치면 그 팀원의 서버에 바로 반영됩니다(그 팀원 Paseo 가 잠깐 다시 시작). 서버 폴더 자체는 건드리지 않습니다."
+      intro={"팀원마다 따로 두는 프로젝트입니다. 리규형님만 넣고 고칠 수 있고, 팀원은 보기만 합니다. 리규형님 프로젝트 목록과 섞이지 않고 팀원 → 그 팀원의 카테고리 → 프로젝트로 묶입니다. 줄의 \"권한\"으로 프로젝트마다 할 수 있는 것을 정합니다(새로 넣으면 읽기만). 고치면 그 팀원의 서버에 바로 반영됩니다(그 팀원 Paseo 가 잠깐 다시 시작). 서버 폴더 자체는 건드리지 않습니다."}
       emptyText="아직 팀원 프로젝트가 없습니다"
-      pathHint={() => "예: /home/ceo — 그 서버의 폴더 경로, / 로 시작합니다"}
+      pathHint={() => "예: /home/yeogi_callcrew — 그 서버의 폴더 경로, / 로 시작합니다"}
     />
   );
 }
 
-function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Props & { members: TeamMember[]; onMembers: (m: TeamMember[]) => void; jobs: Record<string, JobView>; runJob: RunJob }) {
+function MemberAdd({
+  theme,
+  members,
+  onMembers,
+  jobs,
+  runJob,
+  servers,
+  serverLists,
+  loadServer,
+  index,
+  entries,
+}: {
+  theme: PluginTheme;
+  members: TeamMember[];
+  onMembers: (m: TeamMember[]) => void;
+  jobs: Record<string, JobView>;
+  runJob: RunJob;
+  servers: string[];
+  serverLists: Record<string, ServerList>;
+  loadServer: (h: string, again?: boolean) => void;
+  index: HostIndex;
+  entries: ProjectsData["entries"];
+}) {
   const c = theme.colors;
   const scale = useFontScale();
   const fs = (px: number) => scaled(px + 3, scale);
-  const entries = data?.entries ?? [];
-  const readHosts = useRpc(projectsHosts);
   const readSkills = useRpc(teamSkills);
-  const readServerSkills = useRpc(teamServerSkills);
   const saveMember = useRpc(teamMemberSave);
   const removeMember = useRpc(teamMemberRemove);
+  const writeClaude = useRpc(teamMemberClaude);
 
-  const [hosts, setHosts] = useState<string[]>([]);
   // PC 목록 — "이 서버에만" 표시용 비교. 고르는 목록은 서버마다 SSH 로 읽는다(serverLists)
   const [skills, setSkills] = useState<Item[]>([]);
-  const [serverLists, setServerLists] = useState<Record<string, { skills: Item[]; logs?: string[]; error: string | null } | "loading">>({});
   useEffect(() => {
     let alive = true;
-    void readHosts({})
-      .then((r) => alive && setHosts(r.hosts))
-      .catch(() => {});
     void readSkills({})
       .then((r) => alive && setSkills(r.skills))
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [readHosts, readSkills]);
-
-  const servers = useMemo(() => hosts.filter((h) => h !== "PC" && entries.some((e) => e.host === h)), [hosts, entries]);
+  }, [readSkills]);
 
   const [editing, setEditing] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -457,18 +543,14 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
     });
 
   const [id, setId] = useState("");
-  const [pickServers, setPickServers] = useState<Set<string>>(new Set());
+  // 부를 이름(10-21 팀원 표준판) — 비우면 아이디 + "님"
+  const [callName, setCallName] = useState("");
   const [pickSkills, setPickSkills] = useState<Set<string>>(new Set());
   const [skillFilter, setSkillFilter] = useState("");
-  // 서버마다 권한(10-11 저녁 리규형님 "계정 만들 때 설정 먼저") — 고른 적 없는 서버는 기본값
-  const [pickAccess, setPickAccess] = useState<Record<string, AccessDraft>>({});
-  const accessOf = (h: string) => pickAccess[h] ?? toDraft(defaultAccess());
-  const setAccess = (h: string, patch: Partial<AccessDraft>) => setPickAccess((cur) => ({ ...cur, [h]: { ...(cur[h] ?? toDraft(defaultAccess())), ...patch } }));
-  // 서버마다 계정을 만든 뒤 실행할 명령(10-12 리규형님) — 처음엔 한 칸, "명령 추가"로 AFTER_MAX 칸까지
-  const [pickAfter, setPickAfter] = useState<Record<string, string[]>>({});
-  const afterOf = (h: string) => pickAfter[h] ?? [""];
-  const setAfterAt = (h: string, i: number, v: string) => setPickAfter((cur) => ({ ...cur, [h]: (cur[h] ?? [""]).map((x, n) => (n === i ? v : x)) }));
-  const addAfter = (h: string) => setPickAfter((cur) => ({ ...cur, [h]: [...(cur[h] ?? [""]), ""].slice(0, AFTER_MAX) }));
+  // 칸을 열면 업무 서버마다 스킬·명령어를 한 번 읽는다(서버는 고르지 않는다 — 10-20)
+  useEffect(() => {
+    if (formOpen) for (const h of servers) loadServer(h);
+  }, [formOpen, servers, loadServer]);
 
   const toggle = (set: Set<string>, key: string) => {
     const next = new Set(set);
@@ -476,24 +558,6 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
     else next.add(key);
     return next;
   };
-  const toggleServer = (h: string) => {
-    const next = toggle(pickServers, h);
-    setPickServers(next);
-    // 서버를 빼면 그 서버 스킬·명령어 고른 것도 뺀다
-    if (!next.has(h)) setPickSkills(new Set([...pickSkills].filter((k) => !k.startsWith(`${h}|`))));
-  };
-  const projectsOf = (h: string) => entries.filter((e) => e.host === h);
-
-  // 고른 서버의 스킬·명령어를 처음 고를 때 한 번 읽는다(오류면 "다시 읽기")
-  const loadServer = (h: string) => {
-    setServerLists((cur) => ({ ...cur, [h]: "loading" }));
-    readServerSkills({ host: h })
-      .then((r) => setServerLists((cur) => ({ ...cur, [h]: r })))
-      .catch((err) => setServerLists((cur) => ({ ...cur, [h]: { skills: [], error: `읽지 못했습니다 — ${String(err instanceof Error ? err.message : err)}` } })));
-  };
-  useEffect(() => {
-    for (const h of pickServers) if (!serverLists[h]) loadServer(h);
-  }, [pickServers]);
   const pcKeys = useMemo(() => new Set(skills.map((s) => `${s.kind}:${s.name}`)), [skills]);
   const matches = (s: Item) => {
     const q = skillFilter.trim().toLowerCase();
@@ -502,43 +566,42 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
 
   const resetForm = () => {
     setId("");
-    setPickServers(new Set());
+    setCallName("");
     setPickSkills(new Set());
-    setPickAccess({});
-    setPickAfter({});
     setEditing(null);
   };
   const submit = async () => {
     const name = id.trim();
     if (!name) return setMessage({ text: "아이디를 넣어 주세요", bad: true });
-    if (pickServers.size === 0) return setMessage({ text: "서버를 하나 이상 골라 주세요", bad: true });
-    // 쓸 폴더는 줄마다(쉼표도 됨), 열 포트는 쉼표·띄어쓰기로 나눈다 — 자세한 검사는 저장하는 쪽(server/team.ts)
-    const access: Record<string, TeamAccess> = {};
-    for (const h of pickServers) {
-      const d = accessOf(h);
-      const portWords = d.ports.split(/[\s,]+/).filter(Boolean);
-      const bad = portWords.find((w) => !/^\d+$/.test(w));
-      if (bad) return setMessage({ text: `${h} 열 포트 "${bad}" — 숫자만 넣어 주세요(여러 개는 쉼표로)`, bad: true });
-      access[h] = {
-        writable: d.writable.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean),
-        addOnly: d.addOnly.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean),
-        ports: portWords.map(Number),
-        logs: d.logs,
-        hideSecrets: d.hideSecrets,
-      };
-    }
-    // 빈 칸은 버린다 — 자세한 검사(한 줄·길이·개수)는 저장하는 쪽(server/team.ts cleanAfter)
-    const after = Object.fromEntries([...pickServers].map((h) => [h, afterOf(h).map((x) => x.trim()).filter(Boolean)]));
+    const call = callName.trim();
+    const callError = callNameProblem(call);
+    if (callError) return setMessage({ text: callError, bad: true });
     setBusy(true);
     setMessage(null);
     try {
-      const r = await saveMember({ previousId: editing, id: name, servers: [...pickServers], skills: [...pickSkills], access, after });
+      const r = await saveMember({ previousId: editing, id: name, skills: [...pickSkills], callName: call });
       onMembers(r.members);
       if (!r.ok) return setMessage({ text: r.error ?? "저장하지 못했습니다", bad: true });
       resetForm();
       setFormOpen(false);
-      // 저장하면 고른 서버에 바로 반영(10-11 계획 "저장 → 고른 서버마다 apply")
-      runJob(name, "apply");
+      // 서버에 이미 있는 팀원이면 스킬을 바로 반영 · 새 팀원은 팀원 프로젝트를 넣을 때 그 서버에 만들어진다
+      const saved = r.members.find((m) => m.id === name);
+      if (saved && (saved.servers.length || saved.applied.length)) runJob(name, "apply");
+      else setMessage({ text: `${name} 를 저장했습니다 — "팀원 프로젝트 관리" 탭에서 프로젝트를 넣으면 그 서버에 만들어지고 초대 키가 나옵니다`, bad: false });
+    } catch (err) {
+      setMessage({ text: `저장하지 못했습니다: ${String(err instanceof Error ? err.message : err)}`, bad: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+  // 팀원 Claude 계정(10-21) — 저장만 한다. 반영은 그 팀원 Paseo 를 다시 켜므로(쓰는 중이면 답이 끊김) 권한 칸처럼 따로 누른다
+  const setClaude = async (memberId: string, own: boolean) => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const r = await writeClaude({ member: memberId, own });
+      onMembers(r.members);
+      if (!r.ok) setMessage({ text: r.error ?? "저장하지 못했습니다", bad: true });
     } catch (err) {
       setMessage({ text: `저장하지 못했습니다: ${String(err instanceof Error ? err.message : err)}`, bad: true });
     } finally {
@@ -571,10 +634,8 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
   const startEdit = (m: TeamMember) => {
     setEditing(m.id);
     setId(m.id);
-    setPickServers(new Set(m.servers));
+    setCallName(m.callName);
     setPickSkills(new Set(m.skills));
-    setPickAccess(Object.fromEntries(m.servers.map((h) => [h, toDraft(m.access?.[h] ?? defaultAccess())])));
-    setPickAfter(Object.fromEntries(m.servers.map((h) => [h, m.after?.[h]?.length ? [...m.after[h]] : [""]])));
     setConfirmDelete(null);
     setMessage(null);
     setFormOpen(true);
@@ -648,7 +709,8 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
     return `${h} · ${nameLabel(kind, rest.slice(kind.length + 1))}`;
   };
   const skillGroup = (h: string, list: Item[], kind: "skill" | "command", label: string) => {
-    const all = list.filter((s) => s.kind === kind);
+    // 표준판 이름(규칙·시작·마무리·압축 준비)은 고르지 않는다 — 서버 팀원 도구가 표준판을 넣는다(10-21)
+    const all = list.filter((s) => s.kind === kind && !isTeamStandard(s.kind, s.name));
     const shown = all.filter(matches);
     return (
       <View key={`kg-${h}-${kind}`} style={{ gap: 2, paddingLeft: 8 }}>
@@ -664,102 +726,16 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
   };
   const serverSkills = (h: string) => {
     const got = serverLists[h];
+    const projectCount = entries.filter((e) => e.host === h).length;
     return (
       <View key={`sk-${h}`} style={{ gap: 2, paddingLeft: 8 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text style={{ fontSize: fs(11), color: c.foregroundMuted }}>{h}</Text>
-          {got === "loading" || !got ? muted("서버에서 읽는 중…") : got.error ? button("다시 읽기", () => loadServer(h)) : null}
+          <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>{h}</Text>
+          {muted(`리규형님 프로젝트 ${projectCount}개 · Paseo ${index.byAlias.has(h) ? "연결됨" : "연결 안 됨"}`)}
+          {got === "loading" || !got ? muted("서버에서 읽는 중…") : got.error ? button("다시 읽기", () => loadServer(h, true)) : null}
         </View>
         {got && got !== "loading" && got.error ? <Text style={{ fontSize: fs(11), color: c.statusDanger }}>{got.error}</Text> : null}
         {got && got !== "loading" && !got.error ? [skillGroup(h, got.skills, "skill", "스킬"), skillGroup(h, got.skills, "command", "명령어")] : null}
-      </View>
-    );
-  };
-
-  // 서버 한 대의 권한 칸 — 기록은 그 서버에 있는 것만(서버 스킬을 읽을 때 같이 본다)
-  const serverAccess = (h: string) => {
-    const a = accessOf(h);
-    const got = serverLists[h];
-    const present = got && got !== "loading" && !got.error ? (got.logs ?? []) : null;
-    const logs = TEAM_LOGS.filter((l) => present?.includes(l.path) || a.logs.includes(l.path));
-    const input = (value: string, onChange: (v: string) => void, placeholder: string, multiline = false) => (
-      <UiInput
-        theme={theme}
-        fontSize={fs(12)}
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        autoCapitalize="none"
-        autoCorrect={false}
-        multiline={multiline}
-        style={{ width: FIELD_WIDTH, ...(multiline ? { minHeight: fs(12) * 4 } : {}) }}
-      />
-    );
-    return (
-      <View key={`ac-${h}`} style={{ gap: 6, paddingLeft: 8 }}>
-        <Text style={{ fontSize: fs(11), color: c.foregroundMuted }}>{h}</Text>
-        {field(
-          "풀권한 폴더",
-          input(a.writable, (v) => setAccess(h, { writable: v }), "/home/프로젝트/docs/보고서", true),
-          "한 줄에 하나 — 팀원 프로젝트 안 폴더만 고칠 수 있게 엽니다. 프로젝트 경로를 그대로 적으면 그 프로젝트 전체를 고칠 수 있습니다. 비우면 팀원 프로젝트는 모두 읽기만 — 안의 파일 내용은 설정 파일까지 리규형님처럼 다 읽힙니다(팀원 홈은 늘 고칠 수 있음)",
-        )}
-        {field(
-          "계정파일만\n폴더",
-          input(a.addOnly, (v) => setAccess(h, { addOnly: v }), "/home/프로젝트/docs/보고서함", true),
-          "한 줄에 하나 — 팀원이 새 파일을 만들고, 자기가 만든 파일만 고치거나 지울 수 있습니다. 원래 있던 파일과 남이 만든 파일은 읽기만 됩니다(보고서 보관함처럼 같이 쓰는 폴더). 풀권한 폴더와 겹치게 적을 수는 없습니다",
-        )}
-        {field(
-          "열 포트",
-          input(a.ports, (v) => setAccess(h, { ports: v }), "예: 3306"),
-          "이 서버 안에서 팀원이 붙을 수 있는 포트(쉼표로 여러 개). 비우면 서버 안은 모두 막힙니다. DB(3306)를 열어도 접속 정보가 있어야 쓸 수 있고, 프로젝트 설정의 접속 정보를 쓰면 그 계정 권한(고치기·지우기 포함) 그대로입니다",
-        )}
-        {field(
-          "읽을 기록",
-          <View style={{ gap: 2 }}>
-            {present === null && logs.length === 0 ? muted("서버에서 읽는 중…") : logs.length === 0 ? muted("이 서버에는 붙일 수 있는 기록이 없습니다") : null}
-            {logs.map((l) =>
-              check(
-                `log-${h}-${l.path}`,
-                a.logs.includes(l.path),
-                l.label,
-                () => setAccess(h, { logs: a.logs.includes(l.path) ? a.logs.filter((x) => x !== l.path) : [...a.logs, l.path] }),
-                `${l.path} · ${l.note}`,
-              ),
-            )}
-          </View>,
-          "읽기만 됩니다",
-        )}
-        {field(
-          "비밀 파일",
-          check(
-            `hide-${h}`,
-            a.hideSecrets,
-            "가리기",
-            () => setAccess(h, { hideSecrets: !a.hideSecrets }),
-            "켜면 팀원 프로젝트 안 .env·.env.*(DB 비밀번호·API 키)를 팀원 Claude 가 빈 파일로 봅니다. 반영할 때 이름으로 찾아 막으므로 그 뒤 새로 생긴 파일은 다음 반영 때 가려지고, 다른 이름의 비밀까지 막지는 못합니다. 켜면 열어 준 DB 포트도 그 접속 정보로는 못 씁니다. 끄면(기본) 리규형님처럼 그대로 읽힙니다",
-          ),
-        )}
-        {field(
-          "생성뒤\n실행명령어",
-          <View style={{ gap: 4 }}>
-            {afterOf(h).map((cmd, i) => {
-              // 이미 실행한 명령이면 마지막 결과를 칸 아래에 — 성공한 명령은 다시 실행하지 않는다
-              const ran = members.find((x) => x.id === editing)?.afterRan?.[h]?.find((r) => r.command === cmd.trim());
-              return (
-                <View key={`af-${h}-${i}`} style={{ gap: 2 }}>
-                  {input(cmd, (v) => setAfterAt(h, i, v), i === 0 ? `예: \\cp -f /root/.claude-${id.trim() || "아이디"}/commands/* /home/${id.trim() || "아이디"}/.claude/commands/` : "명령 한 줄")}
-                  {ran ? (
-                    <Text style={{ fontSize: fs(10), color: ran.ok ? c.statusSuccess : c.statusDanger }}>
-                      {ran.ok ? `실행함 (${new Date(ran.at).toLocaleString()})` : `실패(종료 코드 ${ran.code ?? "시간 초과"}) — 다음 저장 때 다시 실행${ran.out ? ` · ${ran.out.replace(/\n/g, " / ")}` : ""}`}
-                    </Text>
-                  ) : null}
-                </View>
-              );
-            })}
-            {afterOf(h).length < AFTER_MAX ? <View style={{ flexDirection: "row" }}>{button("명령 추가", () => addAfter(h))}</View> : null}
-          </View>,
-          `계정을 만든 뒤(서버 반영·로그인 계정까지 끝난 뒤) 이 서버에서 관리자 권한으로 적은 차례대로 한 번 실행합니다(${AFTER_MAX}개까지). 성공한 명령은 다시 실행하지 않고, 실패하면 거기서 멈췄다가 다음 저장 때 그 명령부터 다시 합니다. 끝나면 팀원 홈 안 파일은 팀원 소유로 돌립니다. 비밀번호 같은 값은 넣지 마세요(PC 의 팀원 기록에 그대로 남습니다)`,
-        )}
       </View>
     );
   };
@@ -778,102 +754,112 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
           const onServer = m.applied.length > 0 || m.loginAdded;
           const open = openMembers.has(m.id);
           return (
-          <View key={m.id} style={{ gap: 6, paddingVertical: 8, paddingLeft: 12, borderBottomWidth: 1, borderColor: c.border }}>
-            <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`${m.id} 자세히 ${open ? "접기" : "보기"}`}
-                onPress={() => toggleMember(m.id)}
-                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
-              >
-                <Icon name={open ? "ChevronDown" : "ChevronRight"} size={fs(14)} color={c.foregroundMuted} />
-                <Text style={{ fontSize: fs(16), fontWeight: "700", color: c.foreground }}>{m.id}</Text>
-                <Text style={{ fontSize: fs(11), color: state.warn ? c.statusWarning : c.statusSuccess }}>{state.text}</Text>
-              </Pressable>
-              <View style={{ flex: 1 }} />
-              {!running && state.warn
-                ? button("다시 시도", () => runJob(m.id, "apply"), { tone: "accent", hint: "고른 서버에 이 팀원 Paseo 를 다시 만들거나 고칩니다(그 팀원 Paseo 가 잠깐 다시 시작)" })
-                : null}
-              {button("고치기", () => startEdit(m), { disabled: running })}
-              {m.loginAdded
-                ? button("초대 키 다시 발급", () => runJob(m.id, "invite"), {
-                    disabled: running,
-                    hint: "등록을 아직 안 마친 팀원에게 새 초대 키를 냅니다(전 키는 못 쓰게 됩니다). 이미 등록을 마친 팀원이면 서버가 거절합니다",
-                  })
-                : null}
-              {/* 등록 초기화(10-12 리규형님 — 인계·폰 바꿈): 삭제처럼 한 번 더 눌러 확인 */}
-              {m.loginAdded
-                ? confirmReset === m.id
-                  ? [
-                      button("정말 초기화", () => {
-                        setConfirmReset(null);
-                        runJob(m.id, "reset");
-                      }, { tone: "danger", hint: "비밀번호·인증 앱 등록을 지우고 새 초대 키를 냅니다. 지금 로그인은 끊깁니다" }),
-                      button("취소", () => setConfirmReset(null)),
-                    ]
-                  : button("등록 초기화", () => setConfirmReset(m.id), {
+            <View key={m.id} style={{ gap: 6, paddingVertical: 8, paddingLeft: 12, borderBottomWidth: 1, borderColor: c.border }}>
+              <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`${m.id} 자세히 ${open ? "접기" : "보기"}`}
+                  onPress={() => toggleMember(m.id)}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+                >
+                  <Icon name={open ? "ChevronDown" : "ChevronRight"} size={fs(14)} color={c.foregroundMuted} />
+                  <Text style={{ fontSize: fs(16), fontWeight: "700", color: c.foreground }}>{m.id}</Text>
+                  <Text style={{ fontSize: fs(11), color: state.warn ? c.statusWarning : c.statusSuccess }}>{state.text}</Text>
+                </Pressable>
+                <View style={{ flex: 1 }} />
+                {!running && state.warn
+                  ? button("다시 시도", () => runJob(m.id, "apply"), { tone: "accent", hint: "이 팀원의 프로젝트·권한·스킬을 그 서버에 다시 반영합니다(그 팀원 Paseo 가 잠깐 다시 시작)" })
+                  : null}
+                {button("고치기", () => startEdit(m), { disabled: running, hint: "아이디·스킬·명령어를 고칩니다(권한은 \"팀원 프로젝트 관리\" 탭의 프로젝트 줄에서)" })}
+                {m.loginAdded
+                  ? button("초대 키 다시 발급", () => runJob(m.id, "invite"), {
                       disabled: running,
-                      hint: "이 팀원의 비밀번호·인증 앱 등록을 지우고 새 초대 키를 냅니다 — 팀원이 처음 등록처럼 다시 정합니다(서버 계정·프로젝트·기록은 그대로)",
+                      hint: "등록을 아직 안 마친 팀원에게 새 초대 키를 냅니다(전 키는 못 쓰게 됩니다). 이미 등록을 마친 팀원이면 서버가 거절합니다",
                     })
-                : null}
-              {m.applied.length > 0 && m.skills.length > 0
-                ? button("스킬 다시 맞추기", () => runJob(m.id, "skills"), {
-                    disabled: running,
-                    hint: "서버 원본에서 고른 스킬·명령어를 다시 복사합니다(팀원 쪽에서 고친 것은 서버 백업으로 옮기고 덮어씁니다)",
-                  })
-                : null}
-              {confirmDelete === m.id
-                ? onServer
-                  ? [
-                      button("완전 삭제", () => void remove(m.id, "purge"), {
-                        tone: "danger",
-                        hint: `팀원 Paseo·설정·대화 기록·/home/${m.id} 까지 모두 지우고 로그인 계정·연결도 지웁니다. 되돌릴 수 없습니다. 같은 아이디로 다시 만들 수 있습니다`,
-                      }),
-                      button("홈 디렉터리 유지", () => void remove(m.id, "keep"), {
-                        tone: "danger",
-                        hint: `/home/${m.id} 만 남기고 나머지를 지웁니다(설정·대화 기록은 서버 백업으로). 같은 아이디로 다시 만들면 그 홈을 이어 씁니다`,
-                      }),
-                      button("취소", () => setConfirmDelete(null)),
-                    ]
-                  : [button("정말 삭제", () => void remove(m.id), { tone: "danger" }), button("취소", () => setConfirmDelete(null))]
-                : button("삭제", () => setConfirmDelete(m.id), {
-                    tone: "danger",
-                    disabled: running,
-                    hint: onServer
-                      ? "서버의 팀원 Paseo·로그인 계정·연결을 지우고 목록에서도 지웁니다 — 누르면 홈 디렉터리까지 지울지 고릅니다"
-                      : "이 팀원과 그 팀원 프로젝트 목록을 지웁니다(서버에는 아직 만들지 않았습니다)",
-                  })}
-            </View>
-            {open ? (
-            <>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
-              {muted("서버")}
-              {m.servers.map((s) => chip(s, `s-${s}`))}
-            </View>
-            {muted(`팀원 프로젝트 ${m.projects.length}`)}
-            {m.servers.map((s) => {
-              const a = m.access?.[s] ?? defaultAccess();
-              const after = m.after?.[s] ?? [];
-              const ran = (m.afterRan?.[s] ?? []).filter((r) => after.includes(r.command));
-              const okCount = ran.filter((r) => r.ok).length;
-              const failCount = ran.length - okCount;
-              return (
-                <View key={`acc-${s}`}>
+                  : null}
+                {/* 등록 초기화(10-12 리규형님 — 인계·폰 바꿈): 삭제처럼 한 번 더 눌러 확인 */}
+                {m.loginAdded
+                  ? confirmReset === m.id
+                    ? [
+                        button("정말 초기화", () => {
+                          setConfirmReset(null);
+                          runJob(m.id, "reset");
+                        }, { tone: "danger", hint: "비밀번호·인증 앱 등록을 지우고 새 초대 키를 냅니다. 지금 로그인은 끊깁니다" }),
+                        button("취소", () => setConfirmReset(null)),
+                      ]
+                    : button("등록 초기화", () => setConfirmReset(m.id), {
+                        disabled: running,
+                        hint: "이 팀원의 비밀번호·인증 앱 등록을 지우고 새 초대 키를 냅니다 — 팀원이 처음 등록처럼 다시 정합니다(서버 계정·프로젝트·기록은 그대로)",
+                      })
+                  : null}
+                {m.applied.length > 0 && m.skills.length > 0
+                  ? button("스킬 다시 맞추기", () => runJob(m.id, "skills"), {
+                      disabled: running,
+                      hint: "서버 원본에서 고른 스킬·명령어를 다시 복사합니다. 팀원판으로 적어 둔 것은 건너뛰고, 나머지 중 팀원 쪽에서 고친 것은 서버 백업으로 옮기고 덮어씁니다",
+                    })
+                  : null}
+                {confirmDelete === m.id
+                  ? onServer
+                    ? [
+                        button("완전 삭제", () => void remove(m.id, "purge"), {
+                          tone: "danger",
+                          hint: `팀원 Paseo·설정·대화 기록·/home/${m.id} 까지 모두 지우고 로그인 계정·연결도 지웁니다. 되돌릴 수 없습니다. 같은 아이디로 다시 만들 수 있습니다`,
+                        }),
+                        button("홈 디렉터리 유지", () => void remove(m.id, "keep"), {
+                          tone: "danger",
+                          hint: `/home/${m.id} 만 남기고 나머지를 지웁니다(설정·대화 기록은 서버 백업으로). 같은 아이디로 다시 만들면 그 홈을 이어 씁니다`,
+                        }),
+                        button("취소", () => setConfirmDelete(null)),
+                      ]
+                    : [button("정말 삭제", () => void remove(m.id), { tone: "danger" }), button("취소", () => setConfirmDelete(null))]
+                  : button("삭제", () => setConfirmDelete(m.id), {
+                      tone: "danger",
+                      disabled: running,
+                      hint: onServer
+                        ? "서버의 팀원 Paseo·로그인 계정·연결을 지우고 목록에서도 지웁니다 — 누르면 홈 디렉터리까지 지울지 고릅니다"
+                        : "이 팀원과 그 팀원 프로젝트 목록을 지웁니다(서버에는 아직 만들지 않았습니다)",
+                    })}
+              </View>
+              {open ? (
+                <>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+                    {muted("서버(팀원 프로젝트에서 정해짐)")}
+                    {m.servers.length ? m.servers.map((s) => chip(s, `s-${s}`)) : muted("없음")}
+                  </View>
+                  {muted(`팀원 프로젝트 ${m.projects.length}`)}
+                  {m.projects.map((p) => (
+                    <View key={`p-${p.host}|${p.path}`} style={{ paddingLeft: 8 }}>
+                      {muted(`${p.name}${p.enabled ? "" : "(숨김)"} — ${p.host}:${p.path} · ${accessNote(p)}`)}
+                    </View>
+                  ))}
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+                    {muted(`스킬·명령어 ${m.skills.length}`)}
+                    {m.skills.map((s) => chip(itemLabel(s), `k-${s}`))}
+                  </View>
+                  {/* 팀원 Claude 계정(10-21 리규형님) — 고른 쪽만 강조 */}
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+                    {muted("Claude 계정")}
+                    {button("회사 공용", () => void setClaude(m.id, false), {
+                      ...(m.ownClaude ? {} : { tone: "accent" as const }),
+                      disabled: running || busy,
+                      hint: "서버 리규형님 Paseo 의 회사 팀 Claude 를 같이 씁니다(한도도 같이 깎입니다)",
+                    })}
+                    {button("본인 로그인", () => void setClaude(m.id, true), {
+                      ...(m.ownClaude ? { tone: "accent" as const } : {}),
+                      disabled: running || busy,
+                      hint: "팀원이 자기 Claude 계정으로 씁니다 — 팀원 화면 설정의 Claude 로그인 칸에서 서버마다 한 번씩 로그인합니다",
+                    })}
+                  </View>
                   {muted(
-                    `권한 ${s} — 풀권한 폴더 ${a.writable.length ? a.writable.join(", ") : "없음(프로젝트 읽기만)"}${a.addOnly?.length ? ` · 계정파일만 폴더 ${a.addOnly.join(", ")}` : ""} · 열 포트 ${a.ports.length ? a.ports.join(", ") : "없음"} · 기록 ${a.logs.length ? a.logs.map((p) => TEAM_LOGS.find((l) => l.path === p)?.label ?? p).join(", ") : "없음"} · 비밀 파일 ${a.hideSecrets ? "가림" : "그대로"}` +
-                      (after.length ? ` · 생성 뒤 실행 명령어 ${after.length}개(실행함 ${okCount}${failCount ? ` · 실패 ${failCount}` : ""})` : ""),
+                    m.ownClaude
+                      ? "본인 로그인 — 팀원이 자기 화면 설정의 Claude 로그인 칸에서 서버마다 로그인합니다. 로그인 전이나 로그인이 풀렸을 때 회사 공용으로 대신 돌리지 않고, 다시 로그인할 때까지 멈춥니다"
+                      : "회사 공용 — 서버 리규형님 Paseo 의 회사 팀 Claude 를 같이 씁니다(한도도 같이 깎입니다)",
                   )}
-                </View>
-              );
-            })}
-            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
-              {muted(`스킬·명령어 ${m.skills.length}`)}
-              {m.skills.map((s) => chip(itemLabel(s), `k-${s}`))}
+                  {muted("바꾸면 이름 옆 \"다시 시도\"로 서버에 반영해야 먹습니다 — 그 팀원 Paseo 가 다시 켜져, 쓰는 중이면 답이 끊깁니다")}
+                </>
+              ) : null}
+              <JobLog theme={theme} job={jobs[m.id]} fontSize={fs(10)} />
             </View>
-            </>
-            ) : null}
-            <JobLog theme={theme} job={jobs[m.id]} fontSize={fs(10)} />
-          </View>
           );
         })}
       </View>
@@ -889,64 +875,65 @@ function MemberAdd({ theme, data, index, members, onMembers, jobs, runJob }: Pro
           </UiButton>
         </View>
       ) : (
-      <View style={box}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Icon name={editing ? "UserCog" : "UserPlus"} size={fs(14)} color={c.accent} />
-          {title(editing ? `팀원 고치기 — ${editing}` : "팀원 추가")}
-        </View>
-        {field(
-          "아이디",
-          <UiInput
-            theme={theme}
-            fontSize={fs(12)}
-            value={id}
-            onChangeText={setId}
-            autoCapitalize="none"
-            autoCorrect={false}
-            // 서버에 만든 팀원은 아이디가 서버 계정·로그인 계정에 박혀 있어 바꾸지 않는다
-            editable={!members.find((x) => x.id === editing && (x.applied.length > 0 || x.loginAdded))}
-            style={{ width: FIELD_WIDTH }}
-          />,
-          "팀원이 로그인할 때 씁니다 — 영문 소문자로 시작, 영문 소문자·숫자·- 만. 서버에 만든 뒤에는 바꿀 수 없습니다",
-        )}
-
-        <View style={{ gap: 2 }}>
-          <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>1. 서버</Text>
-          {muted("이 팀원이 들어갈 서버 — 여러 개 고를 수 있습니다. 팀원 프로젝트는 여기서 고른 서버에만 만들 수 있습니다")}
-          {servers.length === 0 ? muted("서버 목록을 읽는 중이거나, 프로젝트가 있는 서버가 없습니다") : null}
-          {servers.map((h) => check(`srv-${h}`, pickServers.has(h), h, () => toggleServer(h), index.byAlias.has(h) ? `리규형님 프로젝트 ${projectsOf(h).length}개 · Paseo 연결됨` : `리규형님 프로젝트 ${projectsOf(h).length}개 · Paseo 연결 안 됨`))}
-        </View>
-
-        <View style={{ gap: 2 }}>
-          <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>2. 스킬·명령어</Text>
-          {muted("고른 서버에 있는 글로벌 스킬·명령어 중 이 팀원에게 줄 것 — 그 서버에서 팀원 홈(/home/<아이디>/.claude)으로 복사합니다. 팀원 Claude 에는 여기서 고른 것만 보입니다. Paseo·Claude 가 깐 스킬은 뺐습니다")}
-          {pickServers.size === 0 ? muted("서버를 먼저 고르면 그 서버의 스킬·명령어가 나옵니다") : (
-            <UiInput theme={theme} fontSize={fs(12)} value={skillFilter} onChangeText={setSkillFilter} placeholder="스킬·명령어 이름·설명으로 찾기" style={{ width: FIELD_WIDTH }} />
+        <View style={box}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Icon name={editing ? "UserCog" : "UserPlus"} size={fs(14)} color={c.accent} />
+            {title(editing ? `팀원 고치기 — ${editing}` : "팀원 추가")}
+          </View>
+          {field(
+            "아이디",
+            <UiInput
+              theme={theme}
+              fontSize={fs(12)}
+              value={id}
+              onChangeText={setId}
+              autoCapitalize="none"
+              autoCorrect={false}
+              // 서버에 만든 팀원은 아이디가 서버 계정·로그인 계정에 박혀 있어 바꾸지 않는다
+              editable={!members.find((x) => x.id === editing && (x.applied.length > 0 || x.loginAdded))}
+              style={{ width: FIELD_WIDTH }}
+            />,
+            "팀원이 로그인할 때 씁니다 — 영문 소문자로 시작, 영문 소문자·숫자·- 만. 서버에 만든 뒤에는 바꿀 수 없습니다",
           )}
-          {[...pickServers].map(serverSkills)}
-        </View>
+          {field(
+            "부를 이름",
+            <UiInput
+              theme={theme}
+              fontSize={fs(12)}
+              value={callName}
+              onChangeText={setCallName}
+              placeholder={`${id.trim() || "아이디"}님`}
+              maxLength={CALL_NAME_MAX}
+              autoCorrect={false}
+              style={{ width: FIELD_WIDTH }}
+            />,
+            `팀원 Claude 가 대화에서 팀원을 이렇게 부릅니다(예: 대표님, 홍길동님). 비우면 아이디 뒤에 "님"을 붙입니다. 표준판을 팀원 홈에 처음 넣을 때 들어가고, 이미 넣은 뒤에 바꾸면 그 서버 팀원 홈에는 반영되지 않습니다`,
+          )}
 
-        <View style={{ gap: 2 }}>
-          <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>3. 권한</Text>
-          {muted("서버마다 이 팀원이 무엇을 고치고 무엇에 닿을 수 있는지 — 팀원 프로젝트(\"팀원 프로젝트 관리\" 탭에서 넣음)는 안의 내용까지 리규형님처럼 읽히고(읽기만), \"풀권한 폴더\"에 적은 곳은 다 고칠 수 있고, \"계정파일만 폴더\"에는 새 파일을 만들고 자기가 만든 파일만 고칠 수 있습니다. 포트는 적은 것만 열립니다")}
-          {pickServers.size === 0 ? muted("서버를 먼저 고르면 서버마다 정합니다") : null}
-          {[...pickServers].map(serverAccess)}
-        </View>
+          <View style={{ gap: 2 }}>
+            <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>1. 스킬·명령어</Text>
+            {muted("업무 서버마다 그 서버의 글로벌 스킬·명령어 중 이 팀원에게 줄 것 — 그 서버에 팀원 프로젝트가 생기면 그 서버에서 팀원 홈(/home/<아이디>/.claude)으로 복사합니다. 팀원 Claude 에는 여기서 고른 것만 보입니다(넘겨받은 프로젝트 안의 스킬·명령어는 안 보임). 나중에 목록을 바꿔도 팀원 홈에 이미 있는 것은 그대로 둡니다. Paseo·Claude 가 깐 스킬은 뺐습니다")}
+            {muted("표준판으로 자동: 대화 규칙(korean-rule)·시작(/start)·마무리(/finish)·압축 준비(start_compact)와 글로 묻고 끝내기 막기·진행 알림 감시 — 서버에 반영할 때 팀원 홈에 없으면 넣고, 있으면 그대로 둡니다. 리규형님판 같은 이름은 고르기 목록에서 뺐습니다")}
+            {servers.length === 0 ? muted("서버 목록을 읽는 중이거나, 리규형님 프로젝트가 있는 서버가 없습니다") : (
+              <UiInput theme={theme} fontSize={fs(12)} value={skillFilter} onChangeText={setSkillFilter} placeholder="스킬·명령어 이름·설명으로 찾기" style={{ width: FIELD_WIDTH }} />
+            )}
+            {servers.map(serverSkills)}
+          </View>
 
-        <View style={{ gap: 2 }}>
-          <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>4. 로그인</Text>
-          {muted("저장하면 로그인 서버에 팀원 계정을 만들고 초대 키를 냅니다(위에 상자로 나옵니다). 키를 팀원에게 전하면 팀원이 로그인 페이지의 \"초대 키로 처음 등록\"에서 비밀번호와 자기 폰 OTP 를 직접 정합니다(24시간 안에 한 번만).")}
-        </View>
+          <View style={{ gap: 2 }}>
+            <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>2. 프로젝트·권한·로그인</Text>
+            {muted("저장한 뒤 \"팀원 프로젝트 관리\" 탭에서 이 팀원의 프로젝트를 넣고, 줄의 \"권한\"으로 프로젝트마다 할 수 있는 것을 정합니다. 처음 프로젝트를 넣으면 그 서버에 팀원 Paseo 와 로그인 계정이 만들어지고 초대 키가 나옵니다(위에 상자로). 키를 팀원에게 전하면 팀원이 로그인 페이지의 \"초대 키로 처음 등록\"에서 비밀번호와 자기 폰 OTP 를 직접 정합니다(24시간 안에 한 번만).")}
+          </View>
 
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          {button(editing ? "고친 내용 저장" : "저장", () => void submit(), { tone: "accent" })}
-          {button(editing ? "고치기 그만" : "닫기", () => {
-            resetForm();
-            setMessage(null);
-            setFormOpen(false);
-          })}
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            {button(editing ? "고친 내용 저장" : "저장", () => void submit(), { tone: "accent" })}
+            {button(editing ? "고치기 그만" : "닫기", () => {
+              resetForm();
+              setMessage(null);
+              setFormOpen(false);
+            })}
+          </View>
         </View>
-      </View>
       )}
     </View>
   );

@@ -21,7 +21,7 @@ export function createFollowPills(client: PluginClientContext, log: (message: st
 
   function FollowIcon(props: PluginButtonIconProps) {
     const agentId = props.context === "agent" ? props.agentId : "";
-    const on = useSyncExternalStore(follow.subscribe, () => follow.agentId() === agentId, () => follow.agentId() === agentId);
+    const on = useSyncExternalStore(follow.subscribe, () => follow.isOn(agentId), () => follow.isOn(agentId));
     const green = themeVar("--colors-status-dot-success", props.theme.colors.statusSuccess);
     return <Icon name="Headphones" size={props.size} color={on ? green : props.color} />;
   }
@@ -30,7 +30,7 @@ export function createFollowPills(client: PluginClientContext, log: (message: st
   const sync = () => {
     const visible = follow.available();
     for (const [agentId, pill] of pills) {
-      const on = follow.agentId() === agentId;
+      const on = follow.isOn(agentId);
       if (pill.on === on && pill.visible === visible) continue;
       pill.on = on;
       pill.visible = visible;
@@ -52,7 +52,7 @@ export function createFollowPills(client: PluginClientContext, log: (message: st
     }
     if (Platform.OS !== "web" || !agent.workspaceId || pills.has(agent.id)) return;
     try {
-      const on = follow.agentId() === agent.id;
+      const on = follow.isOn(agent.id);
       const visible = follow.available();
       const reg = client.addComposerPill({
         id: "follow-read",

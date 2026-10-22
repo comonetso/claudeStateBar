@@ -6,6 +6,16 @@ import { z } from "zod";
 // (넓은 화면은 같으면 한 줄만 보인다). 기기마다 그 기기 화면 플러그인이 자기 기기 작업 공간을 맞추고, 경로별 제목은 그 기기의
 // ~/.claude/project-labels.json(PC 가 목록에서 만들어 보낸 이름표, server/projectLabels)에서 읽는다
 /** title = 위쪽 제목 "카테고리 - 이름", name = 이름만(폰·좁은 화면 위 줄 — 10-08 리규형님 "폰에선 카테고리 빼기") */
+/**
+ * 알림 제목용 — 위쪽 제목 "카테고리 - 이름"을 "이름 - 카테고리"로 뒤집는다(10-21 리규형님 "알림 제목이 잘리는 경우가 있어서
+ * 플젝 이름이 우선" · 모양 "질문 — 이름 - 카테고리"). 폰 알림(server/push.ts)과 PC 화면 알림(client/osNotifyTitle.ts)이 쓴다.
+ * 이름표의 이름이 제목 끝 " - 이름"과 맞을 때만 뒤집고, 아니면(카테고리 없음·사람이 바꾼 제목·이름 모름) 그대로 둔다
+ */
+export function flipTitle(title: string, name: string | null | undefined): string {
+  const tail = name ? ` - ${name}` : "";
+  if (!tail || !title.endsWith(tail) || title.length === tail.length) return title;
+  return `${name} - ${title.slice(0, -tail.length)}`;
+}
 const titleSchema = z.object({ path: z.string(), title: z.string(), name: z.string() });
 
 /** 이름표가 바뀔 때까지 기다린다(길어도 25초). 지금 아는 서명을 보내면, 다르면 바로 답한다 */

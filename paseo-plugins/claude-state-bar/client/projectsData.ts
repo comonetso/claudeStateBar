@@ -4,7 +4,8 @@ import { getPaseoClient, useHosts, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { projectsManager, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsWait, type ProjectEntry } from "../shared/projects";
 import { agentBucket, mostUrgent, type StatusBucket } from "./statusIndicator";
-import { staffServerId } from "./teamMode";
+import { staffClient, staffServerId, staffServerIds, watchStaffHosts } from "./teamMode";
+import { mergeStaffProjects, type StaffPart } from "./staffProjects";
 import { isCompactReady, onCompactReady } from "./compactReady";
 import { canOpenWorkspaceFile, currentWorkspaceFromUrl, markWorkspaceInteraction, openWorkspaceFile, watchLocation } from "./web";
 
@@ -169,17 +170,50 @@ export function notifyProjectsChanged(): void {
 // 목록 파일 저장 알림을 못 받았을 때 다시 묻기까지 — 설정 맞추기(client/settingsSync RETRY_MS)와 같은 값
 const WAIT_RETRY_MS = 30_000;
 
+/** 직원 화면에 붙은 직원 데몬들 — 늦게 붙는 데몬이 있으면 다시 그린다 */
+function useStaffServers(): string[] {
+  const [ids, setIds] = useState<string[]>(() => staffServerIds());
+  useEffect(() => watchStaffHosts(() => setIds(staffServerIds())), []);
+  return ids;
+}
+
+/** 직원 데몬마다 그 데몬 플러그인에 목록을 묻고 합친다(10-20 — client/staffProjects). 한 데몬이 실패해도 나머지는 보인다 */
+async function loadStaffProjects(servers: string[], labels: Map<string, string>): Promise<ProjectsData> {
+  const parts = await Promise.all(
+    servers.map(async (serverId): Promise<StaffPart> => {
+      const label = labels.get(serverId) ?? null;
+      const client = staffClient(serverId);
+      if (!client) return { serverId, label, data: null, failure: "연결 없음" };
+      try {
+        return { serverId, label, data: await client.rpc(projectsManager, {}) };
+      } catch (error) {
+        return { serverId, label, data: null, failure: String(error) };
+      }
+    }),
+  );
+  return mergeStaffProjects(parts);
+}
+
 export function useProjectsData(): { data: ProjectsData | null; load: () => Promise<void> } {
   const fetchProjects = useRpc(projectsManager);
   const waitChange = useRpc(projectsWait);
   const [data, setData] = useState<ProjectsData | null>(null);
+  // 직원 데몬이 둘 이상일 때만 데몬마다 묻는다 — 리규형님 화면·직원 데몬 하나는 예전 그대로(이 화면을 맡은 데몬 하나)
+  const staff = useStaffServers();
+  const multi = staff.length > 1;
+  const staffKey = staff.join(",");
+  const hosts = useHosts();
+  const labelKey = staff.map((id) => `${id}=${hosts.find((h) => h.serverId === id)?.label ?? ""}`).join("|");
   const load = useCallback(async () => {
     try {
-      setData(await fetchProjects({}));
+      if (multi) {
+        const labels = new Map(labelKey.split("|").map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)] as [string, string]));
+        setData(await loadStaffProjects(staffKey.split(","), labels));
+      } else setData(await fetchProjects({}));
     } catch (e) {
       setData({ source: null, entries: [], error: String(e) });
     }
-  }, [fetchProjects]);
+  }, [fetchProjects, multi, staffKey, labelKey]);
   useEffect(() => {
     void load();
     const reload = () => void load();
@@ -188,28 +222,38 @@ export function useProjectsData(): { data: ProjectsData | null; load: () => Prom
       reloaders.delete(reload);
     };
   }, [load]);
-  // Paseo 편집기에서 목록 파일을 저장하면 바로 다시 읽는다(10-07) — 데몬이 파일이 바뀔 때까지 기다렸다 답한다
+  // Paseo 편집기에서 목록 파일을 저장하면 바로 다시 읽는다(10-07) — 데몬이 파일이 바뀔 때까지 기다렸다 답한다.
+  // 직원 데몬이 여럿이면 데몬마다 기다린다(리규형님이 팀원 프로젝트를 반영하면 그 서버 데몬의 목록 파일이 바뀐다)
   useEffect(() => {
     let stopped = false;
-    void (async () => {
-      let known: number | null | undefined;
-      while (!stopped) {
-        let r: { mtimeMs: number | null };
-        try {
-          r = await waitChange({ mtimeMs: known ?? null });
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, WAIT_RETRY_MS));
-          continue;
+    type Wait = (input: { mtimeMs: number | null }) => Promise<{ mtimeMs: number | null }>;
+    const waiters: Wait[] = multi
+      ? staffKey.split(",").flatMap((id) => {
+          const client = staffClient(id);
+          return client ? [(input: { mtimeMs: number | null }) => client.rpc(projectsWait, input)] : [];
+        })
+      : [waitChange];
+    for (const wait of waiters) {
+      void (async () => {
+        let known: number | null | undefined;
+        while (!stopped) {
+          let r: { mtimeMs: number | null };
+          try {
+            r = await wait({ mtimeMs: known ?? null });
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, WAIT_RETRY_MS));
+            continue;
+          }
+          if (stopped) return;
+          if (known !== undefined && r.mtimeMs !== known) notifyProjectsChanged();
+          known = r.mtimeMs;
         }
-        if (stopped) return;
-        if (known !== undefined && r.mtimeMs !== known) notifyProjectsChanged();
-        known = r.mtimeMs;
-      }
-    })();
+      })();
+    }
     return () => {
       stopped = true;
     };
-  }, [waitChange, load]);
+  }, [waitChange, load, multi, staffKey]);
   return { data, load };
 }
 
@@ -307,8 +351,10 @@ export function hostIndexOf(entries: ProjectEntry[], paths: Map<string, string>)
 }
 
 export function serverOf(e: ProjectEntry, index: HostIndex): string | undefined {
+  // 직원 데몬 여럿의 목록을 합친 항목은 받아 온 데몬에서 연다(10-20 client/staffProjects)
+  if (e.serverId) return e.serverId;
   const key = norm(e.path);
-  // 직원 화면은 자기 데몬 하나뿐 — 경로·별칭으로 못 찾으면 자기 데몬에서 연다
+  // 직원 화면 — 경로·별칭으로 못 찾으면 자기 데몬(먼저 붙은 것)에서 연다
   return (index.shared.has(key) ? undefined : index.byPath.get(key)) ?? index.byAlias.get(e.host) ?? staffServerId();
 }
 

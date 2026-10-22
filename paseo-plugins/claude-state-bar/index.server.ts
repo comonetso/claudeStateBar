@@ -57,9 +57,9 @@ import { thinkingBoundary } from "./shared/thinkingBoundary";
 import { thinkingBoundaryOf } from "./server/thinkingBoundary";
 import { projectsEdit, projectsHosts, projectsManager, projectsWait, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsResetOrder } from "./shared/projects";
 import { editProjects, projectHosts } from "./server/projectsEdit";
-import { teamCategoryOrder, teamJobStart, teamJobWait, teamMemberRemove, teamMemberSave, teamProjectEdit, teamServerSkills, teamSkills, teamState } from "./shared/team";
+import { teamCategoryOrder, teamJobStart, teamJobWait, teamMemberClaude, teamMemberRemove, teamMemberSave, teamProjectAccess, teamProjectEdit, teamServerSkills, teamSkills, teamState } from "./shared/team";
 import { startTeamJob, waitTeamJob } from "./server/teamApply";
-import { editMemberProjects, removeMember, saveMember, setMemberCategoryOrder, teamStateRead } from "./server/team";
+import { editMemberProjects, removeMember, saveMember, setMemberCategoryOrder, setMemberClaude, setProjectAccess, teamStateRead } from "./server/team";
 import { listGlobalSkills, listServerSkills } from "./server/teamSkills";
 import { clearProjectOrders, projectOrders, setProjectOrder } from "./server/projectsOrder";
 import { clearProjectPins, projectPins, setProjectPin, setProjectPinOrder } from "./server/projectsPins";
@@ -77,9 +77,11 @@ import { baseOf, forgetAccount, providerFromDisk, stopAccounts, switchAccount, w
 import { accountSwitch, accountsWait, personalLoginKeep } from "./shared/account";
 import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCode, waitLogin } from "./server/claudeLogin";
 import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
-import { keepPersonalLogin, teamUsageSources } from "./server/teamUsage";
+import { keepPersonalLogin, startUsageLoginKeeper, teamUsageSources } from "./server/teamUsage";
 import { ackPush, createPush, registerPushToken, soundPushLink } from "./server/push";
 import { pushCompactWait, pushReceived, pushRegister } from "./shared/push";
+import { startStallWatch, trackRpc } from "./server/diagStall";
+import { scheduleTitleSync } from "./server/titleSync";
 
 export default function contribute(server: PluginServerContext) {
   // 처리되지 않은 거부 하나로 플러그인 프로세스 전체가 죽지 않게 한다(10-18 18:08 PC — 공급자 기록 쓰기의 Windows 이름 바꾸기 거부가 처리되지
@@ -89,6 +91,15 @@ export default function contribute(server: PluginServerContext) {
     console.log(`[plugin] 처리되지 않은 오류 — 플러그인은 계속 돈다: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
   };
   process.on("unhandledRejection", onUnhandled);
+  // 요청 시간 초과 진단(10-22, server/diagStall.ts) — 처리 함수를 모두 감싸 27초 넘는 요청과 그때 처리 중이던 것을 남기고, 멈춤을 잰다.
+  // 감쌀 수 없는 문맥(고정된 객체)이면 진단 없이 그대로 간다
+  try {
+    const handle = server.handle.bind(server) as (contract: { name: string }, fn: (...args: unknown[]) => unknown) => unknown;
+    (server as unknown as { handle: typeof handle }).handle = (contract, fn) => handle(contract, trackRpc(contract.name, fn));
+  } catch (error) {
+    console.log(`[diag] rpc tracking unavailable: ${String(error)}`);
+  }
+  startStallWatch();
   const settings = server.registerSettings(soundSettings);
   const readSettings = async () => {
     const state = await settings.read();
@@ -96,12 +107,15 @@ export default function contribute(server: PluginServerContext) {
   };
 
   // 팀 공급자 한도를 사용량 목록에 늘 올린다(10-15 — server/teamUsage). 이 기능이 없는 옛 데몬에선 건너뛴다
+  let stopUsageLoginKeeper = () => {};
   if (typeof (server as { registerUsageSource?: unknown }).registerUsageSource === "function") {
     try {
       for (const source of teamUsageSources()) server.registerUsageSource(source);
     } catch (error) {
       console.log(`[team-usage] register failed: ${String(error)}`);
     }
+    // 1년 열쇠 공급자의 사용량 보기용 로그인이 쓰이지 않는 동안 풀리지 않게(10-22 — server/teamUsage startUsageLoginKeeper)
+    stopUsageLoginKeeper = startUsageLoginKeeper().stop;
   }
 
   const readSound = createSoundReader(readSettings);
@@ -221,6 +235,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(teamMemberSave, async (input) => saveMember(input));
   server.handle(teamMemberRemove, async ({ id }) => removeMember(id));
   server.handle(teamProjectEdit, async ({ member, op }) => editMemberProjects(member, op));
+  // 팀원 프로젝트마다 권한(10-20 — 읽기만·읽기쓰기·내가 쓴 파일만·밖 경로·포트·기록·비밀 가리기)
+  server.handle(teamProjectAccess, async ({ member, key, access }) => setProjectAccess(member, key, access));
+  // 팀원 Claude 계정(10-21 — 회사 공용·본인 로그인)
+  server.handle(teamMemberClaude, async ({ member, own }) => setMemberClaude(member, own));
   server.handle(teamCategoryOrder, async ({ member, names }) => setMemberCategoryOrder(member, names));
   // 서버 작업(10-11 — 서버에 반영·스킬 다시 맞추기·지우기). SSH 로 서버 직원 도구·로그인 서버 관리 도구를 부른다
   server.handle(teamJobStart, async ({ member, action }) => startTeamJob(member, action));
@@ -316,23 +334,30 @@ export default function contribute(server: PluginServerContext) {
     const provider = (handle.current() as { provider?: string } | null)?.provider ?? providerFromDisk(agentId);
     return switchAccount(agentId, to, provider);
   });
-  // Claude 다시 로그인(10-14) — 로그인이 풀린 대화를 턴 끝에서 알아보고, 이 기기 데몬이 `claude auth login` 을 대신 띄운다. 팀원 데몬은 안 한다
+  // Claude 다시 로그인(10-14) — 로그인이 풀린 대화를 턴 끝에서 알아보고, 이 기기 데몬이 `claude auth login` 을 대신 띄운다.
+  // 팀원 데몬도 한다(10-21) — 본인 로그인 팀원만 대상이 생기고, 회사 공용 팀원은 대상이 없어 기록 한 줄로 끝난다(claudeLogin.loginTargets)
   server.handle(loginWait, async ({ rev }) => waitLogin(rev));
   server.handle(loginStart, async ({ target }) => startLogin(target));
   server.handle(loginCode, async ({ code }) => submitCode(code));
   server.handle(loginCancel, async () => cancelLogin());
   const stopAccountHooks: Array<() => void> = [];
-  if (!teamDaemon) {
-    stopAccountHooks.push(server.on("agent.archived", ({ agent }) => {
-      // 결과를 버리면(void) 기록 쓰기 실패가 처리되지 않은 거부가 되어 플러그인 프로세스가 죽는다(10-18 18:08 PC — Windows 이름 바꾸기 거부).
-      // 기록 정리 실패는 기록만 남긴다 — 다음 공급자 바꾸기·보관 때 다시 쓴다
-      forgetAccount(agent.id).catch((error) => console.log(`[account] ${agent.id.slice(0, 8)}: 보관한 대화의 공급자 기록을 못 지움 — ${String(error)}`));
-      forgetLogin(agent.id);
-    }));
-    stopAccountHooks.push(server.on("agent.turn_ended", (event) => {
-      void onTurnEnded(event).catch((error: unknown) => console.log(`[claude-login] turn check failed: ${String(error)}`));
-    }));
-  }
+  stopAccountHooks.push(server.on("agent.archived", ({ agent }) => {
+    forgetLogin(agent.id);
+    // 팀원 데몬은 공급자 바꾸기가 없다(계정 기록 없음)
+    if (teamDaemon) return;
+    // 결과를 버리면(void) 기록 쓰기 실패가 처리되지 않은 거부가 되어 플러그인 프로세스가 죽는다(10-18 18:08 PC — Windows 이름 바꾸기 거부).
+    // 기록 정리 실패는 기록만 남긴다 — 다음 공급자 바꾸기·보관 때 다시 쓴다
+    forgetAccount(agent.id).catch((error) => console.log(`[account] ${agent.id.slice(0, 8)}: 보관한 대화의 공급자 기록을 못 지움 — ${String(error)}`));
+  }));
+  stopAccountHooks.push(server.on("agent.turn_ended", (event) => {
+    void onTurnEnded(event).catch((error: unknown) => console.log(`[claude-login] turn check failed: ${String(error)}`));
+  }));
+  // 탭 이름 → Claude 대화 기록(10-22) — 세션 가져오기 목록이 그 이름을 보여 주게. 보관 때도 한 번 더(보관한 대화만 그 목록에 나온다).
+  // 팀원 데몬도 한다(팀원도 세션 가져오기를 쓴다)
+  stopAccountHooks.push(
+    server.on("agent.turn_ended", ({ agent }) => scheduleTitleSync(agent)),
+    server.on("agent.archived", ({ agent }) => scheduleTitleSync(agent)),
+  );
   // 폰 푸시(10-15 — 질문지·압축 준비만, 모든 대화). 폰 앱이 준 토큰을 화면이 맡기고, 이 데몬 대화의 일만 보낸다. 직원 데몬은 안 한다
   server.handle(pushRegister, async ({ token }) => registerPushToken(token));
   // 폰 앱의 "받았다"(10-17) — 이 데몬이 보낸 알림이면 기록한다(그 소리는 PC 에서 안 울림). 직원 데몬은 보내지 않으니 늘 ok:false
@@ -361,6 +386,7 @@ export default function contribute(server: PluginServerContext) {
     for (const stop of stopAccountHooks) stop();
     stopAccounts();
     stopLogin();
+    stopUsageLoginKeeper();
     void routerPromise?.then((value) => value.dispose(), () => {});
     stopProjectLabels();
     stopProjectsCopy();

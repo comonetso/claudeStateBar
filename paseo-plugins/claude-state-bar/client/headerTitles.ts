@@ -1,5 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { headerTitleApply, headerTitlesWait } from "../shared/headerTitles";
+import { flipTitle, headerTitleApply, headerTitlesWait } from "../shared/headerTitles";
 import { norm } from "./projectsData";
 import { watchCompactHeader, watchTabTitle } from "./web";
 import { joinSharedDevice, type SharedDevice } from "./sharedDevice";
@@ -19,7 +19,7 @@ type Ws = { id: string; projectId: string; projectDisplayName: string; projectRo
 
 // 폰(좁은 화면) 위 줄 줄이기(web.ts watchCompactHeader)는 화면에 하나만 돈다 — 기기마다 올라오는 플러그인이 같은 실행 공간
 // (globalThis)을 쓰므로 기기별 "위쪽 제목 → 이름"을 거기 모은다
-const COMPACT_HEADER_VERSION = 2; // 2: 정지 때 글·display 복원, 옛 장치 인계.
+const COMPACT_HEADER_VERSION = 3; // 2: 정지 때 글·display 복원, 옛 장치 인계. · 3: 알림 제목용 이름(alertNameOfWorkspace, 10-21).
 type CompactHub = SharedDevice & { names: Map<object, Map<string, string>> };
 function compactHub(): CompactHub {
   const g = globalThis as Record<string, unknown>;
@@ -55,6 +55,11 @@ function titleOfWorkspace(workspaceId: string): string | null {
     if (ws) return ws.name || null;
   }
   return null;
+}
+/** PC 화면 알림 제목에 붙일 이름 — 작업 공간 제목 "카테고리 - 이름"을 "이름 - 카테고리"로(shared/headerTitles flipTitle). 모르면 null */
+export function alertNameOfWorkspace(workspaceId: string | null | undefined): string | null {
+  const title = workspaceId ? titleOfWorkspace(workspaceId) : null;
+  return title ? flipTitle(title, shortOf(title)) : null;
 }
 
 export function startHeaderTitles(client: PluginClientContext, log: (message: string) => void): () => void {

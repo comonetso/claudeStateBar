@@ -1,7 +1,8 @@
 import type { SoundKind } from "../shared/sound";
 
 export interface JudgeConfig { settleMs: number; warningPercent: number; dangerPercent: number }
-const QUESTION_KINDS = new Set(["question", "plan"]);
+// 허락 요청은 종류와 상관없이 질문 소리 — 질문지·계획 승인뿐 아니라 "매번 묻기" 모드의 도구 사용 허락도(10-21 리규형님: 허락 창을 10~20분
+// 몰랐다 · "똑같이 질문으로 소리"). 자동 승인으로 settleMs 안에 사라지는 허락은 isCurrent 에서 걸러져 울리지 않는다
 export interface AgentView {
   id: string; status: string; lastUserMessageAt?: string | null;
   pendingPermissions: readonly { id: string; kind: string }[];
@@ -47,7 +48,7 @@ export function createJudge(play: (kind: SoundKind, agentId: string, nativeId: s
   };
   return {
     observe(agent, initial) {
-      const questionIds = new Set(agent.pendingPermissions.filter((p) => QUESTION_KINDS.has(p.kind)).map((p) => p.id));
+      const questionIds = new Set(agent.pendingPermissions.map((p) => p.id));
       const percent = contextPercent(agent), previous = memory.get(agent.id);
       if (!previous || initial) { remove(agent.id); memory.set(agent.id, { agent, questionIds, level: levelOf(percent, config()) }); return; }
       let level = previous.level;

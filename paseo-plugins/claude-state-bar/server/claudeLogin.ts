@@ -6,6 +6,7 @@ import { basename, join } from "node:path";
 import type { LoginSnapshot, LoginTarget } from "../shared/claudeLogin";
 import { isClaudeProvider, PERSONAL_PROVIDER, readProviders, switchedProvider } from "./account";
 import { isTeamDaemon } from "./sound";
+import { tokenProviders, usageLoginDir, usageLoginState } from "./usageLogin";
 
 // Claude 다시 로그인(shared/claudeLogin, 리규형님 10-14). 기기마다 돈다 — 이 기기 데몬의 대화와 이 기기 로그인 파일만 다룬다.
 // 로그인 대상 = 이 기기 Paseo 설정의 Claude 공급자 중 로그인 파일을 쓰는 것. 같은 로그인 파일을 쓰는 공급자는 하나로 묶는다.
@@ -42,12 +43,14 @@ function str(v: unknown): string | null {
 }
 
 export function loginTargets(): Target[] {
-  if (isTeamDaemon()) return [];
+  // 팀원 데몬(10-21 리규형님 — 팀원마다 회사 공용/본인 로그인): 관리자가 본인 로그인으로 정해 반영하면 서버 직원 도구가 회사 토큰을 빼므로
+  // 아래 토큰 검사만으로 회사 공용 팀원은 빠지고 본인 로그인 팀원은 대상이 된다(로그인 파일 = 데몬 홈 /home/<아이디>/.claude)
+  const staff = isTeamDaemon();
   const providers = readProviders();
   // Claude 계열 판정은 account.ts 정본. 설정 칸이 비어 있어도(claude: null) 기본 공급자 자리는 그대로 두려고 빈 칸은 {} 로 본다(10-18 전 이 파일의 판정과 같은 답)
   const claudeIds = Object.keys(providers).filter((id) => isClaudeProvider(id, providers[id] || {}));
-  // 기본 Claude 공급자는 설정에 없어도 Paseo 가 띄운다
-  if (!claudeIds.includes(PERSONAL_PROVIDER)) claudeIds.unshift(PERSONAL_PROVIDER);
+  // 기본 Claude 공급자는 설정에 없어도 Paseo 가 띄운다 — 팀원 데몬은 끼워 넣지 않는다(설정을 못 읽었을 때 회사 공용 팀원에게 로그인 칸이 잘못 생기지 않게)
+  if (!staff && !claudeIds.includes(PERSONAL_PROVIDER)) claudeIds.unshift(PERSONAL_PROVIDER);
   const fallbackClaude = claudeIds.map((id) => claudeFromCommand(providers[id]?.command)).find(Boolean) ?? "claude";
   const byDir = new Map<string, Target>();
   for (const id of claudeIds) {
@@ -65,7 +68,15 @@ export function loginTargets(): Target[] {
     }
     byDir.set(key, { id, label, providers: [id], configDir, claude: claudeFromCommand(p?.command) ?? fallbackClaude });
   }
-  return [...byDir.values()];
+  const targets = [...byDir.values()];
+  // 사용량 보기용 로그인(10-22 리규형님 — server/usageLogin): 위에서 빠진 1년 열쇠 공급자마다 하나. 대화는 열쇠로 돌아 로그인 오류 알약과
+  // 상관없으므로 providers 를 비운다(targetOf 가 찾지 않는다). 팀원 데몬은 tokenProviders 가 비어 생기지 않는다
+  for (const id of tokenProviders()) {
+    const p = providers[id];
+    const dir = usageLoginDir(id);
+    targets.push({ id: `${id}:usage`, label: str(p?.label) ?? id, usage: true, ...usageLoginState(dir), providers: [], configDir: dir, claude: claudeFromCommand(p?.command) ?? fallbackClaude });
+  }
+  return targets;
 }
 
 function credentialsFile(t: Target): string {
@@ -97,7 +108,7 @@ function snapshot(): LoginSnapshot {
   return {
     rev,
     supported: targets.length > 0,
-    targets: targets.map(({ id, label }) => ({ id, label })),
+    targets: targets.map(({ id, label, usage, loggedIn, account }) => (usage ? { id, label, usage, loggedIn, account } : { id, label })),
     needs: Object.fromEntries(needs),
     running: run ? { target: run.target, url: run.url } : null,
   };
@@ -208,6 +219,8 @@ export async function startLogin(targetId: string): Promise<{ ok: boolean; url?:
   const t = loginTargets().find((x) => x.id === targetId);
   if (!t) return { ok: false, error: "이 기기에서 다시 로그인할 수 있는 Claude 공급자가 아닙니다" };
   stopRun();
+  // 사용량 보기용 폴더는 처음엔 없다 — 로그인 파일이 다른 사람에게 읽히지 않게 이 사용자만 여는 폴더로 만든다
+  if (t.usage && t.configDir) await mkdir(t.configDir, { recursive: true, mode: 0o700 });
   const env: NodeJS.ProcessEnv = { ...process.env, BROWSER: await noopBrowser() };
   if (t.configDir) env.CLAUDE_CONFIG_DIR = t.configDir;
   else delete env.CLAUDE_CONFIG_DIR;

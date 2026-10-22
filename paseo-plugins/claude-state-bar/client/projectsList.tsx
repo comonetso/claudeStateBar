@@ -324,6 +324,8 @@ export function ProjectsList(props: {
                       onLongPress={(ev: { nativeEvent?: { pageX?: number; pageY?: number } }) =>
                         setMenu({ entry: e, x: ev?.nativeEvent?.pageX ?? 40, y: ev?.nativeEvent?.pageY ?? 80 })}
                       accessibilityRole="button"
+                      // 폰 앱에서 고를 때 진동하는 자리 표시(client/haptics.ts HAPTIC_TARGETS)
+                      testID="csb-project-open"
                       accessibilityLabel={`${e.name}${mixed && e.category ? ` (${e.category})` : ""} 열기${alive ? ` (열린 대화 ${alive.open}개${alive.running ? `, 돌고 있음 ${alive.running}개` : ""}${alive.asking ? `, 질문 대기 ${alive.asking}개` : ""})` : ""}`}
                       disabled={!!busy || (e.missing && !(readOnly && e.host === "PC"))}
                       onPress={() => onOpen(e)}

@@ -34,6 +34,13 @@ async function readTitles(): Promise<{ sig: string | null; titles: Title[] }> {
   return { sig: createHash("sha1").update(JSON.stringify(titles)).digest("hex"), titles };
 }
 
+/** 위쪽 제목 → 이 기기 이름표의 이름만(폰 알림 제목을 "이름 - 카테고리"로 뒤집을 때 — push.ts). 모르면 null */
+export async function labelNameOf(title: string): Promise<string | null> {
+  const want = title.trim();
+  if (!want) return null;
+  return (await readTitles()).titles.find((t) => t.title === want)?.name ?? null;
+}
+
 const waiters = new Set<() => void>();
 let watching = false;
 function watchLabels(): void {

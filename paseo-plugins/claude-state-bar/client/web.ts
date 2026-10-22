@@ -583,6 +583,10 @@ export const PASEO_BUNDLES: Record<string, { version: string; ids: PaseoModuleId
   "3a92a6be2c6767623cc9fa2aa410618e": { version: "0.11.1", ids: { layout: 3803, schema: 3804, navigate: 3900, sidebarOrder: 4027, queryClient: 850, hostRuntime: 3761 } },
   // PC 앱 0.11.4 (10-17 아침 앱 재시작 때 자동 설치) — 번호·본문 모두 0.11.1 과 같다(update-check/check-bundle.cjs, 결과 tests-261017/check_bundle_0114.json)
   "8bce0495199b6764c1ef3c14273ac681": { version: "0.11.4", ids: { layout: 3803, schema: 3804, navigate: 3900, sidebarOrder: 4027, queryClient: 850, hostRuntime: 3761 } },
+  // PC 앱 0.12.0 (10-20 자동 설치) — 번호가 모두 밀렸다(check-bundle.cjs 결과 docs tests-261020/check_bundle_0120.json). layout 은 본문이 바뀌었으나
+  // 좁은 화면 시트·포커스 되돌리기 칸이 더해진 것뿐이고 우리가 쓰는 layoutByWorkspace·splitSizesByWorkspace 는 그대로, schema 본문은 같다.
+  // hostRuntime 3767 은 acquireScriptStatusDemand 하나가 더해졌을 뿐 우리가 쓰는 listUsageReports 는 같다
+  "35dfa9cf1abfa4f304ac50232f52b8f4": { version: "0.12.0", ids: { layout: 3809, schema: 3810, navigate: 3909, sidebarOrder: 4051, queryClient: 852, hostRuntime: 3767 } },
 };
 
 /** 이 화면 번들에서 확인한 모듈 번호. 모르는 판이거나 웹이 아니면 null */
@@ -1980,17 +1984,19 @@ export type TurnReadBinding = {
   log?(message: string): void;
   fail?(target: unknown, reason: string): void;
   /** from: 화면에서 선택한 글이 걸친 첫 문단 번호 — 있으면 그 문단부터 읽는다(10-13) */
-  read(target: unknown, text: string, from?: number): void;
+  read(target: unknown, text: string, from?: number, agentId?: string): void;
   previous(): void;
   toggle(): void;
   stop(): void;
   next(): void;
   speed(value: number): void;
-  /** 이 호스트에서 켜진 따라 읽기(10-15) — 없으면 null */
+  /** 옛 호스트의 단일 따라 읽기(10-15) — 새 연결은 follows를 쓴다 */
   follow?: FollowBinding | null;
+  /** 이 호스트에서 켜진 대화별 따라 읽기(10-21). follow는 옛 호스트 연결을 넘겨받을 때만 쓴다 */
+  follows?: readonly FollowBinding[];
 };
 /**
- * 따라 읽기(10-15 리규형님 "생각 상자를 뺀 Claude 말을 지금 시점부터 계속 읽어 주는 알약") — 켜진 대화 하나의 새 말을 문단이 끝나는
+ * 따라 읽기(10-15 리규형님 "생각 상자를 뺀 Claude 말을 지금 시점부터 계속 읽어 주는 알약") — 켜진 대화마다 새 말을 문단이 끝나는
  * 대로 재생기에 넘긴다. 생각 상자 본문은 빼고 상자에서 꺼낸 말은 넣는다. 읽는 글은 화면 글이다(브라우저 번역기가 바꿨으면 바뀐 글)
  */
 export type FollowBinding = {
@@ -2007,6 +2013,8 @@ export type FollowBinding = {
   push(texts: string[]): void;
   /** 따라 읽는 대화 화면이 숨었다(true)·돌아왔다(false) — 재생기가 새 소리 만들기를 보류·재개한다(10-20). 옛 판 연결엔 없다 */
   hold?(on: boolean): void;
+  /** 복귀 뒤 문단을 넘긴 다음 재생기 진단을 확인한다(10-21). 기록은 그 복귀에서 한 번만 */
+  checkReturn?(): void;
 };
 type ReadEl = NodeLike & {
   tagName: string;
@@ -2046,8 +2054,8 @@ const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turn
 const READ_MARK = "data-csb-turn-read";
 // v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
 // v7(10-15): 턴 끝난 시각·내 말 시각 항상 보이기 규칙이 붙었다 — 판이 오르면 이름도 바꿔 옛 판이 지우는 스타일과 겹치지 않게
-const READ_SHEET = "claude-state-bar-turn-read-v11";
-const TURN_READ_VERSION = 23; // 23: 숨으면 재생기 보류 — 이미 만든 소리까지만(10-20) · 22: 따라 읽는 대화 화면이 숨으면 새 문단을 안 넘기고 기다림(10-20) · 18: 따라 읽기 켤 때 선택한 문단부터 — follow.from(10-16) · 17: 따라 읽기 — 바인딩에 follow(10-15) ·9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
+const READ_SHEET = "claude-state-bar-turn-read-v12";
+const TURN_READ_VERSION = 24; // 24: 대화별 따라 읽기·복귀 진단(10-21) · 23: 숨으면 재생기 보류 — 이미 만든 소리까지만(10-20) · 22: 따라 읽는 대화 화면이 숨으면 새 문단을 안 넘기고 기다림(10-20) · 18: 따라 읽기 켤 때 선택한 문단부터 — follow.from(10-16) · 17: 따라 읽기 — 바인딩에 follow(10-15) ·9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
 /**
  * 꼬리 줄 "작업 시간" 단추의 이름표에서 끝난 시각만 — 0.11.1 AssistantTurnFooter(모듈 4880 Ue)는 작업 시간과 끝난 시각이 둘 다
  * 있을 때 이름표를 `${작업 시간}, ended ${시각}` 으로 만든다("ended" 는 번역 없는 고정 글). 시각은 Paseo formatMessageTimestamp
@@ -2302,6 +2310,24 @@ function streamKeyUncached(el: ReadEl): string | null {
   if (!p) return null;
   const serverId = typeof p.serverId === "string" ? p.serverId : (p.context as { serverId?: string } | undefined)?.serverId;
   return `${p.agentId as string}|${serverId ?? ""}`;
+}
+/** 입력창 위 띠의 대화. 직접 props가 없는 감싸개면 알약의 fiber에서 찾는다(10-21). */
+function trackStream(track: ReadEl): string | null {
+  const own = streamKey(track);
+  if (own) return own;
+  const pills = track.querySelectorAll("[aria-label]");
+  for (let i = 0; i < pills.length; i++) {
+    const stream = streamKey(pills[i]);
+    if (stream) return stream;
+  }
+  return null;
+}
+function visibleFollowTrack(stream: string): boolean {
+  const tracks = document.querySelectorAll("[data-csb-track]") as unknown as ArrayLike<ReadEl>;
+  for (let i = 0; i < tracks.length; i++) {
+    if ((tracks[i] as unknown as { getBoundingClientRect(): { width: number } }).getBoundingClientRect().width > 0 && trackStream(tracks[i]) === stream) return true;
+  }
+  return false;
 }
 /** 4873 de → We: 각 타임라인 항목은 itemId·gapBelow를 가진 자기 행이다. */
 function timelineRow(el: ReadEl): TimelineRow | null {
@@ -2558,12 +2584,13 @@ function followStep(st: FollowState, follow: FollowBinding, stream: string, log:
   // 다른 대화로 가 있는 동안(따라 읽는 대화 화면이 숨음 — Paseo 는 앞 대화 화면을 폭 0 으로 남겨 둔다)은 새 문단을 넘기지 않고 기다린다.
   // 이미 넘긴 문단은 재생기가 계속 읽고, 돌아오면 그 사이 생긴 문단부터 넘긴다(10-20 리규형님 "내가 보지 않는 화면이 읽혀 불편 — 이전처럼").
   // 다른 브라우저 탭·창 내림은 화면 크기가 그대로라 계속 읽는다(10-15 결정)
-  const shown = !units.length || units.some((u) => (u.el as unknown as { getBoundingClientRect(): { width: number } }).getBoundingClientRect().width > 0);
-  if (!shown !== !!st.away) {
+  const shown = units.length ? units.some((u) => (u.el as unknown as { getBoundingClientRect(): { width: number } }).getBoundingClientRect().width > 0) : visibleFollowTrack(stream);
+  if (st.away === undefined || !shown !== st.away) {
+    const first = st.away === undefined;
     st.away = !shown;
     // 넘긴 문단도 소리를 새로 만들지 않게 재생기를 보류한다 — 켤 때 이미 있던 글을 한꺼번에 넘기면 다른 대화로 가도 계속 읽었다(10-20 실측 17문단)
     follow.hold?.(!shown);
-    log(shown ? "follow: 화면으로 돌아옴 — 이어 읽음" : "follow: 다른 대화로 감 — 이미 만든 소리까지만 읽고 기다림");
+    if (!first || !shown) log(shown ? "follow: 화면으로 돌아옴 — 이어 읽음" : "follow: 다른 대화로 감 — 이미 만든 소리까지만 읽고 기다림");
   }
   if (plan.scan && shown) {
     for (const key of plan.old) st.skip.add(key);
@@ -2597,7 +2624,8 @@ function followStep(st: FollowState, follow: FollowBinding, stream: string, log:
       follow.push(texts);
     }
   }
-  if (follow.index === null) return null;
+  if (shown) follow.checkReturn?.();
+  if (!shown || follow.index === null) return null;
   const at = st.where[follow.index];
   const unit = at ? units.find((u) => u.key === at.key) : undefined;
   return unit ? partsOf(unit)[at.part]?.block ?? null : null;
@@ -2652,7 +2680,7 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
     let queued: "frame" | "timer" | false = false;
     // 지난 검사의 말 블록·복사 단추 — 화면 변화가 이것들과 관계있을 때만 검사를 깨운다(아래 relevant)
     let watched: ReadEl[] = [];
-    // 따라 읽기 진행(호스트마다) · 켜진 것이 있나 — 켜진 동안만 꺼낸 말 글 변화로도 검사를 깨운다(아래 relevant)
+    // 따라 읽기 진행(호스트+대화마다) · 켜진 동안만 꺼낸 말 글 변화로도 검사를 깨운다(아래 relevant)
     const follows = new Map<string, FollowState>();
     let followOn = false;
     // 화면 탐색 실패는 그릴 때마다 되풀이된다 — 같은 이유는 한 번만 서버 기록으로 보낸다
@@ -2726,7 +2754,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
         // 이 말 안에서 글을 선택해 두고 누르면 그 문단부터(재생기 문단 번호 = parts 번호). 선택을 썼으면 푼다 — 선택 색이 형광펜을 덮지 않게
         const from = selectedPart(r.blocks);
         if (from !== null) { trace(r, `선택한 ${from + 1}번째 문단부터`); clearSelection(); }
-        b.read(r.target, text, from ?? undefined);
+        const props = streamProps(r.anchor);
+        b.read(r.target, text, from ?? undefined, typeof props?.agentId === "string" ? props.agentId : undefined);
       } catch (error) { fail(r, `읽기 시작 실패: ${String(error)}`); }
     };
     const paintTurn = (r: ReadRecord) => {
@@ -2880,31 +2909,34 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
           const playing = owner(r.hostId)?.playing;
           if (playing?.target === r.target && typeof playing.index === "number") lit = r.blocks?.[playing.index] ?? null;
         }
-        // 따라 읽기(10-15) — 호스트마다 켜진 대화 하나. 형광펜은 턴·말 읽기가 먼저(한 호스트의 재생기는 하나라 같이 읽지 않는다)
-        const followHosts = new Set<string>();
+        // 따라 읽기(10-21) — 호스트+대화마다 수집 위치·보류를 따로 둔다. 옛 호스트의 follow 하나도 넘겨받는다.
+        const followStreams = new Set<string>();
         for (const get of hub.users.values()) {
           const b = get();
-          if (!b.follow || !b.hostId || followHosts.has(b.hostId)) continue;
-          followHosts.add(b.hostId);
-          const stream = `${b.follow.agentId}|${b.hostId}`;
-          const log = (message: string) => b.log?.(message);
-          let st = follows.get(b.hostId);
-          if (!st || st.session !== b.follow.session) {
-            const { units, boxes } = followScan(stream);
-            const begin = followStart(units, b.follow.idle, stream, b.follow.from, boxes);
-            st = { session: b.follow.session, skip: begin.skip, taken: begin.taken, pushed: new Set(), done: new Set(), where: [] };
-            follows.set(b.hostId, st);
-            // 선택을 썼으면 푼다 — 선택 색이 형광펜을 덮지 않게(말 읽기 단추와 같다)
-            if (begin.picked) clearSelection();
-            const reading = units.filter((u) => !begin.skip.has(u.key)).length;
-            const boxesBefore = boxes.filter((box) => begin.skip.has(box.key)).length;
-            log(`follow: 시작 — 화면 말 ${units.length}개 중 ${reading}개부터${boxesBefore ? ` · 생각 상자 ${boxesBefore}개 출발점 앞` : ""}${begin.picked ? ` · 선택한 ${begin.picked.unit + 1}번째 말의 ${begin.picked.part + 1}번째 문단부터` : ""}${b.follow.idle ? " · 쉬는 중" : ""}`);
+          if (!b.hostId) continue;
+          for (const follow of b.follows ?? (b.follow ? [b.follow] : [])) {
+            const stream = `${follow.agentId}|${b.hostId}`;
+            if (followStreams.has(stream)) continue;
+            followStreams.add(stream);
+            const log = (message: string) => b.log?.(`${message} [${b.hostId}/${follow.agentId.slice(0, 8)}]`);
+            let st = follows.get(stream);
+            if (!st || st.session !== follow.session) {
+              const { units, boxes } = followScan(stream);
+              const begin = followStart(units, follow.idle, stream, follow.from, boxes);
+              st = { session: follow.session, skip: begin.skip, taken: begin.taken, pushed: new Set(), done: new Set(), where: [] };
+              follows.set(stream, st);
+              // 선택을 썼으면 푼다 — 선택 색이 형광펜을 덮지 않게(말 읽기 단추와 같다)
+              if (begin.picked) clearSelection();
+              const reading = units.filter((u) => !begin.skip.has(u.key)).length;
+              const boxesBefore = boxes.filter((box) => begin.skip.has(box.key)).length;
+              log(`follow: 시작 — 화면 말 ${units.length}개 중 ${reading}개부터${boxesBefore ? ` · 생각 상자 ${boxesBefore}개 출발점 앞` : ""}${begin.picked ? ` · 선택한 ${begin.picked.unit + 1}번째 말의 ${begin.picked.part + 1}번째 문단부터` : ""}${follow.idle ? " · 쉬는 중" : ""}`);
+            }
+            const block = followStep(st, follow, stream, log);
+            lit ??= block;
           }
-          const block = followStep(st, b.follow, stream, log);
-          lit ??= block;
         }
-        for (const host of [...follows.keys()]) if (!followHosts.has(host)) follows.delete(host);
-        followOn = followHosts.size > 0;
+        for (const stream of [...follows.keys()]) if (!followStreams.has(stream)) follows.delete(stream);
+        followOn = followStreams.size > 0;
         paintReading(lit);
         });
       } catch (error) {
@@ -2921,7 +2953,7 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
     // 화면이 숨으면(다른 탭·창 최소화) 브라우저가 그리기를 멈춰 위 맞춤 함수가 돌지 않는다. 따라 읽기가 켜진 동안만 그리기를 기다리지
     // 않고 다음 차례에 본다(10-15 리규형님 "숨어 있어도 계속 읽기"). 보일 때나 따라 읽기가 꺼졌을 때는 예전 그대로
     const hidden = pageHidden;
-    const following = () => [...hub.users.values()].some((get) => !!get().follow);
+    const following = () => [...hub.users.values()].some((get) => { const b = get(); return !!b.follow || !!b.follows?.length; });
     // 걸어 둔 예약: 그리기 대기("frame")·다음 차례 대기("timer"). 그리기 대기는 숨은 화면에서 돌지 않으므로, 숨은 화면에서 따라 읽기
     // 중이면 그리기 대기가 걸려 있어도 다음 차례 대기를 하나 더 건다 — 안 그러면 처음부터 숨어 있던 화면은 켜기 전에 걸린 그리기
     // 예약 하나에 막혀 검사가 한 번도 돌지 않는다(10-15 실측). 두 예약이 다 돌면 검사가 한 번 더 돌 뿐이다
@@ -3064,13 +3096,15 @@ export function jumpToPreviousUserMessage(agentId: string): string {
  * 입력창 위 읽기 컨트롤러 — 화면에 하나(10-11 리규형님 "컨트롤러를 여기로 통일 · 찾아 다니는 일도 일").
  * 턴·말·생각 상자·꺼낸 말 무엇을 읽든 같은 자리: 넓은 화면은 입력창 위 알약 줄 정가운데, 좁은 화면(폰)은 그 줄 아래 새 줄 가운데
  * (10-12 리규형님 "오른쪽은 눈이 잘 안 가" — 10-11 의 맨 오른쪽을 바꿈). 넓은 화면이라도 가운데 자리가 좌우 알약과 겹치면 아래 줄 가운데.
- * 읽기는 한 번에 하나라 컨트롤러도 하나다. 칸이 나뉘어 있으면 읽기를 누른 칸의 입력창 위. 읽는 동안에만 보인다.
+ * 보이는 대화의 따라 읽기를 우선하고, 없으면 일반 읽기를 조절한다(10-21). 칸이 나뉘어 있으면 읽기를 누른 칸의 입력창 위.
  * 색(리규형님 "컨트롤러에 색상"): 일시정지·이어서 = 녹색, 중지 = 빨강, 이전·다음 = 흐린 글자색, 속도 = 밝은 강조색 — 모두 Paseo 테마 변수.
  * 알약 줄 찾기는 startComposerRail 이 붙이는 data-csb-track(입력창 위 띠) 표식을 쓴다.
  */
 export type ReadDockState = {
   /** 지금 읽는 것이 없으면 null — 컨트롤러가 사라진다 */
   playing: { paused: boolean; rate: number; error: string } | null;
+  /** 일반 읽기는 어디서든, 따라 읽기는 같은 호스트+대화의 보이는 띠에서만 조절한다(10-21) */
+  follows?: readonly (ReadDockState & { hostId: string; agentId: string })[];
   speedOptions: number[];
   previous(): void;
   toggle(): void;
@@ -3080,8 +3114,8 @@ export type ReadDockState = {
 };
 const DOCK_MARK = "data-csb-read-dock";
 // 판이 오르면 스타일 이름도 바꾼다 — 옛 판을 정리할 때 옛 이름 스타일만 지워지게(project_paseo_client_hub_stale)
-const DOCK_SHEET = "claude-state-bar-read-dock-v9";
-const DOCK_VERSION = 9; // 2: 가운데 배치(10-12) · 3: 좁은 화면은 두 줄 띠의 아랫줄 남는 공간 가운데(10-18) · 4: 알약 줄 위(되돌림) · 5: 아랫줄에 작게(10-18 밤) · 6: 속도 칸 기본 모양 끔(폰 테두리 두 겹) · 9: 숨은 대화의 띠에 붙어 있으면 보이는 띠로 옮김(10-20)
+const DOCK_SHEET = "claude-state-bar-read-dock-v10";
+const DOCK_VERSION = 10; // 10: 보이는 대화의 따라 읽기 우선·없으면 일반 읽기(10-21) · 2: 가운데 배치(10-12) · 3: 좁은 화면은 두 줄 띠의 아랫줄 남는 공간 가운데(10-18) · 4: 알약 줄 위(되돌림) · 5: 아랫줄에 작게(10-18 밤) · 6: 속도 칸 기본 모양 끔(폰 테두리 두 겹) · 9: 숨은 대화의 띠에 붙어 있으면 보이는 띠로 옮김(10-20)
 type DockHub = SharedDevice & { users: Map<object, (() => ReadDockState) & { csbVersion?: number }> };
 export function startReadDock(state: () => ReadDockState): { refresh(): void; dispose(): void } {
   const noop = { refresh: () => {}, dispose: () => {} };
@@ -3100,14 +3134,21 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
     let pressed: ReadEl | null = null;
     /** 이번 읽기의 자리(그 칸의 입력창 위 띠). 읽기가 끝나면 비운다 */
     let home: ReadEl | null = null;
-    // 호스트(PC·서버)마다 플러그인이 따로 올라와 재생기도 따로다 — 지금 읽는 쪽 하나를 고른다
+    // 조작 순간에도 보이는 대화를 확인한다. 등록 순서 때문에 숨은 호스트의 재생을 고르지 않는다.
     const current = () => {
+      const track = home?.isConnected && shown(home) ? home : trackNear(pressed) ?? firstVisibleTrack();
+      const stream = track ? trackStream(track) : null;
+      let ordinary: ReadDockState | null = null;
       for (const get of hub.users.values()) {
         const s = get();
-        if (s.playing) return s;
+        for (const follow of s.follows ?? []) {
+          if (follow.playing && stream === `${follow.agentId}|${follow.hostId}`) return follow;
+        }
+        if (s.playing) ordinary ??= s;
       }
-      return null;
+      return ordinary;
     };
+    const anyPlaying = () => [...hub.users.values()].some((get) => { const s = get(); return !!s.playing || !!s.follows?.some((f) => !!f.playing); });
     const press = (event: { target?: unknown }) => { pressed = (event.target as ReadEl | null) ?? null; };
     document.addEventListener("pointerdown", press as unknown as (e: Event) => void, true);
     const orphaned = document.querySelectorAll(`[${DOCK_MARK}]`) as unknown as ArrayLike<ReadEl>;
@@ -3212,23 +3253,23 @@ export function startReadDock(state: () => ReadDockState): { refresh(): void; di
     // 돌아가 숨김만 풀릴 때는 알림이 없고, 따라 읽기가 다음 문단을 기다리는 동안엔 재생기 알림도 없다(10-20)
     let watch: ReturnType<typeof setInterval> | null = null;
     const watchHome = (on: boolean) => {
-      if (on && !watch) watch = setInterval(() => { if (!home || !shown(home)) refresh(); }, 1000);
+      if (on && !watch) watch = setInterval(refresh, 1000);
       else if (!on && watch) { clearInterval(watch); watch = null; }
     };
     const apply = () => {
       queued = false;
       if (!live) return;
       try {
+        // 조절 줄을 숨긴 동안에도 따라 읽기가 있으면 복귀를 감시한다. 같은 DOM에서 대화 props만 바뀌어도 다시 고른다.
+        watchHome(anyPlaying());
         const s = current();
         const playing = s?.playing;
         if (!s || !playing) {
-          watchHome(false);
           dock?.remove();
           dock = toggle = select = null;
           home = null;
           return;
         }
-        watchHome(true);
         // 자리가 숨으면(읽는 중에 다른 대화로 옮김) 보이는 띠로 옮긴다 — 옮기지 않으면 숨은 대화에 붙은 채 안 보였다(10-20 리규형님
         // "STT 컨트롤러가 안 뜬다 · 중구난방"). 마지막으로 누른 곳 근처의 보이는 띠, 없으면 첫 보이는 띠. 다 숨었으면 그대로 둔다
         if (!home || !home.isConnected || !shown(home)) home = trackNear(pressed) ?? firstVisibleTrack() ?? (home?.isConnected ? home : null);

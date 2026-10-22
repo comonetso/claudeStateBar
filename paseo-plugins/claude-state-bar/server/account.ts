@@ -7,7 +7,8 @@ import { renameRetry } from "./renameRetry";
 import { isTeamDaemon } from "./sound";
 
 // 기록만 바꾼다. 실행기가 기록을 감시해 Claude 를 끄며 다음 말에 새 계정으로 이어 뜬다.
-const PASEO_HOME = process.env.PASEO_HOME || join(homedir(), ".paseo");
+/** 사용량 보기용 로그인 폴더(server/usageLogin)도 이 값을 쓴다 — Paseo 홈 계산을 새로 늘리지 않는다(guard G2) */
+export const PASEO_HOME = process.env.PASEO_HOME || join(homedir(), ".paseo");
 const FILE = join(PASEO_HOME, "plugin-data", "claude-state-bar", "accounts.json");
 const CONFIG = join(PASEO_HOME, "config.json");
 /**

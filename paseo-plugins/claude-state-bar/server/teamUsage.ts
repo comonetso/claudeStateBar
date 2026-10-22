@@ -8,6 +8,7 @@ import { hashAccountKey, toneFromUsedPct, unavailable, windowFromUsedPct, type U
 import { claudeProviders } from "./account";
 import { teamUsageSourceId } from "../shared/account";
 import { accountOrgKey } from "../shared/usageIdentity";
+import { tokenProviders, usageLoginDir } from "./usageLogin";
 
 // 팀 공급자(claude-yeogiaen) 한도를 Paseo 사용량 목록에 늘 올린다(10-15 리규형님 "Claude 공급자가 여러 개면 한도 상황판에
 // 언제든 표시"). Paseo 의 내장 Claude 사용량 원천은 데몬 자신의 로그인(~/.claude)만 찾아서, 다른 설정 폴더로 로그인한
@@ -151,7 +152,10 @@ function windowsOf(resp: z.infer<typeof responseSchema>): UsageWindow[] {
 }
 
 export function teamUsageSources(): UsageSourceRegistration[] {
-  return Object.keys(claudeProviders()).flatMap((id) => (teamDir(id) !== null ? [teamUsageSource(id)] : tokenTeam(id) ? [poolUsageSource(id)] : []));
+  // 1년 열쇠 공급자는 사용량 보기용 로그인을 먼저 본다(10-22 — tokenUsageSource). 팀원 데몬은 그 목록이 비어 예전처럼 실행기 기록만
+  const usageLogin = new Set(tokenProviders());
+  return Object.keys(claudeProviders()).flatMap((id) => (teamDir(id) !== null ? [teamUsageSource(id)]
+    : usageLogin.has(id) ? [tokenUsageSource(id)] : tokenTeam(id) ? [poolUsageSource(id)] : []));
 }
 
 // 서버처럼 1년 열쇠(CLAUDE_CODE_OAUTH_TOKEN)로만 들어가는 팀 공급자는 한도 조회가 429 로 막혀 위 원천을 못 쓴다. 그래서 PC 가 절전하면
@@ -208,6 +212,74 @@ function poolUsageSource(provider: string): UsageSourceRegistration {
       const seat = poolSeat(poolInputSchema.parse(input).provider);
       return seat ? poolUsageReport(seat) : { status: "error", error: "좌석 관측이 아직 없습니다" };
     },
+  };
+}
+
+// 1년 열쇠 공급자의 사용량 보기용 로그인(10-22 리규형님 — server/usageLogin): 그 폴더에 로그인이 있으면 PC 팀 카드와 같은 방법(계정 확인·
+// 사용량 조회·만료 갱신)으로 읽고, 없으면 위 실행기 기록으로. 데몬은 원천을 플러그인이 뜰 때 한 번 등록하므로, 로그인을 나중에 해도
+// 플러그인을 다시 읽지 않고 바뀌게 묻을 때마다 고른다. 대화 범위 발견에는 내지 않는다(10-18 2차 — 팀 카드는 전역 발견에만)
+const tokenInputSchema = z.union([inputSchema, poolInputSchema]);
+export function tokenUsageSource(provider: string, dir: string = usageLoginDir(provider)): UsageSourceRegistration {
+  const pool = poolUsageSource(provider);
+  return {
+    id: teamUsageSourceId(provider),
+    label: teamUsageLabel(provider),
+    input: tokenInputSchema,
+    async discover(scope?: DiscoverScope) {
+      if (scope?.kind === "session") return [];
+      const found = await discoverLogin(dir);
+      return found.length ? found : pool.discover();
+    },
+    async fetch(input): Promise<UsageReport> {
+      const parsed = tokenInputSchema.parse(input);
+      return "dir" in parsed ? fetchTeamReport(parsed.dir) : pool.fetch(parsed);
+    },
+  };
+}
+
+// 사용량 보기용 로그인 유지(10-22). 이 폴더는 사용량을 물을 때만 쓰이는데, PC 가 켜져 있으면 서버 사용량을 묻는 화면이 거의 없어 며칠이고
+// 안 쓰인다 — 그사이 갱신용 열쇠까지 묵어 풀리면 정작 PC 가 꺼졌을 때 카드가 안 나온다. 그래서 데몬 플러그인이 파일만 보고 액세스 열쇠가
+// 곧 만료면(REFRESH_EARLY_MS) 미리 바꿔 둔다 — 바깥 사용량 조회는 없고 열쇠 바꾸는 요청만, 열쇠 수명마다 한 번꼴. 보는 주기 30초는 사용량 칸
+// 주기·개인 로그인 유지(keepPersonalLogin)와 같은 값이고, 실패하면 사용량 칸(client/usageFooter POLL_STEPS_MS)처럼 1분·2분으로 물러난다
+// (성공하면 처음으로). 실패가 이어져도 기록은 처음 한 번만 남긴다 — 갱신용 열쇠가 죽었으면 설정 화면에서 다시 로그인한다
+const KEEP_STEPS_MS = [30_000, 60_000, 120_000];
+export function startUsageLoginKeeper(
+  dirs: () => string[] = () => tokenProviders().map(usageLoginDir),
+  log: (m: string) => void = console.warn,
+  now: () => number = Date.now,
+): { stop: () => void; tick: () => Promise<void> } {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const fails = new Map<string, number>(); // 폴더 → 이어진 실패 수
+  const nextAt = new Map<string, number>(); // 폴더 → 다음 시도 시각(물러나는 중일 때만)
+  const tick = async () => {
+    for (const dir of dirs()) {
+      const login = readLogin(dir);
+      if (!login?.accessToken || !login.refreshToken) continue;
+      if (login.expiresAt === undefined || login.expiresAt - REFRESH_EARLY_MS > now()) continue;
+      if ((nextAt.get(dir) ?? 0) > now()) continue;
+      const n = fails.get(dir) ?? 0;
+      const token = await refreshTeamLogin(dir, n === 0 ? (m) => log(m.replace("[team-usage]", "[usage-login]")) : () => {});
+      if (token) {
+        fails.delete(dir);
+        nextAt.delete(dir);
+      } else {
+        fails.set(dir, n + 1);
+        nextAt.set(dir, now() + KEEP_STEPS_MS[Math.min(n + 1, KEEP_STEPS_MS.length - 1)]);
+      }
+    }
+  };
+  const loop = () => {
+    if (stopped) return;
+    timer = setTimeout(() => void tick().catch(() => {}).finally(loop), KEEP_STEPS_MS[0]);
+  };
+  loop();
+  return {
+    stop: () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    },
+    tick,
   };
 }
 
@@ -277,6 +349,17 @@ function resolveIdentityGeneration(dir: string, fetchApi: typeof fetch, now: () 
 const verifiedKeys = new Map<string, { key: string; generation: string }>();
 type DiscoverScope = { kind?: string } | undefined;
 
+/** 그 로그인 폴더의 계정 하나(로그인이 없으면 빈 목록) — PC 팀 공급자 폴더와 서버 사용량 보기용 폴더(server/usageLogin)가 같이 쓴다 */
+async function discoverLogin(dir: string): Promise<Array<{ key: string; input: { dir: string } }>> {
+  if (!existsSync(join(dir, ".credentials.json")) || !readLogin(dir)?.accessToken) return [];
+  // 카드 제목에 메일을 붙이지 않는다 — 공급자 이름("Claude (como)")이 이미 계정을 가리킨다(10-15 리규형님 "너무 길어")
+  const { key: identity, generation } = await resolveIdentityGeneration(dir, fetch, Date.now);
+  if (identity && generation) verifiedKeys.set(dir, { key: identity, generation });
+  const kept = verifiedKeys.get(dir);
+  const keptKey = kept && generation && kept.generation === generation ? kept.key : undefined;
+  return [{ key: identity ?? keptKey ?? hashAccountKey(`unknown:${dir}`), input: { dir } }];
+}
+
 export function teamUsageSource(provider: string): UsageSourceRegistration {
   return {
     id: teamUsageSourceId(provider),
@@ -286,13 +369,7 @@ export function teamUsageSource(provider: string): UsageSourceRegistration {
     async discover(scope?: DiscoverScope) {
       if (scope?.kind === "session") return [];
       const dir = teamDir(provider);
-      if (!dir || !existsSync(join(dir, ".credentials.json")) || !readLogin(dir)?.accessToken) return [];
-      // 카드 제목에 메일을 붙이지 않는다 — 공급자 이름("Claude (como)")이 이미 계정을 가리킨다(10-15 리규형님 "너무 길어")
-      const { key: identity, generation } = await resolveIdentityGeneration(dir, fetch, Date.now);
-      if (identity && generation) verifiedKeys.set(dir, { key: identity, generation });
-      const kept = verifiedKeys.get(dir);
-      const keptKey = kept && generation && kept.generation === generation ? kept.key : undefined;
-      return [{ key: identity ?? keptKey ?? hashAccountKey(`unknown:${dir}`), input: { dir } }];
+      return dir ? discoverLogin(dir) : [];
     },
     async fetch(input): Promise<UsageReport> {
       return fetchTeamReport(inputSchema.parse(input).dir);

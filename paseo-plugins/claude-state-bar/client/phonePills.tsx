@@ -2,6 +2,7 @@ import type { PluginButtonBehavior, PluginButtonContentProps, PluginButtonIconPr
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useRef } from "react";
 import { Platform, View } from "react-native";
+import { agentOf, useProviderName } from "./accountPill";
 import { openActivityFor } from "./activityButton";
 import { SETTINGS_TITLE } from "./settingsButton";
 import { UsageTable } from "./usageFooter";
@@ -15,6 +16,8 @@ import { phonePillsShown, setPillBadge, watchCompactWidth } from "./web";
 // 내린다(web.ts RAIL_CSS data-csb-rows). 붙일지 판정은 둘이 같은 phonePillsShown 하나를 쓴다.
 // 알약 줄 위 왼쪽 끝에 서브에이전트·백그라운드·Codex 개수를 프로젝트 목록과 같은 "(1, 0, 3)" 으로 작게 쓴다
 // (폰은 프로젝트 목록이 안 보여서 · 10-18 리규형님 "왼쪽정렬"). 셋 다 0 이면 숨긴다(10-18 리규형님 "없으면 보여주지마").
+// 그 뒤에 지금 공급자 이름을 늘 붙인다 — "(1, 0, 1) · COMO", 셋 다 0 이면 "COMO" 만(10-21 리규형님 — 폰은 공급자 알약이 아이콘만이라).
+// 공급자 알약이 안 붙는 대화(Codex·팀원 데몬)는 예전처럼 개수만.
 
 type AgentLike = { id: string; workspaceId?: string | null };
 // 글자는 폭 없는 공백 한 글자 — 빈 글자는 Paseo 가 거절한다(thinkingFoldPill.ts 와 같은 까닭). 아이콘만 보인다
@@ -32,10 +35,13 @@ function UsagePopover({ theme }: PluginButtonContentProps) {
   );
 }
 
-function ActivityPillIcon({ workspaceId, size, color, theme }: PluginButtonIconProps) {
+function ActivityPillIcon(props: PluginButtonIconProps) {
+  const { workspaceId, size, color, theme } = props;
   const counts = useCounts(workspaceId);
+  const provider = useProviderName(agentOf(props as { context: "workspace" | "agent"; agentId?: string }));
   const total = counts ? totalOf(counts) : 0;
-  const text = counts && total > 0 ? `(${counts.workflows}, ${counts.background}, ${counts.codexRuns + counts.codexChats})` : null;
+  const countText = counts && total > 0 ? `(${counts.workflows}, ${counts.background}, ${counts.codexRuns + counts.codexChats})` : null;
+  const text = countText && provider ? `${countText} · ${provider}` : (countText ?? provider);
   const node = useRef<unknown>(null);
   // 아이콘 상자는 밖을 잘라 글씨를 못 그린다 — 담고 있는 알약 요소에 달아 그 위에 띄운다(web.ts setPillBadge)
   useEffect(() => {
