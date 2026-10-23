@@ -8,6 +8,7 @@ import { Pressable, Text, View } from "react-native";
 import { CATEGORY_ORDER_KEY, projectsEdit, projectsHosts, UNTAGGED_GROUP, type ProjectEntry, type ProjectsEditOp } from "../shared/projects";
 import { scaled, useFontScale } from "./fontScale";
 import { createProjectWorktree, moveCategory, norm, orderedCategories, pinKey, useGroupOrders, useOnlineHosts, type ProjectsData } from "./projectsData";
+import { arrangeRows, mainsOf } from "./projectSubs";
 import { FIELD_WIDTH, HelpTip, UiButton, UiInput, UiSelect } from "./ui";
 import { setDraggableRow, setHoverTitle, setNoTranslate } from "./web";
 
@@ -104,12 +105,15 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
   const label = (cats: string[], name: string) => (name ? `${cats.indexOf(name) + 1}. ${name}` : UNTAGGED_GROUP);
 
   const [filter, setFilter] = useState("");
+  // 하위 공간은 메인 바로 아래에 들여 붙인다(10-24 리규형님 "플젝 생성할 때도 한데 몰려 있게" — 왼쪽 목록과 같은 projectSubs)
+  const mainsBy = useMemo(() => new Map(scopes.map((s) => [s.id, mainsOf(s.entries)] as const)), [scopes]);
   const groupsOf = (s: EditScope) => {
     const q = filter.trim().toLowerCase();
     const shown = s.entries.filter((e) => !q || e.name.toLowerCase().includes(q) || e.path.toLowerCase().includes(q) || e.category.toLowerCase().includes(q));
     const list = (catsOf.get(s.id) ?? []).map((name) => ({ name, items: shown.filter((e) => e.category === name) }));
     list.push({ name: "", items: shown.filter((e) => !e.category) });
-    return list.filter((g) => g.items.length > 0);
+    const mains = mainsBy.get(s.id) ?? new Map<ProjectEntry, ProjectEntry>();
+    return list.filter((g) => g.items.length > 0).map((g) => ({ ...g, rows: arrangeRows(g.items, mains) }));
   };
 
   // 새 프로젝트 — 팀원(팀원 프로젝트만) · 카테고리 · 기기 · 폴더 경로 · 이름.
@@ -138,7 +142,9 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
     if (readOnly) return;
     // 같은 기기·경로가 이미 있으면 그것이 메인 — 새 항목은 "메인 이름+번호"(비어 있는 가장 작은 번호)로 짓고 Paseo 워크트리를
     // 만들어 그 폴더를 경로로 둔다(10-24 리규형님). 폴더가 달라지니 대화·고정·순서·숫자도 저절로 항목마다 따로다
-    const main = formScope.entries.find((e) => e.host === host && norm(e.path) === norm(path.trim()));
+    const found = formScope.entries.find((e) => e.host === host && norm(e.path) === norm(path.trim()));
+    // 하위의 경로를 넣었으면 맨 위 메인에서 만든다 — 이름·워크트리·메인 칸 모두 그 메인 기준(10-24)
+    const main = found && (mainsOf(formScope.entries).get(found) ?? found);
     if (main) {
       const names = new Set(formScope.entries.map((e) => e.name));
       let n = 1;
@@ -148,7 +154,8 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
       setMessage({ text: `${auto} — 워크트리 만드는 중…`, bad: false });
       const made = await createProjectWorktree(online, main.path, auto).finally(() => setBusy(false));
       if (!made.ok) return setMessage({ text: made.error, bad: true });
-      const done = await run(formScope.id, { op: "add", host, path: made.directory, name: auto, category: newCat.trim() || pickCat || main.category }, `추가했습니다 — ${auto} · 워크트리 ${made.directory}`);
+      // 메인 경로를 함께 적는다 — 왼쪽 목록·이 화면이 메인 아래에 묶는다(10-24)
+      const done = await run(formScope.id, { op: "add", host, path: made.directory, name: auto, category: newCat.trim() || pickCat || main.category, parent: main.path }, `추가했습니다 — ${auto} · 워크트리 ${made.directory}`);
       if (done) {
         setPath("");
         setName("");
@@ -212,7 +219,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
   );
   const help = (text: string) => <HelpTip theme={theme} text={text} fontSize={fs(11)} />;
 
-  const row = (s: EditScope, cats: string[], e: ProjectEntry) => {
+  const row = (s: EditScope, cats: string[], e: ProjectEntry, sub = false) => {
     const key = pinKey(e);
     // 같은 기기·경로로 이름만 다른 프로젝트가 여럿일 수 있어(10-23) 줄 이름표에 이름까지 넣는다. 고치기는 itemName 으로 그 줄을 고른다
     const rowKey = `${s.id}|${key}|${e.name}`;
@@ -222,7 +229,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
     const panelOpen = !!s.rowPanel && panelKey === rowKey;
     const note = s.rowNote?.(e);
     return (
-      <View key={rowKey} style={{ gap: 6, paddingVertical: 6, paddingLeft: 12, borderBottomWidth: 1, borderColor: c.border }}>
+      <View key={rowKey} style={{ gap: 6, paddingVertical: 6, paddingLeft: sub ? 28 : 12, borderBottomWidth: 1, borderColor: c.border }}>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
           <View style={{ flexGrow: 1, flexShrink: 1, minWidth: 160 }}>
             {editingName ? (
@@ -393,7 +400,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
               </>
             )}
           </View>
-          {g.items.map((e) => row(s, cats, e))}
+          {g.rows.map((r) => row(s, cats, r.e, r.sub))}
         </View>
       );
     });

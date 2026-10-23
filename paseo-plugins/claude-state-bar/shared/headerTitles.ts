@@ -16,6 +16,22 @@ export function flipTitle(title: string, name: string | null | undefined): strin
   if (!tail || !title.endsWith(tail) || title.length === tail.length) return title;
   return `${name} - ${title.slice(0, -tail.length)}`;
 }
+/**
+ * 작업 공간 하나에 맞출 글 — workspace = 작업 공간 제목(머리줄 앞칸), project = Paseo 프로젝트 이름(뒷칸). 없으면 그 칸은 안 맞춘다.
+ * 작업 공간 제목은 자기 폴더로 찾는다(10-24 리규형님 — 하위 공간 둘이 계정 풍선에 모두 메인 이름으로 보였다. 하위 공간은 같은
+ * 저장소의 Paseo 워크트리라 프로젝트 경로가 메인과 같아, 프로젝트 경로로 찾던 때는 메인 제목이 씌워졌다). 목록에 없는 워크트리는
+ * 그대로 둔다. 프로젝트 이름은 메인·하위가 함께 쓰는 Paseo 프로젝트 하나라 프로젝트 경로로만(하위 이름으로 바꾸면 서로 덮어쓴다).
+ * 폴더 칸이 없는 옛 Paseo 면 예전처럼 프로젝트 경로로
+ */
+export function workspaceTitleWants(
+  ws: { directory?: string | null; kind?: string | null; projectRootPath: string },
+  titleOf: (path: string) => string | undefined,
+): { workspace?: string; project?: string } {
+  const project = titleOf(ws.projectRootPath);
+  const own = ws.directory ? titleOf(ws.directory) : undefined;
+  const workspace = own ?? (ws.directory && ws.kind === "worktree" ? undefined : project);
+  return { ...(workspace ? { workspace } : {}), ...(project ? { project } : {}) };
+}
 const titleSchema = z.object({ path: z.string(), title: z.string(), name: z.string() });
 
 /** 이름표가 바뀔 때까지 기다린다(길어도 25초). 지금 아는 서명을 보내면, 다르면 바로 답한다 */

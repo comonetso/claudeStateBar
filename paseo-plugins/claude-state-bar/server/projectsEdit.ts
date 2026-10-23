@@ -156,11 +156,14 @@ export async function editProjects(op: ProjectsEditOp): Promise<Result> {
         rootPath = remoteRootPath(host, path);
       }
       const name = op.name.trim() || (host === "PC" && IS_WIN ? win32.basename(path) : posix.basename(path)) || path;
+      // 하위 공간(같은 경로로 또 추가해 만든 워크트리)이면 메인 경로를 목록과 같은 모양으로 적는다(10-24 — 왼쪽 목록이 메인 아래로 묶는다)
+      const parentInput = op.parent?.trim();
+      const parent = !parentInput ? undefined : host === "PC" ? pcPath(parentInput) : posix.normalize(parentInput).replace(/(.)\/+$/, "$1");
       return editList((items) => {
         // 같은 디바이스·경로는 하나만(10-24 리규형님 — 같은 경로로 또 만들면 관리 화면이 Paseo 워크트리를 만들어 그 폴더로 넣는다.
         // 여기까지 같은 경로로 오는 것은 git 저장소가 아닌 폴더이거나 옛 화면이다 → 막는다. 10-23 의 "이름까지 같을 때만"을 대신함)
         if (findItem(items, `${host}|${path}`) >= 0) return "같은 디바이스·경로의 프로젝트가 이미 있습니다 — git 저장소면 관리 화면에서 같은 경로로 추가할 때 워크트리로 만듭니다";
-        items.push({ name, rootPath, category: op.category.trim(), enabled: true });
+        items.push({ name, rootPath, category: op.category.trim(), enabled: true, ...(parent ? { parent } : {}) });
         return null;
       });
     }

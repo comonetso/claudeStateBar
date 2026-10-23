@@ -1,6 +1,8 @@
 import { readConversation } from "../conversationReader";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { PASEO_HOME } from "../account";
 import { parseBackgroundTasks, type BgTask } from "./backgroundTasks";
 import { parseTaskNotices, type TaskNotices } from "./notices";
 
@@ -327,8 +329,9 @@ export async function findCodexDirs(cwd: string): Promise<{ docsDir: string; log
 /**
  * 같은 저장소의 다른 작업 트리(git worktree)까지 포함한 codex_rescue 폴더들. 첫 칸이 findCodexDirs(cwd) 의 것이고
  * 다른 트리 것에는 tree(그 트리 폴더)가 붙는다. 스킬은 자기가 돈 트리 아래에 기록을 써서, worktree 에서 돌린 실행이
- * 원본 대화의 작업 현황에 안 보였다(리규형님 10-12 · 확장은 09-25 같은 문제로 repoRoots.ts codexRoots 를 만듦 —
- * 규칙도 같다: 저장소 전체 트리를 본다). git 명령 대신 .git 파일을 읽는 것도 확장과 같다.
+ * 원본 대화의 작업 현황에 안 보였다(리규형님 10-12 · 확장은 09-25 같은 문제로 repoRoots.ts codexRoots 를 만듦).
+ * 10-24 부터 어느 트리를 보는지는 대화 자리에 따라 다르다 — 작업 트리 대화는 자기 트리만, 원본 대화는 Paseo 하위 공간을 뺀 나머지
+ * (findAllCodexDirs). git 명령 대신 .git 파일을 읽는 것은 확장과 같다.
  */
 export interface CodexDirs {
   docsDir: string;
@@ -353,25 +356,27 @@ function gitPath(raw: string, relativeTo: string): string {
 
 const sameDir = (a: string, b: string) => (process.platform === "win32" ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b));
 
-/** cwd 가 속한 저장소의 작업 트리 전부(원본 트리 포함). 저장소가 아니면 빈 배열 */
-async function repoTrees(cwd: string): Promise<string[]> {
+/** cwd 가 속한 저장소의 작업 트리 전부(원본 트리 포함)와, cwd 가 원본 트리 안인지(.git 이 폴더). 저장소가 아니면 빈 목록 */
+async function repoTrees(cwd: string): Promise<{ trees: string[]; main: boolean }> {
+  const none = { trees: [], main: false };
   let top = cwd;
   for (;;) {
     if (await exists(join(top, ".git"))) break;
     const parent = join(top, "..");
-    if (parent === top) return [];
+    if (parent === top) return none;
     top = parent;
   }
   const dotGit = join(top, ".git");
   const st = await statOrNull(dotGit);
-  if (!st) return [];
+  if (!st) return none;
+  const main = st.isDirectory();
   let commonDir: string;
-  if (st.isDirectory()) {
+  if (main) {
     commonDir = dotGit;
   } else {
     // worktree 의 .git 은 파일: gitdir: <원본>/.git/worktrees/<이름> → 그 안 commondir 이 원본 git 폴더
     const m = /^gitdir:\s*(.+)$/m.exec((await readTextOrNull(dotGit)) ?? "");
-    if (!m) return [];
+    if (!m) return none;
     const own = gitPath(m[1], top);
     const common = (await readTextOrNull(join(own, "commondir")))?.trim();
     commonDir = common ? gitPath(common, own) : join(own, "..", "..");
@@ -380,7 +385,7 @@ async function repoTrees(cwd: string): Promise<string[]> {
   const wst = await statOrNull(worktreesDir);
   const cacheKey = `${st.mtimeMs}|${wst?.mtimeMs ?? 0}`;
   const hit = treeCache.get(top);
-  if (hit && hit.key === cacheKey) return hit.trees;
+  if (hit && hit.key === cacheKey) return { trees: hit.trees, main };
   const trees: string[] = [];
   if (basename(commonDir) === ".git") trees.push(dirname(resolve(commonDir)));
   if (wst) {
@@ -391,18 +396,78 @@ async function repoTrees(cwd: string): Promise<string[]> {
     }
   }
   treeCache.set(top, { key: cacheKey, trees });
-  return trees;
+  return { trees, main };
 }
 
+// Paseo 가 만든 작업 공간 트리의 자리 — Paseo 서버 utils/worktree resolvePaseoWorktreesBaseRoot 와 같은 규칙: 설정 worktrees.root
+// (~ 는 홈, 상대 경로는 Paseo 홈 기준), 없으면 <Paseo 홈>/worktrees. 트리는 그 아래 <저장소 해시>/<이름> 두 단계다(getPaseoWorktreesRoot).
+// 설정 파일이 바뀔 때만 다시 읽는다(작업 현황은 자주 묻는다)
+let baseCache: { mtimeMs: number; base: string } | null = null;
+async function paseoWorktreesBase(): Promise<string> {
+  const file = join(PASEO_HOME, "config.json");
+  const mtimeMs = (await statOrNull(file))?.mtimeMs ?? 0;
+  if (baseCache && baseCache.mtimeMs === mtimeMs) return baseCache.base;
+  let root: unknown;
+  try {
+    root = (JSON.parse((await readTextOrNull(file)) ?? "{}") as { worktrees?: { root?: unknown } } | null)?.worktrees?.root;
+  } catch {
+    root = undefined;
+  }
+  let base = join(PASEO_HOME, "worktrees");
+  if (typeof root === "string" && root.trim()) {
+    const raw = root.trim();
+    const expanded = raw === "~" ? homedir() : /^~[\\/]/.test(raw) ? join(homedir(), raw.slice(2)) : raw;
+    base = isAbsolute(expanded) ? resolve(expanded) : resolve(PASEO_HOME, expanded);
+  }
+  baseCache = { mtimeMs, base };
+  return base;
+}
+
+/** Paseo 가 만든 하위 공간 트리인가 — 자리 바로 아래 두 단계(<해시>/<이름>). 손으로 만든 한 단계 폴더(Mesa 의 .worktrees/w1)는 아니다 */
+function isPaseoWorkspaceTree(tree: string, base: string): boolean {
+  const rel = relative(base, tree);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return false;
+  return rel.split(/[\\/]+/).filter(Boolean).length === 2;
+}
+
+/** 같은 폴더인지 견줄 열쇠 — 링크를 따라간 실제 경로(없는 폴더는 그 경로) */
+async function realKey(path: string): Promise<string> {
+  let p = resolve(path);
+  try {
+    p = await realpath(path);
+  } catch {
+    /* 아직 없는 기록 폴더는 그 경로로 */
+  }
+  return process.platform === "win32" ? p.toLowerCase() : p;
+}
+
+/**
+ * Codex 실행은 띄운 프로젝트에만 센다(10-24 리규형님 "실제로 띄운 하위 프로젝트에 표시가 되어야지" · 버튼 "하위는 자기 것, 메인은
+ * 하위 공간 빼고"). 작업 트리(.git 이 파일) 안 대화는 자기 트리만 본다. 원본 트리 대화는 다른 작업 트리 것까지 보되(10-12 — 손으로
+ * 만든 트리에서 띄운 실행) Paseo 가 만든 하위 공간 트리는 뺀다 — 그 실행은 그 하위 프로젝트에 뜨고, 왼쪽 목록의 접은 메인 줄이 하위
+ * 숫자를 더할 때 두 번 세지 않는다. 기록 폴더가 링크로 같은 곳을 가리키면 한 번만(Mesa 요청 2f54ca88 — 하위 트리 .log 를 메인 .log 로
+ * 이은 적이 있다)
+ */
 export async function findAllCodexDirs(cwd: string): Promise<CodexDirs[]> {
   const out: CodexDirs[] = [];
+  const seen = new Set<string>();
+  const add = async (d: CodexDirs) => {
+    const key = await realKey(d.logDir);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(d);
+  };
   const own = await findCodexDirs(cwd);
-  if (own) out.push(own);
-  for (const tree of await repoTrees(cwd)) {
+  if (own) await add(own);
+  const repo = await repoTrees(cwd);
+  if (!repo.main) return out;
+  const base = await paseoWorktreesBase();
+  for (const tree of repo.trees) {
+    if (isPaseoWorkspaceTree(tree, base)) continue;
     const docsDir = join(tree, "docs", "codex_rescue");
     if (out.some((d) => sameDir(d.docsDir, docsDir))) continue;
     if (!(await statOrNull(docsDir))?.isDirectory()) continue;
-    out.push({ docsDir, logDir: join(docsDir, ".log"), tree });
+    await add({ docsDir, logDir: join(docsDir, ".log"), tree });
   }
   return out;
 }

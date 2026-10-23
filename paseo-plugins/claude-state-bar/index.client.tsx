@@ -112,7 +112,8 @@ export default function contribute(client: PluginClientContext) {
   cleanups.push(startAlertSounds(client, log, onPageVisible));
   // 프로젝트 목록 압축 준비 아이콘(10-15) — 호스트마다 자기 데몬의 "압축 명령어를 기다리는 대화"를 받아 화면 게시판에 올린다
   // (10-16 이 줄이 빠져 아이콘이 한 번도 안 떴다 — 리규형님 "아이콘 오는 건 확인 못 했네" 로 찾음)
-  cleanups.push(startCompactReady(client, log));
+  // 답하지 않은 질문은 5분마다 질문 소리를 다시(10-24 — 데몬이 회차를 정해 같은 대기 요청에 싣는다. 폰이 받으면 PC 조용은 처음 알림과 같다)
+  cleanups.push(startCompactReady(client, log, (agentId, nativeId) => void report("question", agentId, nativeId)));
 
   // 완료/질문 정착은 기존 화면 판정기로, 안정 번호·명령만인 차례는 발생 데몬 원본으로 확인한다.
   const judge = createJudge((kind, agentId, nativeId) => void report(kind, agentId, nativeId), log, currentSettings);

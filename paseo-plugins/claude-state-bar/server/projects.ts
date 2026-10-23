@@ -157,7 +157,7 @@ export async function listProjects(): Promise<{ source: string | null; entries: 
     const entries: ProjectEntry[] = [];
     for (const item of raw) {
       if (!item || typeof item.rootPath !== "string" || typeof item.name !== "string") continue;
-      const o = toCategoryEntry(item) as { name: string; rootPath: string; category?: unknown; enabled?: unknown };
+      const o = toCategoryEntry(item) as { name: string; rootPath: string; category?: unknown; enabled?: unknown; parent?: unknown };
       const host = hostOf(o.rootPath);
       const path = pathOf(o.rootPath);
       entries.push({
@@ -167,6 +167,8 @@ export async function listProjects(): Promise<{ source: string | null; entries: 
         host,
         path,
         ...(host === "PC" && !existsSync(path) ? { missing: true } : {}),
+        // 하위 공간이면 메인 경로(10-24 — 같은 기기라 경로만 적는다)
+        ...(typeof o.parent === "string" && o.parent.trim() ? { parent: o.parent.trim() } : {}),
       });
     }
     return { source: PROJECTS_FILE, entries };

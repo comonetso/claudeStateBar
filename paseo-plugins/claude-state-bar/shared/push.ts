@@ -18,10 +18,21 @@ export const pushReceived = defineRpc({
   output: z.object({ ok: z.boolean() }),
 });
 
+// 답하지 않은 질문 다시 알리기(10-24 리규형님 "알림을 보낸 뒤 5분 안에 질문 버튼을 누르지 않으면 누를 때까지 계속 보냄 — 작업이 끊기지 않게" ·
+// 버튼 "폰 알림과 PC 질문 소리 둘 다 · 5분마다, 누를 때까지"). 다시 보낼 때마다 질문 번호 끝에 ":r<회차>" 를 붙여 새 사건으로 올린다 —
+// 폰 알림과 PC 소리는 사건 번호로 짝을 맞추므로(폰이 받으면 PC 조용) 서버·화면이 같은 번호를 쓴다. 판정할 때는 표시를 떼고 원래 질문을 본다
+const REPEAT_MARK = /:r\d+$/;
+export const baseQuestionId = (nativeId: string) => nativeId.replace(REPEAT_MARK, "");
+export const questionRepeatId = (requestId: string, round: number) => `${baseQuestionId(requestId)}:r${round}`;
+
 // 프로젝트 목록의 압축 준비 아이콘(10-15 리규형님 "질문지 올라올 때 ? 넣듯이") — 이 데몬에서 압축 명령어를 기다리는 대화.
-// 바뀌거나 25초가 지나면 답한다(rev 가 같으면 기다린다)
+// 바뀌거나 25초가 지나면 답한다(rev 가 같으면 기다린다). questionRepeats = 지금 다시 울릴 질문(10-24 — 옛 데몬은 보내지 않는다)
 export const pushCompactWait = defineRpc({
   name: "push.compact_wait",
   input: z.object({ rev: z.number().nullable() }),
-  output: z.object({ rev: z.number(), agentIds: z.array(z.string()) }),
+  output: z.object({
+    rev: z.number(),
+    agentIds: z.array(z.string()),
+    questionRepeats: z.array(z.object({ agentId: z.string(), nativeId: z.string() })).optional(),
+  }),
 });

@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import type { PluginHookContext, PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import { isCheckpointReport } from "./chime/lastTurn";
 import { flipTitle } from "../shared/headerTitles";
+import { questionRepeatId } from "../shared/push";
 import { labelNameOf } from "./headerTitles";
 import { hostIdentity } from "./layoutSync";
 import { isTeamDaemon } from "./sound";
@@ -36,7 +37,9 @@ export { PHONE_ACK_WAIT_MS };
 export function pushRoute(): Promise<PushRoute> {
   return readPushRoute(DIR);
 }
-/** 알림 사건 번호 — 소리 확인(soundPushKey)과 같은 식을 쓴다 */
+/** 답하지 않은 질문을 다시 알리는 간격(10-24 리규형님 버튼 "5분마다, 누를 때까지") — 회차 번호는 shared/push.ts questionRepeatId */
+export const QUESTION_REPEAT_MS = 5 * 60_000;
+/** 알림 사건 번호 — 소리 확인(soundPushKey)과 같은 식을 쓴다. 다시 알릴 때는 질문 번호에 회차가 붙는다(q:대화:질문:r1) */
 export const questionEventId = (agentId: string, requestId: string) => `q:${agentId}:${requestId}`;
 export const compactEventId = (agentId: string, turnId: string | null) => `c:${agentId}:${turnId ?? Date.now()}`;
 /** 소리(sound-v2)의 번호 → 그 알림의 사건 번호. 압축 준비는 [마지막 사람 말 시각, 차례 번호]의 차례 번호로만(없으면 null — 물러서지 않는다) */
@@ -228,8 +231,18 @@ const WAIT_MS = 25_000;
 type Ref = { eventId: string; agentId: string; kind: "question" | "compact" };
 
 /** disposition = 중앙 경로의 내구 판정(soundEvents.ts createPushDisposition — 소리 확인과 같은 것을 index.server.ts 가 넘긴다) */
-export function createPush(options: { disposition?: PushDisposition } = {}) {
+export function createPush(options: {
+  disposition?: PushDisposition;
+  /** 시험용 — 다시 알림 간격·시계 */
+  repeatMs?: number;
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (timer: unknown) => void;
+} = {}) {
   const { disposition } = options;
+  const repeatMs = options.repeatMs ?? QUESTION_REPEAT_MS;
+  // unref — 떠 있는 질문의 다시 알림 예약이 프로세스 종료를 붙잡지 않게(10-24 폰 알림 시험이 이 예약에 묶여 끝나지 않았다)
+  const setTimer = options.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms).unref());
+  const clearTimer = options.clearTimer ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>));
   const open = new Map<string, Message>();
   // 중앙으로 올린 알림 — 해결도 같은 길로 보낸다(그사이 경로 파일이 바뀌어도)
   const openCentral = new Map<string, CentralRoute>();
@@ -347,32 +360,106 @@ export function createPush(options: { disposition?: PushDisposition } = {}) {
     } else post(message);
   };
 
-  const snapshot = () => ({ rev, agentIds: [...new Set([...open.values()].filter((m) => m.kind === "compact").map((m) => m.agentId))] });
+  // 답하지 않은 질문 다시 알리기(10-24 리규형님 — 5분 안에 버튼을 누르지 않으면 누를 때까지 5분마다 폰 알림·PC 질문 소리).
+  // 원래 사건 번호(q:대화:질문)마다 회차와 예약 하나. 회차가 오르면 직전 폰 알림을 닫고 새 번호로 다시 올린 뒤, 화면에 알려(changed)
+  // 화면이 같은 번호로 질문 소리를 낸다(폰이 받으면 PC 조용 — 처음 알림과 같은 판정). 답·새 차례·차례 끝·보관이면 그친다
+  type Repeat = { agentId: string; requestId: string; round: number; timer: unknown; agent: Agent; paseo: PaseoApi; body: string };
+  const repeats = new Map<string, Repeat>();
+  const rounds = (base: string) => (m: Ref) => m.eventId === base || m.eventId.startsWith(`${base}:r`);
+  const dropRepeats = (match: (r: Repeat, base: string) => boolean) => {
+    let shown = false;
+    for (const [base, r] of [...repeats]) {
+      if (!match(r, base)) continue;
+      repeats.delete(base);
+      if (r.timer !== null) clearTimer(r.timer);
+      if (r.round > 0) shown = true;
+    }
+    if (shown) changed();
+  };
+  const armRepeat = (base: string, r: Repeat) => {
+    r.timer = setTimer(() => {
+      void fireRepeat(base, r).catch((error: unknown) => log(`question ${base}: repeat failed ${String(error)}`));
+    }, repeatMs);
+  };
+  const fireRepeat = async (base: string, r: Repeat) => {
+    if (repeats.get(base) !== r) return;
+    r.timer = null;
+    // 답한 알림을 놓쳤을 수 있다 — 질문이 아직 떠 있는지 데몬에 다시 묻는다(못 읽으면 알림 기준으로 계속)
+    let still = true;
+    try {
+      const handle = r.paseo.agents.ref(r.agentId);
+      await handle.refresh();
+      const now = handle.current();
+      still = !!now && !now.archivedAt && (now.pendingPermissions ?? []).some((p: { id: string }) => p.id === r.requestId);
+    } catch {
+      // 계속 보낸다
+    }
+    if (repeats.get(base) !== r) return;
+    if (!still) {
+      log(`question ${base}: no longer open — stopped repeating`);
+      dropRepeats((x) => x === r);
+      resolve(rounds(base));
+      return;
+    }
+    const previous = r.round === 0 ? base : questionEventId(r.agentId, questionRepeatId(r.requestId, r.round));
+    r.round += 1;
+    resolve((m) => m.eventId === previous);
+    armRepeat(base, r);
+    log(`question ${base}: still unanswered after ${Math.round((repeatMs * r.round) / 60_000)} min — sending again (round ${r.round})`);
+    try {
+      // 새 사건을 먼저 올린다(중앙 경로의 판정 기록이 생긴 뒤에 화면이 소리를 물어야 폰이 받았을 때 PC 가 조용하다)
+      await raise("question", questionEventId(r.agentId, questionRepeatId(r.requestId, r.round)), r.agent, r.paseo, "질문", r.body);
+    } finally {
+      changed();
+    }
+  };
+
+  const snapshot = () => ({
+    rev,
+    agentIds: [...new Set([...open.values()].filter((m) => m.kind === "compact").map((m) => m.agentId))],
+    questionRepeats: [...repeats.values()].filter((r) => r.round > 0).map((r) => ({ agentId: r.agentId, nativeId: questionRepeatId(r.requestId, r.round) })),
+  });
 
   return {
     // 허락 요청은 종류와 상관없이 질문으로 알린다 — 질문지·계획 승인뿐 아니라 "매번 묻기" 모드의 도구 사용 허락도
     // (10-21 리규형님: 허락 창이 떴는데 알림이 없어 10~20분 몰랐다 · "똑같이 질문으로")
     onPermissionRequested({ agent, request }: PluginLifecycleEvents["agent.permission_requested"], { paseo }: { paseo: PaseoApi }) {
-      return raise("question", questionEventId(agent.id, request.id), agent, paseo, "질문", questionText(request));
+      const base = questionEventId(agent.id, request.id);
+      const body = questionText(request);
+      if (!repeats.has(base)) {
+        const r: Repeat = { agentId: agent.id, requestId: request.id, round: 0, timer: null, agent, paseo, body };
+        repeats.set(base, r);
+        armRepeat(base, r);
+      }
+      return raise("question", base, agent, paseo, "질문", body);
     },
-    // 답했을 때(버튼·말 모두) · 취소·새 말로 정리됐을 때 데몬이 낸다(agent-manager resolvePendingPermissionsForAgent)
+    // 답했을 때(버튼·말 모두) · 취소·새 말로 정리됐을 때 데몬이 낸다(agent-manager resolvePendingPermissionsForAgent). 다시 알린 회차도 함께 닫는다
     onPermissionResolved({ agent, requestId }: PluginLifecycleEvents["agent.permission_resolved"]) {
-      resolve((m) => m.eventId === questionEventId(agent.id, requestId));
+      const base = questionEventId(agent.id, requestId);
+      dropRepeats((_r, b) => b === base);
+      resolve(rounds(base));
     },
     // 다음 턴이 시작되면(압축 명령 포함) 그 대화의 압축 준비는 처리된 것이다. 질문은 이 턴 안에서만 생기므로 함께 지운다
     onTurnStarted({ agent }: PluginLifecycleEvents["agent.turn_started"]) {
+      dropRepeats((r) => r.agentId === agent.id);
       resolve((m) => m.agentId === agent.id);
     },
     onTurnEnded({ agent, turnId, outcome, timeline }: PluginLifecycleEvents["agent.turn_ended"], { paseo }: { paseo: PaseoApi }) {
+      dropRepeats((r) => r.agentId === agent.id);
       resolve((m) => m.agentId === agent.id);
       if (outcome.kind !== "completed" || !endsWithCheckpoint(timeline)) return;
       return raise("compact", compactEventId(agent.id, turnId), agent, paseo, "압축 준비", "체크포인트 저장 끝 — 압축 명령어를 복사해 넣으세요", !!turnId);
     },
     onArchived({ agent }: PluginLifecycleEvents["agent.archived"]) {
+      dropRepeats((r) => r.agentId === agent.id);
       resolve((m) => m.agentId === agent.id);
     },
-    /** 압축 준비가 떠 있는 대화(프로젝트 목록 아이콘) — 바뀌거나 25초가 지나면 답한다 */
-    async waitCompact(known: number | null): Promise<{ rev: number; agentIds: string[] }> {
+    /** 플러그인을 내릴 때 — 다시 알림 예약을 모두 지운다 */
+    stop() {
+      dropRepeats(() => true);
+    },
+    /** 압축 준비가 떠 있는 대화(프로젝트 목록 아이콘)와 지금 다시 울릴 질문 — 바뀌거나 25초가 지나면 답한다 */
+    async waitCompact(known: number | null): Promise<{ rev: number; agentIds: string[]; questionRepeats: { agentId: string; nativeId: string }[] }> {
       if (known !== rev) return snapshot();
       await new Promise<void>((done) => {
         const wake = () => {

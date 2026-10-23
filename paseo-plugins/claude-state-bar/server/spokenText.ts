@@ -134,6 +134,10 @@ export function koreanNumber(digits: string): string {
 }
 /** 소수 자리는 한 자리씩(.56 → 점 오육) */
 const koreanFraction = (frac: string) => ` 점 ${frac.split("").map((d) => KO_DIGITS[+d]).join("")}`;
+/** 시각의 시·분·초 — 시계 숫자 그대로(02 → 공이 · 00 → 공공 · 18 → 십팔). 10-24 리규형님 "18:13:02 는 십팔시 십삼분 공이초" · 버튼 "시·분·초 모두 공".
+ *  아라비아 숫자로 두면 엔진이 "18시 13분 2초"를 "열여덟 시간 …"처럼 걸린 시간으로 읽었다 */
+const clockNumber = (digits: string) =>
+  digits.length === 2 && digits[0] === "0" ? `공${digits[1] === "0" ? "공" : KO_DIGITS[+digits[1]]}` : koreanNumber(digits);
 // 숫자 바로 뒤에 붙은 단위 — 영어 철자 대신 한국어로(35ms → 35밀리초). "m"(미터·분)은 뜻이 갈려 뺀다. 긴 이름을 먼저
 const UNIT_WORDS: Record<string, string> = {
   ms: "밀리초", sec: "초", min: "분", s: "초", h: "시간", px: "픽셀", fps: "프레임",
@@ -149,14 +153,15 @@ export function readNumbersKo(text: string): string {
     // 연도 붙은 날짜(2026-10-14 · 2026/10/14 · 2026.10.14). 바로 뒤 ISO 의 T 는 띄운다
     .replace(/(?<![\d.:/-])(\d{4})([-/.])(\d{1,2})\2(\d{1,2})(?![\d/-]|[.:]\d)(T(?=\d{1,2}:\d{2}))?/g,
       (m, year: string, _sep: string, month: string, day: string, iso?: string) => (validMonthDay(month, day) ? `${year}년 ${+month}월 ${+day}일${iso ? " " : ""}` : m))
-    // 끝자리를 x 로 둔 시각(18:4x — 기록에 대략 시각을 이렇게 쓴다) — "18시 40분쯤", 0x 는 "18시쯤"
-    .replace(/(?<![\d.:])([01]?\d|2[0-3]):([0-5])x(?![A-Za-z0-9])/g, (_m, hour: string, tens: string) => (+tens ? `${+hour}시 ${tens}0분쯤` : `${+hour}시쯤`))
-    // 시각(9:05 · 16:24 · 06:51:51) — 0 인 분·초는 끝에서부터 뺀다(09:00 → 9시). 주소 번호(127.0.0.1:6800)는 앞이 숫자·점이라 아니다.
-    // ISO 끝의 Z 는 세계 표준시 표시라 "UTC"(한국 시각과 9시간 차이 — 빼면 틀린 시각으로 들린다)
+    // 끝자리를 x 로 둔 시각(18:4x — 기록에 대략 시각을 이렇게 쓴다) — "십팔시 사십분쯤", 0x 는 "십팔시쯤"
+    .replace(/(?<![\d.:])([01]?\d|2[0-3]):([0-5])x(?![A-Za-z0-9])/g, (_m, hour: string, tens: string) =>
+      (+tens ? `${clockNumber(hour)}시 ${koreanNumber(`${tens}0`)}분쯤` : `${clockNumber(hour)}시쯤`))
+    // 시각(9:05 · 16:24 · 06:51:51) — 0 인 분·초는 끝에서부터 뺀다(09:00 → 공구시). 숫자는 시계 숫자 그대로 수사로(clockNumber).
+    // 주소 번호(127.0.0.1:6800)는 앞이 숫자·점이라 아니다. ISO 끝의 Z 는 세계 표준시 표시라 "UTC"(한국 시각과 9시간 차이 — 빼면 틀린 시각으로 들린다)
     .replace(/(?<![\d.:])([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(Z(?![A-Za-z0-9]))?(?![\d:]|\.\d)/g, (_m, hour: string, minute: string, second?: string, utc?: string) => {
-      const parts = [`${+hour}시`];
-      if (+minute || (second && +second)) parts.push(`${+minute}분`);
-      if (second && +second) parts.push(`${+second}초`);
+      const parts = [`${clockNumber(hour)}시`];
+      if (+minute || (second && +second)) parts.push(`${clockNumber(minute)}분`);
+      if (second && +second) parts.push(`${clockNumber(second)}초`);
       if (utc) parts.push("UTC");
       return parts.join(" ");
     })
@@ -196,8 +201,8 @@ export function readNumbersKo(text: string): string {
     // 남은 곱하기(30초×60 · 25ms×40 — 수식은 숫자 사이만 본다) → "곱하기"
     .replace(/\s*×\s*(?=\d)/g, " 곱하기 ")
     // 물결 범위(4~5개 · 15:39~15:45 · 54,926~80,055 · 10-18~10-25) — 물결이 기호 정리에서 지워져 "4 5개"로 붙어 읽혔다 → "에서". 위에서 날짜·시각·수사로 바꾼 뒤라
-    // 뒤가 숫자이거나 한글 수사로 시작할 때만(그 밖의 물결은 그대로 지워진다)
-    .replace(/([\d%가-힣A-Za-z])[ \t]*~[ \t]*(?=[\d일이삼사오육칠팔구십백천만억조영])/g, "$1에서 ");
+    // 뒤가 숫자이거나 한글 수사로 시작할 때만(그 밖의 물결은 그대로 지워진다). 시계 숫자 "공오시"도 — "공" 뒤에 숫자 글자가 올 때만(공간·공부는 아니다)
+    .replace(/([\d%가-힣A-Za-z])[ \t]*~[ \t]*(?=[\d일이삼사오육칠팔구십백천만억조영]|공[공영일이삼사오육칠팔구])/g, "$1에서 ");
 }
 
 /** 화면 글은 바꾸지 않는다. 음성에만 필요한 마크다운·코드 이름 정리를 적용한다. */

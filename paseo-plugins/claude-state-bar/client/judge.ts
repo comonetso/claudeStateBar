@@ -1,4 +1,5 @@
 import type { SoundKind } from "../shared/sound";
+import { baseQuestionId } from "../shared/push";
 
 export interface JudgeConfig { settleMs: number; warningPercent: number; dangerPercent: number }
 // 허락 요청은 종류와 상관없이 질문 소리 — 질문지·계획 승인뿐 아니라 "매번 묻기" 모드의 도구 사용 허락도(10-21 리규형님: 허락 창을 10~20분
@@ -36,7 +37,7 @@ export function createJudge(play: (kind: SoundKind, agentId: string, nativeId: s
   };
   const isCurrent = (kind: SoundKind, id: string, nativeId: string) => {
     const m = memory.get(id); if (!m) return false;
-    if (kind === "question") return m.questionIds.has(nativeId);
+    if (kind === "question") return m.questionIds.has(baseQuestionId(nativeId)); // 다시 알린 질문(10-24 ":r<회차>")은 원래 질문으로
     if (kind === "completion") return !!nativeId && m.agent.status === "idle" && m.agent.lastUserMessageAt === nativeId && !m.questionIds.size;
     if (kind === "warning" || kind === "danger") return (contextPercent(m.agent) ?? -1) >= (kind === "danger" ? config().dangerPercent : config().warningPercent);
     return true;

@@ -15,6 +15,11 @@ export const projectEntrySchema = z.object({
   missing: z.boolean().optional(),
   /** 이 항목을 연 데몬 — 직원 화면이 직원 데몬 여럿의 목록을 합칠 때만 붙인다(10-20 client/staffProjects). 서버는 보내지 않는다 */
   serverId: z.string().optional(),
+  /**
+   * 하위 공간이면 그 메인의 경로(같은 기기) — 같은 경로로 또 추가해 만든 워크트리 항목(10-24). 왼쪽 목록이 메인 아래에 묶어 접고 편다
+   * (10-24 리규형님 "하위 스페이스는 메인에 얽매인 거잖아 — 접을 수 있게, 한데 몰려 다니게"). 목록 파일에도 경로만 적는다
+   */
+  parent: z.string().optional(),
 });
 export type ProjectEntry = z.infer<typeof projectEntrySchema>;
 
@@ -85,8 +90,8 @@ export const projectsEditOpSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("category"), key: z.string(), category: z.string(), itemName }),
   z.object({ op: z.literal("enabled"), key: z.string(), enabled: z.boolean(), itemName }),
   z.object({ op: z.literal("remove"), key: z.string(), itemName }),
-  /** host = "PC" 또는 ~/.ssh/config 의 Host 별칭. name 이 비면 폴더 이름 */
-  z.object({ op: z.literal("add"), host: z.string(), path: z.string(), name: z.string(), category: z.string() }),
+  /** host = "PC" 또는 ~/.ssh/config 의 Host 별칭. name 이 비면 폴더 이름. parent = 하위 공간으로 넣을 때 메인 경로(10-24) */
+  z.object({ op: z.literal("add"), host: z.string(), path: z.string(), name: z.string(), category: z.string(), parent: z.string().optional() }),
   z.object({ op: z.literal("renameCategory"), from: z.string(), to: z.string() }),
   /** 카테고리만 지운다 — 안의 프로젝트는 "카테고리 없음"으로(10-10 결정) */
   z.object({ op: z.literal("deleteCategory"), name: z.string() }),

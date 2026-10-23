@@ -5,6 +5,7 @@ import { hostIdentity } from "./layoutSync";
 import { lastTurnCheckpointReady, lastTurnCommandOnly } from "./chime/lastTurn";
 import { SoundJournal, soundDataFile } from "./soundJournal";
 import { phoneTook } from "./push";
+import { baseQuestionId } from "../shared/push";
 import { baseOf } from "./account";
 import { waitedLong } from "./diagStall";
 
@@ -228,8 +229,9 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
   const checkpointTurn = async (a: PaseoAgent) => { const s = claudeSession(a); return !!s && await lastTurnCheckpointReady(s); };
   const valid = async (a: PaseoAgent, kind: SoundKind, nativeId: string, cfg: Config, cycle: number, paseo: PaseoApi) => {
     if (a.archivedAt || a.status === "closed") return false;
-    // 허락 요청은 종류와 상관없이 질문이다 — 도구 사용 허락 포함(10-21 리규형님 "똑같이 질문으로 소리", client/judge.ts 와 같은 뜻)
-    if (kind === "question") return a.pendingPermissions.some((p) => p.id === nativeId);
+    // 허락 요청은 종류와 상관없이 질문이다 — 도구 사용 허락 포함(10-21 리규형님 "똑같이 질문으로 소리", client/judge.ts 와 같은 뜻).
+    // 다시 알린 질문(10-24 — 번호 끝 ":r<회차>")은 표시를 떼고 원래 질문이 아직 떠 있는지 본다
+    if (kind === "question") { const id = baseQuestionId(nativeId); return a.pendingPermissions.some((p) => p.id === id); }
     if (kind === "completion" || kind === "compact") {
       if (a.status !== "idle" || !a.lastUserMessageAt || await completionId(paseo, a) !== nativeId || a.pendingPermissions.length > 0) return false;
       const s = claudeSession(a);

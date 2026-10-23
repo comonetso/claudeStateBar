@@ -1,8 +1,9 @@
 import { getPaseoClient } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
-import { isTeamUsageSource, TEAM_USAGE_SOURCE_ID } from "../shared/account";
+import { accountsWait, isTeamUsageSource, TEAM_USAGE_SOURCE_ID } from "../shared/account";
 import { alertNameOfWorkspace } from "./headerTitles";
 import { useOnlineHosts } from "./projectsData";
+import { soundOrigin, watchSoundOrigins } from "./soundScreen";
 
 // 사용량 칸 카드 이름 옆 숫자(10-23 리규형님 "현재 몇 개의 플젝에서 현재 계정을 사용하고 있는지 · 마우스를 오버하면
 // Admin DEV, CrewPhoneApp 처럼 현재 사용하고 있는 플젝을 표시"). 붙어 있는 기기마다 대화 목록을 구독해, 보관 안 된 대화의
@@ -45,11 +46,26 @@ export function putOpenAgent(agents: Map<string, OpenAgent>, agent: AgentLike): 
   else agents.set(agent.id, { provider: providerOf(agent.provider), workspaceId: agent.workspaceId ?? null, cwd: agent.cwd });
 }
 
-const signatureOf = (byHost: Map<string, Map<string, OpenAgent>>): string =>
+/**
+ * 기기별 대화 목록에 계정 전환을 입힌다(10-24 리규형님 — Mesa 하위 둘을 알약으로 hhs·hyj 로 바꿨는데 숫자는 como 에 셌다).
+ * 알약으로 바꾼 계정은 Paseo 대화의 공급자 칸이 아니라 그 기기 플러그인 기록(server/account accounts.json)에만 남는다 — 알약과 같은 기준.
+ * 값은 서버가 이미 공급자 이름으로 바꿔 준다(옛 값 이행 normalizeProvider · 원래 공급자로 되돌린 대화는 빠진다)
+ */
+export function withSwitched(byHost: Map<string, Map<string, OpenAgent>>, switched: Map<string, Record<string, string>>): OpenAgent[] {
+  return [...byHost].flatMap(([host, agents]) => {
+    const to = switched.get(host) ?? {};
+    return [...agents].map(([id, a]) => (to[id] ? { ...a, provider: to[id] } : a));
+  });
+}
+
+const signatureOf = (byHost: Map<string, Map<string, OpenAgent>>, switched: Map<string, Record<string, string>>): string =>
   [...byHost]
-    .flatMap(([host, agents]) => [...agents].map(([id, a]) => `${host}|${id}|${a.provider}|${a.workspaceId ?? ""}|${a.cwd}`))
+    .flatMap(([host, agents]) => [...agents].map(([id, a]) => `${host}|${id}|${switched.get(host)?.[id] ?? a.provider}|${a.workspaceId ?? ""}|${a.cwd}`))
     .sort()
     .join("\n");
+
+/** 계정 전환 기록을 못 받은 기기(옛 판 플러그인·잠깐 끊김)를 다시 묻는 간격 */
+const SWITCH_RETRY_MS = 30_000;
 
 /** 붙어 있는 기기 전부의 열린 대화. 대화가 도는 동안 잦은 상태 알림은 공급자·작업 공간·폴더가 그대로면 다시 그리지 않는다 */
 export function useOpenAgents(): OpenAgent[] {
@@ -58,16 +74,52 @@ export function useOpenAgents(): OpenAgent[] {
   useEffect(() => {
     let disposed = false;
     const byHost = new Map<string, Map<string, OpenAgent>>();
+    // 기기별 계정 전환 기록(대화 번호 → 바꾼 계정)
+    const switched = new Map<string, Record<string, string>>();
     const releases: (() => void)[] = [];
     let shown = "";
     const publish = () => {
       if (disposed) return;
-      const signature = signatureOf(byHost);
+      const signature = signatureOf(byHost, switched);
       if (signature === shown) return;
       shown = signature;
-      setAgents([...byHost.values()].flatMap((m) => [...m.values()]));
+      setAgents(withSwitched(byHost, switched));
     };
     for (const serverId of online) {
+      // 그 기기의 계정 전환 기록 — 바뀔 때까지 기다렸다 답이 온다(길어도 25초, 알약과 같은 요청). 플러그인 연결이 아직이면 붙기를 기다린다
+      void (async () => {
+        let rev: number | null = null;
+        while (!disposed) {
+          const origin = soundOrigin(serverId);
+          if (!origin) {
+            await new Promise<void>((resolve) => {
+              let finished = false;
+              let stop: (() => void) | null = null;
+              const done = () => {
+                if (finished) return;
+                finished = true;
+                stop?.();
+                resolve();
+              };
+              stop = watchSoundOrigins(() => {
+                if (disposed || soundOrigin(serverId)) done();
+              });
+              if (soundOrigin(serverId)) done();
+              releases.push(done);
+            });
+            continue;
+          }
+          try {
+            const r: { rev: number; accounts: Record<string, string> } = await origin.rpc(accountsWait, { rev });
+            if (disposed) return;
+            rev = r.rev;
+            switched.set(serverId, r.accounts);
+            publish();
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, SWITCH_RETRY_MS));
+          }
+        }
+      })();
       const agentsOfHost = new Map<string, OpenAgent>();
       byHost.set(serverId, agentsOfHost);
       const fill = (entries: { agent: AgentLike }[]) => {

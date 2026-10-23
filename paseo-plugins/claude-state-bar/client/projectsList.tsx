@@ -21,8 +21,9 @@ import {
   type Live,
   type ProjectsData,
 } from "./projectsData";
-import { countsTotal, useProjectCounts, type ProjectTarget } from "./projectCounts";
-import { StatusIndicator } from "./statusIndicator";
+import { countsTotal, useProjectCounts, type ProjectCounts, type ProjectTarget } from "./projectCounts";
+import { arrangeRows, mainsOf, placeEntries } from "./projectSubs";
+import { mostUrgent, StatusIndicator } from "./statusIndicator";
 import { isTeamMember } from "./teamMode";
 import { lineColor, UiInput } from "./ui";
 import { setContextMenu, setDraggableRow, setHoverTitle, setNoTranslate } from "./web";
@@ -43,6 +44,31 @@ const CATEGORY_DRAG = ":category-headers";
 // 펼친 묶음 — 화면을 닫았다 열어도 그대로(앱이 켜져 있는 동안, 전체 화면과 칸이 함께). 처음엔 활성만 펼치고 나머지(고정·카테고리·
 // 숨김)는 접혀 있다 — "모두 접기"를 누른 모양과 같다(10-15 리규형님 "기본을 접힘으로 — 맨날 접어 놓으면 새로고침하면서 계속 펴져서")
 const expanded = new Set<string>([ACTIVE_GROUP]);
+// 하위 공간을 접은 메인(키 = pinKey) — 처음엔 펼침(10-24 리규형님 버튼). 묶음이 달라도(고정·활성·카테고리) 같은 메인이면 함께 접힌다.
+// 묶음 접기처럼 앱이 켜져 있는 동안만 기억한다
+const foldedSubs = new Set<string>();
+
+/** 접힌 메인 줄에 하위 상태를 합친다(10-24 리규형님 버튼 "메인 줄에 합쳐 보이기") — 점은 가장 급한 것, 대화·돌고 있음·질문·압축 수는 더한다 */
+function mergeLive(parts: (Live | null)[]): Live | null {
+  let out: Live | null = null;
+  for (const v of parts) {
+    if (!v) continue;
+    out = out
+      ? { open: out.open + v.open, running: out.running + v.running, asking: out.asking + v.asking, compacting: out.compacting + v.compacting, bucket: mostUrgent(out.bucket, v.bucket) }
+      : { open: v.open, running: v.running, asking: v.asking, compacting: v.compacting, bucket: v.bucket };
+  }
+  return out;
+}
+
+/** 작업 현황 숫자(서브에이전트·백그라운드·Codex)도 접힌 메인 줄에 더한다 */
+function sumCounts(parts: (ProjectCounts | undefined)[]): ProjectCounts | undefined {
+  let out: ProjectCounts | undefined;
+  for (const v of parts) {
+    if (!v) continue;
+    out = out ? { subagents: out.subagents + v.subagents, background: out.background + v.background, codex: out.codex + v.codex } : { ...v };
+  }
+  return out;
+}
 
 export function ProjectsList(props: {
   theme: PluginTheme;
@@ -117,34 +143,38 @@ export function ProjectsList(props: {
     return out;
   }, [entries, index, live, member]);
   const projectCounts = useProjectCounts(countTargets);
+  // 하위 공간 → 메인(10-24) — 메인 아래에 묶어 접고 펴며, 고정·활성·카테고리 어디서나 메인과 몰려 다닌다
+  const mains = useMemo(() => mainsOf(entries), [entries]);
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const map = new Map<string, ProjectEntry[]>();
-    const add = (g: string, e: ProjectEntry) => map.set(g, [...(map.get(g) ?? []), e]);
+    // 어느 묶음에 넣는지는 projectSubs.placeEntries — 아래 규칙에 "하위가 든 묶음엔 메인도"·"고정은 메인 핀으로"를 더했다.
     // 팀원 화면은 메인이 숨긴 프로젝트를 아예 안 보인다(10-12 리규형님 "팀원은 숨김 카테를 히든 처리" — 숨김 묶음을 펼쳐
-    // 눌러 들어가던 것). 활성·고정·찾기에도 안 나온다. 서버의 읽기 권한은 그대로라 팀원 Claude 의 분석은 된다
-    for (const e of entries) {
-      if (member && !e.enabled) continue;
-      if (q && !e.name.toLowerCase().includes(q) && !e.path.toLowerCase().includes(q) && !e.category.toLowerCase().includes(q)) continue;
-      // 열린 대화가 있는 것(점이 회색·초록)은 고정이든 아니든 "활성"에 모은다 — 활성은 활성끼리 모아 보는 칸이고 고정은
-      // 그대로 고정에 남는다(10-07 리규형님: "고정은 고정, 활성은 활성끼리"). 원래 묶음 쪽도 지금처럼(대화를 열고 닫을 때
-      // 줄이 들락날락하지 않게)
-      if (liveOf(e, serverOf(e, index), live)) add(ACTIVE_GROUP, e);
-      // 고정한 것은 맨 위 "고정" 묶음에도 넣고 원래 묶음에도 그대로 둔다 — 원래 묶음에서 빠지면 지워진 줄로 착각한다
-      // (10-06 처음엔 원래 묶음에서 뺐다 → 10-13 리규형님 "핀으로 고정을 해도 원래 카테에 남도록")
-      if (pins.has(pinKey(e))) add(PINNED_GROUP, e);
-      add(categoryGroup(e), e);
-    }
+    // 눌러 들어가던 것). 활성·고정·찾기에도 안 나온다. 서버의 읽기 권한은 그대로라 팀원 Claude 의 분석은 된다.
+    // 열린 대화가 있는 것(점이 회색·초록)은 고정이든 아니든 "활성"에 모은다 — 활성은 활성끼리 모아 보는 칸이고 고정은
+    // 그대로 고정에 남는다(10-07 리규형님: "고정은 고정, 활성은 활성끼리"). 원래 묶음 쪽도 지금처럼(대화를 열고 닫을 때
+    // 줄이 들락날락하지 않게). 고정한 것은 맨 위 "고정" 묶음에도 넣고 원래 묶음에도 그대로 둔다 — 원래 묶음에서 빠지면 지워진
+    // 줄로 착각한다(10-06 처음엔 원래 묶음에서 뺐다 → 10-13 리규형님 "핀으로 고정을 해도 원래 카테에 남도록")
+    const placed = placeEntries(entries, mains, {
+      show: (e) => !(member && !e.enabled),
+      matches: (e) => !q || e.name.toLowerCase().includes(q) || e.path.toLowerCase().includes(q) || e.category.toLowerCase().includes(q),
+      live: (e) => !!liveOf(e, serverOf(e, index), live),
+      pinned: (e) => pins.has(pinKey(e)),
+      category: categoryGroup,
+      activeGroup: ACTIVE_GROUP,
+      pinnedGroup: PINNED_GROUP,
+    });
     // 묶음 순서: 고정·활성은 맨 위, 카테고리는 번호 순서, 그다음 카테고리 없음, 숨김은 맨 아래(10-11 리규형님 "숨김은 이동에서 제외,
     // 항상 맨 끝" — 카테고리 없음도 번호가 없어 자리 고정)
-    const order = categories.filter((g) => map.has(g));
-    if (map.has(ACTIVE_GROUP)) order.unshift(ACTIVE_GROUP);
-    if (map.has(PINNED_GROUP)) order.unshift(PINNED_GROUP);
-    if (map.has(UNTAGGED_GROUP)) order.push(UNTAGGED_GROUP);
-    if (map.has(DISABLED_GROUP)) order.push(DISABLED_GROUP);
+    const order = categories.filter((g) => placed.has(g));
+    if (placed.has(ACTIVE_GROUP)) order.unshift(ACTIVE_GROUP);
+    if (placed.has(PINNED_GROUP)) order.unshift(PINNED_GROUP);
+    if (placed.has(UNTAGGED_GROUP)) order.push(UNTAGGED_GROUP);
+    if (placed.has(DISABLED_GROUP)) order.push(DISABLED_GROUP);
     // 고정 묶음은 고정 목록 파일의 순서. 나머지는 끌어 놓은 순서(묶음별 순서 파일) 다음에, 끌어 놓은 적 없는 것을 목록 파일
-    // 순서로 뒤에 붙인다 — 활성에 처음 들어온 것은 맨 아래(10-07 리규형님 결정. 처음엔 이름순이었다가 같은 날 목록 파일 순서로)
-    const pinRank = (e: ProjectEntry) => pinOrder.indexOf(pinKey(e));
+    // 순서로 뒤에 붙인다 — 활성에 처음 들어온 것은 맨 아래(10-07 리규형님 결정. 처음엔 이름순이었다가 같은 날 목록 파일 순서로).
+    // 고정 여부·순서는 하위면 메인 것을 본다 — 하위는 메인 바로 아래에 붙는다(arrangeRows)
+    const pinOwner = (e: ProjectEntry) => mains.get(e) ?? e;
+    const pinRank = (e: ProjectEntry) => pinOrder.indexOf(pinKey(pinOwner(e)));
     const sortIn = (g: string, items: ProjectEntry[]) => {
       if (g === PINNED_GROUP) return items.sort((a, b) => pinRank(a) - pinRank(b));
       const saved = orders[orderKey(g)] ?? [];
@@ -157,16 +187,20 @@ export function ProjectsList(props: {
       const pinFirst = g !== ACTIVE_GROUP;
       return items.sort((a, b) => {
         if (pinFirst) {
-          const pa = pins.has(pinKey(a));
-          const pb = pins.has(pinKey(b));
+          const pa = pins.has(pinKey(pinOwner(a)));
+          const pb = pins.has(pinKey(pinOwner(b)));
           if (pa !== pb) return pa ? -1 : 1;
           if (pa && pb) return pinRank(a) - pinRank(b);
         }
         return rank(a) - rank(b) || (fileRank.get(a) ?? 0) - (fileRank.get(b) ?? 0);
       });
     };
-    return order.map((g) => ({ name: g, items: sortIn(g, map.get(g) ?? []) }));
-  }, [entries, filter, pins, pinOrder, live, index, orders, categories, fileRank, member]);
+    return order.map((g) => {
+      const { items, dragged } = placed.get(g) ?? { items: [], dragged: new Set<ProjectEntry>() };
+      // 머리 숫자는 그 묶음 소속만 — 하위를 따라 끌려온 메인(활성 칸에서 메인 대화가 닫힌 것 등)은 빼고 센다
+      return { name: g, rows: arrangeRows(sortIn(g, items), mains), count: items.length - dragged.size };
+    });
+  }, [entries, filter, pins, pinOrder, live, index, orders, categories, fileRank, member, mains]);
   // 카테고리 묶음 머리를 끌어 놓은 자리로(고정·활성·카테고리 없음·숨김은 자리 고정). 화면에 안 보이는 카테고리(찾기로 걸러진 것 등)도
   // 전체 순서에 남겨 번호가 흔들리지 않게 한다
   const onDropCategory = (from: string, to: string, after: boolean) => {
@@ -259,7 +293,8 @@ export function ProjectsList(props: {
       {data && !data.source ? <Text style={{ color: c.foregroundMuted, fontSize: fs(12) }}>프로젝트 목록 파일을 찾지 못했습니다.</Text> : null}
       {groups.map((g) => {
         const shut = !expanded.has(g.name) && !filter.trim();
-        const onDrop = g.name === PINNED_GROUP ? dropPin : dropIn(g.name, g.items.map(pinKey));
+        // 하위 줄은 끌지 않는다 — 메인을 끌면 하위가 따라온다(메인 바로 아래에 붙으므로)
+        const onDrop = g.name === PINNED_GROUP ? dropPin : dropIn(g.name, g.rows.filter((r) => !r.sub).map((r) => pinKey(r.e)));
         // 카테고리 묶음 머리도 끌어 옮긴다(10-07 리규형님) — 고정·활성·카테고리 없음·숨김 머리는 자리 고정
         const movable = catNumber.has(g.name);
         return (
@@ -281,15 +316,20 @@ export function ProjectsList(props: {
               <Text style={{ flexShrink: 1, color: c.foregroundMuted, fontSize: fs(13), fontWeight: "600" }} numberOfLines={1}>
                 {catNumber.has(g.name) ? `${catNumber.get(g.name)}. ${g.name}` : g.name}
               </Text>
-              <Text style={{ color: c.foregroundMuted, fontSize: fs(11) }}>{g.items.length}</Text>
+              <Text style={{ color: c.foregroundMuted, fontSize: fs(11) }}>{g.count}</Text>
             </Pressable>
             {shut
               ? null
-              : g.items.map((e) => {
+              : g.rows.map(({ e, sub, subs }) => {
+                  // 하위 줄은 메인을 접으면 숨긴다. 접힌 메인 줄은 하위 상태를 합쳐 보인다(10-24 리규형님 버튼)
+                  const main = sub ? mains.get(e) : undefined;
+                  if (main && foldedSubs.has(pinKey(main))) return null;
+                  const folded = subs.length > 0 && foldedSubs.has(pinKey(e));
                   const serverId = serverOf(e, index);
                   const known = !!serverId;
                   const opening = busy === e.path;
-                  const alive = liveOf(e, serverId, live);
+                  const own = liveOf(e, serverId, live);
+                  const alive = folded ? mergeLive([own, ...subs.map((s) => liveOf(s, serverOf(s, index), live))]) : own;
                   // 살아 있는 세션: Paseo 워크스페이스 목록과 같은 표시(10-07 — 돌고 있음 고리·답 기다림 느낌표·실패·안 본 끝남
                   // 초록 점·끝남 흐린 점, statusIndicator). 대화가 없으면 자리만(이름 줄이 흔들리지 않게)
                   const hostText = opening ? "여는 중…" : e.missing ? "폴더 없음" : !known ? `${e.host} · 연결 없음` : e.host;
@@ -298,18 +338,26 @@ export function ProjectsList(props: {
                   // 연결 안 된 기기(방화벽 등)는 글자 대신 이름을 주황(테마 경고 색)으로 — 왼쪽 칸이 좁아 "연결 없음"이 이름을
                   // 자르던 것(10-06 리규형님). 마우스를 올리면 "기기 · 연결 없음"
                   const sideText = sidebar ? (opening ? "여는 중…" : e.missing ? "폴더 없음" : null) : hostText;
-                  const nameColor =
-                    pinKey(e) === currentKey ? c.statusSuccess : e.missing ? c.foregroundMuted : !known ? c.statusWarning : c.foreground;
+                  // 접힌 메인 줄은 지금 탭이 하위여도 초록(하위 줄이 안 보이므로)
+                  const current = pinKey(e) === currentKey || (folded && subs.some((s) => pinKey(s) === currentKey));
+                  const nameColor = current ? c.statusSuccess : e.missing ? c.foregroundMuted : !known ? c.statusWarning : c.foreground;
                   const key = pinKey(e);
                   const pinned = pins.has(key);
-                  // 셋 다 0 이면 숨긴다(10-14 리규형님). Codex = 실행 + 핑퐁 채팅
-                  const work = alive ? projectCounts.get(key) : undefined;
+                  // 셋 다 0 이면 숨긴다(10-14 리규형님). Codex = 실행 + 핑퐁 채팅. 접힌 메인 줄은 하위 것까지 더한다
+                  const countsOf = (x: ProjectEntry) => (liveOf(x, serverOf(x, index), live) ? projectCounts.get(pinKey(x)) : undefined);
+                  const work = folded ? sumCounts([e, ...subs].map(countsOf)) : alive ? projectCounts.get(key) : undefined;
                   const workText = work && countsTotal(work) > 0 ? `(${work.subagents}, ${work.background}, ${work.codex})` : null;
                   // 고정·활성은 여러 카테고리가 섞여 소속이 안 보인다 → 카테고리 번호를 이름 앞 작은 배지로(10-09 리규형님 결정 —
                   // 카테고리 이름을 통째로 붙이면 좁은 칸에서 프로젝트 이름이 잘린다). 10-11부터 번호는 카테고리 순서(끌어 옮긴 순서)이고
                   // 카테고리 없음은 배지 없음. 마우스를 올리면 카테고리 이름도 뜬다. 원래 카테고리 묶음 안 줄은 그대로
                   const mixed = g.name === PINNED_GROUP || g.name === ACTIVE_GROUP;
-                  const badge = mixed && catNumber.has(e.category) ? String(catNumber.get(e.category)) : null;
+                  // 하위 줄은 메인과 같은 카테고리면 배지를 뺀다(바로 위 메인 줄에 있다)
+                  const sameAsMain = !!main && main.category === e.category;
+                  const badge = mixed && !sameAsMain && catNumber.has(e.category) ? String(catNumber.get(e.category)) : null;
+                  // 하위 줄의 점은 메인 줄 번호 칸 자리에 둔다 — 이름 앞머리가 메인 이름과 맞게(10-24 리규형님 "앞대가리가 정렬되도록,
+                  // 똥글뺑이를 좀 밀어 넣으면"). 번호 칸이 없는 카테고리 묶음에선 점이 메인 이름 첫 글자 아래에 온다
+                  const mainBadge = main && mixed && catNumber.has(main.category) ? String(catNumber.get(main.category)) : null;
+                  const badgeBox = { flexShrink: 0, minWidth: fs(15), paddingHorizontal: 3, borderRadius: 4, borderWidth: 1, borderColor: c.border, alignItems: "center" } as const;
                   const hoverHost = !known && !e.missing ? `${e.host} · 연결 없음` : e.host;
                   return (
                     <Pressable
@@ -317,7 +365,7 @@ export function ProjectsList(props: {
                       ref={(node: unknown) => {
                         setHoverTitle(node, mixed && badge ? `${badge}. ${e.category} · ${hoverHost}` : hoverHost);
                         // 마우스로 끌어 같은 묶음 안 순서를 바꾼다(10-06 고정 → 10-07 모든 묶음, PC·웹 — 폰은 순서 바꾸기 없음)
-                        if (!readOnly) setDraggableRow(node, key, g.name, c.accent, onDrop);
+                        if (!readOnly && !sub) setDraggableRow(node, key, g.name, c.accent, onDrop);
                         setContextMenu(node, (x, y) => setMenu({ entry: e, x, y }));
                       }}
                       // 폰은 길게 누르기(껍데기 앱 웹뷰가 contextmenu 를 안 낼 수도 있어 둘 다 단다 — 같은 메뉴를 다시 여는 것뿐)
@@ -336,9 +384,23 @@ export function ProjectsList(props: {
                     >
                       {({ hovered }: { hovered?: boolean; pressed: boolean }) => (
                         <>
-                          <StatusIndicator bucket={alive?.bucket ?? null} theme={theme} />
+                          {/* 하위 줄: 메인 점 자리를 비우고(같은 크기 빈 칸) 다음 칸에 점 */}
+                          {sub ? <StatusIndicator bucket={null} theme={theme} /> : null}
+                          {sub && mainBadge ? (
+                            // 메인 번호를 안 보이게 넣어 번호 칸과 같은 폭을 잡고 점을 그 가운데에
+                            <View style={{ flexShrink: 0, justifyContent: "center" }}>
+                              <View style={[badgeBox, { opacity: 0 }]}>
+                                <Text style={{ fontSize: fs(10) }}>{mainBadge}</Text>
+                              </View>
+                              <View style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, alignItems: "center", justifyContent: "center" }}>
+                                <StatusIndicator bucket={alive?.bucket ?? null} theme={theme} />
+                              </View>
+                            </View>
+                          ) : (
+                            <StatusIndicator bucket={alive?.bucket ?? null} theme={theme} />
+                          )}
                           {badge ? (
-                            <View style={{ flexShrink: 0, minWidth: fs(15), paddingHorizontal: 3, borderRadius: 4, borderWidth: 1, borderColor: c.border, alignItems: "center" }}>
+                            <View style={badgeBox}>
                               <Text style={{ color: c.foregroundMuted, fontSize: fs(10) }}>{badge}</Text>
                             </View>
                           ) : null}
@@ -354,6 +416,23 @@ export function ProjectsList(props: {
                             >
                               {workText}
                             </Text>
+                          ) : null}
+                          {/* 하위 공간 접기·펼치기(10-24 리규형님 그림 — 이름·숫자 바로 뒤). 누르면 줄 열기는 하지 않는다 */}
+                          {subs.length > 0 ? (
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel={`${e.name} 하위 ${subs.length}개 ${folded ? "펼치기" : "접기"}`}
+                              ref={(node: unknown) => setHoverTitle(node, `하위 ${subs.length}개 ${folded ? "펼치기" : "접기"}`)}
+                              hitSlop={6}
+                              onPress={(ev) => {
+                                ev?.stopPropagation?.();
+                                if (!foldedSubs.delete(key)) foldedSubs.add(key);
+                                bump((n) => n + 1);
+                              }}
+                              style={{ flexShrink: 0 }}
+                            >
+                              <Icon name={folded ? "ChevronRight" : "ChevronDown"} size={fs(12)} color={c.foregroundMuted} />
+                            </Pressable>
                           ) : null}
                           {sideText ? (
                             <Text style={{ flexShrink: 0, marginLeft: 4, color: c.foregroundMuted, fontSize: fs(11) }} numberOfLines={1}>
@@ -383,6 +462,9 @@ export function ProjectsList(props: {
                                 ) : null}
                               </View>
                             ) : null
+                          ) : sub ? (
+                            // 하위 줄엔 핀이 없다 — 고정은 메인 핀 하나로 묶음 전체(10-24 리규형님 버튼). 자리만 잡아 이름 줄을 맞춘다
+                            <View style={{ flexShrink: 0, width: fs(11) }} />
                           ) : (
                             <Pressable
                               accessibilityRole="button"

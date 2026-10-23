@@ -6,7 +6,7 @@ import { shellMuted, watchShellMute } from "./shellMute";
 import { createShellAudio, shellCanSpeak } from "./shellSpeech";
 import { comboOfKey, shortcutMatches, type KeyLike } from "../shared/shortcuts";
 import { joinSplitParens } from "./readParts";
-import { followPlan } from "../shared/thinkingContract";
+import { followPlan, koreanMostly, translationGate, type TranslationMark, type TranslationWait } from "../shared/thinkingContract";
 import { joinSharedDevice, type SharedDevice } from "./sharedDevice";
 
 /** 키 이벤트 → 단축키 표(shared/shortcuts.ts)가 보는 모양 */
@@ -2128,8 +2128,8 @@ const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turn
 const READ_MARK = "data-csb-turn-read";
 // v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
 // v7(10-15): 턴 끝난 시각·내 말 시각 항상 보이기 규칙이 붙었다 — 판이 오르면 이름도 바꿔 옛 판이 지우는 스타일과 겹치지 않게
-const READ_SHEET = "claude-state-bar-turn-read-v14";
-const TURN_READ_VERSION = 26; // 26: 말마다 붙은 스피커도 따라 읽기를 묻는다·안 물은 이유 기록(10-24) · 25: 턴 스피커가 따라 읽기를 묻는다(10-23) · 24: 대화별 따라 읽기·복귀 진단(10-21) ·23: 숨으면 재생기 보류 — 이미 만든 소리까지만(10-20) · 22: 따라 읽는 대화 화면이 숨으면 새 문단을 안 넘기고 기다림(10-20) · 18: 따라 읽기 켤 때 선택한 문단부터 — follow.from(10-16) · 17: 따라 읽기 — 바인딩에 follow(10-15) ·9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
+const READ_SHEET = "claude-state-bar-turn-read-v15";
+const TURN_READ_VERSION = 27; // 27: 따라 읽기가 DeepL 번역을 기다렸다 화면 글로 넘김(10-24) · 26: 말마다 붙은 스피커도 따라 읽기를 묻는다·안 물은 이유 기록(10-24) · 25: 턴 스피커가 따라 읽기를 묻는다(10-23) · 24: 대화별 따라 읽기·복귀 진단(10-21) ·23: 숨으면 재생기 보류 — 이미 만든 소리까지만(10-20) · 22: 따라 읽는 대화 화면이 숨으면 새 문단을 안 넘기고 기다림(10-20) · 18: 따라 읽기 켤 때 선택한 문단부터 — follow.from(10-16) · 17: 따라 읽기 — 바인딩에 follow(10-15) ·9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
 /**
  * 꼬리 줄 "작업 시간" 단추의 이름표에서 끝난 시각만 — 0.11.1 AssistantTurnFooter(모듈 4880 Ue)는 작업 시간과 끝난 시각이 둘 다
  * 있을 때 이름표를 `${작업 시간}, ended ${시각}` 으로 만든다("ended" 는 번역 없는 고정 글). 시각은 Paseo formatMessageTimestamp
@@ -2564,7 +2564,38 @@ type FollowState = {
   where: { key: string; part: number }[];
   /** 따라 읽는 대화 화면이 숨어 새 문단을 기다리는 중(10-20) — 바뀔 때만 기록에 남긴다 */
   away?: boolean;
+  /** DeepL 번역을 기다리는 문단(10-24) — 그 문단과 뒤 문단은 넘기지 않는다(shared/thinkingContract translationGate) */
+  wait?: TranslationWait;
+  /** 번역을 기다리며 화면 가운데로 옮긴 문단("key#part") — 같은 문단은 한 번만 옮긴다 */
+  scrolled?: string;
 };
+
+/**
+ * 문단의 DeepL 번역 상태(10-24 — 웹 읽기 확장 peer_mail e164953b 실측: 문단 요소는 그대로 두고 안의 글만 바꾸며, 번역 중이면
+ * data-dl-translated="false", 끝나면 "true"). 문단이나 그 조상·자손의 표시를 본다. 표시가 없으면 한국어 위주 글은 기다리지 않고,
+ * 페이지 어딘가에 DeepL 표시가 있으면 "아직 손 안 댄 문단"(none), 없으면 번역을 안 켠 화면(off)
+ */
+function translationMark(block: ReadEl | null, text: string): TranslationMark {
+  if (!block) return "off";
+  const pending = '[data-dl-translated="false"]';
+  const done = '[data-dl-translated="true"]';
+  if (block.closest?.(pending) || block.querySelector(pending)) return "pending";
+  if (block.closest?.(done) || block.querySelector(done)) return "done";
+  if (koreanMostly(text)) return "off";
+  return document.querySelector("[data-dl-translated]") ? "none" : "off";
+}
+/** 번역을 기다리는 동안 다시 볼 간격 — 번역이 끝내 안 와도 시간 초과를 판정하려면 화면 변화 없이도 다시 봐야 한다 */
+const FOLLOW_TRANSLATION_POLL_MS = 250;
+/** 번역을 기다리는 문단이 화면 밖이면 가운데로(웹 읽기 확장과 같게 — 화면 근처에 들어와야 DeepL 이 번역한다). 같은 문단은 한 번만 */
+function bringIntoView(st: FollowState, key: string, part: number, block: ReadEl | null): void {
+  const id = `${key}#${part}`;
+  if (!block || st.scrolled === id) return;
+  st.scrolled = id;
+  const el = block as unknown as { getBoundingClientRect(): { top: number; bottom: number }; scrollIntoView?(o: { block: string }): void };
+  const r = el.getBoundingClientRect();
+  if (r.bottom > 0 && r.top < window.innerHeight) return;
+  el.scrollIntoView?.({ block: "center" });
+}
 /** 화면 순서대로 말 단위와, 꺼낸 말이 아직 없는 생각 상자를 한 번에 모은다(한 번 훑은 순서가 곧 앞뒤 비교 기준) */
 function followScan(stream: string): { units: FollowUnit[]; boxes: FollowBox[] } {
   const all = document.querySelectorAll(`${FOLLOW_UNITS}, ${FOLLOW_BOX}`) as unknown as ArrayLike<ReadEl>;
@@ -2675,7 +2706,9 @@ function followStep(st: FollowState, follow: FollowBinding, stream: string, log:
     }
     for (const key of plan.take) st.taken.set(key, 0);
     const texts: string[] = [];
-    for (let i = 0; i < units.length; i++) {
+    const now = Date.now();
+    let held = false;
+    for (let i = 0; i < units.length && !held; i++) {
       const u = units[i];
       if (!st.taken.has(u.key) || st.skip.has(u.key) || st.done.has(u.key)) continue;
       const list = partsOf(u);
@@ -2683,15 +2716,32 @@ function followStep(st: FollowState, follow: FollowBinding, stream: string, log:
       const after = followClosed(units, i, false, stream);
       const ready = after || follow.idle ? list.length : list.length - 1;
       const from = st.taken.get(u.key) ?? 0;
-      for (let k = from; k < ready; k++) {
+      let k = from;
+      for (; k < ready; k++) {
+        // DeepL 번역을 기다린다(10-24 — 끝난 순간의 영어 글을 넘겨 번역본이 생겨도 영어로 읽었다). 번역 중이면 이 문단과 뒤 문단을
+        // 넘기지 않고 다음 탐색에서 다시 본다 — 순서는 그대로, 기다리는 문단은 소리도 미리 만들지 않는다. 넘길 때는 그때의 화면 글
+        const waitingHere = !!st.wait && st.wait.key === u.key && st.wait.part === k;
+        const gate = translationGate(st.wait, u.key, k, translationMark(list[k].block, list[k].text), now);
+        if (!gate.pass) {
+          if (!waitingHere) log(`follow: 번역 기다림 · ${u.key} 문단 ${k + 1}`);
+          st.wait = gate.wait;
+          bringIntoView(st, u.key, k, list[k].block);
+          held = true;
+          break;
+        }
+        if (waitingHere) {
+          const how = !gate.timedOut ? "번역 끝" : st.wait?.marked ? "번역 기다림 시간 지남 — 지금 글로 넘김" : "번역 표시가 안 붙음 — 그대로 넘김";
+          log(`follow: ${how} · ${u.key} 문단 ${k + 1}`);
+        }
+        st.wait = undefined;
         texts.push(list[k].text);
         st.where.push({ key: u.key, part: k });
       }
-      if (ready > from) {
-        st.taken.set(u.key, ready);
+      if (k > from) {
+        st.taken.set(u.key, k);
         st.pushed.add(u.key);
       }
-      if (after) st.done.add(u.key);
+      if (after && !held) st.done.add(u.key);
     }
     if (texts.length) {
       log(`follow: 문단 ${texts.length}개 넘김 · 모두 ${st.where.length}개`);
@@ -2787,6 +2837,15 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
     // 따라 읽기 진행(호스트+대화마다) · 켜진 동안만 꺼낸 말 글 변화로도 검사를 깨운다(아래 relevant)
     const follows = new Map<string, FollowState>();
     let followOn = false;
+    // 따라 읽기 번역 기다림 다시 보기(10-24) — 타이머는 하나만
+    let translationTimer: ReturnType<typeof setTimeout> | null = null;
+    const waitTranslation = () => {
+      if (translationTimer) return;
+      translationTimer = setTimeout(() => {
+        translationTimer = null;
+        refresh();
+      }, FOLLOW_TRANSLATION_POLL_MS);
+    };
     // 화면 탐색 실패는 그릴 때마다 되풀이된다 — 같은 이유는 한 번만 서버 기록으로 보낸다
     let lastScanError = "";
     const owner = (hostId: string) => [...hub.users.values()].map((get) => get()).find((b) => b.hostId === hostId && b.enabled);
@@ -3068,6 +3127,8 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
               log(`follow: 시작 — 화면 말 ${units.length}개 중 ${reading}개부터${boxesBefore ? ` · 생각 상자 ${boxesBefore}개 출발점 앞` : ""}${begin.picked ? ` · 선택한 ${begin.picked.unit + 1}번째 말의 ${begin.picked.part + 1}번째 문단부터` : ""}${follow.idle ? " · 쉬는 중" : ""}`);
             }
             const block = followStep(st, follow, stream, log);
+            // DeepL 번역을 기다리면 화면 변화가 없어도 잠시 뒤 다시 본다(시간 초과 판정 — 10-24). 대화 화면이 숨어 있으면 돌아올 때 다시 본다
+            if (st.wait && !st.away) waitTranslation();
             lit ??= block;
           }
         }

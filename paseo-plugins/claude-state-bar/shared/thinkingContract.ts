@@ -223,3 +223,49 @@ export function followPlan(keys: readonly string[], marks: FollowMarks): FollowP
   });
   return plan;
 }
+
+// ── C5. 따라 읽기 번역 기다리기(10-24) ─────────────────────────────────────────────────────────
+// 리규형님: "따라 읽기 할 때 이미 번역된 한글은 한글로 읽는데, 그 후 생긴 영문은 번역본이 있어도 영어로 읽음" — 끝난 문단을 넘기는
+// 순간 DeepL 이 아직 번역 전이라 영어 글이 재생기로 갔다. 웹 읽기 확장(read-aloud-hrg, peer_mail e164953b)과 같은 방식으로 기다린다
+// (리규형님 버튼 "웹 읽기 확장과 같게"): 번역 중 표시면 최대 5초, 표시가 없는 문단은 1초 지켜본 뒤 넘긴다
+
+/** 번역 중 표시(data-dl-translated="false")를 본 문단을 기다리는 최대 시간 — 넘으면 지금 글(원문)로 넘긴다 */
+export const TRANSLATION_WAIT_MS = 5000;
+/** 페이지에 DeepL 표시가 있는데 이 문단엔 아직 없을 때 표시가 붙는지 지켜보는 시간 — 안 붙으면 번역 대상이 아닌 글로 본다 */
+export const TRANSLATION_MARK_WAIT_MS = 1000;
+
+/**
+ * 문단의 번역 상태 — pending: 번역 중 표시 · done: 번역 끝 표시 · none: 페이지엔 DeepL 표시가 있는데 이 문단엔 없음 ·
+ * off: 기다릴 것 없음(페이지에 DeepL 표시가 없음 = 번역을 안 켠 화면·폰 앱, 또는 이미 한국어 위주인 문단)
+ */
+export type TranslationMark = "pending" | "done" | "none" | "off";
+export type TranslationWait = { key: string; part: number; since: number; marked: boolean };
+
+/**
+ * 한국어 위주 글인가 — 한글이 든 어절이 영문만 있는 어절보다 적지 않다. Claude 가 한글로 쓴 문단은 DeepL 이 손대지 않아 표시가
+ * 없으니 기다리지 않는다(안 그러면 문단마다 1초씩 늦는다). 글자 수가 아니라 어절로 센다 — 한국어 문장 안 긴 코드 이름(findAllCodexDirs)이
+ * 한 어절이어야 한다. 영어 문단에 짧은 한글 인용이 섞인 것은 영어로 본다
+ */
+export function koreanMostly(text: string): boolean {
+  let ko = 0;
+  let latin = 0;
+  for (const word of text.split(/\s+/)) {
+    if (/[가-힣ㄱ-ㆎ]/.test(word)) ko++;
+    else if (/[A-Za-z]/.test(word)) latin++;
+  }
+  return ko > 0 && ko >= latin;
+}
+
+/**
+ * 그 문단을 지금 재생기에 넘겨도 되는가. 같은 문단(key·part)을 이어서 기다리면 since 를 유지한다. 표시 없이 지켜보던 문단에 번역 중
+ * 표시가 붙으면 marked 가 되어 상한이 5초로 늘어난다(since 는 처음 기다린 때). 시간이 다 되면 timedOut 과 함께 넘긴다
+ */
+export function translationGate(wait: TranslationWait | undefined, key: string, part: number, mark: TranslationMark, now: number): { pass: boolean; wait?: TranslationWait; timedOut?: boolean } {
+  if (mark === "done" || mark === "off") return { pass: true };
+  const same = wait && wait.key === key && wait.part === part;
+  const w: TranslationWait = same ? { ...wait } : { key, part, since: now, marked: false };
+  if (mark === "pending") w.marked = true;
+  const limit = w.marked ? TRANSLATION_WAIT_MS : TRANSLATION_MARK_WAIT_MS;
+  if (now - w.since >= limit) return { pass: true, timedOut: true };
+  return { pass: false, wait: w };
+}

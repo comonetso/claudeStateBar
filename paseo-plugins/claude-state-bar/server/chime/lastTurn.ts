@@ -52,6 +52,12 @@ const CHECKPOINT_COMMAND = /^\/compact 세션로그 \S+ 가 이 세션의 정본
 export function isCheckpointReport(text: string): boolean {
   return CHECKPOINT_COMMAND.test(text);
 }
+/** 체크포인트 보고 안의 복사용 압축 명령어 줄 전체(같은 표식으로 시작하는 줄을 줄 끝까지) — 압축 명령 자동 넣기(autoCompact.ts)가 그대로 보낸다. 없으면 null */
+const CHECKPOINT_LINE = new RegExp(`${CHECKPOINT_COMMAND.source}[^\\r\\n]*`, "m");
+export function checkpointCommandLine(text: string): string | null {
+  const m = CHECKPOINT_LINE.exec(text);
+  return m ? m[0].trim() : null;
+}
 export async function lastTurnCheckpointReady(sessionId: string): Promise<boolean> {
   const file = await locateSession(sessionId);
   if (!file) return false;

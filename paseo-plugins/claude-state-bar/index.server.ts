@@ -79,6 +79,7 @@ import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCod
 import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
 import { keepPersonalLogin, startUsageLoginKeeper, teamUsageSources } from "./server/teamUsage";
 import { ackPush, createPush, registerPushToken, soundPushLink } from "./server/push";
+import { createAutoCompact } from "./server/autoCompact";
 import { pushCompactWait, pushReceived, pushRegister } from "./shared/push";
 import { startStallWatch, trackRpc } from "./server/diagStall";
 import { scheduleTitleSync } from "./server/titleSync";
@@ -379,8 +380,25 @@ export default function contribute(server: PluginServerContext) {
       server.on("agent.turn_started", (event) => guard(() => push.onTurnStarted(event))),
       server.on("agent.turn_ended", (event, context) => guard(() => push.onTurnEnded(event, context))),
       server.on("agent.archived", (event) => guard(() => push.onArchived(event))),
+      // 답하지 않은 질문 다시 알림(10-24) 예약을 지운다
+      () => push.stop(),
     );
   }
+  // 압축 명령 자동 넣기(10-24 — 모든 대화, 직원 데몬도). 체크포인트 보고로 끝난 답 뒤 1분 동안 말이 없으면 그 명령어 줄을 대신 넣는다
+  const autoCompact = createAutoCompact();
+  const guardAuto = (work: () => unknown) => {
+    try {
+      void Promise.resolve(work()).catch((error: unknown) => console.log(`[auto-compact] hook failed: ${String(error)}`));
+    } catch (error) {
+      console.log(`[auto-compact] hook failed: ${String(error)}`);
+    }
+  };
+  stopAccountHooks.push(
+    server.on("agent.turn_started", (event) => guardAuto(() => autoCompact.onTurnStarted(event))),
+    server.on("agent.turn_ended", (event, context) => guardAuto(() => autoCompact.onTurnEnded(event, context))),
+    server.on("agent.archived", (event) => guardAuto(() => autoCompact.onArchived(event))),
+    () => autoCompact.stop(),
+  );
   return () => {
     process.off("unhandledRejection", onUnhandled);
     for (const stop of stopAccountHooks) stop();
