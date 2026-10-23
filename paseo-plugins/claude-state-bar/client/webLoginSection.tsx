@@ -139,6 +139,7 @@ export function WebLoginSection({ theme, compact, t, readOnly = false }: { theme
             </Pressable>
           </View>
         </View>
+        <ScreenLockPart theme={theme} compact={compact} t={t} readOnly={readOnly} styles={styles} />
       </>
     );
   }
@@ -316,6 +317,137 @@ export function WebLoginSection({ theme, compact, t, readOnly = false }: { theme
         </View>
       ) : null}
     </View>
+    <ScreenLockPart theme={theme} compact={compact} t={t} readOnly={readOnly} styles={styles} />
+    </>
+  );
+}
+
+type Styles = {
+  card: object; muted: object; error: object; text: object; row: object; input: object; actions: object;
+  button: object; buttonText: object; primary: object; primaryText: object;
+};
+type Me = {
+  pinSet: boolean;
+  pinAvailable: boolean;
+  screen: { enabled: boolean; exempt: boolean; deadline: number | null; state: string };
+  admin: { allowedHere: boolean } | null;
+};
+type LockGate = { lock?: () => Promise<boolean> };
+
+/**
+ * 화면 잠금(10-23 — 로그인 서버 web-gate lib/screen.mjs) — 지금 상태 한 줄 · 내 PIN 정하기·바꾸기(비밀번호+OTP) · 지금 잠그기 ·
+ * 관리 화면 열기(관리자이고 관리 허용 주소일 때). 로그인 서버가 이 판 전이면(/__gate/me 가 없으면) 칸을 그리지 않는다
+ */
+function ScreenLockPart({ theme, compact, t, readOnly, styles }: { theme: PluginTheme; compact: boolean; t: SettingsText; readOnly: boolean; styles: Styles }) {
+  const [me, setMe] = useState<Me | null>(null);
+  const [open, setOpen] = useState(false);
+  const EMPTY = { pin: "", pin2: "", password: "", otp: "" };
+  const [form, setForm] = useState(EMPTY);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ text: string; bad: boolean } | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const r = await call("/__gate/me");
+      setMe(r.status === 200 ? (r.json as unknown as Me) : null);
+    } catch {
+      setMe(null);
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  if (!me) return null;
+  const g = (globalThis as { paseoGate?: LockGate }).paseoGate;
+  const mins = me.screen.deadline ? Math.max(1, Math.round((me.screen.deadline - Date.now()) / 60000)) : 0;
+  const state = !me.screen.enabled ? t.screenOff : me.screen.exempt ? t.screenExempt : t.screenWillLock(mins);
+  const pinLine = !me.pinAvailable ? t.screenPinUnavailable : me.pinSet ? t.screenPinSet : t.screenPinNone;
+
+  const save = async () => {
+    if (readOnly || busy) return;
+    setMessage(null);
+    if (form.pin !== form.pin2) {
+      setMessage({ text: t.screenPinMismatch, bad: true });
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await call("/__gate/me/pin", { pin: form.pin, password: form.password, otp: form.otp });
+      if (r.status === 200) {
+        setForm(EMPTY);
+        setOpen(false);
+        setMessage({ text: t.screenPinSaved, bad: false });
+        void load();
+      } else {
+        setForm({ ...form, otp: "" });
+        setMessage({ text: failText(r.status, r.json, t), bad: true });
+      }
+    } catch (error) {
+      setMessage({ text: t.loginUnreachable(String(error)), bad: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const field = (key: keyof typeof EMPTY, placeholder: string, opts: { secret?: boolean; numeric?: boolean; max?: number } = {}) => (
+    <UiInput
+      theme={theme}
+      fontSize={14}
+      compact={false}
+      style={styles.input}
+      value={form[key]}
+      onChangeText={(v) => setForm({ ...form, [key]: v })}
+      placeholder={placeholder}
+      secureTextEntry={opts.secret}
+      keyboardType={opts.numeric ? "number-pad" : "default"}
+      maxLength={opts.max}
+      autoCapitalize="none"
+      autoCorrect={false}
+      editable={!readOnly && !busy}
+    />
+  );
+
+  return (
+    <>
+      <SectionTitle icon="ShieldCheck" title={t.screenHeading} theme={theme} />
+      <View style={styles.card}>
+        <Text style={styles.muted}>{state}</Text>
+        <Text style={styles.muted}>{pinLine}</Text>
+        <View style={styles.actions}>
+          {me.pinAvailable && !readOnly ? (
+            <Pressable style={styles.button} onPress={() => setOpen(!open)} accessibilityRole="button">
+              <Text style={styles.buttonText}>{open ? t.screenPinClose : t.screenPinOpen}</Text>
+            </Pressable>
+          ) : null}
+          {me.screen.enabled && typeof g?.lock === "function" ? (
+            <Pressable style={styles.button} onPress={() => void g.lock?.()} accessibilityRole="button">
+              <Text style={styles.buttonText}>{t.screenLockNow}</Text>
+            </Pressable>
+          ) : null}
+          {me.admin?.allowedHere ? (
+            <Pressable style={styles.button} onPress={() => (globalThis as { open?: (url: string, target: string, features: string) => unknown }).open?.("/__gate/admin", "_blank", "noopener")} accessibilityRole="button">
+              <Text style={styles.buttonText}>{t.screenAdminOpen}</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {me.admin && !me.admin.allowedHere ? <Text style={styles.muted}>{t.screenAdminHere}</Text> : null}
+        {open ? (
+          <>
+            <View style={styles.row}>
+              {field("pin", t.screenPinNew, { secret: true, numeric: true, max: 6 })}
+              {field("pin2", t.screenPinNew2, { secret: true, numeric: true, max: 6 })}
+            </View>
+            <View style={styles.row}>
+              {field("password", t.loginCurrentPassword, { secret: true })}
+              {field("otp", t.loginOtp, { numeric: true, max: 6 })}
+            </View>
+            <View style={styles.actions}>
+              <Pressable style={styles.primary} onPress={() => void save()} disabled={readOnly || busy} accessibilityRole="button">
+                <Text style={styles.primaryText}>{busy ? t.loginChecking : t.screenPinSave}</Text>
+              </Pressable>
+            </View>
+          </>
+        ) : null}
+        {message ? <Text style={message.bad ? styles.error : styles.text}>{message.text}</Text> : null}
+      </View>
     </>
   );
 }

@@ -292,7 +292,8 @@ export async function openProjectsFile(
   }
 }
 
-function useOnlineHosts(): string[] {
+/** 지금 붙어 있는 기기 번호(정렬) — 프로젝트 목록과 사용량 칸 숫자(accountProjects)가 같이 쓴다 */
+export function useOnlineHosts(): string[] {
   const hosts = useHosts();
   return useMemo(() => hosts.filter((h) => h.status === "online").map((h) => h.serverId).sort(), [hosts]);
 }

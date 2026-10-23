@@ -10,6 +10,7 @@ import { readAppFontSizes, readLocal, setNoTranslate, writeLocal } from "./web";
 import { isTeamUsageSource, TEAM_USAGE_SOURCE_ID } from "../shared/account";
 import { usageFromReports } from "../shared/usageIdentity";
 import { reportUsageDedupe, type UsageDedupeView } from "./health";
+import { agentProviderOfSource, projectsOfProvider, useOpenAgents } from "./accountProjects";
 
 // 왼쪽 목록 칸 맨 아래에 Claude·Codex 사용량을 둔다(리규형님 10-05 결정 — Paseo 자체 "사용량" 줄은 눌러야 보인다).
 // 10-09 부터 처음엔 접혀 요약 한 줄만 보이고, 올리고 내린 것을 기억한다(아래 UsageFooter).
@@ -186,6 +187,14 @@ export const shownWindows = (p: Provider): Window[] => (p.windows.some((w) => w.
  *  그대로("Claude (como)")라 떼면 개인 카드와 같은 "Claude" 가 된다 → 그대로 둔다(10-15) */
 export const shortName = (p: Provider): string =>
   isTeamUsageSource(p.providerId) ? p.displayName : p.displayName.replace(/\s*\([^)]*\)\s*$/, "") || p.providerId;
+/** 카드 제목 — 개인 카드도 메일을 뗀다(10-23 리규형님 "Claude (메일 주소) => Claude : 개인계정은 그냥 메일주소 빼고",
+ *  같은 개인 메일인 Codex 카드도). 떼고 나서 같은 이름이 둘 이상이면 그 카드들만 원래 이름을 둔다 — 어느 계정인지 갈라 보게 */
+export function cardTitles(providers: Provider[]): Map<string, string> {
+  const shorts = providers.map((p) => [p, shortName(p)] as const);
+  const count = new Map<string, number>();
+  for (const [, s] of shorts) count.set(s, (count.get(s) ?? 0) + 1);
+  return new Map(shorts.map(([p, s]) => [p.providerId, (count.get(s) ?? 0) > 1 ? p.displayName : s]));
+}
 export const clampPct = (n: number | null | undefined): number | null => (typeof n === "number" ? Math.max(0, Math.min(100, n)) : null);
 /** 요약 한 줄 — 숫자마다 % 를 붙인다(리규형님 10-07: 숫자만으로는 직관적이지 않다) — "Claude 3%·31% │ Codex 13%".
  *  상단 사용량 단추 글자와 접힌 왼쪽 아래 줄이 같이 쓴다 */
@@ -284,11 +293,49 @@ function RefreshLine({ theme, ui, fetchedAt, busy, onPress }: Pick<PluginHostPro
   );
 }
 
+/** 카드 이름 옆 숫자 — 이 계정을 쓰는 열린 대화가 있는 프로젝트 수(accountProjects). 웹·PC 앱은 마우스를 올리면 이름이 뜨고,
+ *  누르면 다시 누를 때까지 둔다(폰은 누를 때만). 이름 상자는 카드 위로 띄운다 — 칸 높이를 바꾸지 않게(10-22 "Fable 펼칠 때 막대 움찔"
+ *  같은 출렁임을 만들지 않는다). 0 이면 흐리게 — 안 쓰는 계정도 한눈에 보이게 */
+function ProjectCount({ theme, names, ui }: Pick<PluginHostProps, "theme"> & { names: string[]; ui: number }) {
+  const c = theme.colors;
+  const [hover, setHover] = useState(false);
+  const [held, setHeld] = useState(false);
+  const open = (hover || held) && names.length > 0;
+  return (
+    <View style={{ position: "relative", zIndex: open ? 10 : 0 }}>
+      <Pressable
+        onHoverIn={() => setHover(true)}
+        onHoverOut={() => setHover(false)}
+        onPress={() => setHeld((v) => !v)}
+        accessibilityRole="button"
+        accessibilityLabel={names.length ? `이 계정을 쓰는 프로젝트 ${names.length}개: ${names.join(", ")}` : "이 계정을 쓰는 프로젝트 없음"}
+        style={{ borderWidth: 1, borderColor: c.border, borderRadius: 4, paddingHorizontal: 5, minWidth: ui + 4, alignItems: "center", opacity: names.length ? 1 : 0.45 }}
+      >
+        <Text style={{ color: c.foreground, fontSize: ui - 2, fontWeight: "600" }}>{names.length}</Text>
+      </Pressable>
+      {open ? (
+        <View
+          pointerEvents="none"
+          style={{ position: "absolute", bottom: "100%", left: 0, marginBottom: 4, zIndex: 10, minWidth: 150, maxWidth: 260, gap: 2,
+            backgroundColor: c.surface1, borderColor: c.border, borderWidth: 1, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6 }}
+        >
+          {names.map((name) => (
+            <Text key={name} style={{ color: c.foreground, fontSize: ui - 2 }} numberOfLines={1}>{name}</Text>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 export function UsageRows({ theme, usage, error, ui, action, top }: Pick<PluginHostProps, "theme"> & { usage: Usage | null; error: string | null; ui: number; action?: ReactNode; top?: ReactNode }) {
   const c = theme.colors;
   const toneColor = (w: Window) => (w.tone === "danger" ? c.statusDanger : w.tone === "warning" ? c.statusWarning : c.accent);
   const now = Date.now();
   const providers = availableProviders(usage);
+  const titles = cardTitles(providers);
+  // 카드 이름 옆 숫자용 — 이 표가 그려질 때만 기기마다 대화 목록을 구독한다(접힌 줄·닫힌 단추는 안 그린다)
+  const openAgents = useOpenAgents();
   const rowH = Math.round(ui * 1.45);
   // 막대 말고 글자 칸의 폭은 모든 카드가 같이 쓴다(리규형님 10-15 "como 만 막대가 길다") — 카드마다 따로 줄을 그려서 오른쪽 글자가
   // 짧은 카드일수록 막대가 남는 폭을 더 먹었다. 칸마다 카드별로 글자 묶음의 폭을 재고, 지금 있는 카드 중 가장 넓은 값을 모든 카드의
@@ -326,6 +373,7 @@ export function UsageRows({ theme, usage, error, ui, action, top }: Pick<PluginH
       {providers.map((p, index) => {
         const foldable = cardWindows(p.windows, false).length < p.windows.length;
         const open = pinned.has(p.providerId);
+        const agentProvider = agentProviderOfSource(p.providerId);
         const shown = new Set(cardWindows(p.windows, open));
         const cell = { height: rowH, justifyContent: "center" } as const;
         // 접힌 줄도 높이 0 으로 그려 둔다 — 글자 칸 폭을 잴 때 늘 들어가서, 한 카드를 펼쳐도 모든 카드의 막대 시작·끝 자리가 그대로다
@@ -359,9 +407,11 @@ export function UsageRows({ theme, usage, error, ui, action, top }: Pick<PluginH
             accessibilityState={foldable ? { expanded: open } : undefined}
           >
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Text style={{ flex: 1, color: c.foregroundMuted, fontSize: ui, fontWeight: "600" }} numberOfLines={1}>
-                {p.displayName}
+              <Text style={{ flexShrink: 1, color: c.foregroundMuted, fontSize: ui, fontWeight: "600" }} numberOfLines={1}>
+                {titles.get(p.providerId) ?? p.displayName}
               </Text>
+              {agentProvider !== null ? <ProjectCount theme={theme} names={projectsOfProvider(openAgents, agentProvider)} ui={ui} /> : null}
+              <View style={{ flex: 1 }} />
               {index === 0 ? action : null}
             </View>
             <View style={{ flexDirection: "row", gap: 6 }}>
