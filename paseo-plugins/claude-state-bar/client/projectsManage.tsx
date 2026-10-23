@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { CATEGORY_ORDER_KEY, projectsEdit, projectsHosts, UNTAGGED_GROUP, type ProjectEntry, type ProjectsEditOp } from "../shared/projects";
 import { scaled, useFontScale } from "./fontScale";
-import { moveCategory, orderedCategories, pinKey, useGroupOrders, type ProjectsData } from "./projectsData";
+import { createProjectWorktree, moveCategory, norm, orderedCategories, pinKey, useGroupOrders, useOnlineHosts, type ProjectsData } from "./projectsData";
 import { FIELD_WIDTH, HelpTip, UiButton, UiInput, UiSelect } from "./ui";
 import { setDraggableRow, setHoverTitle, setNoTranslate } from "./web";
 
@@ -76,6 +76,8 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
 
   const [message, setMessage] = useState<{ text: string; bad: boolean } | null>(null);
   const [saving, setBusy] = useState(false);
+  // 같은 경로 두 번째 항목의 워크트리를 만들 기기를 찾을 때 묻는 연결들(10-24)
+  const online = useOnlineHosts();
   const busy = saving || readOnly;
   const run = async (scope: string, op: ProjectsEditOp, done: string): Promise<boolean> => {
     if (readOnly) return false;
@@ -133,6 +135,27 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
       return setMessage({ text: `${word}${batchim ? "을" : "를"} 골라 주세요`, bad: true });
     }
     if (!host) return setMessage({ text: "디바이스를 골라 주세요", bad: true });
+    if (readOnly) return;
+    // 같은 기기·경로가 이미 있으면 그것이 메인 — 새 항목은 "메인 이름+번호"(비어 있는 가장 작은 번호)로 짓고 Paseo 워크트리를
+    // 만들어 그 폴더를 경로로 둔다(10-24 리규형님). 폴더가 달라지니 대화·고정·순서·숫자도 저절로 항목마다 따로다
+    const main = formScope.entries.find((e) => e.host === host && norm(e.path) === norm(path.trim()));
+    if (main) {
+      const names = new Set(formScope.entries.map((e) => e.name));
+      let n = 1;
+      while (names.has(`${main.name}${n}`)) n++;
+      const auto = `${main.name}${n}`;
+      setBusy(true);
+      setMessage({ text: `${auto} — 워크트리 만드는 중…`, bad: false });
+      const made = await createProjectWorktree(online, main.path, auto).finally(() => setBusy(false));
+      if (!made.ok) return setMessage({ text: made.error, bad: true });
+      const done = await run(formScope.id, { op: "add", host, path: made.directory, name: auto, category: newCat.trim() || pickCat || main.category }, `추가했습니다 — ${auto} · 워크트리 ${made.directory}`);
+      if (done) {
+        setPath("");
+        setName("");
+        setNewCat("");
+      }
+      return;
+    }
     const ok = await run(formScope.id, { op: "add", host, path, name, category: newCat.trim() || pickCat }, "추가했습니다");
     if (ok) {
       setPath("");
@@ -191,7 +214,8 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
 
   const row = (s: EditScope, cats: string[], e: ProjectEntry) => {
     const key = pinKey(e);
-    const rowKey = `${s.id}|${key}`;
+    // 같은 기기·경로로 이름만 다른 프로젝트가 여럿일 수 있어(10-23) 줄 이름표에 이름까지 넣는다. 고치기는 itemName 으로 그 줄을 고른다
+    const rowKey = `${s.id}|${key}|${e.name}`;
     const editingName = renaming?.key === rowKey;
     const movingHere = moving?.key === rowKey;
     const open = expanded.has(rowKey);
@@ -210,7 +234,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
                 onSubmitEditing={() => {
                   const draft = renaming.draft;
                   setRenaming(null);
-                  if (draft.trim() && draft.trim() !== e.name) void run(s.id, { op: "rename", key, name: draft }, "이름을 바꿨습니다");
+                  if (draft.trim() && draft.trim() !== e.name) void run(s.id, { op: "rename", key, itemName: e.name, name: draft }, "이름을 바꿨습니다");
                 }}
                 onKeyPress={escape(() => setRenaming(null))}
                 onBlur={() => setRenaming(null)}
@@ -259,13 +283,13 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
             }, { on: movingHere, hint: "다른 카테고리로 옮기기 — 그 묶음 맨 아래로 갑니다" })}
             {button(e.enabled ? "숨김" : "보임", () => {
               resetRow();
-              void run(s.id, { op: "enabled", key, enabled: !e.enabled }, e.enabled ? "숨겼습니다 — 목록에서는 맨 아래 \"숨김\" 묶음에 들어갑니다" : "다시 보이게 했습니다");
+              void run(s.id, { op: "enabled", key, itemName: e.name, enabled: !e.enabled }, e.enabled ? "숨겼습니다 — 목록에서는 맨 아래 \"숨김\" 묶음에 들어갑니다" : "다시 보이게 했습니다");
             }, { hint: e.enabled ? "목록 맨 아래 \"숨김\" 묶음으로 보냅니다" : "원래 카테고리로 되돌립니다" })}
             {confirmRemove === rowKey
               ? [
                   button("정말 삭제", () => {
                     resetRow();
-                    void run(s.id, { op: "remove", key }, "목록에서 지웠습니다(폴더는 그대로입니다)");
+                    void run(s.id, { op: "remove", key, itemName: e.name }, "목록에서 지웠습니다(폴더는 그대로입니다)");
                   }, { tone: "danger" }),
                   button("취소", () => setConfirmRemove(null)),
                 ]
@@ -281,7 +305,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
             {[...new Set([...(s.pinned ?? []).map((p) => p.category ?? "").filter(Boolean), ...cats, ""])].filter((cat) => cat !== e.category).map((cat) =>
               button(cats.includes(cat) || !cat ? label(cats, cat) : cat, () => {
                 resetRow();
-                void run(s.id, { op: "category", key, category: cat }, `"${cat || UNTAGGED_GROUP}" 로 옮겼습니다`);
+                void run(s.id, { op: "category", key, itemName: e.name, category: cat }, `"${cat || UNTAGGED_GROUP}" 로 옮겼습니다`);
               }),
             )}
             {muted("새 카테고리")}
@@ -292,7 +316,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
                 const draft = moving.draft.trim();
                 if (!draft) return;
                 resetRow();
-                void run(s.id, { op: "category", key, category: draft }, `"${draft}" 로 옮겼습니다`);
+                void run(s.id, { op: "category", key, itemName: e.name, category: draft }, `"${draft}" 로 옮겼습니다`);
               }}
               onKeyPress={escape(() => setMoving(null))}
               style={{ minWidth: 140 }}

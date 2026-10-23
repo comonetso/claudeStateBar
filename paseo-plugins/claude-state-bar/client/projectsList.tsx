@@ -313,7 +313,7 @@ export function ProjectsList(props: {
                   const hoverHost = !known && !e.missing ? `${e.host} · 연결 없음` : e.host;
                   return (
                     <Pressable
-                      key={`${g.name}|${e.host}|${e.path}`}
+                      key={`${g.name}|${e.host}|${e.path}|${e.name}`}
                       ref={(node: unknown) => {
                         setHoverTitle(node, mixed && badge ? `${badge}. ${e.category} · ${hoverHost}` : hoverHost);
                         // 마우스로 끌어 같은 묶음 안 순서를 바꾼다(10-06 고정 → 10-07 모든 묶음, PC·웹 — 폰은 순서 바꾸기 없음)

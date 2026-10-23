@@ -293,7 +293,7 @@ function RefreshLine({ theme, ui, fetchedAt, busy, onPress }: Pick<PluginHostPro
   );
 }
 
-/** 카드 이름 옆 숫자 — 이 계정을 쓰는 열린 대화가 있는 프로젝트 수(accountProjects). 웹·PC 앱은 마우스를 올리면 이름이 뜨고,
+/** 카드 이름 옆 괄호 숫자 "(5)" — 이 계정을 쓰는 열린 대화가 있는 프로젝트 수(accountProjects). 웹·PC 앱은 마우스를 올리면 이름이 뜨고,
  *  누르면 다시 누를 때까지 둔다(폰은 누를 때만). 이름 상자는 카드 위로 띄운다 — 칸 높이를 바꾸지 않게(10-22 "Fable 펼칠 때 막대 움찔"
  *  같은 출렁임을 만들지 않는다). 0 이면 흐리게 — 안 쓰는 계정도 한눈에 보이게 */
 function ProjectCount({ theme, names, ui }: Pick<PluginHostProps, "theme"> & { names: string[]; ui: number }) {
@@ -309,9 +309,10 @@ function ProjectCount({ theme, names, ui }: Pick<PluginHostProps, "theme"> & { n
         onPress={() => setHeld((v) => !v)}
         accessibilityRole="button"
         accessibilityLabel={names.length ? `이 계정을 쓰는 프로젝트 ${names.length}개: ${names.join(", ")}` : "이 계정을 쓰는 프로젝트 없음"}
-        style={{ borderWidth: 1, borderColor: c.border, borderRadius: 4, paddingHorizontal: 5, minWidth: ui + 4, alignItems: "center", opacity: names.length ? 1 : 0.45 }}
+        style={{ paddingHorizontal: 2, alignItems: "center", opacity: names.length ? 1 : 0.45 }}
       >
-        <Text style={{ color: c.foreground, fontSize: ui - 2, fontWeight: "600" }}>{names.length}</Text>
+        {/* 네모 대신 괄호 숫자(10-23 리규형님 "(5) 로 표시해서 명시적이게") */}
+        <Text style={{ color: c.foreground, fontSize: ui - 2, fontWeight: "600" }}>({names.length})</Text>
       </Pressable>
       {open ? (
         <View

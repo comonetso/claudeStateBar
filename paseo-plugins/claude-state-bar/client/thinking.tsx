@@ -15,7 +15,7 @@ import { boundaryStep, boundaryTurnOf, classifyBoxTurn, newBoundaryTrack, type A
 import { boxPhase, boxText, normalizeRate, saidText, splitParagraphs, ThinkingController, watchThinking, type ThinkingBoxState, type ThinkingSnapshot } from "./thinkingPlayer";
 import { onThinkingAllOpen, thinkingAllOpen } from "./thinkingFold";
 import { translationCache } from "./translationCache";
-import { clearSelection, createThinkingAudio, elementText, readAppFontSizes, readLocal, listenTtsSpeedKeys, setHoverTitle, setNoTranslate, selectionStartIn, themeVar, watchSelection, writeLocal, type SelectionSnapshot } from "./web";
+import { askFollowFromSaid, clearSelection, createThinkingAudio, elementText, readAppFontSizes, readLocal, listenTtsSpeedKeys, setHoverTitle, setNoTranslate, selectionStartIn, themeVar, watchSelection, writeLocal, type SelectionSnapshot } from "./web";
 import { lineColor } from "./ui";
 
 const KIND = "csb-thinking";
@@ -482,10 +482,11 @@ function ThinkingBox({ theme, item, agentId, timestamp, host, layout, client, ow
         </View>
       ) : null}
       {/* 그 말 읽기(10-09 리규형님 "복사 버튼이 없는 경우도 TTS 버튼이 있어야" · 결정 "그 말 하나만") — Paseo 말 블록에 붙는
-          "이 말 읽기"(web.ts 턴·말 읽기 단추)와 같은 이름·모양. 읽는 중 녹색·소리 만드는 중 빙글빙글(10-11), 조절은 입력창 위 */}
+          "이 말 읽기"(web.ts 턴·말 읽기 단추)와 같은 이름·모양. 읽는 중 녹색·소리 만드는 중 빙글빙글(10-11), 조절은 입력창 위.
+          누르면 턴·말 스피커처럼 따라 읽기를 묻는다(10-24 리규형님 "생각 상자를 제외한 모든 스피커" — web.ts askFollowFromSaid) */}
       {said && web && features.tts ? (
         <View style={{ minHeight: px + 7, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 2 }}>
-          {canRead ? plainIcon("Volume2", saidActive ? "이 말 읽기(읽는 중)" : "이 말 읽기", () => (saidActive ? controller.stop() : readSaid()), saidActive) : null}
+          {canRead ? plainIcon("Volume2", saidActive ? "이 말 읽기(읽는 중)" : "이 말 읽기", () => (saidActive ? controller.stop() : askFollowFromSaid(saidId, readSaid)), saidActive) : null}
           {saidActive && saidState!.status === "loading" ? spinner("spin-said") : null}
         </View>
       ) : null}

@@ -44,7 +44,7 @@ export function ProjectMenu({ theme, at, readOnly, fontSize, onClose, onChanged 
     if (!name || name === entry.name) return onClose();
     setSaving(true);
     try {
-      const r = await edit({ op: "rename", key: pinKey(entry), name });
+      const r = await edit({ op: "rename", key: pinKey(entry), itemName: entry.name, name });
       if (!r.ok) return setMessage({ text: r.error ?? "이름을 바꾸지 못했습니다", bad: true });
       onChanged();
       onClose();

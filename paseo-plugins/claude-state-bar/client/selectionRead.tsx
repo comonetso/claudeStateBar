@@ -82,7 +82,8 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     dom.refresh();
     dock.refresh();
   };
-  const startFollow = (agentId: string) => {
+  // from: 시작 문단 선택 영역 — 알약은 마지막 선택(picked), 턴 스피커는 누른 턴의 첫 문단(10-23 web.ts followFrom)
+  const startFollow = (agentId: string, from: unknown = picked) => {
     if (!available() || !hostId) { log(`follow read: 켤 수 없음 (${!hostId ? "호스트 번호 없음" : !canSpeak ? "음성 합성 키 없음" : "소리 읽기 꺼짐"})`); return; }
     const ordinary = controller.current()?.box;
     if (ordinary?.hostId === hostId && (ordinary.readAgentId ?? ordinary.agentId) === agentId) controller.stop();
@@ -93,14 +94,14 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     next.said = true;
     next.translate = false;
     const rpc = rpcFor(`follow read [${hostId}/${agentId.slice(0, 8)}]`);
-    const f: Follow = { agentId, session: ++followSession, box: next, text: "", from: picked, player,
+    const f: Follow = { agentId, session: ++followSession, box: next, text: "", from, player,
       stopPlayback: () => {}, stopSpeed: () => {}, requests: 0 };
     next.rpc = { ...rpc, synthesize(input) { f.requests++; return rpc.synthesize(input); } };
     player.start(next, false);
     follows.set(agentId, f);
     f.stopPlayback = player.subscribePlayback(refresh);
     f.stopSpeed = listenTtsSpeedKeys(() => ({ active: player.isReading() && !player.diagnostic(next).held, adjust: (direction) => player.stepSpeed(direction) }));
-    log(`follow read: 켬 ${agentId.slice(0, 8)}${picked ? " · 선택 있음" : ""}`);
+    log(`follow read: 켬 ${agentId.slice(0, 8)}${from ? " · 시작 문단 있음" : ""}`);
     followChanged();
     dom.refresh();
     dock.refresh();
@@ -219,6 +220,10 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
       },
       checkReturn: () => checkReturn(f),
     })) : [],
+    // 턴 스피커에서 "따라 읽기"(10-23 리규형님) — 누른 턴의 첫 문단부터. 이미 켜진 대화는 그대로 둔다
+    followFrom: (agentId: string, from: unknown) => {
+      if (!follows.has(agentId)) startFollow(agentId, from);
+    },
   }));
   // 입력창 위 조절 줄: 일반 읽기와 대화별 따라 읽기 상태를 함께 주고 화면 장치가 보이는 대화를 고른다(10-21).
   const dockState = (player: typeof controller): ReadDockState => {

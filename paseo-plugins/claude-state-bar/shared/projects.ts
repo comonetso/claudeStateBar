@@ -76,12 +76,15 @@ export const projectsWait = defineRpc({
 // 프로젝트 관리 화면(10-10 리규형님: "사용자들이 json 을 건드는 건 좀 그래서" — 목록 파일 직접 편집 대신 화면에서 고친다).
 // key 는 고정·순서와 같은 "<기기>|<경로>". 실제 폴더는 건드리지 않고 목록 파일만 고친다
 // 팀원 프로젝트(shared/team)도 같은 고치기를 쓴다
+// itemName(10-23): 같은 기기·경로로 이름만 다른 프로젝트를 여럿 둘 수 있어(리규형님 — Mesa 한 폴더를 세션 여럿으로) 고칠 줄의 지금 이름을
+// 함께 보낸다. 없으면(옛 판 화면) 그 경로의 첫 항목
+const itemName = z.string().optional();
 export const projectsEditOpSchema = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("rename"), key: z.string(), name: z.string() }),
+  z.object({ op: z.literal("rename"), key: z.string(), name: z.string(), itemName }),
   /** 다른 카테고리로 — 그 묶음 맨 아래로 간다(10-10 결정). "" = 카테고리 없음 */
-  z.object({ op: z.literal("category"), key: z.string(), category: z.string() }),
-  z.object({ op: z.literal("enabled"), key: z.string(), enabled: z.boolean() }),
-  z.object({ op: z.literal("remove"), key: z.string() }),
+  z.object({ op: z.literal("category"), key: z.string(), category: z.string(), itemName }),
+  z.object({ op: z.literal("enabled"), key: z.string(), enabled: z.boolean(), itemName }),
+  z.object({ op: z.literal("remove"), key: z.string(), itemName }),
   /** host = "PC" 또는 ~/.ssh/config 의 Host 별칭. name 이 비면 폴더 이름 */
   z.object({ op: z.literal("add"), host: z.string(), path: z.string(), name: z.string(), category: z.string() }),
   z.object({ op: z.literal("renameCategory"), from: z.string(), to: z.string() }),

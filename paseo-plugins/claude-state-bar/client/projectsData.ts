@@ -538,17 +538,21 @@ export function currentProjectKey(entries: ProjectEntry[], index: HostIndex, cur
   return best ? pinKey(best) : null;
 }
 
-/** 프로젝트 폴더와 그 아래 폴더에서 도는 대화를 합친다 */
+/**
+ * 프로젝트 폴더와 그 아래 폴더에서 도는 대화를 합친다. 단 그 아래 `.worktrees/` 는 뺀다 — 워크트리는 따로 항목이 되고, 콜어드민은
+ * Paseo 워크트리 자리를 `/hosting/mesa/.worktrees` 로 둔다(10-24 리규형님 버튼). 안 빼면 메인 항목 숫자·점에 워크트리 대화가 섞인다
+ */
 export function liveOf(e: ProjectEntry, serverId: string | undefined, live: Map<string, Live>): Live | null {
   if (!serverId) return null;
   const base = `${serverId}|${norm(e.path)}`;
+  const worktrees = `${base}/.worktrees/`;
   let open = 0;
   let running = 0;
   let asking = 0;
   let compacting = 0;
   let bucket: StatusBucket = "done";
   for (const [key, v] of live) {
-    if (key === base || key.startsWith(base + "/")) {
+    if ((key === base || key.startsWith(base + "/")) && !key.startsWith(worktrees)) {
       open += v.open;
       running += v.running;
       asking += v.asking;
@@ -565,6 +569,34 @@ type Navigation = {
   openAgent(input: { agentId: string; serverId?: string }): void;
   openWorkspace(input: { workspaceId: string; serverId?: string }): void;
 };
+
+/**
+ * 같은 기기·경로로 두 번째 프로젝트를 만들 때 — 그 폴더를 Paseo 프로젝트로 가진 연결된 기기에서 워크트리 작업 공간을 새로 만든다
+ * (10-24 리규형님 "처음 만든 것이 메인, 같은 경로로 새로 만드는 것은 이름에 1~n · 워크트리 자동 — Paseo 작업 공간 만들기처럼").
+ * 자리는 Paseo 기본(설정 worktrees.root — 리규형님 버튼), 브랜치·폴더 이름도 Paseo 가 겹치지 않게 짓는다(항목을 지워도 워크트리는
+ * 남으므로 번호로 지으면 다음에 같은 번호에서 부딪친다). git 저장소가 아니면 Paseo 가 거절한다 → 막는다(리규형님 버튼)
+ */
+export async function createProjectWorktree(online: string[], path: string, title: string): Promise<{ ok: true; directory: string } | { ok: false; error: string }> {
+  const want = norm(path);
+  const owners: string[] = [];
+  for (const serverId of online) {
+    try {
+      const { projects } = await getPaseoClient(serverId).projects.list();
+      if (projects.some((p) => norm(p.projectRootPath) === want)) owners.push(serverId);
+    } catch {
+      /* 그 기기는 건너뛴다 */
+    }
+  }
+  if (owners.length === 0) return { ok: false, error: "그 폴더를 Paseo 프로젝트로 가진 연결된 기기를 찾지 못했습니다 — 기기가 연결돼 있는지, 그 폴더에서 대화를 연 적이 있는지 보세요" };
+  if (owners.length > 1) return { ok: false, error: "같은 폴더가 연결된 기기 둘 이상에 있어 어느 기기에 워크트리를 만들지 모릅니다" };
+  try {
+    const ws = await getPaseoClient(owners[0]).workspaces.create({ title, source: { kind: "worktree", cwd: path, action: "branch-off" } });
+    if (!ws.directory) return { ok: false, error: "워크트리는 만들었지만 폴더 경로를 받지 못했습니다" };
+    return { ok: true, directory: ws.directory };
+  } catch (error) {
+    return { ok: false, error: `워크트리를 만들지 못했습니다 — git 저장소가 아니면 같은 경로로는 프로젝트를 하나만 둘 수 있습니다 (${String(error instanceof Error ? error.message : error)})` };
+  }
+}
 
 /** 누르면 바로 대화로(리규형님 10-05): 그 작업 공간의 가장 최근 대화를 연다. 대화가 하나도 없으면 작업 공간 첫 화면 */
 export async function openProjectOn(serverId: string, path: string, navigation: Navigation): Promise<void> {

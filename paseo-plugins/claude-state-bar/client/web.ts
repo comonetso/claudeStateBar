@@ -39,6 +39,7 @@ type RangeLike = {
   intersectsNode(node: NodeLike): boolean;
   setStart(node: NodeLike, offset: number): void;
   setEnd(node: NodeLike, offset: number): void;
+  selectNodeContents(node: NodeLike): void;
   toString(): string;
 };
 declare class Audio {
@@ -1178,6 +1179,77 @@ export function listenComposer(on: {
   };
 }
 
+// ── 확인 창(10-23) — 화면 안에 직접 그린다(폰 앱 감싸기 웹뷰에서 window.confirm 이 안 뜰 수 있다). 바깥을 누르면 취소.
+// Esc 는 쓰지 않는다 — Paseo 단축키가 창에서 먼저 받는다(에이전트 중단과 겹칠 수 있다)
+type BoxEl = {
+  style: Record<string, string>;
+  textContent: string | null;
+  setAttribute(name: string, value: string): void;
+  appendChild(node: unknown): void;
+  addEventListener(type: string, fn: (e: { target?: unknown }) => void): void;
+  remove(): void;
+  focus(): void;
+};
+
+/** 확인(true)·취소(false)를 묻는다. enterMeans = Enter 키가 고르는 쪽 */
+export function confirmBox(message: string, okText: string, cancelText: string, enterMeans: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!isWeb()) return resolve(false);
+    const make = (tag: string) => document.createElement(tag) as unknown as BoxEl;
+    const back = make("div");
+    back.setAttribute("data-csb-confirm", "");
+    Object.assign(back.style, { position: "fixed", left: "0", top: "0", right: "0", bottom: "0", zIndex: "2147483647", background: "rgba(0,0,0,0.45)",
+      display: "flex", alignItems: "center", justifyContent: "center" });
+    const box = make("div");
+    box.setAttribute("role", "dialog");
+    Object.assign(box.style, { background: "#1f1f23", color: "#ececec", border: "1px solid #48484f", borderRadius: "10px", padding: "18px 18px 14px",
+      width: "min(90vw, 380px)", font: "15px/1.55 system-ui, sans-serif", boxShadow: "0 10px 30px rgba(0,0,0,0.45)" });
+    const text = make("div");
+    text.textContent = message;
+    text.style.whiteSpace = "pre-wrap";
+    const row = make("div");
+    Object.assign(row.style, { display: "flex", gap: "8px", justifyContent: "flex-end", flexWrap: "wrap", marginTop: "16px" });
+    const button = (label: string, primary: boolean) => {
+      const b = make("button");
+      b.setAttribute("type", "button");
+      b.textContent = label;
+      Object.assign(b.style, { font: "inherit", fontSize: "14px", padding: "7px 14px", borderRadius: "7px", cursor: "pointer",
+        border: primary ? "1px solid #3b82f6" : "1px solid #55555c", background: primary ? "#2563eb" : "transparent", color: primary ? "#fff" : "#ddd" });
+      return b;
+    };
+    const cancel = button(cancelText, false);
+    const ok = button(okText, true);
+    let done = false;
+    const onKey = (e: KeyEventLike) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation?.();
+      finish(enterMeans);
+    };
+    const finish = (value: boolean) => {
+      if (done) return;
+      done = true;
+      document.removeEventListener("keydown", onKey, true);
+      back.remove();
+      resolve(value);
+    };
+    ok.addEventListener("click", () => finish(true));
+    cancel.addEventListener("click", () => finish(false));
+    back.addEventListener("click", (e) => {
+      if (e.target === back) finish(false);
+    });
+    row.appendChild(cancel);
+    row.appendChild(ok);
+    box.appendChild(text);
+    box.appendChild(row);
+    back.appendChild(box);
+    (document.body as BoxEl).appendChild(back);
+    document.addEventListener("keydown", onKey, true);
+    (enterMeans ? ok : cancel).focus();
+  });
+}
+
 declare const atob: (base64: string) => string;
 declare const btoa: (text: string) => string;
 declare class PopStateEvent { constructor(type: string, init?: { state: unknown }); }
@@ -1994,6 +2066,8 @@ export type TurnReadBinding = {
   follow?: FollowBinding | null;
   /** 이 호스트에서 켜진 대화별 따라 읽기(10-21). follow는 옛 호스트 연결을 넘겨받을 때만 쓴다 */
   follows?: readonly FollowBinding[];
+  /** 턴 스피커에서 따라 읽기 켜기(10-23) — from 은 시작 문단을 감싼 선택 영역(Range). 이미 따라 읽는 대화면 아무것도 안 한다. 옛 판 연결엔 없다 */
+  followFrom?(agentId: string, from: unknown): void;
 };
 /**
  * 따라 읽기(10-15 리규형님 "생각 상자를 뺀 Claude 말을 지금 시점부터 계속 읽어 주는 알약") — 켜진 대화마다 새 말을 문단이 끝나는
@@ -2054,8 +2128,8 @@ const TURN_COPY_LABELS = new Set(["نسخ بدوره", "Copy turn", "Copiar turn
 const READ_MARK = "data-csb-turn-read";
 // v6(10-11): 읽기 조절은 입력창 위 한 곳(startReadDock)으로 옮기고 여기는 스피커만 — 맨 오른쪽 · 읽는 중 녹색 · 소리 만드는 중 빙글빙글
 // v7(10-15): 턴 끝난 시각·내 말 시각 항상 보이기 규칙이 붙었다 — 판이 오르면 이름도 바꿔 옛 판이 지우는 스타일과 겹치지 않게
-const READ_SHEET = "claude-state-bar-turn-read-v12";
-const TURN_READ_VERSION = 24; // 24: 대화별 따라 읽기·복귀 진단(10-21) · 23: 숨으면 재생기 보류 — 이미 만든 소리까지만(10-20) · 22: 따라 읽는 대화 화면이 숨으면 새 문단을 안 넘기고 기다림(10-20) · 18: 따라 읽기 켤 때 선택한 문단부터 — follow.from(10-16) · 17: 따라 읽기 — 바인딩에 follow(10-15) ·9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
+const READ_SHEET = "claude-state-bar-turn-read-v14";
+const TURN_READ_VERSION = 26; // 26: 말마다 붙은 스피커도 따라 읽기를 묻는다·안 물은 이유 기록(10-24) · 25: 턴 스피커가 따라 읽기를 묻는다(10-23) · 24: 대화별 따라 읽기·복귀 진단(10-21) ·23: 숨으면 재생기 보류 — 이미 만든 소리까지만(10-20) · 22: 따라 읽는 대화 화면이 숨으면 새 문단을 안 넘기고 기다림(10-20) · 18: 따라 읽기 켤 때 선택한 문단부터 — follow.from(10-16) · 17: 따라 읽기 — 바인딩에 follow(10-15) ·9: 0.11.1 liveHead 행도 읽기·판 7/8 넘겨받기(10-12) · 10: 읽는 중 다시 누르면 중지(10-12) · 11: 선택한 문단부터 · 12: 표 한 덩어리·글머리 칸 빼기(10-13) · 13: 검사 안 탐색 결과 공유·꼬리 줄 색인(10-14 폰 버벅임) · 14: 말·복사 단추와 관계없는 화면 변화로는 검사 안 깨움(10-15) · 15: fiber 오를 때 Set·경로 목록 안 만듦(10-15 메모리) · 16: 꼬리 줄에 턴 끝난 시각·내 말 시각 항상 보이기(10-15)
 /**
  * 꼬리 줄 "작업 시간" 단추의 이름표에서 끝난 시각만 — 0.11.1 AssistantTurnFooter(모듈 4880 Ue)는 작업 시간과 끝난 시각이 둘 다
  * 있을 때 이름표를 `${작업 시간}, ended ${시각}` 으로 만든다("ended" 는 번역 없는 고정 글). 시각은 Paseo formatMessageTimestamp
@@ -2661,6 +2735,36 @@ type ReadRecord = {
   blocks?: (ReadEl | null)[];
 };
 type ReadHub = SharedDevice & { users: Map<object, (() => TurnReadBinding) & { csbVersion?: number }> };
+
+/**
+ * 생각 상자에서 꺼낸 말 칸의 스피커(thinking.tsx "이 말 읽기")도 턴·말 스피커처럼 따라 읽기를 묻는다(10-24 리규형님 "생각 상자를
+ * 제외한 모든 스피커에"). 확인 = 그 칸 첫 문단부터 따라 읽기(따라 읽기는 이 칸도 말 단위로 모은다 — FOLLOW_SAID) · 취소·물을 수 없음 = readOne
+ */
+export function askFollowFromSaid(saidId: string, readOne: () => void): void {
+  if (!isWeb()) return readOne();
+  const first = document.getElementById(`${saidId}-0`) as unknown as ReadEl | null;
+  const props = first ? streamProps(first) : null;
+  const agentId = props?.agentId;
+  const hostId = props?.serverId ?? (props?.context as { serverId?: unknown } | undefined)?.serverId;
+  const hub = (globalThis as Record<string, unknown>).__claudeStateBar_turnRead_v1 as ReadHub | undefined;
+  const bindingOf = () => (typeof hostId === "string" && hub ? [...hub.users.values()].map((get) => get()).find((b) => b.hostId === hostId) : undefined);
+  const b = bindingOf();
+  const following = typeof agentId === "string" && (b?.follows ?? []).some((f) => f.agentId === agentId);
+  if (!first || !b?.followFrom || typeof agentId !== "string" || following) {
+    b?.log?.(`said: 따라 읽기 안 물음 — ${!first ? "칸 못 찾음" : !b.followFrom ? "옛 판 연결" : typeof agentId !== "string" ? "대화 번호 못 찾음" : "이미 따라 읽는 대화"}`);
+    return readOne();
+  }
+  void confirmBox("따라 읽기 할까요?\n이 말부터 읽고, 이어서 새로 오는 말도 계속 읽습니다.\n취소하면 지금처럼 이 말만 읽습니다.", "따라 읽기", "이 말만 읽기", true)
+    .then((go) => {
+      const now = bindingOf();
+      if (!go || !now?.followFrom || !first.isConnected) return readOne();
+      const range = document.createRange();
+      range.selectNodeContents(first as unknown as NodeLike);
+      now.log?.("said: 따라 읽기로 — 이 말 첫 문단부터");
+      now.followFrom(agentId, range);
+    })
+    .catch(() => readOne());
+}
 /** 한 페이지·한 장치. 호스트 번호가 맞고 읽기가 켜진 연결만 자기 데몬의 TTS 를 쓴다. */
 export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(): void; dispose(): void } {
   const noop = { refresh: () => {}, dispose: () => {} };
@@ -2742,6 +2846,38 @@ export function startTurnReadButtons(binding: () => TurnReadBinding): { refresh(
         // 이 단추로 읽는 중(소리 만드는 중·일시정지 포함)이면 다시 누를 때 멈춘다(10-12 리규형님). 기준은 스피커 녹색과 같다(speaker)
         if (b.playing?.target === r.target) { trace(r, "다시 눌러 중지"); b.stop(); return; }
         if (!b.enabled) { b.read(r.target, ""); return; } // 키·설정의 정확한 이유는 연결 쪽에서
+        // 스피커는 따라 읽기를 묻는다(10-23 리규형님) — 확인이면 누른 자리(이 단추가 읽을 말)의 첫 문단부터 따라 읽기, 취소면 지금처럼
+        // 그 말만. 턴 꼬리 줄 스피커와 말마다 붙은 스피커 둘 다다(10-24 — 리규형님이 누른 "턴 아래 스피커"는 말마다 붙은 쪽이었다.
+        // 질문 버튼을 띄운 채 끝나지 않은 턴엔 꼬리 줄이 없다). 이미 따라 읽는 대화·옛 판 연결(followFrom 없음)은 묻지 않는다
+        const agentId = streamProps(r.anchor)?.agentId;
+        const following = typeof agentId === "string" && (b.follows ?? []).some((f) => f.agentId === agentId);
+        if (b.followFrom && typeof agentId === "string" && !following) {
+          const unit = r.kind === "turn" ? "턴" : "말";
+          void confirmBox(`따라 읽기 할까요?\n이 ${unit}부터 읽고, 이어서 새로 오는 말도 계속 읽습니다.\n취소하면 지금처럼 이 ${unit}만 읽습니다.`, "따라 읽기", `이 ${unit}만 읽기`, true)
+            .then((go) => {
+              const now = bindingFor(r.hostId);
+              if (!now) return;
+              const group = go ? (r.kind === "turn" ? lastSpeech(r.anchor) : speechGroup(r.anchor)) : null;
+              const first = group ? group.messages.flatMap(screenParts)[0]?.block : undefined;
+              if (go && first && now.followFrom) {
+                const range = document.createRange();
+                range.selectNodeContents(first as unknown as NodeLike);
+                trace(r, `따라 읽기로 — 이 ${unit} 첫 문단부터`);
+                now.followFrom(agentId, range);
+                return;
+              }
+              readOnce(r, now);
+            })
+            .catch((error) => fail(r, `읽기 시작 실패: ${String(error)}`));
+          return;
+        }
+        trace(r, `따라 읽기 안 물음 — ${!b.followFrom ? "옛 판 연결" : typeof agentId !== "string" ? "대화 번호 못 찾음" : "이미 따라 읽는 대화"}`);
+        readOnce(r, b);
+      } catch (error) { fail(r, `읽기 시작 실패: ${String(error)}`); }
+    };
+    /** 이 단추가 읽을 말을 한 번 읽는다(지금까지의 스피커 동작) */
+    const readOnce = (r: ReadRecord, b: TurnReadBinding) => {
+      try {
         const group = r.kind === "turn" ? lastSpeech(r.anchor) : speechGroup(r.anchor);
         if (!group) { fail(r, "이 턴의 화면 본문을 찾지 못했습니다. 본문을 화면에 보이게 한 뒤 다시 눌러 주세요"); return; }
         tablesSeen = 0;

@@ -32,10 +32,13 @@ function keyOfItem(item: Item): string | null {
   return typeof item.rootPath === "string" ? `${hostOf(item.rootPath)}|${pathOf(item.rootPath)}` : null;
 }
 
-function findItem(items: Item[], key: string): number {
+const nameOf = (item: Item) => (typeof item.name === "string" ? item.name.trim() : "");
+
+/** 그 기기·경로의 항목 — 이름이 주어지면 그 이름인 줄(10-23 리규형님: 같은 기기·경로라도 이름이 다르면 다른 프로젝트), 아니면 첫 줄 */
+function findItem(items: Item[], key: string, name?: string): number {
   return items.findIndex((item) => {
     const k = keyOfItem(item);
-    return k !== null && sameKey(k, key);
+    return k !== null && sameKey(k, key) && (name === undefined || nameOf(item) === name.trim());
   });
 }
 
@@ -89,8 +92,10 @@ export async function editProjects(op: ProjectsEditOp): Promise<Result> {
       const name = op.name.trim();
       if (!name) return { ok: false, error: "이름이 비어 있습니다" };
       return editList((items) => {
-        const i = findItem(items, op.key);
+        const i = findItem(items, op.key, op.itemName);
         if (i < 0) return "목록에서 그 프로젝트를 찾지 못했습니다";
+        const same = findItem(items, op.key, name);
+        if (same >= 0 && same !== i) return "같은 디바이스·경로에 그 이름의 프로젝트가 이미 있습니다";
         items[i].name = name;
         return null;
       });
@@ -98,7 +103,7 @@ export async function editProjects(op: ProjectsEditOp): Promise<Result> {
     case "category": {
       const category = op.category.trim();
       const r = await editList((items) => {
-        const i = findItem(items, op.key);
+        const i = findItem(items, op.key, op.itemName);
         if (i < 0) return "목록에서 그 프로젝트를 찾지 못했습니다";
         if (categoryOf(items[i]) === category) return null;
         // 옮긴 프로젝트는 그 묶음 맨 아래(10-10 결정) — 끌어 놓은 적 없는 줄은 목록 파일 순서라 파일 끝으로 보낸다
@@ -116,19 +121,22 @@ export async function editProjects(op: ProjectsEditOp): Promise<Result> {
     }
     case "enabled":
       return editList((items) => {
-        const i = findItem(items, op.key);
+        const i = findItem(items, op.key, op.itemName);
         if (i < 0) return "목록에서 그 프로젝트를 찾지 못했습니다";
         items[i].enabled = op.enabled;
         return null;
       });
     case "remove": {
+      // 고정은 기기·경로로 둔다 — 같은 경로의 다른 이름 항목이 남아 있으면 풀지 않는다(10-23)
+      let left = false;
       const r = await editList((items) => {
-        const i = findItem(items, op.key);
+        const i = findItem(items, op.key, op.itemName);
         if (i < 0) return "목록에서 그 프로젝트를 찾지 못했습니다";
         items.splice(i, 1);
+        left = findItem(items, op.key) >= 0;
         return null;
       });
-      if (r.ok) await setProjectPin(op.key, false).catch(() => {});
+      if (r.ok && !left) await setProjectPin(op.key, false).catch(() => {});
       return r;
     }
     case "add": {
@@ -149,7 +157,9 @@ export async function editProjects(op: ProjectsEditOp): Promise<Result> {
       }
       const name = op.name.trim() || (host === "PC" && IS_WIN ? win32.basename(path) : posix.basename(path)) || path;
       return editList((items) => {
-        if (findItem(items, `${host}|${path}`) >= 0) return "이미 목록에 있는 프로젝트입니다";
+        // 같은 디바이스·경로는 하나만(10-24 리규형님 — 같은 경로로 또 만들면 관리 화면이 Paseo 워크트리를 만들어 그 폴더로 넣는다.
+        // 여기까지 같은 경로로 오는 것은 git 저장소가 아닌 폴더이거나 옛 화면이다 → 막는다. 10-23 의 "이름까지 같을 때만"을 대신함)
+        if (findItem(items, `${host}|${path}`) >= 0) return "같은 디바이스·경로의 프로젝트가 이미 있습니다 — git 저장소면 관리 화면에서 같은 경로로 추가할 때 워크트리로 만듭니다";
         items.push({ name, rootPath, category: op.category.trim(), enabled: true });
         return null;
       });
