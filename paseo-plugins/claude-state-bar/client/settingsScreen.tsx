@@ -25,6 +25,9 @@ export const SETTINGS_TITLE = "Claude State Bar";
 // 화면이 열릴 때 한 번 읽는다(Paseo 언어를 바꾸면 설정 화면을 다시 열 때 반영 — 같은 결정).
 
 const ORDER: SoundKind[] = ["completion", "question", "warning", "danger", "workflow", "compact"];
+// 화면에 그리는 칸 — 압축 준비(compact)는 뺀다. 10-24 리규형님 버튼 "폰 알림 없애고 보통 끝남 소리로"로 그 소리를 내지 않는다
+// (저장·검사는 ORDER 그대로 — 저장된 값은 남긴다)
+const SHOWN: SoundKind[] = ORDER.filter((kind) => kind !== "compact");
 
 
 type Draft = Record<SoundKind, { file: string; gain: string }> & {
@@ -569,7 +572,7 @@ export function createSettingsScreen(onSaved: () => void, readOnly = false) {
           <>
             <Text style={styles.muted}>{t.soundIntro}</Text>
 
-            {ORDER.map((kind) => (
+            {SHOWN.map((kind) => (
               <View key={kind} style={styles.card}>
                 <Text style={styles.text}>{t.sounds[kind].title}</Text>
                 <Text style={styles.muted}>{t.sounds[kind].hint}</Text>

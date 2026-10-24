@@ -2,7 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useState } from "react";
 import { Modal, Pressable, Text, View, useWindowDimensions } from "react-native";
-import { projectsEdit, type ProjectEntry } from "../shared/projects";
+import { mutableSoundKinds, projectsEdit, type ProjectEntry } from "../shared/projects";
 import { pinKey } from "./projectsData";
 import { lineColor, UiInput } from "./ui";
 import { copyText, setNoTranslate } from "./web";
@@ -10,7 +10,8 @@ import { copyText, setNoTranslate } from "./web";
 // 프로젝트 줄 오른쪽 클릭(폰은 길게 누르기) 메뉴(10-15 리규형님): 이름 복사 · 이름 바꾸기를 관리 화면에 가지 않고 바로.
 // 이름 복사는 peer_mail 로 다른 프로젝트 대화에 말을 보낼 때 받는 곳 이름(프로젝트 매니저 이름)을 붙여 넣으려는 것.
 // 10-10 엔 "우클릭 메뉴 말고 관리 화면"으로 정했는데 리규형님이 이번에 바꿨다. 이름 바꾸기는 관리 화면과 같은 기능(projects.edit rename)
-export type ProjectMenuAt = { entry: ProjectEntry; x: number; y: number };
+// 소리 끄기·켜기(10-24 리규형님 — 무인 프로젝트 소리를 질문만 남기고 끄기). soundOwner = 그 설정의 주인 — 하위 공간 줄이면 메인(버튼 "메인 설정을 하위도 따름")
+export type ProjectMenuAt = { entry: ProjectEntry; x: number; y: number; soundOwner?: ProjectEntry };
 
 const MENU_WIDTH = 220;
 
@@ -54,6 +55,21 @@ export function ProjectMenu({ theme, at, readOnly, fontSize, onClose, onChanged 
       setSaving(false);
     }
   };
+  const owner = at.soundOwner ?? entry;
+  const soundOff = (owner.mute ?? []).length > 0;
+  const setSound = async () => {
+    setSaving(true);
+    try {
+      const r = await edit({ op: "mute", key: pinKey(owner), itemName: owner.name, mute: soundOff ? [] : [...mutableSoundKinds] });
+      if (!r.ok) return setMessage({ text: r.error ?? "소리 설정을 바꾸지 못했습니다", bad: true });
+      onChanged();
+      onClose();
+    } catch (err) {
+      setMessage({ text: `소리 설정을 바꾸지 못했습니다: ${String(err instanceof Error ? err.message : err)}`, bad: true });
+    } finally {
+      setSaving(false);
+    }
+  };
   const item = (label: string, onPress: () => void) => (
     <Pressable
       accessibilityRole="menuitem"
@@ -80,6 +96,12 @@ export function ProjectMenu({ theme, at, readOnly, fontSize, onClose, onChanged 
           <>
             {item("이름 복사", () => void copy())}
             {readOnly ? null : item("이름 바꾸기", () => setRenaming(entry.name))}
+            {readOnly || saving
+              ? null
+              : item(
+                  `${soundOff ? "소리 켜기" : "소리 끄기 — 질문만 남김"}${owner !== entry ? ` (${owner.name} 묶음 전체)` : ""}`,
+                  () => void setSound(),
+                )}
           </>
         ) : (
           <View style={{ paddingHorizontal: 8, paddingVertical: 6, gap: 6 }}>

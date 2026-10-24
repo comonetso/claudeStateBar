@@ -250,6 +250,8 @@ export function createPush(options: {
   const order = createEventSerial();
   // 올리는 중(작업 공간 이름을 읽는 사이) — 그사이 지워지면 보내지 않는다
   const raising = new Map<string, Ref>();
+  // 체크포인트 보고로 끝난 대화 — 폰엔 안 보내고 목록 아이콘만 켜 둔다(10-24 리규형님 버튼 "폰 알림 없애고 보통 끝남 소리로")
+  const quietCompact = new Set<string>();
   let serverId: Promise<string | null> | null = null;
   let rev = 0;
   const waiters = new Set<() => void>();
@@ -311,6 +313,11 @@ export function createPush(options: {
         openCentral.delete(eventId);
         resolveCentral(m, route);
       } else post({ ...m, kind: "resolved" });
+    }
+    for (const agentId of [...quietCompact]) {
+      if (!match({ eventId: `quiet:${agentId}`, agentId, kind: "compact" })) continue;
+      quietCompact.delete(agentId);
+      compact = true;
     }
     if (compact) changed();
   };
@@ -416,7 +423,7 @@ export function createPush(options: {
 
   const snapshot = () => ({
     rev,
-    agentIds: [...new Set([...open.values()].filter((m) => m.kind === "compact").map((m) => m.agentId))],
+    agentIds: [...new Set([...[...open.values()].filter((m) => m.kind === "compact").map((m) => m.agentId), ...quietCompact])],
     questionRepeats: [...repeats.values()].filter((r) => r.round > 0).map((r) => ({ agentId: r.agentId, nativeId: questionRepeatId(r.requestId, r.round) })),
   });
 
@@ -448,7 +455,11 @@ export function createPush(options: {
       dropRepeats((r) => r.agentId === agent.id);
       resolve((m) => m.agentId === agent.id);
       if (outcome.kind !== "completed" || !endsWithCheckpoint(timeline)) return;
-      return raise("compact", compactEventId(agent.id, turnId), agent, paseo, "압축 준비", "체크포인트 저장 끝 — 압축 명령어를 복사해 넣으세요", !!turnId);
+      // 압축 준비 폰 알림은 없앴다(10-24 리규형님 버튼 "폰 알림 없애고 보통 끝남 소리로" — 압축 명령은 autoCompact.ts 가 1분 뒤 대신 넣는다).
+      // 목록 아이콘(압축 대기 중 표시)만 켜 둔다 — 새 차례가 시작되거나 보관하면 꺼진다
+      quietCompact.add(agent.id);
+      changed();
+      log(`compact ${compactEventId(agent.id, turnId)}: checkpoint report — icon only, no phone push`);
     },
     onArchived({ agent }: PluginLifecycleEvents["agent.archived"]) {
       dropRepeats((r) => r.agentId === agent.id);

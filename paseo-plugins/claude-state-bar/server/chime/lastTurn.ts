@@ -16,12 +16,12 @@ import { locateSession } from "./tracker";
 // 마지막 차례만 보면 되므로 끝부분만 읽는다. 마지막 모델 답 한 줄이 이보다 길면 줄이 잘려 못 읽고, 그때는 아니라고 본다(울림).
 const TAIL_BYTES = 256 * 1024;
 
-async function readTail(file: string): Promise<string | null> {
+async function readTail(file: string, bytes = TAIL_BYTES): Promise<string | null> {
   let handle;
   try {
     handle = await open(file, "r");
     const { size } = await handle.stat();
-    const start = Math.max(0, size - TAIL_BYTES);
+    const start = Math.max(0, size - bytes);
     const buffer = Buffer.alloc(size - start);
     await handle.read(buffer, 0, buffer.length, start);
     const text = buffer.toString("utf8");
@@ -64,19 +64,26 @@ export async function lastTurnCheckpointReady(sessionId: string): Promise<boolea
   const text = await readTail(file);
   return !!text && turnEndsWithCheckpoint(text);
 }
-/** 대화 기록 끝(jsonl 글)을 거꾸로 읽어 마지막 차례가 체크포인트 보고로 끝났는지 */
-export function turnEndsWithCheckpoint(text: string): boolean {
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    let o: { type?: string; isSidechain?: boolean; isMeta?: boolean; message?: { content?: unknown } };
-    try {
-      o = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (o.isSidechain) continue;
+type Line = { type?: string; subtype?: string; isSidechain?: boolean; isMeta?: boolean; message?: { content?: unknown } };
+function parseLine(raw: string): Line | null {
+  const line = raw.trim();
+  if (!line) return null;
+  try {
+    return JSON.parse(line) as Line;
+  } catch {
+    return null;
+  }
+}
+const isCompactBoundary = (o: Line) => o.type === "system" && o.subtype === "compact_boundary";
+/** 차례를 여는 줄 — 사람 말·백그라운드 끝 알림·다른 대화가 보낸 말(도구 결과·isMeta 는 차례 안) */
+const isTurnStart = (o: Line) => o.type === "user" && !o.isMeta && !isToolResultOnly(o.message?.content);
+
+/** from 줄에서 끝난 차례가 체크포인트 보고로 끝났는지 — 거꾸로 읽어 글이 든 마지막 답 하나만 본다 */
+function checkpointEndAt(lines: string[], from: number): boolean {
+  for (let i = from; i >= 0; i--) {
+    const o = parseLine(lines[i]);
+    if (!o || o.isSidechain) continue;
+    if (isCompactBoundary(o)) return false;
     if (o.type === "assistant") {
       // 답은 블록마다 줄이 따로다 — 글이 든 마지막 줄 하나만 본다(그 뒤에 도구를 불렀으면 보고로 끝난 차례가 아니다)
       const content = o.message?.content;
@@ -85,9 +92,15 @@ export function turnEndsWithCheckpoint(text: string): boolean {
       if (said.trim()) return isCheckpointReport(said);
       continue;
     }
-    if (o.type === "user" && !o.isMeta && !isToolResultOnly(o.message?.content)) return false;
+    if (isTurnStart(o)) return false;
   }
   return false;
+}
+
+/** 대화 기록 끝(jsonl 글)을 거꾸로 읽어 마지막 차례가 체크포인트 보고로 끝났는지 */
+export function turnEndsWithCheckpoint(text: string): boolean {
+  const lines = text.split("\n");
+  return checkpointEndAt(lines, lines.length - 1);
 }
 
 export async function lastTurnCommandOnly(sessionId: string): Promise<boolean> {
@@ -99,7 +112,7 @@ export async function lastTurnCommandOnly(sessionId: string): Promise<boolean> {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (!line) continue;
-    let o: { type?: string; subtype?: string; isSidechain?: boolean; isMeta?: boolean; message?: { content?: unknown } };
+    let o: { type?: string; subtype?: string; isSidechain?: boolean; isMeta?: boolean; isCompactSummary?: boolean; message?: { content?: unknown } };
     try {
       o = JSON.parse(line);
     } catch {
@@ -111,6 +124,9 @@ export async function lastTurnCommandOnly(sessionId: string): Promise<boolean> {
     if (o.type !== "user" || o.isMeta) continue;
     const content = o.message?.content;
     if (isToolResultOnly(content)) continue;
+    // /compact 차례는 끝에 명령 출력(<local-command-stdout>Compacted …)과 압축 요약 줄이 사용자 줄로 붙는다 — 건너뛰고 그 앞 명령 줄을 본다.
+    // 못 건너뛰면 압축 차례 끝마다 끝남 소리가 났다(10-24 — 체크포인트 보고의 압축 준비 소리 1분 뒤 자동 넣기 압축이 끝나며 또 울림)
+    if (o.isCompactSummary || textOf(content).trimStart().startsWith("<local-command-stdout>")) continue;
     return textOf(content).includes("<command-name>");
   }
   return false;

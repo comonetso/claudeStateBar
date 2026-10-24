@@ -3,12 +3,12 @@ import { OFFLINE_NOTICE } from "../shared/offlineProjects";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { CATEGORY_ORDER_KEY, projectsEdit, projectsHosts, UNTAGGED_GROUP, type ProjectEntry, type ProjectsEditOp } from "../shared/projects";
+import { ACTIVE_ORDER_KEY, CATEGORY_ORDER_KEY, mutableSoundKinds, mutableSoundNames as SOUND_NAMES, projectsEdit, projectsHosts, UNTAGGED_GROUP, type MutableSoundKind, type ProjectEntry, type ProjectsEditOp } from "../shared/projects";
 import { scaled, useFontScale } from "./fontScale";
-import { createProjectWorktree, moveCategory, norm, orderedCategories, pinKey, useGroupOrders, useOnlineHosts, type ProjectsData } from "./projectsData";
-import { arrangeRows, mainsOf } from "./projectSubs";
+import { createProjectWorktree, liveOf, moveCategory, norm, orderedCategories, pinKey, serverOf, useGroupOrders, useOnlineHosts, usePins, type HostIndex, type Live, type ProjectsData } from "./projectsData";
+import { ACTIVE_GROUP, arrangeRows, DISABLED_GROUP, groupProjects, mainsOf, PINNED_GROUP, type ListGroup, type ListRow } from "./projectSubs";
 import { FIELD_WIDTH, HelpTip, UiButton, UiInput, UiSelect } from "./ui";
 import { setDraggableRow, setHoverTitle, setNoTranslate } from "./web";
 
@@ -49,6 +49,11 @@ export type EditScope = {
   rowNote?: (e: ProjectEntry) => string;
   /** 있으면 줄에 "권한" 단추가 생기고, 누르면 줄 아래에 이것을 펼친다(팀원 프로젝트 권한 칸 — 10-20). close = 접기 */
   rowPanel?: (e: ProjectEntry, close: () => void) => ReactNode;
+  /**
+   * 있으면 왼쪽 목록과 같은 묶음(고정 → 활성 → 카테고리 → 카테고리 없음 → 숨김)·순서로 그리고 묶음을 접는다(10-24 리규형님 "플젝 매니저도
+   * 왼쪽 리스트의 사용자 경험대로"). 리규형님 목록만 — 팀원 관리 탭은 카테고리 묶음 그대로(버튼). 찾기 글을 받는다
+   */
+  listGroups?: (filter: string) => ListGroup[];
 };
 
 type EditorProps = {
@@ -69,6 +74,9 @@ type EditorProps = {
   /** 폴더 경로 칸 아래 도움말 */
   pathHint: (host: string) => string;
 };
+
+// 프로젝트 관리 탭 묶음 펼침(10-24 — 왼쪽 목록처럼 처음엔 활성만 펼치고 나머지는 접는다. 앱이 켜져 있는 동안 기억)
+const manageOpen = new Set<string>([ACTIVE_GROUP]);
 
 export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCategoryOrder, intro, headerAction, notice, error, emptyText, scopeLabel, pathHint }: EditorProps) {
   const c = theme.colors;
@@ -105,15 +113,28 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
   const label = (cats: string[], name: string) => (name ? `${cats.indexOf(name) + 1}. ${name}` : UNTAGGED_GROUP);
 
   const [filter, setFilter] = useState("");
+  // 묶음 접기·펼치기 뒤 다시 그리기(펼친 묶음은 위 manageOpen 에 둔다)
+  const [, bumpFold] = useState(0);
   // 하위 공간은 메인 바로 아래에 들여 붙인다(10-24 리규형님 "플젝 생성할 때도 한데 몰려 있게" — 왼쪽 목록과 같은 projectSubs)
   const mainsBy = useMemo(() => new Map(scopes.map((s) => [s.id, mainsOf(s.entries)] as const)), [scopes]);
-  const groupsOf = (s: EditScope) => {
+  // 묶음 종류 — 카테고리 묶음만 머리에 끌기·이름 바꾸기·지우기가 있다
+  type GroupKind = "category" | "untagged" | "pinned" | "active" | "hidden";
+  const groupsOf = (s: EditScope): { name: string; rows: ListRow[]; count: number; kind: GroupKind }[] => {
+    // 리규형님 목록 — 왼쪽 목록과 같은 묶음·순서(10-24)
+    if (s.listGroups) {
+      return s.listGroups(filter).map((g) => ({
+        ...g,
+        kind: g.name === PINNED_GROUP ? "pinned" : g.name === ACTIVE_GROUP ? "active" : g.name === DISABLED_GROUP ? "hidden" : g.name === UNTAGGED_GROUP ? "untagged" : "category",
+      }));
+    }
     const q = filter.trim().toLowerCase();
     const shown = s.entries.filter((e) => !q || e.name.toLowerCase().includes(q) || e.path.toLowerCase().includes(q) || e.category.toLowerCase().includes(q));
     const list = (catsOf.get(s.id) ?? []).map((name) => ({ name, items: shown.filter((e) => e.category === name) }));
     list.push({ name: "", items: shown.filter((e) => !e.category) });
     const mains = mainsBy.get(s.id) ?? new Map<ProjectEntry, ProjectEntry>();
-    return list.filter((g) => g.items.length > 0).map((g) => ({ ...g, rows: arrangeRows(g.items, mains) }));
+    return list
+      .filter((g) => g.items.length > 0)
+      .map((g) => ({ name: g.name, rows: arrangeRows(g.items, mains), count: g.items.length, kind: g.name ? "category" : "untagged" }));
   };
 
   // 새 프로젝트 — 팀원(팀원 프로젝트만) · 카테고리 · 기기 · 폴더 경로 · 이름.
@@ -219,15 +240,82 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
   );
   const help = (text: string) => <HelpTip theme={theme} text={text} fontSize={fs(11)} />;
 
-  const row = (s: EditScope, cats: string[], e: ProjectEntry, sub = false) => {
+  // 프로젝트 소리 끄기(10-24 리규형님 — Mesa 처럼 사람 없이 도는 프로젝트의 소리 · 질문만 남기고 끄기 · 폰으로도 안 나감). 펼친 칸 한 줄.
+  // 하위 공간은 메인 설정을 따른다(버튼) — 하위 줄엔 안내만. 질문은 늘 울려 끄는 단추가 없다(버튼)
+  const soundRow = (s: EditScope, e: ProjectEntry, main: ProjectEntry | null) => {
+    if (main) {
+      return (
+        <Text style={{ marginTop: 4, fontSize: fs(10), color: c.foregroundMuted }}>{`소리: 메인(${main.name}) 설정을 따릅니다`}</Text>
+      );
+    }
+    const off = new Set<MutableSoundKind>(e.mute ?? []);
+    const send = (next: MutableSoundKind[], done: string) => void run(s.id, { op: "mute", key: pinKey(e), itemName: e.name, mute: next }, done);
+    // 단추 글자는 누를 행동(10-24 리규형님 "습관상 내가 행동할 것을 버튼에") — 울리면 "끄기", 꺼져 있으면 "켜기".
+    // 꺼진 종류는 글자 앞에 목록과 같은 주황 소리 끔 아이콘. "질문만 남기고 끄기"는 주황으로 눈에 띄게(같은 날 "못 봤어 — 주황으로")
+    const orange = c.statusWarning;
+    const all = mutableSoundKinds.map((k) => SOUND_NAMES[k]).join("·");
+    return (
+      <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+        <Text style={{ fontSize: fs(11), color: c.foregroundMuted }}>소리</Text>
+        {mutableSoundKinds.map((k) => {
+          const isOff = off.has(k);
+          const label = `${SOUND_NAMES[k]} ${isOff ? "켜기" : "끄기"}`;
+          return (
+            <UiButton
+              key={k}
+              theme={theme}
+              label={label}
+              fontSize={fs(11)}
+              disabled={busy}
+              hint={isOff ? "지금 꺼져 있음 — 눌러서 다시 켜기" : "지금 울림 — 눌러서 이 프로젝트에서 끄기(PC·웹·폰 어디서도 안 울립니다)"}
+              onPress={() => send(mutableSoundKinds.filter((x) => (x === k ? !isOff : off.has(x))), `${SOUND_NAMES[k]} 소리를 ${isOff ? "켰습니다" : "껐습니다"}`)}
+            >
+              {isOff ? (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                  <Icon name="VolumeX" size={fs(11)} color={orange} />
+                  <Text style={{ fontSize: fs(11), color: c.foreground }}>{label}</Text>
+                </View>
+              ) : undefined}
+            </UiButton>
+          );
+        })}
+        {off.size < mutableSoundKinds.length ? (
+          <UiButton
+            key="quiet"
+            theme={theme}
+            label="질문만 남기고 끄기"
+            fontSize={fs(11)}
+            disabled={busy}
+            hint={`${all}을 모두 끕니다 — 질문 소리는 울립니다`}
+            onPress={() => send([...mutableSoundKinds], "질문 소리만 남기고 껐습니다")}
+            style={{ borderColor: orange }}
+          >
+            <Text style={{ fontSize: fs(11), color: orange }}>질문만 남기고 끄기</Text>
+          </UiButton>
+        ) : null}
+        {off.size > 0 ? button("모두 켜기", () => send([], "소리를 모두 켰습니다")) : null}
+        {help(
+          "이 프로젝트 대화에서 고른 소리를 끕니다 — 끈 소리는 PC·웹·폰 앱 어디서도 울리지 않습니다. 질문 소리는 늘 울립니다. " +
+            "컨텍스트 경고·위험은 대화의 컨텍스트 사용률이 설정의 경고·위험 기준(기본 50%·75%)을 처음 넘을 때 나는 소리입니다. 하위 공간은 이 설정을 따릅니다.",
+        )}
+      </View>
+    );
+  };
+
+  const row = (s: EditScope, cats: string[], e: ProjectEntry, sub = false, group = "") => {
     const key = pinKey(e);
-    // 같은 기기·경로로 이름만 다른 프로젝트가 여럿일 수 있어(10-23) 줄 이름표에 이름까지 넣는다. 고치기는 itemName 으로 그 줄을 고른다
-    const rowKey = `${s.id}|${key}|${e.name}`;
+    // 같은 기기·경로로 이름만 다른 프로젝트가 여럿일 수 있어(10-23) 줄 이름표에 이름까지 넣는다. 고치기는 itemName 으로 그 줄을 고른다.
+    // 왼쪽 목록 모양(10-24)에선 같은 프로젝트가 고정·활성·카테고리에 함께 나온다 — 펼침·이름 바꾸기가 묶음마다 따로 되게 묶음 이름도
+    const rowKey = group ? `${s.id}|${group}|${key}|${e.name}` : `${s.id}|${key}|${e.name}`;
     const editingName = renaming?.key === rowKey;
     const movingHere = moving?.key === rowKey;
     const open = expanded.has(rowKey);
     const panelOpen = !!s.rowPanel && panelKey === rowKey;
     const note = s.rowNote?.(e);
+    // 프로젝트 소리 끄기(10-24) — 하위 공간은 메인 것을 따른다(버튼). 팀원 목록(title·rowPanel 있음)엔 없다
+    const soundMain = mainsBy.get(s.id)?.get(e) ?? null;
+    const soundOff = (soundMain ?? e).mute ?? [];
+    const ownSounds = !s.title && !s.rowPanel;
     return (
       <View key={rowKey} style={{ gap: 6, paddingVertical: 6, paddingLeft: sub ? 28 : 12, borderBottomWidth: 1, borderColor: c.border }}>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -252,13 +340,19 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
                 accessibilityLabel={`${e.name} 디바이스·경로 ${open ? "접기" : "보기"}`}
                 ref={(node: unknown) => setHoverTitle(node, open ? "눌러서 접기" : "눌러서 디바이스·경로 보기")}
                 onPress={() => toggleExpanded(rowKey)}
+                style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
               >
-                <Text style={{ fontSize: fs(13), color: e.enabled ? c.foreground : c.foregroundMuted }} numberOfLines={1}>
+                <Text style={{ flexShrink: 1, fontSize: fs(13), color: e.enabled ? c.foreground : c.foregroundMuted }} numberOfLines={1}>
                   {e.name}
                   {e.enabled ? "" : "  (숨김)"}
                   {e.missing ? <Text style={{ fontSize: fs(10), color: c.foregroundMuted }}>{"  · 폴더 없음"}</Text> : null}
                   {note ? <Text style={{ fontSize: fs(10), color: c.foregroundMuted }}>{`  · ${note}`}</Text> : null}
                 </Text>
+                {ownSounds && soundOff.length ? (
+                  <View accessibilityLabel={`소리 끔: ${soundOff.map((k) => SOUND_NAMES[k]).join(", ")}`} style={{ flexShrink: 0 }}>
+                    <Icon name="VolumeX" size={fs(12)} color={c.statusWarning} />
+                  </View>
+                ) : null}
               </Pressable>
             )}
             {open ? (
@@ -274,6 +368,7 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
                     }, { hint: "Enter 저장, Esc 취소" })}
               </View>
             ) : null}
+            {open && ownSounds ? soundRow(s, e, soundMain) : null}
           </View>
           <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
             {s.rowPanel
@@ -344,9 +439,14 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
       if (next) setCategoryOrder(s.id, next);
     };
     return groupsOf(s).map((g) => {
-      const untagged = !g.name;
+      // 카테고리 묶음이 아니면(카테고리 없음·고정·활성·숨김) 머리에 끌기·이름 바꾸기·지우기가 없다
+      const untagged = g.kind !== "category";
       const catKey = `${s.id}|${g.name}`;
       const editingCat = catRenaming?.key === catKey && !untagged;
+      // 왼쪽 목록 모양(10-24)은 머리를 눌러 접고 편다 — 처음엔 활성만 펼침. 찾기 글이 있으면 다 펼친다(접혀 있으면 찾은 것이 안 보인다)
+      const folding = !!s.listGroups;
+      const shut = folding && !filter.trim() && !manageOpen.has(g.name);
+      const title = g.kind === "category" ? label(cats, g.name) : g.kind === "untagged" ? UNTAGGED_GROUP : g.name;
       return (
         <View key={catKey} style={{ gap: 2 }}>
           <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, paddingVertical: 4 }}>
@@ -365,6 +465,25 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
                 onBlur={() => setCatRenaming(null)}
                 style={{ minWidth: 180 }}
               />
+            ) : folding ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${title} ${shut ? "펼치기" : "접기"}`}
+                onPress={() => {
+                  if (!manageOpen.delete(g.name)) manageOpen.add(g.name);
+                  bumpFold((n) => n + 1);
+                }}
+                ref={(node: unknown) => {
+                  if (!untagged && !readOnly) setDraggableRow(node, g.name, `:manage-categories|${s.id}`, c.accent, onDropCategory);
+                  setHoverTitle(node, untagged || readOnly ? `누르면 ${shut ? "펼칩니다" : "접습니다"}` : `누르면 ${shut ? "펼칩니다" : "접습니다"} · 끌어서 카테고리 순서 바꾸기 — 번호가 이 순서대로 붙습니다`);
+                }}
+                style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+              >
+                {chevron(!shut, fs(13))}
+                {untagged ? null : <Icon name="GripVertical" size={fs(13)} color={c.foregroundMuted} />}
+                <Text style={{ fontSize: fs(13), fontWeight: "600", color: c.foregroundMuted }}>{title}</Text>
+                <Text style={{ fontSize: fs(11), color: c.foregroundMuted }}>{g.count}</Text>
+              </Pressable>
             ) : (
               <View
                 ref={(node: unknown) => {
@@ -375,8 +494,8 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
                 style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
               >
                 {untagged ? null : <Icon name="GripVertical" size={fs(13)} color={c.foregroundMuted} />}
-                <Text style={{ fontSize: fs(13), fontWeight: "600", color: c.foregroundMuted }}>{label(cats, g.name)}</Text>
-                <Text style={{ fontSize: fs(11), color: c.foregroundMuted }}>{g.items.length}</Text>
+                <Text style={{ fontSize: fs(13), fontWeight: "600", color: c.foregroundMuted }}>{title}</Text>
+                <Text style={{ fontSize: fs(11), color: c.foregroundMuted }}>{g.count}</Text>
               </View>
             )}
             {untagged || editingCat ? null : (
@@ -400,13 +519,16 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
               </>
             )}
           </View>
-          {g.rows.map((r) => row(s, cats, r.e, r.sub))}
+          {shut ? null : g.rows.map((r) => row(s, cats, r.e, r.sub, folding ? g.name : ""))}
         </View>
       );
     });
   };
 
   const total = scopes.reduce((n, s) => n + s.entries.length, 0);
+  // 모두 접기·펼치기가 다루는 묶음 — 왼쪽 목록 모양 편집 단위의 활성 빼고 전부
+  const foldNames = scopes.flatMap((s) => (s.listGroups ? groupsOf(s).filter((g) => g.name !== ACTIVE_GROUP).map((g) => g.name) : []));
+  const allShut = foldNames.length > 0 && foldNames.every((n) => !manageOpen.has(n));
   return (
     <View ref={setNoTranslate} style={{ gap: 14 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -492,7 +614,27 @@ export function ProjectsEditor({ readOnly = false, theme, scopes, edit, setCateg
         </View>
       ) : null}
 
-      <UiInput theme={theme} fontSize={fs(12)} value={filter} onChangeText={setFilter} placeholder="이름·경로·카테고리로 찾기" style={{ width: FIELD_WIDTH }} />
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <UiInput theme={theme} fontSize={fs(12)} value={filter} onChangeText={setFilter} placeholder="이름·경로·카테고리로 찾기" style={{ width: FIELD_WIDTH }} />
+        {/* 모두 접기·펼치기(10-24 — 왼쪽 목록과 같은 아이콘·규칙): 활성은 그대로, 나머지가 다 접혀 있으면 모두 펼치고 하나라도 펼쳐져 있으면 모두 접는다 */}
+        {foldNames.length ? (
+          <UiButton
+            theme={theme}
+            label={allShut ? "모두 펼치기" : "모두 접기"}
+            hint={allShut ? "모두 펼치기" : "모두 접기"}
+            fontSize={fs(11)}
+            onPress={() => {
+              for (const n of foldNames) {
+                if (allShut) manageOpen.add(n);
+                else manageOpen.delete(n);
+              }
+              bumpFold((x) => x + 1);
+            }}
+          >
+            <Icon name={allShut ? "ChevronsUpDown" : "ChevronsDownUp"} size={fs(13)} color={c.foreground} />
+          </UiButton>
+        ) : null}
+      </View>
 
       {scopes.map((s) => {
         if (!scopeLabel)
@@ -560,6 +702,9 @@ type Props = {
   readOnly?: boolean;
   theme: PluginTheme;
   data: ProjectsData | null;
+  /** 기기별 대화 목록 — 활성 묶음(열린 대화가 있는 프로젝트) 판정, 왼쪽 목록과 같은 것(10-24) */
+  index: HostIndex;
+  live: Map<string, Live>;
   onChanged: () => void;
   /** 목록 파일을 Paseo 편집기로 연다 — 못 열면 이유 */
   onEditFile: () => Promise<string | null>;
@@ -568,7 +713,7 @@ type Props = {
 };
 
 // 리규형님 프로젝트 목록(PC 데몬 목록 파일)
-export function ProjectsManage({ readOnly = false, theme, data, onChanged, onEditFile, fileTitle }: Props) {
+export function ProjectsManage({ readOnly = false, theme, data, index, live, onChanged, onEditFile, fileTitle }: Props) {
   const c = theme.colors;
   const scale = useFontScale();
   const edit = useRpc(projectsEdit);
@@ -593,7 +738,27 @@ export function ProjectsManage({ readOnly = false, theme, data, onChanged, onEdi
   // 디바이스는 실제 기기만(10-11 리규형님) — PC + 목록에 프로젝트가 있는 SSH 호스트(팀원 관리의 서버 후보와 같은 기준).
   // github.com·터널 같은 SSH 항목은 프로젝트가 없어 저절로 빠진다
   const devices = useMemo(() => hosts.filter((h) => h === "PC" || entries.some((e) => e.host === h)), [hosts, entries]);
-  const scopes = useMemo<EditScope[]>(() => [{ id: "", entries, categoryOrder: savedCats ?? [], hosts: devices }], [entries, savedCats, devices]);
+  // 왼쪽 목록과 같은 묶음·순서(10-24 리규형님 "왼쪽 리스트의 사용자 경험대로") — 고정 목록·끌어 놓은 순서·카테고리 번호·열린 대화를
+  // 왼쪽 목록과 같은 곳에서 읽는다. 관리 화면이라 숨긴 것도 보인다(맨 아래 숨김 묶음). 순서는 보여 주기만 — 끌어 바꾸기는 왼쪽 목록에서(버튼)
+  const { order: pinOrder } = usePins(readOnly);
+  const categories = useMemo(() => orderedCategories(entries, savedCats ?? []), [entries, savedCats]);
+  const mains = useMemo(() => mainsOf(entries), [entries]);
+  const listGroups = useCallback(
+    (filter: string) =>
+      groupProjects(entries, mains, {
+        filter,
+        show: () => true,
+        live: (e) => !!liveOf(e, serverOf(e, index), live),
+        pinOrder,
+        orders,
+        activeOrderKey: ACTIVE_ORDER_KEY,
+        categories,
+        untaggedGroup: UNTAGGED_GROUP,
+        key: pinKey,
+      }),
+    [entries, mains, index, live, pinOrder, orders, categories],
+  );
+  const scopes = useMemo<EditScope[]>(() => [{ id: "", entries, categoryOrder: savedCats ?? [], hosts: devices, listGroups }], [entries, savedCats, devices, listGroups]);
 
   // 10-11 리규형님: 프로젝트 목록 탭의 "목록 파일 직접 편집"을 "프로젝트 파일 수정"으로 바꿔 이 탭 맨 위 오른쪽으로
   const fileButton = (

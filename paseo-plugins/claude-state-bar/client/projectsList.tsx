@@ -4,7 +4,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMemo, useState, type ReactNode } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
-import { ACTIVE_ORDER_KEY, CATEGORY_ORDER_KEY, UNTAGGED_GROUP, type ProjectEntry } from "../shared/projects";
+import { ACTIVE_ORDER_KEY, CATEGORY_ORDER_KEY, mutableSoundNames, UNTAGGED_GROUP, type ProjectEntry } from "../shared/projects";
 import { fontStep, scaled, useFontScale } from "./fontScale";
 import {
   currentProjectKey,
@@ -22,7 +22,7 @@ import {
   type ProjectsData,
 } from "./projectsData";
 import { countsTotal, useProjectCounts, type ProjectCounts, type ProjectTarget } from "./projectCounts";
-import { arrangeRows, mainsOf, placeEntries } from "./projectSubs";
+import { ACTIVE_GROUP, groupProjects, mainsOf, PINNED_GROUP } from "./projectSubs";
 import { mostUrgent, StatusIndicator } from "./statusIndicator";
 import { isTeamMember } from "./teamMode";
 import { lineColor, UiInput } from "./ui";
@@ -33,11 +33,8 @@ import { ProjectMenu, type ProjectMenuAt } from "./projectMenu";
 // 10-11: "꺼 둠" → "숨김"으로 용어 통일, 카테고리 번호는 이름에서 떼고 순서대로 붙인다).
 // 전체 화면과 왼쪽 목록 칸이 같이 쓴다. 칸(sidebar)은 폭이 좁아 도구 단추를 검색창 아래 줄에 둔다.
 
-const PINNED_GROUP = "고정";
 /** 왼쪽 칸 머리줄(워크스페이스·새로고침·A−·A+) — 폰 웹에서 Paseo 닫기 단추와 겹치는지 잴 때 쓴다 */
 export const TOOLBAR_ID = "claude-state-bar-projects-toolbar";
-const ACTIVE_GROUP = "활성";
-const DISABLED_GROUP = "숨김";
 // 카테고리 묶음 머리끼리 끌어 옮길 때 쓰는 끌기 묶음 이름(프로젝트 줄 묶음 이름과 겹치지 않게)
 const CATEGORY_DRAG = ":category-headers";
 
@@ -118,9 +115,6 @@ export function ProjectsList(props: {
     const next = reorderKeys(orders[orderKey(group)] ?? [], visible, from, to, after);
     if (next) setOrder(orderKey(group), next);
   };
-  // 목록 파일 순서 — 끌어 놓은 적 없는 줄과 묶음의 기본 순서(10-07 리규형님: 초기화하면 목록 파일 순서)
-  const categoryGroup = (e: ProjectEntry) => (!e.enabled ? DISABLED_GROUP : e.category || UNTAGGED_GROUP);
-  const fileRank = useMemo(() => new Map(entries.map((e, i) => [e, i] as const)), [entries]);
   // 카테고리 번호(10-11 리규형님) — 끌어 놓은 순서(순서 파일 ":categories") 다음에 목록 파일에 처음 나오는 순서. 숨긴 프로젝트만
   // 있는 카테고리도 번호를 받는다(프로젝트 관리 탭과 같은 번호). 카테고리 없음은 번호가 없다
   const categories = useMemo(() => orderedCategories(entries, orders[CATEGORY_ORDER_KEY] ?? []), [entries, orders]);
@@ -145,62 +139,24 @@ export function ProjectsList(props: {
   const projectCounts = useProjectCounts(countTargets);
   // 하위 공간 → 메인(10-24) — 메인 아래에 묶어 접고 펴며, 고정·활성·카테고리 어디서나 메인과 몰려 다닌다
   const mains = useMemo(() => mainsOf(entries), [entries]);
-  const groups = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    // 어느 묶음에 넣는지는 projectSubs.placeEntries — 아래 규칙에 "하위가 든 묶음엔 메인도"·"고정은 메인 핀으로"를 더했다.
-    // 팀원 화면은 메인이 숨긴 프로젝트를 아예 안 보인다(10-12 리규형님 "팀원은 숨김 카테를 히든 처리" — 숨김 묶음을 펼쳐
-    // 눌러 들어가던 것). 활성·고정·찾기에도 안 나온다. 서버의 읽기 권한은 그대로라 팀원 Claude 의 분석은 된다.
-    // 열린 대화가 있는 것(점이 회색·초록)은 고정이든 아니든 "활성"에 모은다 — 활성은 활성끼리 모아 보는 칸이고 고정은
-    // 그대로 고정에 남는다(10-07 리규형님: "고정은 고정, 활성은 활성끼리"). 원래 묶음 쪽도 지금처럼(대화를 열고 닫을 때
-    // 줄이 들락날락하지 않게). 고정한 것은 맨 위 "고정" 묶음에도 넣고 원래 묶음에도 그대로 둔다 — 원래 묶음에서 빠지면 지워진
-    // 줄로 착각한다(10-06 처음엔 원래 묶음에서 뺐다 → 10-13 리규형님 "핀으로 고정을 해도 원래 카테에 남도록")
-    const placed = placeEntries(entries, mains, {
-      show: (e) => !(member && !e.enabled),
-      matches: (e) => !q || e.name.toLowerCase().includes(q) || e.path.toLowerCase().includes(q) || e.category.toLowerCase().includes(q),
-      live: (e) => !!liveOf(e, serverOf(e, index), live),
-      pinned: (e) => pins.has(pinKey(e)),
-      category: categoryGroup,
-      activeGroup: ACTIVE_GROUP,
-      pinnedGroup: PINNED_GROUP,
-    });
-    // 묶음 순서: 고정·활성은 맨 위, 카테고리는 번호 순서, 그다음 카테고리 없음, 숨김은 맨 아래(10-11 리규형님 "숨김은 이동에서 제외,
-    // 항상 맨 끝" — 카테고리 없음도 번호가 없어 자리 고정)
-    const order = categories.filter((g) => placed.has(g));
-    if (placed.has(ACTIVE_GROUP)) order.unshift(ACTIVE_GROUP);
-    if (placed.has(PINNED_GROUP)) order.unshift(PINNED_GROUP);
-    if (placed.has(UNTAGGED_GROUP)) order.push(UNTAGGED_GROUP);
-    if (placed.has(DISABLED_GROUP)) order.push(DISABLED_GROUP);
-    // 고정 묶음은 고정 목록 파일의 순서. 나머지는 끌어 놓은 순서(묶음별 순서 파일) 다음에, 끌어 놓은 적 없는 것을 목록 파일
-    // 순서로 뒤에 붙인다 — 활성에 처음 들어온 것은 맨 아래(10-07 리규형님 결정. 처음엔 이름순이었다가 같은 날 목록 파일 순서로).
-    // 고정 여부·순서는 하위면 메인 것을 본다 — 하위는 메인 바로 아래에 붙는다(arrangeRows)
-    const pinOwner = (e: ProjectEntry) => mains.get(e) ?? e;
-    const pinRank = (e: ProjectEntry) => pinOrder.indexOf(pinKey(pinOwner(e)));
-    const sortIn = (g: string, items: ProjectEntry[]) => {
-      if (g === PINNED_GROUP) return items.sort((a, b) => pinRank(a) - pinRank(b));
-      const saved = orders[orderKey(g)] ?? [];
-      const rank = (e: ProjectEntry) => {
-        const i = saved.indexOf(pinKey(e));
-        return i < 0 ? saved.length : i;
-      };
-      // 고정한 것은 원래 카테고리 안에서도 끌어 놓은 순서와 상관없이 맨 위, 고정 순서대로(10-13 리규형님 "즐겨찾기를 하면
-      // 순서와 상관없이 해당 카테에서 최상단"). 활성 묶음은 대화를 열고 닫는 순서를 지키려고 그대로 둔다
-      const pinFirst = g !== ACTIVE_GROUP;
-      return items.sort((a, b) => {
-        if (pinFirst) {
-          const pa = pins.has(pinKey(pinOwner(a)));
-          const pb = pins.has(pinKey(pinOwner(b)));
-          if (pa !== pb) return pa ? -1 : 1;
-          if (pa && pb) return pinRank(a) - pinRank(b);
-        }
-        return rank(a) - rank(b) || (fileRank.get(a) ?? 0) - (fileRank.get(b) ?? 0);
-      });
-    };
-    return order.map((g) => {
-      const { items, dragged } = placed.get(g) ?? { items: [], dragged: new Set<ProjectEntry>() };
-      // 머리 숫자는 그 묶음 소속만 — 하위를 따라 끌려온 메인(활성 칸에서 메인 대화가 닫힌 것 등)은 빼고 센다
-      return { name: g, rows: arrangeRows(sortIn(g, items), mains), count: items.length - dragged.size };
-    });
-  }, [entries, filter, pins, pinOrder, live, index, orders, categories, fileRank, member, mains]);
+  // 묶음과 줄 순서 — 프로젝트 관리 탭과 같은 규칙(projectSubs.groupProjects, 10-24 리규형님 "프로젝트 매니저도 왼쪽 리스트처럼")
+  const groups = useMemo(
+    () =>
+      groupProjects(entries, mains, {
+        filter,
+        // 팀원 화면은 메인이 숨긴 프로젝트를 아예 안 보인다(10-12 리규형님 "팀원은 숨김 카테를 히든 처리" — 숨김 묶음을 펼쳐
+        // 눌러 들어가던 것). 활성·고정·찾기에도 안 나온다. 서버의 읽기 권한은 그대로라 팀원 Claude 의 분석은 된다
+        show: (e) => !(member && !e.enabled),
+        live: (e) => !!liveOf(e, serverOf(e, index), live),
+        pinOrder,
+        orders,
+        activeOrderKey: ACTIVE_ORDER_KEY,
+        categories,
+        untaggedGroup: UNTAGGED_GROUP,
+        key: pinKey,
+      }),
+    [entries, filter, pinOrder, live, index, orders, categories, member, mains],
+  );
   // 카테고리 묶음 머리를 끌어 놓은 자리로(고정·활성·카테고리 없음·숨김은 자리 고정). 화면에 안 보이는 카테고리(찾기로 걸러진 것 등)도
   // 전체 순서에 남겨 번호가 흔들리지 않게 한다
   const onDropCategory = (from: string, to: string, after: boolean) => {
@@ -366,11 +322,11 @@ export function ProjectsList(props: {
                         setHoverTitle(node, mixed && badge ? `${badge}. ${e.category} · ${hoverHost}` : hoverHost);
                         // 마우스로 끌어 같은 묶음 안 순서를 바꾼다(10-06 고정 → 10-07 모든 묶음, PC·웹 — 폰은 순서 바꾸기 없음)
                         if (!readOnly && !sub) setDraggableRow(node, key, g.name, c.accent, onDrop);
-                        setContextMenu(node, (x, y) => setMenu({ entry: e, x, y }));
+                        setContextMenu(node, (x, y) => setMenu({ entry: e, x, y, soundOwner: mains.get(e) ?? e }));
                       }}
                       // 폰은 길게 누르기(껍데기 앱 웹뷰가 contextmenu 를 안 낼 수도 있어 둘 다 단다 — 같은 메뉴를 다시 여는 것뿐)
                       onLongPress={(ev: { nativeEvent?: { pageX?: number; pageY?: number } }) =>
-                        setMenu({ entry: e, x: ev?.nativeEvent?.pageX ?? 40, y: ev?.nativeEvent?.pageY ?? 80 })}
+                        setMenu({ entry: e, x: ev?.nativeEvent?.pageX ?? 40, y: ev?.nativeEvent?.pageY ?? 80, soundOwner: mains.get(e) ?? e })}
                       accessibilityRole="button"
                       // 폰 앱에서 고를 때 진동하는 자리 표시(client/haptics.ts HAPTIC_TARGETS)
                       testID="csb-project-open"
@@ -480,6 +436,17 @@ export function ProjectsList(props: {
                               <Icon name="Pin" size={fs(11)} color={pinned ? c.accent : c.foregroundMuted} />
                             </Pressable>
                           )}
+                          {/* 소리 끈 프로젝트(10-24 리규형님 — 프로젝트 매니저에 아이콘 · 같은 날 "맨 오른쪽으로 옮겨서 색깔을 주황으로").
+                              줄 맨 끝이라 모든 줄에서 같은 자리. 색은 질문·압축 아이콘과 같은 주황. 하위 공간은 메인 설정을 따른다 */}
+                          {((mains.get(e) ?? e).mute ?? []).length ? (
+                            <View
+                              ref={(node: unknown) => setHoverTitle(node, `소리 끔: ${((mains.get(e) ?? e).mute ?? []).map((k) => mutableSoundNames[k]).join("·")} — 질문 소리는 울림 · 오른쪽 클릭으로 켜기`)}
+                              accessibilityLabel="소리 끔"
+                              style={{ flexShrink: 0 }}
+                            >
+                              <Icon name="VolumeX" size={fs(12)} color={c.statusWarning} />
+                            </View>
+                          ) : null}
                         </>
                       )}
                     </Pressable>

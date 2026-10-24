@@ -2,6 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { createElement, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Modal, Platform, Pressable, Text, TextInput, useWindowDimensions, View, type StyleProp, type TextInputProps, type TextStyle, type ViewStyle } from "react-native";
 import { scaled, useFontScale } from "./fontScale";
+import { helpLines } from "./helpText";
 import { setHoverTitle } from "./web";
 
 // ── 입력칸·선택 상자·단추·"?" 풍선 — 플러그인 화면이 모두 이 부품을 쓴다(10-11 리규형님: "다크 모드에서 라인이 흐려서 식별이 힘드니
@@ -215,7 +216,7 @@ export function HelpTip({ theme, text, fontSize }: { theme: PluginTheme; text: s
             }}
           />
           <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: c.accent, backgroundColor: c.surface0 }}>
-            <Text selectable style={{ flex: 1, fontSize, lineHeight: fontSize * 1.5, color: c.foreground }}>{text}</Text>
+            <Text selectable style={{ flex: 1, fontSize, lineHeight: fontSize * 1.5, color: c.foreground }}>{helpLines(text)}</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="도움말 닫기" onPress={() => setAt(null)} hitSlop={6}>
               <Text style={{ fontSize, lineHeight: fontSize * 1.5, color: c.foregroundMuted }}>✕</Text>
             </Pressable>

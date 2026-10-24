@@ -2,7 +2,9 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { SOUND_PAGE_SIZE, type RoutedSoundEvent } from "../shared/soundClaim";
 import type { SoundKind } from "../shared/sound";
 import { hostIdentity } from "./layoutSync";
-import { lastTurnCheckpointReady, lastTurnCommandOnly } from "./chime/lastTurn";
+import { lastTurnCommandOnly } from "./chime/lastTurn";
+import { mutedKindsOf } from "./projectMute";
+import type { MutableSoundKind } from "../shared/projects";
 import { SoundJournal, soundDataFile } from "./soundJournal";
 import { phoneTook } from "./push";
 import { baseQuestionId } from "../shared/push";
@@ -225,8 +227,8 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
   // Claude 계열 대화(Paseo 설정 extends === "claude" 인 공급자 — 판정은 server/account.ts baseOf 한 곳, 10-18 정리)만
   // 대화 기록을 읽어 차례 끝을 가린다. 앞 단계(index.server.ts checkSession)·생각 경계(thinkingBoundary.ts)와 같은 판정이다
   const claudeSession = (a: PaseoAgent) => (baseOf(a.provider) && a.persistence?.sessionId) || null;
-  // 압축 준비(10-15): 체크포인트 보고로 끝난 차례는 끝남(completion) 대신 compact 로 낸다 — 발생 데몬이 갈라 화면 판정은 그대로
-  const checkpointTurn = async (a: PaseoAgent) => { const s = claudeSession(a); return !!s && await lastTurnCheckpointReady(s); };
+  // 압축 준비(10-15 — 체크포인트 보고로 끝난 차례는 끝남 대신 compact)는 10-24 리규형님 버튼 "폰 알림 없애고 보통 끝남 소리로"로 없앴다 —
+  // 압축 명령은 플러그인이 1분 뒤 대신 넣어(autoCompact.ts) 사람이 할 일이 없다. 보고 차례도 보통 끝남이고 compact 사건은 만들지 않는다(옛 사건은 무효)
   const valid = async (a: PaseoAgent, kind: SoundKind, nativeId: string, cfg: Config, cycle: number, paseo: PaseoApi) => {
     if (a.archivedAt || a.status === "closed") return false;
     // 허락 요청은 종류와 상관없이 질문이다 — 도구 사용 허락 포함(10-21 리규형님 "똑같이 질문으로 소리", client/judge.ts 와 같은 뜻).
@@ -236,7 +238,7 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
       if (a.status !== "idle" || !a.lastUserMessageAt || await completionId(paseo, a) !== nativeId || a.pendingPermissions.length > 0) return false;
       const s = claudeSession(a);
       if (s && await lastTurnCommandOnly(s)) return false;
-      return (await checkpointTurn(a)) === (kind === "compact");
+      return kind === "completion";
     }
     if (kind === "workflow") return true; // 번호는 스캐너가 실제 완료 항목에서 준다.
     const p = percent(a);
@@ -261,15 +263,21 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
         if (input.kind === "completion" && (!a.lastUserMessageAt || input.nativeId !== a.lastUserMessageAt)) return { event: null };
         const nativeId = input.kind === "completion" ? await completionId(paseo, a)
           : input.kind === "warning" || input.kind === "danger" ? String(cycle) : input.nativeId;
-        const kind: SoundKind = input.kind === "completion" && await checkpointTurn(a) ? "compact" : input.kind;
+        const kind: SoundKind = input.kind;
         if (!nativeId || !await valid(a, kind, nativeId, input, cycle, paseo)) return { event: null };
         const { serverId } = await hostIdentity(); if (!serverId) throw new Error("발생 데몬 번호 미확인");
         const eventId = JSON.stringify(["sound-v2", serverId, kind === "workflow" ? "workflow" : incarnation(a), kind, nativeId]);
         if (skipped.has(eventId)) return { event: null };
+        const directory = await directoryOf(paseo, a);
+        // 프로젝트에서 끈 소리(10-24 리규형님 — 무인 프로젝트 소리 끄기 · 폰으로도 안 나감)는 사건을 아예 만들지 않는다. 질문은 끌 수 없다
+        if (kind !== "question" && (await mutedKindsOf(directory)).includes(kind as MutableSoundKind)) {
+          console.log(`[sound-v2] ${kind} ${a.id.slice(0, 8)}: muted for this project — no sound anywhere`);
+          return { event: null };
+        }
         return { event: {
           eventId,
           originHostId: serverId, agentId: a.id, kind, nativeId,
-          directory: await directoryOf(paseo, a), projectKey: null,
+          directory, projectKey: null,
         } };
       });
     },

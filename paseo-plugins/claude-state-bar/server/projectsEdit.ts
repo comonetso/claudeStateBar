@@ -126,6 +126,15 @@ export async function editProjects(op: ProjectsEditOp): Promise<Result> {
         items[i].enabled = op.enabled;
         return null;
       });
+    case "mute":
+      // 끈 소리 종류(10-24) — 빈 목록이면 칸을 지워 옛 모양 그대로 둔다
+      return editList((items) => {
+        const i = findItem(items, op.key, op.itemName);
+        if (i < 0) return "목록에서 그 프로젝트를 찾지 못했습니다";
+        if (op.mute.length) items[i].mute = [...new Set(op.mute)];
+        else delete items[i].mute;
+        return null;
+      });
     case "remove": {
       // 고정은 기기·경로로 둔다 — 같은 경로의 다른 이름 항목이 남아 있으면 풀지 않는다(10-23)
       let left = false;

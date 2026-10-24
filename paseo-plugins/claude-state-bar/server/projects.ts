@@ -5,6 +5,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProjectEntry } from "../shared/projects";
+import { mutableSoundKinds } from "../shared/projectSound";
 
 // 프로젝트 목록 — 플러그인 데이터 폴더 안 전용 폴더 project-list/ 의 projects.json 이 정본이다(리규형님 10-07 결정:
 // VS Code 를 안 쓰게 되어 VS Code 프로젝트 매니저 목록을 플러그인으로 옮겨 그대로 쓴다. 공개 레포 밖에 둔다. 이 폴더를 Paseo
@@ -157,7 +158,8 @@ export async function listProjects(): Promise<{ source: string | null; entries: 
     const entries: ProjectEntry[] = [];
     for (const item of raw) {
       if (!item || typeof item.rootPath !== "string" || typeof item.name !== "string") continue;
-      const o = toCategoryEntry(item) as { name: string; rootPath: string; category?: unknown; enabled?: unknown; parent?: unknown };
+      const o = toCategoryEntry(item) as { name: string; rootPath: string; category?: unknown; enabled?: unknown; parent?: unknown; mute?: unknown };
+      const mute = Array.isArray(o.mute) ? mutableSoundKinds.filter((k) => (o.mute as unknown[]).includes(k)) : [];
       const host = hostOf(o.rootPath);
       const path = pathOf(o.rootPath);
       entries.push({
@@ -169,6 +171,8 @@ export async function listProjects(): Promise<{ source: string | null; entries: 
         ...(host === "PC" && !existsSync(path) ? { missing: true } : {}),
         // 하위 공간이면 메인 경로(10-24 — 같은 기기라 경로만 적는다)
         ...(typeof o.parent === "string" && o.parent.trim() ? { parent: o.parent.trim() } : {}),
+        // 끈 소리 종류(10-24) — 모르는 값은 버린다
+        ...(mute.length ? { mute } : {}),
       });
     }
     return { source: PROJECTS_FILE, entries };

@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { mutableSoundKinds, mutableSoundNames, type MutableSoundKind } from "./projectSound";
 
 // 프로젝트 목록(리규형님 10-05: VS Code 프로젝트 매니저 묶음 그대로 → 10-07: 목록을 플러그인 데이터 폴더로 옮겨 정본으로,
 // tags → category). 데몬(PC)이 server/projects 로 읽어 준다.
@@ -20,7 +21,13 @@ export const projectEntrySchema = z.object({
    * (10-24 리규형님 "하위 스페이스는 메인에 얽매인 거잖아 — 접을 수 있게, 한데 몰려 다니게"). 목록 파일에도 경로만 적는다
    */
   parent: z.string().optional(),
+  /**
+   * 이 프로젝트에서 끈 소리 종류(10-24 리규형님 — Mesa 처럼 사람 없이 도는 프로젝트의 소리를 끄기). 끈 종류는 소리를 아예 만들지 않아
+   * PC·웹·폰 앱 어디서도 안 울린다. 질문은 늘 울려 여기 없다(버튼 "질문은 늘 울림"). 하위 공간은 메인 것을 따른다(버튼) — 하위 칸은 안 쓴다
+   */
+  mute: z.array(z.enum(mutableSoundKinds)).optional(),
 });
+export { mutableSoundKinds, mutableSoundNames, type MutableSoundKind };
 export type ProjectEntry = z.infer<typeof projectEntrySchema>;
 
 // 맨 위 고정(10-06) — 키는 "<host>|<path>". 데몬(PC)의 플러그인 전용 파일에 둔다(server/projectsPins)
@@ -89,6 +96,8 @@ export const projectsEditOpSchema = z.discriminatedUnion("op", [
   /** 다른 카테고리로 — 그 묶음 맨 아래로 간다(10-10 결정). "" = 카테고리 없음 */
   z.object({ op: z.literal("category"), key: z.string(), category: z.string(), itemName }),
   z.object({ op: z.literal("enabled"), key: z.string(), enabled: z.boolean(), itemName }),
+  /** 끈 소리 종류를 통째로 바꾼다 — [] = 모두 켬(10-24) */
+  z.object({ op: z.literal("mute"), key: z.string(), mute: z.array(z.enum(["completion", "workflow", "warning", "danger"])), itemName }),
   z.object({ op: z.literal("remove"), key: z.string(), itemName }),
   /** host = "PC" 또는 ~/.ssh/config 의 Host 별칭. name 이 비면 폴더 이름. parent = 하위 공간으로 넣을 때 메인 경로(10-24) */
   z.object({ op: z.literal("add"), host: z.string(), path: z.string(), name: z.string(), category: z.string(), parent: z.string().optional() }),

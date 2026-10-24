@@ -4,7 +4,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { renameRetry } from "./renameRetry";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ProjectEntry } from "../shared/projects";
+import type { MutableSoundKind, ProjectEntry } from "../shared/projects";
+import { effectiveMute } from "./projectMute";
 import { listProjects, onProjectsChange } from "./projects";
 import { globalClaudeHome } from "./claudePaths";
 
@@ -28,6 +29,8 @@ export interface ProjectLabel {
   name: string;
   /** Paseo 위쪽 제목 "카테고리 - 이름"(카테고리가 없으면 이름만) */
   title: string;
+  /** 이 경로에서 끈 소리 종류(10-24) — 하위 공간은 메인 것. 그 기기의 소리 사건이 거른다(server/projectMute.ts) */
+  mute?: MutableSoundKind[];
 }
 
 const dropNumber = (s: string) => s.trim().replace(/^\d+\.\s*/, "").trim();
@@ -35,12 +38,14 @@ const dropNumber = (s: string) => s.trim().replace(/^\d+\.\s*/, "").trim();
 /** 목록 → 기기별 이름표. 이름·카테고리 앞 정렬용 번호("1. ")는 뗀다 */
 export function labelsByHost(entries: ProjectEntry[]): Map<string, ProjectLabel[]> {
   const out = new Map<string, ProjectLabel[]>();
+  const mutes = effectiveMute(entries);
   for (const e of entries) {
     const name = dropNumber(e.name);
     if (!name || !e.path) continue;
     const category = dropNumber(e.category);
     const list = out.get(e.host) ?? [];
-    list.push({ path: e.path, name, title: category ? `${category} - ${name}` : name });
+    const mute = mutes.get(e) ?? [];
+    list.push({ path: e.path, name, title: category ? `${category} - ${name}` : name, ...(mute.length ? { mute } : {}) });
     out.set(e.host, list);
   }
   return out;

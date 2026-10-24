@@ -157,6 +157,8 @@ export function ProjectsScreen({ theme, navigation, layout, params }: PluginScre
         <ProjectsManage
           theme={theme}
           data={data}
+          index={index}
+          live={live}
           readOnly={readOnly}
           onChanged={() => void load()}
           onEditFile={editFile}
