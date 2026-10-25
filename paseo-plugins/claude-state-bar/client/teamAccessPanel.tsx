@@ -105,7 +105,7 @@ export function TeamAccessPanel({ theme, project, serverLogs, fontSize: fs, onOp
   return (
     <View style={{ gap: 8, marginTop: 4, marginRight: 4, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: c.accent, backgroundColor: c.surface1 }}>
       <Text style={{ fontSize: fs(12), fontWeight: "600", color: c.foreground }}>{`권한 — ${project.name}`}</Text>
-      {row(label("파일", "이 프로젝트 폴더 안에서 할 수 있는 것. 읽기쓰기를 받아야 원래 있던 파일을 고치고 git 커밋·배포를 할 수 있습니다. 내가 쓴 파일만은 모두 읽고 자기가 새로 만든 파일만 고칩니다(검토만 맡길 때)"), modes(d.file, (m) => set({ file: m }), "file"))}
+      {row(label("파일", "이 프로젝트 폴더 안에서 할 수 있는 것. 읽기만은 안의 파일을 읽기만 하고, 읽기쓰기는 리규형님과 같은 권한으로 모든 파일을 읽고 고치고 지웁니다(git 커밋·배포 포함)"), modes(d.file, (m) => set({ file: m }), "file"))}
       {d.outside.map((o, i) =>
         row(
           label(i === 0 ? "밖 경로" : "", i === 0 ? `프로젝트 밖에서 열어 줄 폴더(${OUTSIDE_MAX}개까지, 경로마다 권한을 고릅니다). 예: 개발 폴더를 고쳐 운영 폴더로 배포할 때 운영 폴더를 읽기쓰기로. 비우면 밖은 보이지 않습니다. 관리자 폴더(/root)와 시스템 폴더(/etc·/usr·/var·/opt 등)는 넣을 수 없습니다(저장할 때 알려 드립니다). 다른 팀원 홈은 서버가 거절합니다` : undefined),

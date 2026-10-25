@@ -4,15 +4,15 @@
 // 다른 묶음을 불러오지 않는다 — PC 데몬 쪽 코드와 시험·화면이 Paseo 묶음 없이 쓴다(검사 정의는 shared/team.ts 의 projectAccessSchema)
 
 /**
- * 파일 권한 세 가지(10-20 리규형님) — 서버 팀원 도구(team-daemon policy.py)의 mount mode 와 같은 값.
- * ro = 읽기만 · rw = 읽기쓰기(모든 권한 — 고치기·지우기·git 커밋까지) ·
- * add = 내가 쓴 파일만 쓰기(읽기는 전부. 새 파일을 만들고 자기가 만든 파일만 고치고 지운다 — 리규형님 "검토만 하는 경우를 위해 준비")
+ * 파일 권한 두 가지 — 서버 팀원 도구(team-daemon policy.py)의 mount mode 와 같은 값.
+ * ro = 읽기만 · rw = 읽기쓰기(리규형님(root)과 같은 권한 — 고치기·지우기·git 커밋까지. 10-25 부터 서버가 root 의 파일 권한 검사 건너뛰기로 연다).
+ * "내가 쓴 파일만"(add, 10-20)은 10-25 에 없앴다(리규형님) — 팀원이 root 처럼 권한 검사를 건너뛰어 "자기 파일만 고친다"를 지킬 수 없다.
+ * 옛 기록의 add 는 읽기만으로 읽는다(server/team toMode)
  */
-export type FileMode = "ro" | "rw" | "add";
+export type FileMode = "ro" | "rw";
 export const FILE_MODES: readonly { mode: FileMode; label: string; note: string }[] = [
   { mode: "ro", label: "읽기만", note: "안의 파일을 읽기만 합니다" },
-  { mode: "rw", label: "읽기쓰기", note: "모든 파일을 읽고 고치고 지웁니다(git 커밋·배포 포함)" },
-  { mode: "add", label: "내가 쓴 파일만", note: "모두 읽고, 새로 만든 자기 파일만 고치거나 지웁니다(원래 있던 파일은 읽기만)" },
+  { mode: "rw", label: "읽기쓰기", note: "리규형님과 같은 권한으로 모든 파일을 읽고 고치고 지웁니다(git 커밋·배포 포함)" },
 ];
 export const fileModeLabel = (mode: FileMode): string => FILE_MODES.find((x) => x.mode === mode)?.label ?? mode;
 
@@ -20,7 +20,7 @@ export const fileModeLabel = (mode: FileMode): string => FILE_MODES.find((x) => 
 export const OUTSIDE_MAX = 2;
 
 /**
- * 팀원 프로젝트 하나의 권한. file = 그 프로젝트 폴더 · outside = 프로젝트 밖 경로(경로마다 같은 세 권한) ·
+ * 팀원 프로젝트 하나의 권한. file = 그 프로젝트 폴더 · outside = 프로젝트 밖 경로(경로마다 같은 두 권한) ·
  * ports = 서버 안에서 열어 줄 포트(DB 3306 등) · logs = 읽기 전용으로 붙일 기록(TEAM_LOGS) · hideSecrets = 비밀 파일(.env 류)을 빈 파일로.
  * ports·logs·hideSecrets 는 팀원 Paseo(서버마다 하나) 단위로 걸려서 같은 서버의 프로젝트끼리 합쳐진다
  */
@@ -142,10 +142,6 @@ export function combineAccess(home: string, projects: readonly { name: string; p
   for (const l of logs) {
     const problem = put(l, "ro", "서버 기록");
     if (problem) return done(problem);
-  }
-  for (const add of mounts.filter((m) => m.mode === "add")) {
-    const clash = mounts.find((m) => m.mode !== "ro" && m.path !== add.path && (beneath(add.path, m.path) || beneath(m.path, add.path)));
-    if (clash) return done(`"내가 쓴 파일만" 폴더 ${add.path}(${owner.get(add.path)})가 ${clash.path}(${owner.get(clash.path)}, "${fileModeLabel(clash.mode)}")와 안팎으로 겹칩니다 — 겹치지 않게 나눠 주세요`);
   }
   if (mounts.length > MOUNT_MAX) return done(`한 서버에서 열 수 있는 폴더는 ${MOUNT_MAX}개까지입니다(지금 ${mounts.length}개)`);
   if (ports.size > PORT_MAX) return done(`한 서버에서 열 수 있는 포트는 ${PORT_MAX}개까지입니다`);

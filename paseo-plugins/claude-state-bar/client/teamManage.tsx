@@ -458,7 +458,7 @@ function TeamProjects({
             const why = [...lines].reverse().find((l) => / 실패|못했습니다|거절|위험|겹쳐/.test(l)) ?? "서버 반영 실패";
             void editProject({ member, op: { op: "remove", key: `${op.host}|${op.path}` } }).then((back) => {
               onMembers(back.members);
-              setNotice(`서버에 반영하지 못해 방금 추가한 ${op.name || op.path} 를 목록에서 뺐습니다 — ${why}`);
+              setNotice(`방금 추가한 프로젝트(${op.name || op.path})를 서버에 반영하지 못해 목록에서 다시 뺐습니다 — 까닭: ${why}`);
               if (back.ok) requestApply(member);
             });
           });
@@ -587,7 +587,7 @@ function MemberAdd({
       // 서버에 이미 있는 팀원이면 스킬을 바로 반영 · 새 팀원은 팀원 프로젝트를 넣을 때 그 서버에 만들어진다
       const saved = r.members.find((m) => m.id === name);
       if (saved && (saved.servers.length || saved.applied.length)) runJob(name, "apply");
-      else setMessage({ text: `${name} 를 저장했습니다 — "팀원 프로젝트 관리" 탭에서 프로젝트를 넣으면 그 서버에 만들어지고 초대 키가 나옵니다`, bad: false });
+      else setMessage({ text: `${name} 를 저장했습니다 — "팀원 프로젝트 관리" 탭에서 프로젝트를 넣으면 그 서버에 만들어지고 초대 키가 나옵니다${r.notice ? ` · ${r.notice}` : ""}`, bad: false });
     } catch (err) {
       setMessage({ text: `저장하지 못했습니다: ${String(err instanceof Error ? err.message : err)}`, bad: true });
     } finally {

@@ -1,5 +1,6 @@
 import type { PluginHookContext, PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import { checkpointCommandLine } from "./chime/lastTurn";
+import { deliveredTimeline, isAsideItem, turnEndedTimeline, type TurnItem } from "./turnTimeline";
 
 // 압축 명령 자동 넣기(10-24 리규형님 — Mesa 메인·하위 대화가 자는 동안 압축 준비에서 멈춰 무중단이 깨졌다. 버튼: 플러그인이 대신 넣기 ·
 // 모든 대화 · 답이 끝나고 1분 동안 말이 없으면 — 처음엔 3분, 같은 날 1분으로 줄임). 체크포인트 보고(start_compact)로 끝난 답이면 그 대화에 1분을 예약하고, 그 사이 새 차례가
@@ -24,7 +25,7 @@ export function compactCommandOf(timeline: readonly TimelineItem[]): string | nu
       continue;
     }
     if (parts.length) break;
-    if (item.type === "reasoning" || item.type === "todo" || item.type === "notification") continue;
+    if (isAsideItem(item)) continue;
     return null;
   }
   if (!parts.length) return null;
@@ -83,24 +84,51 @@ export function createAutoCompact(options: {
     log(`${short}: ${Math.round(delayMs / 1000)}초 동안 말이 없어 압축 명령을 넣음`);
   };
 
+  // 대화마다 차례 시작·보관 횟수 — 기록을 다시 읽는 사이(0.13.0) 새 차례가 시작됐거나 보관됐으면 늦게 온 결과로 예약하지 않는다
+  const turns = new Map<string, number>();
+  const bump = (agentId: string) => turns.set(agentId, (turns.get(agentId) ?? 0) + 1);
+
+  const arm = (agentId: string, turnId: string | null, timeline: readonly TurnItem[], paseo: PaseoApi) => {
+    const line = compactCommandOf(timeline as readonly TimelineItem[]);
+    if (!line) return;
+    if (turnId && sent.has(`${agentId}:${turnId}`)) return;
+    const old = pending.get(agentId);
+    if (old) clearTimer(old.timer);
+    const p: Pending = { timer: null, turnId, line, paseo };
+    p.timer = setTimer(() => {
+      fire(agentId, p).catch((error: unknown) => log(`${agentId.slice(0, 8)}: 압축 명령 넣기 실패 — ${String(error)}`));
+    }, delayMs);
+    pending.set(agentId, p);
+    log(`${agentId.slice(0, 8)}: 체크포인트 보고로 끝남 — ${Math.round(delayMs / 1000)}초 동안 말이 없으면 압축 명령을 넣음`);
+  };
+
   return {
     onTurnStarted({ agent }: PluginLifecycleEvents["agent.turn_started"]) {
+      bump(agent.id);
       cancel(agent.id, "새 차례가 시작됨");
     },
-    onTurnEnded({ agent, turnId, outcome, timeline }: PluginLifecycleEvents["agent.turn_ended"], { paseo }: { paseo: PaseoApi }) {
+    onTurnEnded(event: PluginLifecycleEvents["agent.turn_ended"], { paseo }: { paseo: PaseoApi }) {
+      const { agent, turnId, outcome } = event;
       cancel(agent.id, "다른 차례가 끝남");
       if (stopped || outcome.kind !== "completed") return;
-      const line = compactCommandOf(timeline as readonly TimelineItem[]);
-      if (!line) return;
-      if (turnId && sent.has(`${agent.id}:${turnId}`)) return;
-      const p: Pending = { timer: null, turnId: turnId ?? null, line, paseo };
-      p.timer = setTimer(() => {
-        fire(agent.id, p).catch((error: unknown) => log(`${agent.id.slice(0, 8)}: 압축 명령 넣기 실패 — ${String(error)}`));
-      }, delayMs);
-      pending.set(agent.id, p);
-      log(`${agent.id.slice(0, 8)}: 체크포인트 보고로 끝남 — ${Math.round(delayMs / 1000)}초 동안 말이 없으면 압축 명령을 넣음`);
+      // 0.12.0 이하 데몬은 훅이 내용을 넘긴다 — 지금처럼 바로 예약
+      const delivered = deliveredTimeline(event);
+      if (delivered) return arm(agent.id, turnId ?? null, delivered, paseo);
+      // 0.13.0 — 빈 목록이라 기록 끝을 다시 읽는다(server/turnTimeline.ts)
+      const short = agent.id.slice(0, 8);
+      const seen = turns.get(agent.id) ?? 0;
+      return turnEndedTimeline(event, paseo).then(
+        (items) => {
+          if (stopped) return;
+          if ((turns.get(agent.id) ?? 0) !== seen) return log(`${short}: 기록을 다시 읽는 사이 새 차례가 시작되거나 보관됨 — 예약 안 함`);
+          if (!items) return log(`${short}: 끝난 차례 기록을 못 읽음 — 예약 안 함`);
+          arm(agent.id, turnId ?? null, items, paseo);
+        },
+        (error: unknown) => log(`${short}: 끝난 차례 기록 다시 읽기 실패(${String(error)}) — 예약 안 함`),
+      );
     },
     onArchived({ agent }: PluginLifecycleEvents["agent.archived"]) {
+      bump(agent.id);
       cancel(agent.id, "보관됨");
     },
     /** 예약이 걸린 대화(시험·진단용) */

@@ -8,6 +8,8 @@ import type { MutableSoundKind } from "../shared/projects";
 import { SoundJournal, soundDataFile } from "./soundJournal";
 import { phoneTook } from "./push";
 import { baseQuestionId } from "../shared/push";
+import { shareReplyOf } from "../shared/share";
+import { shareReplyPending } from "./share";
 import { baseOf } from "./account";
 import { waitedLong } from "./diagStall";
 
@@ -233,7 +235,13 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
     if (a.archivedAt || a.status === "closed") return false;
     // 허락 요청은 종류와 상관없이 질문이다 — 도구 사용 허락 포함(10-21 리규형님 "똑같이 질문으로 소리", client/judge.ts 와 같은 뜻).
     // 다시 알린 질문(10-24 — 번호 끝 ":r<회차>")은 표시를 떼고 원래 질문이 아직 떠 있는지 본다
-    if (kind === "question") { const id = baseQuestionId(nativeId); return a.pendingPermissions.some((p) => p.id === id); }
+    // 같이 보기 팀원 답글(10-25 "질문처럼 소리") — 번호 "share-<답글>" 은 아직 넣거나 닫지 않은 답글일 때만
+    if (kind === "question") {
+      const reply = shareReplyOf(nativeId);
+      if (reply !== null) return shareReplyPending(a.id, reply);
+      const id = baseQuestionId(nativeId);
+      return a.pendingPermissions.some((p) => p.id === id);
+    }
     if (kind === "completion" || kind === "compact") {
       if (a.status !== "idle" || !a.lastUserMessageAt || await completionId(paseo, a) !== nativeId || a.pendingPermissions.length > 0) return false;
       const s = claudeSession(a);

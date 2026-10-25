@@ -59,6 +59,27 @@ function categoryOf(o) {
   return typeof o.category === 'string' && o.category.trim() ? o.category.trim() : null;
 }
 
+// PC 원본 한 줄 → 항목(PC 와 서버가 같은 모양으로 읽는다)
+function entryOf(o) {
+  return o && typeof o.rootPath === 'string' && typeof o.name === 'string' ? { name: o.name.trim(), category: categoryOf(o), host: hostOf(o.rootPath), path: pathOf(o.rootPath), enabled: o.enabled !== false } : null;
+}
+
+// 서버는 PC 원본을 ssh 로 바로 읽는다(10-25 리규형님 — 저장한 사본은 PC 가 바꿀 때만 보내고 실패하면 다시 안 보낸다). 못 읽으면 null(사본으로).
+// 서버 셋 모두 `ssh BluemingPC` 로 PC(cmd)에 닿는다(browser-check 중계와 같은 길 · 실측 0.4초). PEER_MAIL_PC_READ=0 이면 안 읽는다(시험은 끈다)
+function readPcCanonical() {
+  if (process.env.PEER_MAIL_PC_READ === '0') return null;
+  const host = process.env.PEER_MAIL_PC_HOST || 'BluemingPC';
+  try {
+    const out = require('child_process').execFileSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=4', host,
+      'type "%USERPROFILE%\\.paseo\\plugin-data\\claude-state-bar\\project-list\\projects.json"'],
+    { encoding: 'utf8', timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 8 * 1024 * 1024 });
+    const arr = JSON.parse(out);
+    return Array.isArray(arr) ? arr : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function load() {
   let raw = null;
   let source = null;
@@ -69,7 +90,7 @@ function load() {
     try {
       const arr = JSON.parse(fs.readFileSync(source, 'utf8'));
       if (!Array.isArray(arr)) return { ok: false, error: 'the project list is not an array: ' + source };
-      raw = arr.map((o) => (o && typeof o.rootPath === 'string' && typeof o.name === 'string' ? { name: o.name.trim(), category: categoryOf(o), host: hostOf(o.rootPath), path: pathOf(o.rootPath), enabled: o.enabled !== false } : null));
+      raw = arr.map(entryOf);
     } catch (e) {
       return { ok: false, error: 'could not read the project list: ' + e.message };
     }
@@ -81,6 +102,12 @@ function load() {
       raw = (Array.isArray(j.entries) ? j.entries : []).map((o) => (o && typeof o.name === 'string' && typeof o.host === 'string' && typeof o.path === 'string' ? { name: o.name.trim(), category: categoryOf(o), host: o.host, path: o.path, enabled: o.enabled !== false } : null));
     } catch (e) {
       return { ok: false, error: 'could not read the project list copy: ' + e.message };
+    }
+    // 이 기기 이름(recipient)은 사본에서, 목록은 PC 원본이 읽히면 그것으로
+    const live = readPcCanonical();
+    if (live) {
+      raw = live.map(entryOf);
+      source = 'PC live: %USERPROFILE%\\.paseo\\plugin-data\\claude-state-bar\\project-list\\projects.json (fallback ' + copyFile() + ')';
     }
   } else {
     return { ok: false, error: 'no project list on this machine (the claude-state-bar project manager is needed)' };
@@ -105,6 +132,21 @@ function resolveTo(entries, to) {
   const visible = entries.filter((e) => e.enabled);
   const t = String(to || '').trim();
   if (!t) return { ok: false, error: '--to is empty', candidates: [] };
+  // 관리 화면 우클릭 "경로 포함 이름 복사"의 한 줄 "이름 (기기:경로)"(10-25 리규형님) — 기기·경로로 찾는다(이름은 사람이 알아보는 표시).
+  // 이름·경로에 괄호가 있어도 되게 목록에 있는 기기 이름으로 " (기기:" 를 뒤에서 찾는다
+  if (t.endsWith(')')) {
+    for (const h of [...new Set(entries.map((e) => e.host))]) {
+      const mark = '(' + h + ':';
+      const at = t.startsWith(mark) ? 0 : t.lastIndexOf(' ' + mark) + 1;
+      if (at <= 0 && !t.startsWith(mark)) continue;
+      const key = keyOf(h, t.slice(at + mark.length, -1).trim());
+      const hit = visible.filter((e) => e.key === key);
+      if (hit.length === 1) return { ok: true, entry: hit[0] };
+      if (entries.some((e) => !e.enabled && e.key === key)) return { ok: false, error: '"' + t + '" is hidden in the project manager — only visible projects can be reached', candidates: [] };
+      const name = t.slice(0, at).trim();
+      return { ok: false, error: 'no visible project at ' + h + ':' + t.slice(at + mark.length, -1).trim() + ' — the copied line may be old; copy it again from the project menu', candidates: visible.filter((e) => name && e.name === name) };
+    }
+  }
   const colon = t.indexOf(':');
   if (colon > 0 && !/^[a-zA-Z]:[\\/]/.test(t)) {
     const host = t.slice(0, colon);

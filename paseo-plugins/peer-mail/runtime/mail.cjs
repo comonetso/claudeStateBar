@@ -64,8 +64,11 @@ function need(args, key) {
   return v;
 }
 
+// "-" 면 표준 입력 — 받는 대화가 받은 글·답을 파일로 쓰지 않고 명령에 바로 붙여 넣는다(<<'끝 표시'). 파일 쓰기는 묻기 모드에서
+// 권한 창이 떠, 중계기가 자동으로 연 대화가 거기서 멈췄다(10-26 — 이 명령 한 줄만 Claude 허용 목록에 둔다)
 function readFileArg(args, key) {
   const f = need(args, key);
+  if (f === '-') return fs.readFileSync(0, 'utf8');
   if (!fs.existsSync(f)) throw new UsageError('--' + key + ' file not found: ' + f);
   return fs.readFileSync(f, 'utf8');
 }

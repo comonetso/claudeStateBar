@@ -86,7 +86,27 @@ const bc = {
     await page.cdp('Page.addScriptToEvaluateOnNewDocument', { source: __bcHook }, { timeout: 5000 });
     try { await page.evaluate(__bcHook); } catch { /* about:blank before the first navigation */ }
     if (light) await page.cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] }, { timeout: 5000 });
-    return { light };
+    const viewport = await bc.fixViewport(page);
+    return { light, viewport };
+  },
+
+  /**
+   * A tab opened in a minimized ego window that was never shown has a 0x0 page (measured 2026-10-26: innerWidth 0,
+   * windowState "minimized") — nothing paints, so screencast gets no frame and the page text is only "root". Such a
+   * page gets its window's size (else 1280x800) through device metrics, the way --width does; the window itself is
+   * not touched. A page that already has a size is left alone.
+   */
+  async fixViewport(page) {
+    let size;
+    try { size = await page.evaluate(() => [innerWidth, innerHeight]); } catch (e) { return { fixed: false, why: String(e && e.message || e).slice(0, 120) }; }
+    if (size[0] > 0 && size[1] > 0) return { fixed: false, size };
+    let width = 1280, height = 800;
+    try {
+      const w = await page.cdp('Browser.getWindowForTarget', {}, { timeout: 5000 }); const b = w && w.bounds;
+      if (b && b.width > 200 && b.height > 200) { width = b.width; height = b.height; }
+    } catch { /* default size */ }
+    await page.cdp('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, { timeout: 5000 });
+    return { fixed: true, size, width, height };
   },
 
   /** Wait until no fetch/XHR is open and the resource count is stable for 5 checks 500 ms apart. */
@@ -130,11 +150,13 @@ const bc = {
       const why = String(e && e.message || e);
       // A painting window answers within a few hundred ms; 1.5 s without a frame means nothing is painting.
       let frame = await bc.__cast(page, { waitMs: 1500 });
-      let reopened = null;
+      let reopened = null, viewport;
+      // A 0x0 page (a page this run opened itself, not through bc.run) paints once it has a size.
+      if (!frame) { viewport = await bc.fixViewport(page); if (viewport.fixed) frame = await bc.__cast(page); }
       if (!frame && __bcCfg.windowScript) { reopened = bc.ensureWindow(); frame = await bc.__cast(page); }
-      if (!frame) return { ok: false, ms: Date.now() - t0, why: why.slice(0, 160), reopened };
+      if (!frame) return { ok: false, ms: Date.now() - t0, why: why.slice(0, 160), reopened, viewport };
       bc.img(name + '.png', Buffer.from(frame, 'base64'));
-      return { ok: true, via: 'screencast', ms: Date.now() - t0, firstTry: why.slice(0, 80), reopened, fullPage: fullPage ? 'not available on screencast' : undefined };
+      return { ok: true, via: 'screencast', ms: Date.now() - t0, firstTry: why.slice(0, 80), reopened, viewport: viewport && viewport.fixed ? viewport : undefined, fullPage: fullPage ? 'not available on screencast' : undefined };
     }
   },
   async __guardTime(p, ms) { let t; try { return await Promise.race([p, new Promise((_, j) => { t = setTimeout(() => j(new Error('timeout ' + ms + 'ms')), ms); })]); } finally { clearTimeout(t); } },

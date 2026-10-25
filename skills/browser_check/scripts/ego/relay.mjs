@@ -13,6 +13,12 @@
  * Before a run it starts ego (minimized) if ego is not running, so ego's own auto-start does not throw a window
  * onto the screen. At most 3 runs at a time; the rest wait. The log keeps time, ms, exit and sizes — never scripts.
  * A second copy exits at once if one already answers /health (the scheduler starts it every minute).
+ *
+ * Stalled ego (2026-10-25): ego stayed up and its windows answered, but one tab held the agent channel and every run,
+ * even help(), timed out with no output for 2.5 h until ego was restarted by hand. So after STALL_RUNS timed-out runs
+ * in a row the relay asks ego for its task-space list (a round trip of ~0.1 s on a healthy ego); if that fails too it
+ * restarts ego (window.ps1 restart: polite close, force only if ego stays, profile kept) and does not restart again
+ * within RESTART_GAP_MS. New runs wait while this happens. /health shows the state.
  */
 import http from 'node:http';
 import { spawn, execFile } from 'node:child_process';
@@ -22,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 
-export const RELAY_VERSION = 1;
+export const RELAY_VERSION = 2;
 const DIR = dirname(fileURLToPath(import.meta.url));
 const TOKEN_FILE = join(DIR, 'token');
 const PORT_FILE = join(DIR, 'port');
@@ -30,6 +36,10 @@ const LOG_FILE = join(DIR, 'relay.log');
 const MAX_BODY = 16 * 1024 * 1024;
 const MAX_OUT = 96 * 1024 * 1024;
 const MAX_PARALLEL = 3;
+const STALL_RUNS = 3;                      // timed-out runs in a row before ego is probed
+const PROBE_MS = 30000;
+const RESTART_GAP_MS = 15 * 60 * 1000;     // at most one restart per 15 min, so a broken ego is not restarted in a loop
+const PROBE_SCRIPT = "const s = await listTaskSpaces(); console.log('bc-probe ' + s.length);\n";
 
 const log = (m) => { try { appendFileSync(LOG_FILE, new Date().toISOString() + ' ' + m + '\n'); } catch { /* disk */ } };
 
@@ -49,11 +59,12 @@ export function findEgoBrowser(env = process.env, home = homedir()) {
 function egoRunning() {
   return new Promise((res) => execFile('tasklist.exe', ['/FI', 'IMAGENAME eq ego.exe', '/NH', '/FO', 'CSV'], { windowsHide: true, timeout: 5000 }, (e, out) => res(!e && /"ego\.exe"/i.test(String(out)))));
 }
-function ensureWindow() {
-  return new Promise((res) => execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(DIR, 'window.ps1'), 'ensure'], { windowsHide: true, timeout: 25000 }, (e, out) => {
+function windowPs(action, ms) {
+  return new Promise((res) => execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(DIR, 'window.ps1'), action], { windowsHide: true, timeout: ms }, (e, out) => {
     try { res(JSON.parse(String(out).trim().split(/\r?\n/).pop())); } catch { res({ ok: false, why: e ? String(e.message).slice(0, 120) : 'no output' }); }
   }));
 }
+const ensureWindow = () => windowPs('ensure', 25000);
 
 function readToken() {
   if (!existsSync(TOKEN_FILE)) writeFileSync(TOKEN_FILE, randomBytes(24).toString('hex') + '\n', { mode: 0o600 });
@@ -89,6 +100,25 @@ function runEgo(bin, body, timeoutMs) {
   });
 }
 
+let stallStreak = 0; let lastRestartAt = 0; let healing = null;
+/** Probe ego after a run of timeouts; restart it only when the probe fails too (a long script that hit its own limit is not a stall). */
+async function heal(bin) {
+  const streak = stallStreak;
+  const p = await runEgo(bin, Buffer.from(PROBE_SCRIPT), PROBE_MS);
+  const probe = `${p.timedOut ? 'timeout' : 'exit=' + p.exit} ms=${p.ms}`;
+  stallStreak = 0;
+  if (!p.timedOut && p.exit === 0) { log(`heal probe ok ${probe} after ${streak} timeouts - ego answers, no restart`); return; }
+  const since = Date.now() - lastRestartAt;
+  if (lastRestartAt && since < RESTART_GAP_MS) { log(`heal probe ${probe} after ${streak} timeouts - restart skipped, last restart ${Math.round(since / 1000)}s ago`); return; }
+  lastRestartAt = Date.now();
+  const r = await windowPs('restart', 60000);
+  log(`heal probe ${probe} after ${streak} timeouts - restarted ego ok=${r.ok} stopped=${r.stopped ?? '-'}${r.why ? ' why=' + r.why : ''}`);
+}
+function noteRun(bin, r) {
+  if (r.timedOut) stallStreak++; else stallStreak = 0;
+  if (stallStreak >= STALL_RUNS && !healing) healing = heal(bin).catch((e) => log('heal failed ' + e.message)).finally(() => { healing = null; });
+}
+
 async function main() {
   mkdirSync(DIR, { recursive: true });
   const token = readToken();
@@ -97,7 +127,8 @@ async function main() {
     const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); };
     if (req.headers['x-bc-token'] !== token) { send(403, { ok: false, why: 'bad token' }); req.resume(); return; }
     if (req.method === 'GET' && req.url === '/health') {
-      egoRunning().then((up) => send(200, { ok: true, version: RELAY_VERSION, pid: process.pid, dir: DIR, ego: { bin: findEgoBrowser(), running: up } }));
+      egoRunning().then((up) => send(200, { ok: true, version: RELAY_VERSION, pid: process.pid, dir: DIR, ego: { bin: findEgoBrowser(), running: up },
+        heal: { timeoutsInARow: stallStreak, healing: !!healing, lastRestart: lastRestartAt ? new Date(lastRestartAt).toISOString() : null } }));
       req.resume(); return;
     }
     if (req.method !== 'POST' || req.url !== '/run') { send(404, { ok: false, why: 'unknown' }); req.resume(); return; }
@@ -108,12 +139,14 @@ async function main() {
       const timeoutMs = Math.min(Math.max(Number(req.headers['x-bc-timeout']) || 300000, 5000), 1800000);
       const bin = findEgoBrowser();
       if (!bin) { send(500, { ok: false, why: 'ego-browser.exe not found on this PC' }); return; }
+      if (healing) await healing;
       await slot();
       try {
         let started = null;
         if (!(await egoRunning())) started = await ensureWindow();
         const r = await runEgo(bin, Buffer.concat(chunks), timeoutMs);
         log(`run exit=${r.exit} ms=${r.ms} in=${n} out=${r.stdout.length}${r.timedOut ? ' TIMEOUT' : ''}${started ? ' started-ego' : ''}`);
+        noteRun(bin, r);
         send(200, { ok: true, ...r, startedEgo: started });
       } catch (e) { log('run failed ' + e.message); send(500, { ok: false, why: String(e.message).slice(0, 200) }); }
       finally { free(); }

@@ -23,7 +23,7 @@ export const teamServerSkills = defineRpc({
   output: z.object({ skills: z.array(item), logs: z.array(z.string()).optional(), error: z.string().nullable() }),
 });
 
-const fileMode = z.enum(["ro", "rw", "add"]);
+const fileMode = z.enum(["ro", "rw"]);
 /** 팀원 프로젝트 하나의 권한 — 모양·기본값·검사는 shared/teamAccess.ts */
 export const projectAccessSchema = z.object({
   file: fileMode,
@@ -89,7 +89,8 @@ export type TeamMember = z.infer<typeof memberSchema>;
 export const TEAM_JOB_ACTIONS = ["apply", "skills", "remove-keep", "remove-purge", "invite", "reset"] as const;
 export type TeamJobAction = (typeof TEAM_JOB_ACTIONS)[number];
 
-const teamResult = z.object({ ok: z.boolean(), error: z.string().optional(), members: z.array(memberSchema) });
+// notice = 저장은 됐지만 알릴 것(10-25 — 아이디를 확인하지 못한 서버가 있으면 그 서버에 처음 만들 때 서버가 다시 확인한다)
+const teamResult = z.object({ ok: z.boolean(), error: z.string().optional(), notice: z.string().optional(), members: z.array(memberSchema) });
 
 export const teamState = defineRpc({
   name: "team.state",

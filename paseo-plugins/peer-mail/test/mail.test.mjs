@@ -10,6 +10,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+// 서버 목록 읽기가 실제 PC(ssh BluemingPC)에 닿지 않게 — 시험은 임시 목록만 본다(10-25 runtime/lib/projects.cjs readPcCanonical)
+process.env.PEER_MAIL_PC_READ = "0";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MAIL = path.join(HERE, "..", "runtime", "mail.cjs");
@@ -186,6 +188,31 @@ test("이름이 같은 프로젝트가 둘이면 이름으로 고르지 않는�
   assert.equal(s2.ok, true);
 });
 
+test("우클릭 「경로 포함 이름 복사」 한 줄 「이름 (기기:경로)」 — 이름이 겹쳐도 기기·경로로 찾는다 · 이름 괄호 · 옛 줄은 막음(10-25)", () => {
+  const t = setup();
+  const f = path.join(t.home, "plugin-data", "claude-state-bar", "project-list", "projects.json");
+  const C = tmp("projC");
+  const D = tmp("projD");
+  const list = JSON.parse(fs.readFileSync(f, "utf8"));
+  list.push({ name: "Proj B", rootPath: C, category: "u", enabled: true }, { name: "Proj (beta)", rootPath: D, category: "u", enabled: true });
+  fs.writeFileSync(f, JSON.stringify(list));
+  const body = path.join(t.A, "b.txt");
+  fs.writeFileSync(body, "q");
+  const rootOf = (s) => {
+    const rec = JSON.parse(fs.readFileSync(path.join(t.A, "docs", "_msg", "peer_mail", s.request_id, "request.json"), "utf8"));
+    return (rec.envelope && rec.envelope.recipient_root) || rec.targets.peer.root;
+  };
+  const s = t.run(t.A, "agent-a", ["send", "--to", `Proj B (PC:${C})`, "--intent", "query", "--body-file", body]);
+  assert.equal(s.ok, true, JSON.stringify(s));
+  assert.equal(rootOf(s), C);
+  const s2 = t.run(t.A, "agent-a", ["send", "--to", `Proj (beta) (PC:${D})`, "--intent", "query", "--body-file", body]);
+  assert.equal(s2.ok, true, JSON.stringify(s2));
+  assert.equal(rootOf(s2), D);
+  const old = t.run(t.A, "agent-a", ["send", "--to", `Proj B (PC:${C}-gone)`, "--intent", "query", "--body-file", body]);
+  assert.equal(old.ok, false);
+  assert.ok(/copy it again/.test(old.error), old.error);
+});
+
 test("전달 안 됨 알림(unreachable)은 기록을 끝 상태로 만든다", () => {
   const t = setup();
   const body = path.join(t.A, "b.txt");
@@ -349,4 +376,28 @@ test("우편함 읽기는 크기를 잰 뒤 커진 파일을 올리지 않는다
     if (prev === undefined) delete process.env.PEER_MAIL_HOME;
     else process.env.PEER_MAIL_HOME = prev;
   }
+});
+
+test("보내기·받기·답하기·결과 받기를 파일 없이 붙여 넣기(--…-file -)로 — 중계기가 자동으로 연 대화가 권한 창 없이 쓰는 모양(10-26)", () => {
+  const t = setup();
+  const pipe = (cwd, agent, args, input) =>
+    JSON.parse(execFileSync(process.execPath, [MAIL, ...args], { cwd, env: { ...process.env, PASEO_HOME: t.home, PASEO_AGENT_ID: agent, PEER_MAIL_HOME: "" }, encoding: "utf8", input }));
+  // 안내문이 시키는 대로 봉투 블록만 — PC 의 Bash 도구는 따옴표 붙여 넣기 안에서도 "\\" 를 "\" 하나로 줄인다(10-26 실측). 그 모양을 흉내 낸다
+  const blockOf = (message) => message.slice(message.lastIndexOf("```peer_mail")).replace(/\\\\/g, "\\");
+  const q = "붙여 넣은 질문 — 경로 C:\\Users\\a b\\x.txt";
+  const s = pipe(t.A, "agent-a", ["send", "--to", "Proj B", "--intent", "query", "--body-file", "-"], q + "\n");
+  assert.equal(s.ok, true);
+  const [req] = t.take("outbox");
+  assert.equal(envl.extractEnvelope(req.message).body, q);
+  const block = req.message.slice(req.message.lastIndexOf("```peer_mail"));
+  assert.ok(!block.includes("\\\\") && block.includes("\\u005c"), "봉투 블록에 역슬래시 쌍이 없어야 줄어들지 않는다");
+  const r = pipe(t.B, "agent-b", ["receive", "--message-file", "-"], blockOf(req.message));
+  assert.equal(r.verdict, "new");
+  t.take("outbox"); // 접수 확인
+  const rep = pipe(t.B, "agent-b", ["reply", "--id", s.request_id, "--status", "completed", "--body-file", "-"], "붙여 넣은 답 src/a.js:1 · D:\\data\\b\n");
+  assert.equal(rep.ok, true);
+  const [res] = t.take("outbox");
+  const ing = pipe(t.A, "agent-a", ["ingest", "--message-file", "-"], blockOf(res.message));
+  assert.equal(ing.status, "completed");
+  assert.ok(fs.readFileSync(ing.result_file, "utf8").includes("src/a.js:1 · D:\\data\\b"));
 });

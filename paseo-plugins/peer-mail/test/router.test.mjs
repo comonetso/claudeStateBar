@@ -15,6 +15,8 @@ import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+// 서버 목록 읽기가 실제 PC(ssh BluemingPC)에 닿지 않게 — 시험은 임시 목록만 본다(10-25 runtime/lib/projects.cjs readPcCanonical)
+process.env.PEER_MAIL_PC_READ = "0";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RT = path.join(HERE, "..", "runtime");
@@ -66,10 +68,11 @@ function setup({ preHeld } = {}) {
     ServerB: [{ id: "33333333-3333-4333-8333-333333333333", cwd: "/srv/target", status: "running", pendingPermissions: [] }],
   };
   const sends = [];
+  const creates = [];
   const acks = [];
   const inboxes = [];
   const logs = [];
-  const fail = { fetch: false, send: false };
+  const fail = { fetch: false, send: false, create: false, createDelay: 0 };
   const fake = {
     fs,
     path,
@@ -107,6 +110,15 @@ function setup({ preHeld } = {}) {
           if (fail.send) throw new Error("send failed (test)");
           sends.push({ host, id, msg });
         },
+        // 실제 클라이언트처럼 만든 대화 자체를 돌려준다(daemon-client createAgent → result.agent). 만들면 목록에도 바로 보인다
+        createAgent: async (opts) => {
+          if (fail.create) throw new Error("create failed (test)");
+          if (fail.createDelay) await new Promise((r) => globalThis.setTimeout(r, fail.createDelay));
+          const a = { id: util.uuid(), cwd: opts.cwd, status: "running", pendingPermissions: [] };
+          creates.push({ host, opts, id: a.id });
+          (agents[host] = agents[host] || []).push(a);
+          return JSON.parse(JSON.stringify(a));
+        },
         close() {},
       };
     },
@@ -126,7 +138,7 @@ function setup({ preHeld } = {}) {
       stop() {},
     });
   }
-  return { home, routerDir, entries, writeList, agents, sends, acks, inboxes, logs, fail, api };
+  return { home, routerDir, entries, writeList, agents, sends, creates, acks, inboxes, logs, fail, api };
 }
 
 function request({ host = "PC", id = util.uuid(), body = "test question" } = {}) {
@@ -425,4 +437,66 @@ test("보낸 대화 번호가 Paseo 형식(UUID)이 아니면 영구 실패로 �
   await handle(t, "PC", r2);
   assert.equal(t.sends.length, 0);
   assert.equal(t.acks.length, 2);
+});
+
+// ── 10-26 받는 대화가 없으면 새 대화를 연다(리규형님 버튼: 모두 · 묻기 모드 · 그대로 둠) ─────────────────────────────
+test("받는 대화가 없으면 그 프로젝트에 새 대화를 묻기 모드로 열고 요청을 첫 말로 넣는다 — 안내는 따옴표 없는 경로에 붙여 넣기", async () => {
+  const t = setup();
+  t.agents.ServerB.length = 0;
+  const r = request();
+  await handle(t, "PC", r);
+  assert.equal(t.creates.length, 1);
+  const c = t.creates[0];
+  assert.equal(c.host, "ServerB");
+  assert.deepEqual([c.opts.provider, c.opts.cwd, c.opts.modeId], ["claude", "/srv/target", "default"]);
+  assert.equal(c.opts.idempotencyKey, "peer-mail:" + r.id);
+  assert.equal(toB(t).length, 0); // 끼워 넣기가 아니라 첫 말
+  const first = c.opts.initialPrompt;
+  const end = "PEERMAIL_END_" + r.request_id.slice(0, 8);
+  assert.ok(first.includes("node /x/mail.cjs receive --message-file - <<'" + end + "'"), first);
+  assert.ok(first.includes("node /x/mail.cjs reply --id " + r.request_id + " --status <completed|awaiting_user|failed> --body-file - <<'" + end + "'"));
+  assert.ok(first.split("\n").includes(end), "끝 표시는 줄 맨 앞 한 줄");
+  assert.ok(!first.includes('"/x/mail.cjs"'), "따옴표로 감싼 경로는 허용 줄과 안 맞는다");
+  assert.deepEqual(envl.checkEnvelope(envl.extractEnvelope(first)), []);
+  assert.match(first, /nobody is watching it\. Investigate with the file tools only/); // 새로 연 대화에만(10-26 DB 서버 시험이 셸 권한 창에서 멈춤)
+  assert.equal(t.api.ledger[r.request_id].dst_agent, c.id);
+  assert.ok(t.inboxes.some((x) => x.host === "PC" && x.item.status === "delivered" && /opened a new one/.test(x.item.detail)));
+  // 다음 요청은 이미 열린 그 대화로 끼워 넣는다(새로 열지 않음)
+  await handle(t, "PC", request());
+  assert.equal(t.creates.length, 1);
+  assert.equal(toB(t).length, 1);
+  assert.equal(toB(t)[0].id, c.id);
+  assert.ok(!/nobody is watching/.test(toB(t)[0].msg), "이미 있는 대화에 끼워 넣는 글에는 그 안내가 없다");
+});
+
+test("새 대화 열기에 실패하면 보낸 쪽에 전달 안 됨과 이유", async () => {
+  const t = setup();
+  t.agents.ServerB.length = 0;
+  t.fail.create = true;
+  const r = request();
+  await handle(t, "PC", r);
+  assert.equal(t.creates.length, 0);
+  assert.ok(t.inboxes.some((x) => x.item.status === "unreachable" && /opening one failed: create failed/.test(x.item.detail)));
+  assert.ok(!t.api.ledger[r.request_id]);
+});
+
+test("같은 프로젝트로 거의 동시에 온 두 요청 — 대화는 하나만 열고 둘째는 그 대화로 넣는다", async () => {
+  const t = setup();
+  t.agents.ServerB.length = 0;
+  t.fail.createDelay = 50;
+  const a = request(), b = request();
+  await Promise.all([handle(t, "PC", a), handle(t, "PC", b)]);
+  assert.equal(t.creates.length, 1);
+  const id = t.creates[0].id;
+  assert.equal(t.api.ledger[a.request_id].dst_agent, id);
+  assert.equal(t.api.ledger[b.request_id].dst_agent, id);
+  assert.equal(toB(t).length, 1);
+  assert.equal(toB(t)[0].id, id);
+});
+
+test("경로에 공백이 있는 Windows 기기 — / 로 바꾸고 따옴표로 감싼다", async () => {
+  const t = setup();
+  t.api.channels.get("ServerB").hello.mail = "C:\\Users\\a b\\.paseo\\peer-mail\\mail.cjs";
+  await handle(t, "PC", request());
+  assert.ok(toB(t)[0].msg.includes('node "C:/Users/a b/.paseo/peer-mail/mail.cjs" receive --message-file - <<\'PEERMAIL_END_'));
 });

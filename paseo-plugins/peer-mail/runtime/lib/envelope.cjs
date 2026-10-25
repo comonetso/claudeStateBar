@@ -112,7 +112,9 @@ function renderMessage(env) {
     '',
     '── envelope (for records and checks — pass it on unchanged) ──',
     FENCE,
-    JSON.stringify(env, null, 2),
+    // 역슬래시는 \ 로 — 받는 대화가 이 블록을 명령에 붙여 넣으면(<<'끝 표시') Bash 도구가 "\\" 를 "\" 하나로 줄여
+    // Windows 경로가 든 봉투가 JSON 해석에서 깨졌다(10-26 실측 — 따옴표·줄바꿈 표기는 그대로 지나감). 같은 JSON 이라 옛 판도 읽는다
+    JSON.stringify(env, null, 2).replace(/\\\\/g, '\\u005c'),
     '```',
     '',
   ].join('\n');

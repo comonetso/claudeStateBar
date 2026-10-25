@@ -153,6 +153,11 @@ export function readNumbersKo(text: string): string {
     // 연도 붙은 날짜(2026-10-14 · 2026/10/14 · 2026.10.14). 바로 뒤 ISO 의 T 는 띄운다
     .replace(/(?<![\d.:/-])(\d{4})([-/.])(\d{1,2})\2(\d{1,2})(?![\d/-]|[.:]\d)(T(?=\d{1,2}:\d{2}))?/g,
       (m, year: string, _sep: string, month: string, day: string, iso?: string) => (validMonthDay(month, day) ? `${year}년 ${+month}월 ${+day}일${iso ? " " : ""}` : m))
+    // 판 번호(v1.17.2 · 1.18.1 · 0.13.0) — 점으로 이은 숫자 세 마디, 앞 v 는 "버전"(10-26 리규형님 버튼 "버전 일 점 십칠 점 이").
+    // 예전엔 v 붙은 것은 아래 영어 낱말 정리가 점을 지워 "v1 17 2", v 없는 것은 엔진마다 다르게 읽었다. 첫 마디를 세 자리까지로 둬
+    // 연도 날짜(2026.10.14 — 위에서 이미 바꿈)와 겹치지 않고, 뒤에 점·숫자가 더 붙은 주소(127.0.0.1)는 건드리지 않는다(문장 끝 마침표는 된다)
+    .replace(/(?<![\w.])([vV](?=\d))?(\d{1,3})\.(\d{1,3})\.(\d{1,4})(?![\w]|\.\d)/g, (_m, v: string | undefined, a: string, b: string, c: string) =>
+      `${v ? "버전 " : ""}${koreanNumber(a)} 점 ${koreanNumber(b)} 점 ${koreanNumber(c)}`)
     // 끝자리를 x 로 둔 시각(18:4x — 기록에 대략 시각을 이렇게 쓴다) — "십팔시 사십분쯤", 0x 는 "십팔시쯤"
     .replace(/(?<![\d.:])([01]?\d|2[0-3]):([0-5])x(?![A-Za-z0-9])/g, (_m, hour: string, tens: string) =>
       (+tens ? `${clockNumber(hour)}시 ${koreanNumber(`${tens}0`)}분쯤` : `${clockNumber(hour)}시쯤`))

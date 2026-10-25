@@ -18,6 +18,7 @@ import { soundProvider } from "./sounds";
 import { takeStaffHome } from "./teamMode";
 import { atStartScreen, measureRoomAbove, overlapFromRight, watchSizeOf } from "./web";
 import { lineColor } from "./ui";
+import { ShareGroup } from "./shareList";
 
 // 왼쪽 목록 칸 맨 위(리규형님 10-06 결정): 프로젝트 목록을 바로 보이고, 보이는 동안 아래 워크스페이스 목록은 가린다(웹·데스크톱).
 // 칸 높이는 아래쪽 줄(사용량)까지 남은 높이로 맞춘다. 칸에는 대화로 바로 가는 기능이 주어지지 않아서(플러그인 도구에서
@@ -182,6 +183,8 @@ function ProjectsPane({ theme, openScreen }: Pick<PluginSidebarItemProps, "theme
   return (
     <View nativeID={ROOT_ID} style={{ height, maxHeight, paddingHorizontal: 8, paddingTop: 4, paddingBottom: 4 }}>
       <ScrollView style={height ? { flex: 1 } : { flexGrow: 0 }} contentContainerStyle={{ paddingBottom: 8 }}>
+        {/* 같이 보기(10-25) — 팀원 화면만, 공유받은 대화가 있을 때만 */}
+        <ShareGroup theme={theme} openScreen={openScreen} />
         <ProjectsList
           theme={theme}
           variant="sidebar"

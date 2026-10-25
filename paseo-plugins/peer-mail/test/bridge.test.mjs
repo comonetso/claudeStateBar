@@ -10,6 +10,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+// 서버 목록 읽기가 실제 PC(ssh BluemingPC)에 닿지 않게 — 시험은 임시 목록만 본다(10-25 runtime/lib/projects.cjs readPcCanonical)
+process.env.PEER_MAIL_PC_READ = "0";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE = path.join(HERE, "..", "runtime", "bridge.cjs");

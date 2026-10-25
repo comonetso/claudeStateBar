@@ -40,6 +40,12 @@ export function ProjectMenu({ theme, at, readOnly, fontSize, onClose, onChanged 
     if (await copyText(entry.name)) return onClose();
     setMessage({ text: `복사하지 못했습니다 — 이름을 직접 고르세요: ${entry.name}`, bad: true });
   };
+  // 경로 포함 이름 복사(10-25 리규형님) — "이름 (기기:경로)" 한 줄. peer_mail 은 이 줄을 받으면 이름이 겹쳐도 기기·경로로 정확히 찾는다
+  const pathLine = `${entry.name} (${entry.host}:${entry.path})`;
+  const copyWithPath = async () => {
+    if (await copyText(pathLine)) return onClose();
+    setMessage({ text: `복사하지 못했습니다 — 직접 고르세요: ${pathLine}`, bad: true });
+  };
   const save = async () => {
     const name = (renaming ?? "").trim();
     if (!name || name === entry.name) return onClose();
@@ -95,6 +101,8 @@ export function ProjectMenu({ theme, at, readOnly, fontSize, onClose, onChanged 
         {renaming === null ? (
           <>
             {item("이름 복사", () => void copy())}
+            {/* 직원 데몬 목록의 기기 칸은 그 서버 기준이라 리규형님 목록의 기기 이름과 다르다 — 직원 줄엔 두지 않는다 */}
+            {entry.serverId ? null : item("경로 포함 이름 복사", () => void copyWithPath())}
             {readOnly ? null : item("이름 바꾸기", () => setRenaming(entry.name))}
             {readOnly || saving
               ? null

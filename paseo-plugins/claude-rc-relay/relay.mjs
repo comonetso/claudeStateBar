@@ -25,6 +25,7 @@ import { StringDecoder } from "node:string_decoder";
 import { applyAccount, HOME, watchAccount } from "./account.mjs";
 import { createAssistantFix } from "./assistant-fix.mjs";
 import { createRotation, handoffNotice, jsonLines, noticeForwarder, saveHandoff, shouldResume, startResumeKicker, takeHandoff } from "./rotation.mjs";
+import { readStaffRules, staffArgs } from "./staff-policy.mjs";
 import { isRegistered, isStaffDaemon, legacyRcStateDir, paseoHome, personalSwitchFile, relayLogFile, rotationTestFile, teamSyncScript, workRecorder, workRoot } from "./workstate.mjs";
 
 // 진짜 claude 위치 — `--real <실행 파일>` 하나만 받는다(10-18 Codex D5). 해석은 이 한 곳뿐이다(팀 껍데기 launch.mjs 도 이 파일을 그대로 실행한다).
@@ -151,12 +152,15 @@ const rotation = createRotation({ real, env: childEnv, initialEnv: process.env, 
 // 직원 Claude 는 자기 홈(CLAUDE_CONFIG_DIR = /home/<아이디>/.claude)의 스킬·명령어·지침만 쓴다(10-20 리규형님 "각 홈에 있는 스킬만 —
 // 넘겨받은 프로젝트에 있는 스킬을 쓰면 안 된다" · 프로젝트 지침도 함께 막기 버튼). Paseo 는 늘 --setting-sources=user,project,local 을
 // 넘긴다 — 직원이면 그 자리를 user 하나로 바꿔 프로젝트 폴더의 .claude/skills·commands·settings.json 과 CLAUDE.md 를 읽지 않게 한다
-// (10-20 PC 실측: user 면 셋 다 안 보이고 user,project,local 이면 셋 다 보인다). 값이 없으면 끝에 붙인다(Paseo 는 위치 인자를 쓰지 않는다)
+// (10-20 PC 실측: user 면 셋 다 안 보이고 user,project,local 이면 셋 다 보인다). 받은 값은 빼고 끝에 붙인다(Paseo 는 위치 인자를 쓰지 않는다)
+// 10-25: 같은 자리에서 bypass·auto 와 작업 폴더 밖 읽기를 막고 서버 root 의 막기·묻기 목록을 명령줄 설정으로 넣는다(staff-policy.mjs 머리 설명)
+// 10-25 밤: 셸 명령·쓰기 도구가 프로젝트(Paseo 가 이 실행기를 띄운 폴더) 밖이면 거절하는 훅도 같은 설정에 건다
 if (staff) {
-  const at = argv.findIndex((a) => a === "--setting-sources" || a.startsWith("--setting-sources="));
-  if (at >= 0) argv.splice(at, argv[at] === "--setting-sources" ? 2 : 1, "--setting-sources=user");
-  else argv.push("--setting-sources=user");
-  log("staff: setting sources = user only (project skills·commands·settings·CLAUDE.md are not read)");
+  const rules = readStaffRules();
+  argv.splice(0, argv.length, ...staffArgs(argv, rules, { cwd: process.cwd(), home: process.env.HOME ?? "", node: process.execPath }));
+  let guarded = false;
+  try { guarded = Array.isArray(JSON.parse(argv[argv.lastIndexOf("--settings") + 1]).hooks?.PreToolUse); } catch {}
+  log(`staff: setting sources = user only · bypass·auto off · reads outside cwd blocked · outside-project guard ${guarded ? `on ${process.cwd()}` : "off (cwd not a posix path)"} · root rules ${rules ? `deny ${rules.deny.length} ask ${rules.ask.length}` : "unreadable (modes still locked)"}`);
 }
 const child = spawn(real, argv, { stdio: ["pipe", "pipe", "inherit"], env: childEnv, windowsHide: true });
 // 켜져 있는 동안 이 대화의 계정 기록이 바뀌면 Claude 를 끈다 — 다음 말 때 Paseo 가 이 실행기를 다시 띄우며 새 계정이 적용된다

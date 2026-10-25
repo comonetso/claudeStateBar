@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { TeamJobAction, TeamMember, TeamProject } from "../shared/team";
 import { combineAccess, fileModeLabel } from "../shared/teamAccess";
 import { SAFE_HOST, sshExe } from "./projectLabels";
+import { listProjects } from "./projects";
 import { memberSnapshot, recordJob, removeMember } from "./team";
 
 // 팀원 관리 → 서버(10-11 리규형님 "계획대로 서버 작업까지"). PC 데몬이 SSH 로 각 서버의 팀원 도구(paseo-team-ctl)와
@@ -268,10 +269,10 @@ async function applyOn(job: Job, m: TeamMember, server: string): Promise<boolean
   }
   if (skipped.length) say(job, `${server}: 하위 폴더 명령어·이름 규칙에 안 맞는 것은 넣지 못합니다 — ${skipped.join(", ")}`);
   say(job, `${server}: 팀원 Paseo 만들기·고치기 — 홈 /home/${m.id}, 프로젝트 ${(spec.projects as unknown[]).length}개, 스킬·명령어 ${(spec.skills as string[]).length + (spec.commands as string[]).length}개`);
-  const mounts = spec.mounts as { path: string; mode: "ro" | "rw" | "add" }[];
+  const mounts = spec.mounts as { path: string; mode: "ro" | "rw" }[];
   const ports = (spec.net as { allowLocalPorts: number[] }).allowLocalPorts;
-  const list = (mode: "ro" | "rw" | "add") => mounts.filter((x) => x.mode === mode).map((x) => x.path).join(", ") || "없음";
-  say(job, `${server}: 권한 — ${fileModeLabel("rw")} ${list("rw")} · ${fileModeLabel("add")} ${list("add")} · ${fileModeLabel("ro")} ${list("ro")} · 포트 ${ports.join(", ") || "없음"} · 비밀 파일 ${spec.hideSecrets ? "가림" : "그대로"} · Claude ${spec.ownClaude ? "본인 로그인" : "회사 공용"}`);
+  const list = (mode: "ro" | "rw") => mounts.filter((x) => x.mode === mode).map((x) => x.path).join(", ") || "없음";
+  say(job, `${server}: 권한 — ${fileModeLabel("rw")} ${list("rw")} · ${fileModeLabel("ro")} ${list("ro")} · 포트 ${ports.join(", ") || "없음"} · 비밀 파일 ${spec.hideSecrets ? "가림" : "그대로"} · Claude ${spec.ownClaude ? "본인 로그인" : "회사 공용"}`);
   const b64 = Buffer.from(JSON.stringify(spec), "utf8").toString("base64");
   const command =
     `umask 077; [ -x ${CTL} ] || { echo '{"ok":false,"error":"이 서버에는 팀원 도구가 설치되지 않았습니다"}'; exit 3; }; ` +
@@ -378,10 +379,101 @@ async function registerLink(job: Job, m: TeamMember, server: string): Promise<st
   }
 }
 
+/** 같이 보기 열쇠 이름 — 연결 이름 앞에 t-(팀원 Paseo 몫, 10-25) */
+export function shareKeyName(server: string, id: string): string {
+  return `t-${linkName(server, id)}`.slice(0, 64);
+}
+
+/** 팀원 폴더에 같이 보기 열쇠를 넣는 서버 명령 — 이미 있으면 그대로(kept), 없으면 받은 파일을 팀원 소유·600 으로(put). 결과는 JSON 한 줄 */
+export function shareKeyCommand(home: string, file: string): string {
+  return (
+    `umask 077; D=${home}; [ -d "$D" ] || { echo '{"ok":false,"error":"팀원 Paseo 폴더가 없습니다"}'; exit 3; }; ` +
+    `o=$(stat -c %u "$D"); g=$(stat -c %g "$D"); t="$D/claude-state-bar/push-central.json"; ` +
+    `[ -d "$D/claude-state-bar" ] || install -d -o "$o" -g "$g" -m 700 "$D/claude-state-bar" || exit 4; ` +
+    `[ -s "$t" ] && { echo '{"ok":true,"key":"kept"}'; exit 0; }; ` +
+    `install -o "$o" -g "$g" -m 600 ${file} "$t.csb" && mv "$t.csb" "$t" && echo '{"ok":true,"key":"put"}'`
+  );
+}
+
+/**
+ * 같이 보기 게이트 열쇠(10-25 명시 지시 5 — 팀원도 공유). 그 서버 팀원 Paseo 폴더에 열쇠(claude-state-bar/push-central.json)가 없을 때만
+ * 로그인 서버에서 그 팀원 몫 열쇠(주인 = 그 팀원)를 만들어 옮긴다 — 비밀은 서버끼리만 오가고(scp -3) PC 디스크·화면·기록에 남기지 않는다(registerLink 와 같다).
+ * 있으면 건드리지 않는다(다시 만들면 게이트의 비밀이 바뀌어 지금 열쇠를 못 쓰게 된다). 팀원 데몬 플러그인은 이 파일을 쓸 때마다 다시 읽어 재시작이 필요 없다
+ */
+async function shareKeyOn(job: Job, m: TeamMember, server: string): Promise<boolean> {
+  const target = `${teamHome(m.id)}/claude-state-bar/push-central.json`;
+  const seen = lastJson((await ssh(server, `[ -s ${target} ] && echo '{"ok":true,"has":true}' || echo '{"ok":true,"has":false}'`)).out);
+  if (seen?.ok !== true) {
+    say(job, `${server}: 같이 보기 열쇠가 있는지 확인하지 못했습니다`);
+    return false;
+  }
+  if (seen.has === true) return true;
+  const name = shareKeyName(server, m.id);
+  const file = `${OFFERS}/${name}.key`;
+  try {
+    const made = await ssh(LOGIN_HOST, `install -d -m 700 ${OFFERS} && rm -f ${file} && ${GATE} push-origin-add ${name} --member ${m.id} --mode central --out ${file} --label '팀원 ${m.id} · ${server}' --json`);
+    const mj = lastJson(made.out);
+    if (!mj?.ok) {
+      say(job, `${server}: 같이 보기 열쇠를 만들지 못했습니다 — ${failText(mj, made)}`);
+      return false;
+    }
+    if (server !== LOGIN_HOST) {
+      const dir = await ssh(server, `install -d -m 700 ${OFFERS}`);
+      const copy = dir.code === 0 ? await scp(["-3", "-q", "-o", "BatchMode=yes", `${LOGIN_HOST}:${file}`, `${server}:${file}`], 90_000) : dir;
+      if (copy.code !== 0) {
+        say(job, `${server}: 같이 보기 열쇠를 옮기지 못했습니다`);
+        return false;
+      }
+    }
+    const put = await ssh(server, shareKeyCommand(teamHome(m.id), file));
+    const pj = lastJson(put.out);
+    if (!pj?.ok) {
+      say(job, `${server}: 같이 보기 열쇠를 넣지 못했습니다 — ${failText(pj, put)}`);
+      return false;
+    }
+    say(job, `${server}: 같이 보기 열쇠를 넣었습니다(${name} — 팀원 Paseo 도 공유를 켤 수 있습니다)`);
+    return true;
+  } finally {
+    await ssh(LOGIN_HOST, `rm -f ${file}`);
+    if (server !== LOGIN_HOST) await ssh(server, `rm -f ${file}`);
+  }
+}
+
 async function gate(args: string): Promise<{ ok: boolean; text: string; code: string }> {
   const r = await ssh(LOGIN_HOST, `${GATE} ${args} --json`);
   const j = lastJson(r.out);
   return { ok: j?.ok === true, text: failText(j, r), code: typeof j?.error === "string" ? j.error : "" };
+}
+
+/**
+ * 새 팀원 아이디를 써도 되는가(10-25 리규형님 — 아이디 중복 확인이 없어 웹 로그인 관리자 아이디로 팀원을 만들었다). 팀원을 저장하기 전에
+ * 웹 로그인(관리자·팀원 계정)과 프로젝트 목록에 나오는 서버마다(원래 있던 /home/<아이디>·서버 계정 이름·같은 아이디 팀원) 묻는다.
+ * 겹치면 error. 닿지 않거나 아직 옛 도구인 곳은 unchecked — 그 서버에 처음 만들 때 서버 도구가 다시 막는다(ctl.name_taken)
+ */
+export async function memberIdProblems(id: string): Promise<{ error: string | null; unchecked: string[] }> {
+  if (!ID.test(id)) return { error: null, unchecked: [] }; // 형식 오류 문구는 저장(saveMember)이 낸다
+  const { entries } = await listProjects();
+  const servers = [...new Set([LOGIN_HOST, ...entries.map((e) => e.host)])].filter((h) => h !== "PC" && SAFE_HOST.test(h));
+  const problems: string[] = [];
+  const unchecked: string[] = [];
+  await Promise.all([
+    (async () => {
+      const j = lastJson((await ssh(LOGIN_HOST, `${GATE} member-check ${id} --json`, 20_000)).out);
+      if (j?.ok === true && typeof j.free === "boolean") {
+        if (!j.free) problems.push(`웹 로그인 — ${typeof j.reason === "string" ? j.reason : "이미 있는 아이디입니다"}`);
+      } else unchecked.push("웹 로그인");
+    })(),
+    ...servers.map(async (server) => {
+      const r = await ssh(server, `[ -x ${CTL} ] || exit 3; ${CTL} name-check ${id} --json`, 20_000);
+      if (r.code === 3) return; // 팀원 도구가 없는 서버 — 팀원을 만들 수 없는 곳
+      const j = lastJson(r.out);
+      const result = (j?.ok === true ? j.result : null) as { free?: unknown; reason?: unknown } | null;
+      if (typeof result?.free === "boolean") {
+        if (!result.free) problems.push(`${server} — ${typeof result.reason === "string" ? result.reason : "쓸 수 없는 아이디입니다"}`);
+      } else unchecked.push(server);
+    }),
+  ]);
+  return { error: problems.length ? `이 아이디는 쓸 수 없습니다: ${problems.join(" · ")}` : null, unchecked };
 }
 
 async function applyJob(job: Job, m: TeamMember): Promise<boolean> {
@@ -408,9 +500,13 @@ async function applyJob(job: Job, m: TeamMember): Promise<boolean> {
   let loginAdded = m.loginAdded;
   const allowed = m.servers.map((s) => links[s]).filter((l): l is string => !!l);
   if (allowed.length) {
-    let r = loginAdded ? await gate(`member-links ${m.id} --links ${allowed.join(",")}`) : await gate(`member-add ${m.id} --links ${allowed.join(",")}`);
-    if (!loginAdded && !r.ok && /EXIST|이미/.test(`${r.code} ${r.text}`)) r = await gate(`member-links ${m.id} --links ${allowed.join(",")}`);
-    if (r.ok) {
+    // 같은 아이디가 이미 있으면(관리자 아이디 또는 다른 팀원 계정) 덮지 않고 멈춘다(10-25 — 전엔 연결 맞추기로 넘어가 남의 계정 연결을
+    // 덮거나, 관리자 아이디면 "직원 계정이 없습니다"로 끝났다). 저장 전 확인(memberIdProblems)이 먼저 막는다
+    const r = loginAdded ? await gate(`member-links ${m.id} --links ${allowed.join(",")}`) : await gate(`member-add ${m.id} --links ${allowed.join(",")}`);
+    if (!loginAdded && r.code === "ID_EXISTS") {
+      say(job, `로그인 서버에 같은 아이디(${m.id})가 이미 있어 웹 계정을 만들지 않았습니다 — 관리자 아이디이거나 다른 팀원 계정입니다. 이 팀원을 지우고 다른 아이디로 다시 추가해 주세요`);
+      ok = false;
+    } else if (r.ok) {
       const first = !loginAdded;
       if (first) say(job, `로그인 서버에 팀원 계정 ${m.id} 를 만들었습니다`);
       else say(job, `로그인 서버: ${m.id} 가 쓸 수 있는 연결을 맞췄습니다(${allowed.length}개)`);
@@ -425,6 +521,8 @@ async function applyJob(job: Job, m: TeamMember): Promise<boolean> {
     const r = await gate(`member-links ${m.id} --links ''`);
     if (!r.ok) ok = false;
   }
+  // 같이 보기 열쇠(10-25 명시 지시 5) — 열쇠 주인이 그 팀원이라 웹 계정이 있어야 만든다. 계정을 맞춘 뒤 서버마다(있으면 그대로)
+  if (loginAdded) for (const server of m.servers) if (applied.has(server) && !(await shareKeyOn(job, m, server))) ok = false;
   for (const server of dropped) {
     say(job, `${server}: 이 서버에 팀원 프로젝트가 더 없어 그 서버의 팀원 Paseo 를 지웁니다(/home/${m.id} 는 남김)`);
     // 그 서버의 마지막 팀원 프로젝트를 뺀 것 — 묻지 않고 되돌릴 수 있는 쪽(홈 유지)으로 지운다
@@ -441,6 +539,8 @@ async function applyJob(job: Job, m: TeamMember): Promise<boolean> {
       if (g.ok) delete links[server];
       else ok = false;
     }
+    // 그 서버 팀원 Paseo 의 같이 보기 열쇠도 거둔다(없으면 그냥 지나감)
+    if (!(await gate(`push-origin-remove ${shareKeyName(server, m.id)}`)).ok) say(job, `${server}: 같이 보기 열쇠를 지우지 못했습니다(로그인 서버 관리 화면에서 지울 수 있습니다)`);
     say(job, `${server}: 지웠습니다(그 서버에 다시 팀원 프로젝트를 넣으면 같은 아이디·같은 홈으로 다시 만듭니다)`);
   }
   if (!m.servers.length && !dropped.length) say(job, "아직 팀원 프로젝트가 없어 서버에 만들 것이 없습니다 — \"팀원 프로젝트 관리\" 탭에서 프로젝트를 넣으면 그 서버에 만들어집니다");
@@ -550,6 +650,10 @@ async function removeJob(job: Job, m: TeamMember, home: "keep" | "purge"): Promi
     const r = await gate(`link-remove ${link}`);
     if (r.ok || /NO_LINK|없/.test(`${r.code} ${r.text}`)) delete links[server];
     else ok = false;
+  }
+  // 같이 보기 열쇠도 거둔다(10-25 — 없으면 그냥 지나감)
+  for (const server of m.applied) {
+    if (!(await gate(`push-origin-remove ${shareKeyName(server, m.id)}`)).ok) say(job, `${server}: 같이 보기 열쇠를 지우지 못했습니다(로그인 서버 관리 화면에서 지울 수 있습니다)`);
   }
   if (!ok) {
     await recordJob(m.id, m.rev, { applied: [...applied], links, loginAdded: m.loginAdded, complete: false });

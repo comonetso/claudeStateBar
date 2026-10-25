@@ -58,7 +58,7 @@ import { thinkingBoundaryOf } from "./server/thinkingBoundary";
 import { projectsEdit, projectsHosts, projectsManager, projectsWait, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsResetOrder } from "./shared/projects";
 import { editProjects, projectHosts } from "./server/projectsEdit";
 import { teamCategoryOrder, teamJobStart, teamJobWait, teamMemberClaude, teamMemberRemove, teamMemberSave, teamProjectAccess, teamProjectEdit, teamServerSkills, teamSkills, teamState } from "./shared/team";
-import { startTeamJob, waitTeamJob } from "./server/teamApply";
+import { memberIdProblems, startTeamJob, waitTeamJob } from "./server/teamApply";
 import { editMemberProjects, removeMember, saveMember, setMemberCategoryOrder, setMemberClaude, setProjectAccess, teamStateRead } from "./server/team";
 import { listGlobalSkills, listServerSkills } from "./server/teamSkills";
 import { clearProjectOrders, projectOrders, setProjectOrder } from "./server/projectsOrder";
@@ -78,7 +78,9 @@ import { accountSwitch, accountsWait, personalLoginKeep } from "./shared/account
 import { cancelLogin, forgetLogin, onTurnEnded, startLogin, stopLogin, submitCode, waitLogin } from "./server/claudeLogin";
 import { loginCancel, loginCode, loginStart, loginWait } from "./shared/claudeLogin";
 import { keepPersonalLogin, startUsageLoginKeeper, teamUsageSources } from "./server/teamUsage";
-import { ackPush, createPush, registerPushToken, soundPushLink } from "./server/push";
+import { ackPush, createPush, pushRoute, registerPushToken, soundPushLink } from "./server/push";
+import { createShare, createStaffShareRinger } from "./server/share";
+import { shareReplyAction, shareReplyFileGet, shareSet, shareWait } from "./shared/share";
 import { createAutoCompact } from "./server/autoCompact";
 import { pushCompactWait, pushReceived, pushRegister } from "./shared/push";
 import { startStallWatch, trackRpc } from "./server/diagStall";
@@ -233,10 +235,20 @@ export default function contribute(server: PluginServerContext) {
   server.handle(teamServerSkills, async ({ host }) => listServerSkills(host));
   // 팀원 목록·팀원 전용 프로젝트(10-11) — PC 플러그인 전용 파일 team.json 에 저장만 한다(서버에 직원을 만드는 일은 뒷단 작업 때)
   server.handle(teamState, async () => teamStateRead());
-  server.handle(teamMemberSave, async (input) => saveMember(input));
+  // 새 아이디(새 팀원·아이디 바꿈)는 저장 전에 웹 로그인·서버마다 겹치는지 묻는다(10-25 리규형님 — 아이디 중복 확인).
+  // 확인하지 못한 곳은 저장하고 알린다 — 그 서버에 처음 만들 때 서버 도구가 다시 막는다
+  server.handle(teamMemberSave, async (input) => {
+    const id = input.id.trim();
+    const check = input.previousId === id ? { error: null, unchecked: [] as string[] } : await memberIdProblems(id);
+    if (check.error) return { ...(await teamStateRead()), ok: false, error: check.error };
+    const r = await saveMember(input);
+    return r.ok && check.unchecked.length
+      ? { ...r, notice: `아이디를 확인하지 못한 곳: ${check.unchecked.join(", ")} — 그 서버에 팀원을 처음 만들 때 다시 확인합니다` }
+      : r;
+  });
   server.handle(teamMemberRemove, async ({ id }) => removeMember(id));
   server.handle(teamProjectEdit, async ({ member, op }) => editMemberProjects(member, op));
-  // 팀원 프로젝트마다 권한(10-20 — 읽기만·읽기쓰기·내가 쓴 파일만·밖 경로·포트·기록·비밀 가리기)
+  // 팀원 프로젝트마다 권한(10-20 — 읽기만·읽기쓰기·밖 경로·포트·기록·비밀 가리기 · "내가 쓴 파일만"은 10-25 에 없앰)
   server.handle(teamProjectAccess, async ({ member, key, access }) => setProjectAccess(member, key, access));
   // 팀원 Claude 계정(10-21 — 회사 공용·본인 로그인)
   server.handle(teamMemberClaude, async ({ member, own }) => setMemberClaude(member, own));
@@ -350,8 +362,9 @@ export default function contribute(server: PluginServerContext) {
     // 기록 정리 실패는 기록만 남긴다 — 다음 공급자 바꾸기·보관 때 다시 쓴다
     forgetAccount(agent.id).catch((error) => console.log(`[account] ${agent.id.slice(0, 8)}: 보관한 대화의 공급자 기록을 못 지움 — ${String(error)}`));
   }));
-  stopAccountHooks.push(server.on("agent.turn_ended", (event) => {
-    void onTurnEnded(event).catch((error: unknown) => console.log(`[claude-login] turn check failed: ${String(error)}`));
+  stopAccountHooks.push(server.on("agent.turn_ended", (event, context) => {
+    // 0.13.0 부터 훅이 대화 내용을 빈 목록으로 넘겨 기록을 다시 읽을 연결을 함께 준다(server/turnTimeline.ts)
+    void onTurnEnded(event, context.paseo).catch((error: unknown) => console.log(`[claude-login] turn check failed: ${String(error)}`));
   }));
   // 탭 이름 → Claude 대화 기록(10-22) — 세션 가져오기 목록이 그 이름을 보여 주게. 보관 때도 한 번 더(보관한 대화만 그 목록에 나온다).
   // 팀원 데몬도 한다(팀원도 세션 가져오기를 쓴다)
@@ -363,9 +376,15 @@ export default function contribute(server: PluginServerContext) {
   server.handle(pushRegister, async ({ token }) => registerPushToken(token));
   // 폰 앱의 "받았다"(10-17) — 이 데몬이 보낸 알림이면 기록한다(그 소리는 PC 에서 안 울림). 직원 데몬은 보내지 않으니 늘 ok:false
   server.handle(pushReceived, async ({ eventId, receivedAt }) => (teamDaemon ? { ok: false } : ackPush(eventId, receivedAt)));
-  if (teamDaemon) server.handle(pushCompactWait, async () => ({ rev: 0, agentIds: [] }));
-  else {
+  let pushForShare: ReturnType<typeof createPush> | null = null;
+  // 팀원 데몬은 폰 알림이 없고, 같은 요청으로 같이 보기 답글 소리 목록만 준다(10-25 명시 지시 5 — 팀원도 같이 보기)
+  const staffRinger = teamDaemon ? createStaffShareRinger() : null;
+  if (staffRinger) {
+    server.handle(pushCompactWait, async ({ rev }) => staffRinger.wait(rev));
+    stopAccountHooks.push(() => staffRinger.stop());
+  } else {
     const push = createPush({ disposition: pushDisposition });
+    pushForShare = push;
     server.handle(pushCompactWait, async ({ rev }) => push.waitCompact(rev));
     const guard = (work: () => unknown) => {
       try {
@@ -399,6 +418,55 @@ export default function contribute(server: PluginServerContext) {
     server.on("agent.archived", (event) => guardAuto(() => autoCompact.onArchived(event))),
     () => autoCompact.stop(),
   );
+  // 같이 보기(10-25 — 공유 켠 대화의 사람 말·답 글을 웹 게이트에 사본으로 · 팀원 답글은 대화 화면 줄로).
+  // 팀원 데몬도 공유한다(10-25 명시 지시 5 — 자기 게이트 열쇠 push-central.json 이 있을 때). 팀원 쪽 답글 알림은 화면 소리만(폰 등록 없음)
+  if (!pushForShare && !staffRinger) {
+    server.handle(shareWait, async () => ({ rev: 0, available: false, reason: "이 기기는 공유를 쓸 수 없습니다", shares: {}, modes: {}, members: [], errors: {} }));
+    server.handle(shareSet, async () => ({ ok: false, error: "이 기기는 공유를 쓸 수 없습니다" }));
+    server.handle(shareReplyAction, async () => ({ ok: false, error: "이 기기는 공유를 쓸 수 없습니다" }));
+    server.handle(shareReplyFileGet, async () => ({ ok: false, error: "이 기기는 공유를 쓸 수 없습니다" }));
+  } else {
+    const ringer = pushForShare;
+    const share = createShare({
+      route: async () => {
+        const r = await pushRoute();
+        if (r.mode === "central" && r.central) return { route: r.central, reason: null };
+        return { route: null, reason: r.mode === "central" ? (r.error ?? "웹 게이트 열쇠가 없습니다") : "이 기기는 웹 게이트 길(폰 알림 중앙 경로)이 없습니다" };
+      },
+      callNames: async () => Object.fromEntries((await teamStateRead()).members.map((m) => [m.id, m.callName ?? ""])),
+      ring: (agent, paseo, nativeId, title, body) => (ringer ? ringer.ringShareReply(agent, paseo, nativeId, title, body) : staffRinger?.ring(agent.id, nativeId)),
+      unring: (agentId, nativeId) => (ringer ? ringer.unringShareReply(agentId, nativeId) : staffRinger?.unring(agentId, nativeId)),
+    });
+    const guardShare = (work: () => unknown) => {
+      try {
+        void Promise.resolve(work()).catch((error: unknown) => console.log(`[share] hook failed: ${String(error)}`));
+      } catch (error) {
+        console.log(`[share] hook failed: ${String(error)}`);
+      }
+    };
+    server.handle(shareWait, async ({ rev }, context) => {
+      share.attach(context.paseo);
+      return share.wait(rev);
+    });
+    server.handle(shareSet, async ({ agentId, members, mode }, context) => {
+      share.attach(context.paseo);
+      return share.set(agentId, members, mode);
+    });
+    server.handle(shareReplyAction, async ({ agentId, replyId, action }, context) => {
+      share.attach(context.paseo);
+      return share.replyAction(agentId, replyId, action);
+    });
+    server.handle(shareReplyFileGet, async ({ agentId, replyId, n }, context) => {
+      share.attach(context.paseo);
+      return share.replyFile(agentId, replyId, n);
+    });
+    stopAccountHooks.push(
+      server.on("agent.turn_started", (event, context) => { share.attach(context.paseo); guardShare(() => share.onTurnStarted(event)); }),
+      server.on("agent.turn_ended", (event, context) => { share.attach(context.paseo); guardShare(() => share.onTurnEnded(event)); }),
+      server.on("agent.archived", (event, context) => { share.attach(context.paseo); guardShare(() => share.onArchived(event)); }),
+      () => share.stop(),
+    );
+  }
   return () => {
     process.off("unhandledRejection", onUnhandled);
     for (const stop of stopAccountHooks) stop();

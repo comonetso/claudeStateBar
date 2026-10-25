@@ -7,6 +7,8 @@ import type { LoginSnapshot, LoginTarget } from "../shared/claudeLogin";
 import { isClaudeProvider, PERSONAL_PROVIDER, readProviders, switchedProvider } from "./account";
 import { isTeamDaemon } from "./sound";
 import { tokenProviders, usageLoginDir, usageLoginState } from "./usageLogin";
+import { deliveredTimeline, turnEndedTimeline } from "./turnTimeline";
+import type { PluginHookContext } from "@getpaseo/plugin/server";
 
 // Claude 다시 로그인(shared/claudeLogin, 리규형님 10-14). 기기마다 돈다 — 이 기기 데몬의 대화와 이 기기 로그인 파일만 다룬다.
 // 로그인 대상 = 이 기기 Paseo 설정의 Claude 공급자 중 로그인 파일을 쓰는 것. 같은 로그인 파일을 쓰는 공급자는 하나로 묶는다.
@@ -132,9 +134,11 @@ export async function waitLogin(known: number | null): Promise<LoginSnapshot> {
 type TimelineLike = ReadonlyArray<{ type: string; text?: unknown }>;
 type TurnEnded = {
   agent: { id: string; provider: string };
+  turnId?: string | null;
   outcome: { kind: "completed" } | { kind: "failed"; error: { message: string } } | { kind: "canceled"; reason: string };
   timeline: TimelineLike;
 };
+type PaseoApi = PluginHookContext["paseo"];
 
 function lastAssistantText(timeline: TimelineLike): string | null {
   for (let i = timeline.length - 1; i >= 0; i--) {
@@ -150,8 +154,16 @@ async function targetOf(agentId: string, provider: string): Promise<string | nul
   return loginTargets().find((t) => t.providers.includes(effective))?.id ?? null;
 }
 
-export async function onTurnEnded(event: TurnEnded): Promise<void> {
-  const { agent, outcome, timeline } = event;
+/** paseo 가 있으면 훅이 빈 목록을 넘긴 0.13.0 에서 기록 끝을 다시 읽는다(server/turnTimeline.ts). 못 읽으면 알약을 켜지도 끄지도 않는다 —
+ *  빈 목록을 "오류 없이 끝남"으로 읽으면 떠 있던 알약까지 지워진다 */
+export async function onTurnEnded(event: TurnEnded, paseo?: PaseoApi): Promise<void> {
+  const { agent, outcome } = event;
+  let timeline: TimelineLike = event.timeline;
+  if (outcome.kind !== "failed" && !deliveredTimeline(event)) {
+    const items = paseo ? await turnEndedTimeline(event, paseo).catch(() => null) : null;
+    if (!items) return;
+    timeline = items as TimelineLike;
+  }
   const text = outcome.kind === "failed" ? outcome.error.message : lastAssistantText(timeline);
   if (isAuthErrorText(text)) {
     const target = await targetOf(agent.id, agent.provider);

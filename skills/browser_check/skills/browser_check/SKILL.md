@@ -75,6 +75,7 @@ Helpers: `bc.run` · `bc.shot` · `bc.watch` · `bc.problems` · `bc.sent` / `bc
 
 ## 4. ego traps — measured 2026-10-21
 - `page.screenshot` is refused while ego is minimized and times out in a window closed with X — use `bc.shot` (`look` does). Full-page capture works only through `page.screenshot`; when refused, scroll and shoot tiles, then `scripts/image/stitch.py`.
+- A tab opened in a minimized ego window that was never shown has a 0×0 page: nothing paints, the page text is only `root`, the capture gets no frame (2026-10-26). `look` and `bc.run` give such a page its window's size (`bc.fixViewport` — device metrics, the window is not touched) and `bc.shot` does it for pages a script opened itself. `page.viewport` in the result then shows that size.
 - A click or fill usually takes 0.1–0.6 s; a few took 6–11 s (2026-10-21, cause not found — ego waits until the element is usable, and a minimized window paints slowly). `steps[].ms` shows it; don't add your own sleeps for it.
 - The page text is the viewport only unless `--full` / `snapshot({ scope: 'full_page' })`.
 - ego's theme can be dark; `look`/`bc.run` force the light scheme unless `--dark`.

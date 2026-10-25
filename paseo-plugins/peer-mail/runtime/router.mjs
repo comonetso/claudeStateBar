@@ -58,19 +58,44 @@ function watchError(error) { log("file watch stopped: " + (error.code || "error"
 
 // ── 한 대만: router.pid
 const PID = path.join(ROUTER_DIR, "router.pid");
-try {
-  const old = Number(fs.readFileSync(PID, "utf8"));
-  if (old && old !== process.pid) {
-    try {
-      process.kill(old, 0);
-      log("another router is running (pid " + old + ") — exiting");
-      process.exit(0);
-    } catch {
-      /* 죽은 기록 */
-    }
+// 돌고 있는 중계기는 BEAT_MS 마다 이 파일 시각을 새로 쓴다(아래 "시작"). Windows 는 프로세스 번호를 다시 쓰므로 번호가 살아 있는
+// 것만으로는 중계기인지 모른다 — 옛 중계기가 죽고 그 번호를 다른 프로그램이 쓰면 새 중계기가 영영 안 떴다(Codex 07-6, 10-26 고침).
+// 정한 값(근거): 30초·90초·35초는 Claude 가 정했다(10-26, 리규형님 "수리할 것은 수리" — 보고함).
+const BEAT_MS = 30_000;
+const STALE_MS = 90_000;
+const beatAge = () => {
+  try {
+    return Date.now() - fs.statSync(PID).mtimeMs;
+  } catch {
+    return Infinity;
   }
+};
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+let old = 0;
+try {
+  old = Number(fs.readFileSync(PID, "utf8"));
 } catch {
   /* 없음 */
+}
+if (old && old !== process.pid && pidAlive(old)) {
+  let running = beatAge() <= STALE_MS;
+  if (!running) {
+    // 표시가 오래됐다 — 절전에서 막 깬 진짜 중계기면 한 주기 안에 다시 쓴다. 시작 전이라 동기로 기다린다
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, BEAT_MS + 5_000);
+    running = pidAlive(old) && beatAge() <= STALE_MS;
+    if (!running) log("router.pid " + old + " is alive but never refreshed — taking over (the number was likely reused)");
+  }
+  if (running) {
+    log("another router is running (pid " + old + ") — exiting");
+    process.exit(0);
+  }
 }
 fs.writeFileSync(PID, String(process.pid));
 
@@ -151,6 +176,15 @@ async function inject(host, agentId, text, messageId, verify) {
   if (await compacting(host, agentId)) return { ok: false, reason: "compacting" };
   await withDaemon(host, (c) => c.sendAgentMessage(agentId, text, { activeTurnBehavior: "steer", messageId }));
   return { ok: true, status: a.status, title: a.title || null };
+}
+
+// 받는 대화가 없는 프로젝트에 새 Claude 대화를 연다 — 요청을 첫 말로 넣고, 권한은 묻기 모드로 못 박는다(앱 기본값이 무엇이든 —
+// 10-26 리규형님 버튼 "기본 묻기 그대로, 피어메일 명령만 미리 허용"). 계정·모델은 그 기기의 기본. 같은 시도를 두 번 받아도
+// 대화를 둘 만들지 않게 시도 번호로 묶는다. 돌려주는 것은 새 대화
+const opening = new Map(); // 프로젝트 키 → 여는 중인 대화(Promise)
+async function openAgent(host, cwd, text, attemptId) {
+  const r = await withDaemon(host, (c) => c.createAgent({ provider: "claude", cwd, modeId: "default", initialPrompt: text, clientMessageId: attemptId, idempotencyKey: "peer-mail:" + attemptId, labels: { "peer-mail": "opened" } }));
+  return agentOf(r);
 }
 
 // 받는 대화가 압축 중인가 — 압축 중이면 Paseo 가 끼워 넣지 못하고 압축을 취소한 뒤 새 글로 다시 시작한다
@@ -376,27 +410,52 @@ async function handleItem(host, name, item) {
   }
 }
 
-function composeFor(host, message, kind, requestId) {
+// 받는 대화가 실행할 명령의 경로 — 따옴표·변수 없이 그 기기의 절대 경로로, Windows 는 / 로. Claude 허용 목록의 한 줄
+// "Bash(node <이 경로>:*)" 과 글자 그대로 맞아야 권한 창 없이 돈다(10-26 실측: `"$HOME/…"` 형태는 규칙이 있어도 묻는다).
+// 경로에 공백이 있으면 따옴표로 감싼다(그때는 허용 줄도 따옴표 형태여야 한다)
+function mailCmd(host) {
   const mail = mailPathFor(host);
+  if (!mail) return "<peer-mail>/mail.cjs";
+  const p = mail.replace(/\\/g, "/");
+  return /\s/.test(p) ? '"' + p + '"' : p;
+}
+
+// 받은 봉투 블록·답은 파일로 쓰지 않고 명령에 바로 붙여 넣게 한다 — 파일 쓰기는 묻기 모드에서 권한 창이 떠 중계기가 자동으로 연
+// 대화(받는 대화가 없을 때)가 거기서 멈춘다(10-26 리규형님 버튼 "피어메일 명령만 미리 허용"). 끝 표시는 요청마다 달라 글 안에 우연히 나오지 않는다
+//   opened — 중계기가 이 요청 때문에 새로 연 대화: 지켜보는 사람이 없어 셸 명령의 권한 창에서 멈춘다(10-26 DB 서버 시험 — README 를 ls·head 로
+//   찾다 멈춤) → 조사는 파일 도구로만(작업 폴더 안 읽기는 묻지 않는다, 리규형님 버튼 "파일 도구로만 조사하라고 안내")
+function composeFor(host, message, kind, requestId, opened = false) {
   const nl = message.indexOf("\n");
   const first = nl < 0 ? message : message.slice(0, nl);
   const rest = nl < 0 ? "" : message.slice(nl);
-  const m = mail ? '"' + mail + '"' : "<peer-mail>/mail.cjs";
+  const m = mailCmd(host);
+  const end = "PEERMAIL_END_" + String(requestId).slice(0, 8);
+  const paste = (cmd, what) => ["node " + m + " " + cmd + " <<'" + end + "'", what, end];
+  const exact = "Use the commands exactly as written — this path form, no files — so they run without a permission prompt. The " + end + " line starts at the beginning of its line.";
   const how =
     kind === "request"
       ? [
-          "How to handle it (peer_mail relay — if a skill named peer_mail is available, load it first):",
-          "1. Save this whole message unchanged to a file in your temp folder.",
-          "2. Run: node " + m + ' receive --message-file "<that file>" — it records the request and queues the acknowledgement for you. Follow its instruction.',
-          "3. Write the answer to a file, then run: node " + m + " reply --id " + requestId + ' --status <completed|awaiting_user|failed> --body-file "<file>"',
+          "How to handle it (peer_mail relay — if a skill named peer_mail is available, load it first). " + exact,
+          ...(opened
+            ? ["The relay opened this conversation for this request — nobody is watching it. Investigate with the file tools only (Read, Grep, Glob): a shell command asks for permission and would stop here. If the question cannot be answered without one, say so in your answer."]
+            : []),
+          "1. Record it — paste the ```peer_mail block at the end of this message (with its ``` lines), unchanged, between these lines:",
+          ...paste("receive --message-file -", "<the ```peer_mail block>"),
+          "It records the request and queues the acknowledgement for you. Follow its instruction.",
+          "2. Answer — put your answer between these lines:",
+          ...paste("reply --id " + requestId + " --status <completed|awaiting_user|failed> --body-file -", "<your answer>"),
         ]
-      : ["How to handle it (peer_mail relay):", "1. Save this whole message unchanged to a file in your temp folder.", "2. Run: node " + m + ' ingest --message-file "<that file>"', "Then tell the user. Never reply to this message."];
+      : [
+          "How to handle it (peer_mail relay). " + exact,
+          "Record it — paste the ```peer_mail block at the end of this message (with its ``` lines), unchanged, between these lines:",
+          ...paste("ingest --message-file -", "<the ```peer_mail block>"),
+          "Then tell the user. Never reply to this message.",
+        ];
   return first + "\n\n" + how.join("\n") + "\n" + rest;
 }
 
 function noticeText(host, requestId, status, reason, candidates) {
-  const mail = mailPathFor(host);
-  const m = mail ? '"' + mail + '"' : "<peer-mail>/mail.cjs";
+  const m = mailCmd(host);
   const lines = [
     "[" + util.PROTOCOL + "] 전달 안 됨(" + status + ") · 요청 " + util.shortId(requestId),
     "",
@@ -503,8 +562,32 @@ async function routeRequest(host, item) {
   } else if (cands.length === 1) {
     chosen = cands[0];
   } else if (cands.length === 0) {
-    await notifySender(host, item.from_agent, item.request_id, item.id, "unreachable", "no Paseo conversation is open in " + target.name + " (" + target.host + ":" + target.path + ")", null, true);
-    return;
+    // 받는 대화가 없다 — 그 프로젝트에 새 Claude 대화를 열어 요청을 첫 말로 넣는다(10-26 리규형님 버튼: 질문·알림·수정 요청 모두 ·
+    // 묻기 모드 그대로 · 답한 뒤 그대로 둠). 대화가 생기니 프로젝트 관리 화면에도 바로 활성으로 보인다.
+    // 다른 요청이 이 프로젝트에 대화를 여는 중이면 열린 뒤 그 대화로 넣는다(대화를 둘 열지 않게)
+    const pending = opening.get(tKey);
+    if (pending) chosen = await pending.catch(() => null);
+    else {
+      const text = composeFor(target.host, envl.renderRelayed(env), "request", item.request_id, true);
+      const p = openAgent(target.host, target.path, text, item.id);
+      opening.set(tKey, p);
+      let opened = null, why = null;
+      try { opened = await p; } catch (e) { why = e && e.message ? e.message : String(e); } finally { opening.delete(tKey); }
+      if (!opened || !opened.id) {
+        log("could not open a conversation for request " + util.shortId(item.request_id) + " in " + target.host + ":" + target.path + " — " + (why || "no agent returned"));
+        await notifySender(host, item.from_agent, item.request_id, item.id, "unreachable", "no Paseo conversation is open in " + target.name + " (" + target.host + ":" + target.path + ") and opening one failed: " + String(why || "no agent returned").slice(0, 200), null, true);
+        return;
+      }
+      ledger[item.request_id] = { src_host: host, src_agent: item.from_agent, src_key: srcProj.key, dst_host: target.host, dst_agent: opened.id, dst_key: tKey, at: new Date().toISOString(), opened: true };
+      saveJson("ledger.json", ledger);
+      log("opened a conversation for request " + util.shortId(item.request_id) + " " + host + " → " + target.host + " " + opened.id.slice(0, 8));
+      await notifySender(host, item.from_agent, item.request_id, item.id, "delivered", "no conversation was open in " + target.name + " — opened a new one (" + opened.id.slice(0, 8) + ") and gave it the request", null, false);
+      return;
+    }
+    if (!chosen) {
+      await notifySender(host, item.from_agent, item.request_id, item.id, "unreachable", "no Paseo conversation is open in " + target.name + " (" + target.host + ":" + target.path + ") and opening one failed", null, true);
+      return;
+    }
   } else {
     await notifySender(host, item.from_agent, item.request_id, item.id, "ask", cands.length + " conversations are open in " + target.name, cands.map(brief), true);
     return;
@@ -709,5 +792,27 @@ const shutdown = () => {
 };
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+// 살아 있다는 표시 — 새 중계기가 번호 재사용과 진짜 중계기를 가른다(위 "한 대만"). 다른 중계기가 넘겨받았으면 둘이 같이 돌지 않게 끝낸다
+setInterval(() => {
+  let owner = 0;
+  try {
+    owner = Number(fs.readFileSync(PID, "utf8"));
+  } catch {
+    /* 지워졌다 — 아래에서 다시 쓴다 */
+  }
+  if (owner && owner !== process.pid) {
+    log("router.pid now belongs to router " + owner + " — exiting");
+    shutdown();
+    return;
+  }
+  try {
+    if (owner) {
+      const now = new Date();
+      fs.utimesSync(PID, now, now);
+    } else fs.writeFileSync(PID, String(process.pid));
+  } catch (e) {
+    log("cannot refresh router.pid: " + e.message);
+  }
+}, BEAT_MS).unref();
 process.stdin.on("end", shutdown); // 띄운 플러그인이 끝나면 함께 끝난다
 process.stdin.resume();

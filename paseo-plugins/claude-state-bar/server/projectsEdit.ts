@@ -42,6 +42,17 @@ function findItem(items: Item[], key: string, name?: string): number {
   });
 }
 
+/** 같은 기기 안에서 그 이름(대소문자·앞뒤 공백 무시)을 쓰는 다른 줄이 있으면 막는 이유 — 기기가 다르면 허용(10-25 리규형님: peer_mail 이
+ *  이름으로 받는 곳을 찾다 같은 이름 둘에 헷갈렸다 · "디바이스가 틀리면 허용, 같은 디바이스에서는 막아야"). except = 바꾸는 그 줄 */
+function nameClash(items: Item[], host: string, name: string, except: number): string | null {
+  const want = name.trim().toLowerCase();
+  const j = items.findIndex((item, k) => {
+    const key = k === except ? null : keyOfItem(item);
+    return key !== null && key.slice(0, key.indexOf("|")) === host && nameOf(item).toLowerCase() === want;
+  });
+  return j < 0 ? null : `같은 디바이스(${host})에 "${nameOf(items[j])}" 이름의 프로젝트가 이미 있습니다 — 다른 이름을 쓰세요`;
+}
+
 const categoryOf = (item: Item) => (typeof item.category === "string" ? item.category.trim() : "");
 
 // 고치기와 쓰기는 한 줄로 — 빠르게 두 번 눌러도 한쪽이 사라지지 않게(projectsPins 와 같은 방식)
@@ -94,8 +105,8 @@ export async function editProjects(op: ProjectsEditOp): Promise<Result> {
       return editList((items) => {
         const i = findItem(items, op.key, op.itemName);
         if (i < 0) return "목록에서 그 프로젝트를 찾지 못했습니다";
-        const same = findItem(items, op.key, name);
-        if (same >= 0 && same !== i) return "같은 디바이스·경로에 그 이름의 프로젝트가 이미 있습니다";
+        const clash = nameClash(items, op.key.slice(0, op.key.indexOf("|")), name, i);
+        if (clash) return clash;
         items[i].name = name;
         return null;
       });
@@ -172,6 +183,8 @@ export async function editProjects(op: ProjectsEditOp): Promise<Result> {
         // 같은 디바이스·경로는 하나만(10-24 리규형님 — 같은 경로로 또 만들면 관리 화면이 Paseo 워크트리를 만들어 그 폴더로 넣는다.
         // 여기까지 같은 경로로 오는 것은 git 저장소가 아닌 폴더이거나 옛 화면이다 → 막는다. 10-23 의 "이름까지 같을 때만"을 대신함)
         if (findItem(items, `${host}|${path}`) >= 0) return "같은 디바이스·경로의 프로젝트가 이미 있습니다 — git 저장소면 관리 화면에서 같은 경로로 추가할 때 워크트리로 만듭니다";
+        const clash = nameClash(items, host, name, -1);
+        if (clash) return clash;
         items.push({ name, rootPath, category: op.category.trim(), enabled: true, ...(parent ? { parent } : {}) });
         return null;
       });

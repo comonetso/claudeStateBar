@@ -88,7 +88,14 @@ function bump(): void {
 // 자동 전환 실행기도 이 파일을 쓴다. 외부 변경을 롱폴·로그인 대상에 반영한다.
 const onDiskChange = () => { load(); bump(); };
 watchFile(FILE, { persistent: false, interval: 500 }, onDiskChange);
-export function stopAccounts(): void { unwatchFile(FILE, onDiskChange); }
+let stopped = false;
+// 롱폴로 기다리던 요청도 깨운다(깨우는 함수가 대기 타이머를 지운다). 안 깨우면 그 25초 타이머가 플러그인 프로세스를 붙잡아,
+// 다시 불러오기 때 Paseo 가 2초 기다렸다 강제로 껐다(Codex 07-4, 10-26 고침). 내린 뒤 오는 기다림은 바로 답한다
+export function stopAccounts(): void {
+  stopped = true;
+  unwatchFile(FILE, onDiskChange);
+  for (const fn of [...waiters]) fn();
+}
 
 // 실행기 account.mjs 와 같은 잠금. 잠금 안에서 최신 문서를 읽어 다른 대화 변경을 보존한다.
 // 죽은 프로세스의 잠금을 임의로 뺏지 않는다. 5초 안에 못 얻으면 실패를 반환한다.
@@ -139,7 +146,7 @@ function snapshot() {
 }
 export async function waitAccounts(known: number | null) {
   load();
-  if (known !== rev) return snapshot();
+  if (stopped || known !== rev) return snapshot();
   await new Promise<void>((resolve) => {
     const done = () => { clearTimeout(timer); waiters.delete(done); resolve(); };
     const timer = setTimeout(done, WAIT_MS);

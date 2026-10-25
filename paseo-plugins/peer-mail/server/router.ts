@@ -7,8 +7,12 @@ import { dirname, join } from "node:path";
 // (@getpaseo/client)을 가져오지 못하기 때문이다. 이 파일은 그 프로세스를 띄우고 지켜보기만 한다.
 // 정한 값(근거): 다시 띄우기 5초는 Claude 가 정했다(2026-10-13, 리규형님 "알아서" — 보고함).
 const RESTART_MS = 5_000;
-// router.mjs 의 끝 번호: 0 = 이미 다른 중계기가 돈다 · 3 = Paseo 연결 모듈을 못 찾았다(업데이트로 바뀜) — 둘 다 다시 띄우지 않는다
-const NO_RESTART = new Set([0, 3]);
+// router.mjs 의 끝 번호: 3 = Paseo 연결 모듈을 못 찾았다(업데이트로 바뀜) — 다시 띄우지 않는다.
+// 0 = 이미 다른 중계기가 돈다 — 플러그인을 다시 불러올 때 옛 중계기와 잠깐 겹치면 새 것이 0 으로 끝나고 옛 것도 곧 끝나
+// 중계기가 하나도 없게 됐다(10-26 고침). 그래서 0 은 길게 기다렸다 다시 띄워 본다 — 진짜 다른 중계기가 돌면 또 0 으로 끝날 뿐이다.
+// 정한 값(근거): 60초는 Claude 가 정했다(10-26 — 보고함).
+const NO_RESTART = new Set([3]);
+const BUSY_RECHECK_MS = 60_000;
 
 export function startRouter(): () => void {
   const home = process.env.PASEO_HOME || join(homedir(), ".paseo");
@@ -45,6 +49,11 @@ export function startRouter(): () => void {
       if (stopped) return;
       if (code !== null && NO_RESTART.has(code)) {
         console.log("[peer-mail] router ended (" + code + ") — not restarting");
+        return;
+      }
+      if (code === 0) {
+        console.log("[peer-mail] another router is running — check again in " + BUSY_RECHECK_MS / 1000 + "s");
+        timer = setTimeout(run, BUSY_RECHECK_MS);
         return;
       }
       console.log("[peer-mail] router exited (" + code + ") — restart in " + RESTART_MS / 1000 + "s");

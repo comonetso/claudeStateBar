@@ -9,6 +9,7 @@ import { questionRepeatId } from "../shared/push";
 import { labelNameOf } from "./headerTitles";
 import { hostIdentity } from "./layoutSync";
 import { isTeamDaemon } from "./sound";
+import { deliveredTimeline, isAsideItem, turnEndedTimeline, type TurnItem } from "./turnTimeline";
 import type { PushDisposition, SoundPushLink } from "./soundEvents";
 import {
   FCM_KEY_FILE, PC_WAIT_CAP_MS, PHONE_ACK_WAIT_MS, PUSH_TOKENS_FILE,
@@ -207,7 +208,7 @@ export function questionText(request: PluginLifecycleEvents["agent.permission_re
 }
 
 /** 턴이 압축 명령어 줄이 든 답으로 끝났는지 — 마지막 답 글 뒤에 도구를 불렀으면 아니다(lastTurn.ts turnEndsWithCheckpoint 와 같은 뜻) */
-export function endsWithCheckpoint(timeline: PluginLifecycleEvents["agent.turn_ended"]["timeline"]): boolean {
+export function endsWithCheckpoint(timeline: readonly TurnItem[]): boolean {
   const parts: string[] = [];
   for (let i = timeline.length - 1; i >= 0; i--) {
     const item = timeline[i];
@@ -216,7 +217,7 @@ export function endsWithCheckpoint(timeline: PluginLifecycleEvents["agent.turn_e
       continue;
     }
     if (parts.length) break;
-    if (item.type === "reasoning" || item.type === "todo" || item.type === "notification") continue;
+    if (isAsideItem(item)) continue;
     return false;
   }
   // 답이 조각으로 쌓였으면 이어 붙여야 줄 맨 앞이 보이고, 따로 쌓인 답이면 하나씩 봐야 한다
@@ -252,6 +253,11 @@ export function createPush(options: {
   const raising = new Map<string, Ref>();
   // 체크포인트 보고로 끝난 대화 — 폰엔 안 보내고 목록 아이콘만 켜 둔다(10-24 리규형님 버튼 "폰 알림 없애고 보통 끝남 소리로")
   const quietCompact = new Set<string>();
+  // 대화마다 차례 시작·보관 횟수 — 끝난 차례 기록을 다시 읽는 사이(0.13.0) 상황이 바뀌었는지 본다
+  const turns = new Map<string, number>();
+  const bumpTurn = (agentId: string) => turns.set(agentId, (turns.get(agentId) ?? 0) + 1);
+  // 같이 보기 팀원 답글(10-25 — "질문처럼 소리·폰 알림"). 화면엔 질문 다시 알림과 같은 목록으로 실려 한 번 울린다(server/share.ts)
+  const shareRings = new Map<string, { agentId: string; nativeId: string }>();
   let serverId: Promise<string | null> | null = null;
   let rev = 0;
   const waiters = new Set<() => void>();
@@ -424,10 +430,25 @@ export function createPush(options: {
   const snapshot = () => ({
     rev,
     agentIds: [...new Set([...[...open.values()].filter((m) => m.kind === "compact").map((m) => m.agentId), ...quietCompact])],
-    questionRepeats: [...repeats.values()].filter((r) => r.round > 0).map((r) => ({ agentId: r.agentId, nativeId: questionRepeatId(r.requestId, r.round) })),
+    questionRepeats: [
+      ...[...repeats.values()].filter((r) => r.round > 0).map((r) => ({ agentId: r.agentId, nativeId: questionRepeatId(r.requestId, r.round) })),
+      ...shareRings.values(),
+    ],
   });
 
   return {
+    /** 같이 보기 팀원 답글 — 질문처럼 폰에 올리고 화면 질문 소리 목록에 싣는다(다시 알림은 하지 않는다) */
+    ringShareReply(agent: Agent, paseo: PaseoApi, nativeId: string, title: string, body: string) {
+      shareRings.set(`${agent.id} ${nativeId}`, { agentId: agent.id, nativeId });
+      changed();
+      return raise("question", questionEventId(agent.id, nativeId), agent, paseo, title, body);
+    },
+    /** 답글을 넣거나 닫았을 때 — 폰 알림·화면 목록에서 거둔다 */
+    unringShareReply(agentId: string, nativeId: string) {
+      if (shareRings.delete(`${agentId} ${nativeId}`)) changed();
+      const eventId = questionEventId(agentId, nativeId);
+      resolve((m) => m.eventId === eventId);
+    },
     // 허락 요청은 종류와 상관없이 질문으로 알린다 — 질문지·계획 승인뿐 아니라 "매번 묻기" 모드의 도구 사용 허락도
     // (10-21 리규형님: 허락 창이 떴는데 알림이 없어 10~20분 몰랐다 · "똑같이 질문으로")
     onPermissionRequested({ agent, request }: PluginLifecycleEvents["agent.permission_requested"], { paseo }: { paseo: PaseoApi }) {
@@ -448,20 +469,39 @@ export function createPush(options: {
     },
     // 다음 턴이 시작되면(압축 명령 포함) 그 대화의 압축 준비는 처리된 것이다. 질문은 이 턴 안에서만 생기므로 함께 지운다
     onTurnStarted({ agent }: PluginLifecycleEvents["agent.turn_started"]) {
+      bumpTurn(agent.id);
       dropRepeats((r) => r.agentId === agent.id);
       resolve((m) => m.agentId === agent.id);
     },
-    onTurnEnded({ agent, turnId, outcome, timeline }: PluginLifecycleEvents["agent.turn_ended"], { paseo }: { paseo: PaseoApi }) {
+    onTurnEnded(event: PluginLifecycleEvents["agent.turn_ended"], { paseo }: { paseo: PaseoApi }) {
+      const { agent, turnId, outcome } = event;
       dropRepeats((r) => r.agentId === agent.id);
       resolve((m) => m.agentId === agent.id);
-      if (outcome.kind !== "completed" || !endsWithCheckpoint(timeline)) return;
+      if (outcome.kind !== "completed") return;
       // 압축 준비 폰 알림은 없앴다(10-24 리규형님 버튼 "폰 알림 없애고 보통 끝남 소리로" — 압축 명령은 autoCompact.ts 가 1분 뒤 대신 넣는다).
       // 목록 아이콘(압축 대기 중 표시)만 켜 둔다 — 새 차례가 시작되거나 보관하면 꺼진다
-      quietCompact.add(agent.id);
-      changed();
-      log(`compact ${compactEventId(agent.id, turnId)}: checkpoint report — icon only, no phone push`);
+      const mark = (timeline: readonly TurnItem[]) => {
+        if (!endsWithCheckpoint(timeline)) return;
+        quietCompact.add(agent.id);
+        changed();
+        log(`compact ${compactEventId(agent.id, turnId)}: checkpoint report — icon only, no phone push`);
+      };
+      // 0.12.0 이하 데몬은 훅이 내용을 넘기고, 0.13.0 은 빈 목록이라 기록 끝을 다시 읽는다(server/turnTimeline.ts).
+      // 다시 읽는 사이 새 차례가 시작되거나 보관됐으면 늦게 온 결과로 아이콘을 켜지 않는다
+      const delivered = deliveredTimeline(event);
+      if (delivered) return mark(delivered);
+      const seen = turns.get(agent.id) ?? 0;
+      return turnEndedTimeline(event, paseo).then(
+        (items) => {
+          if ((turns.get(agent.id) ?? 0) !== seen) return;
+          if (!items) return log(`compact ${compactEventId(agent.id, turnId)}: turn timeline unreadable — no icon`);
+          mark(items);
+        },
+        (error: unknown) => log(`compact ${compactEventId(agent.id, turnId)}: turn timeline refetch failed ${String(error)} — no icon`),
+      );
     },
     onArchived({ agent }: PluginLifecycleEvents["agent.archived"]) {
+      bumpTurn(agent.id);
       dropRepeats((r) => r.agentId === agent.id);
       resolve((m) => m.agentId === agent.id);
     },

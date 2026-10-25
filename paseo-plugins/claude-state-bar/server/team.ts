@@ -21,7 +21,7 @@ const ID_RULE = /^[a-z][a-z0-9-]{0,30}$/;
 type Result = { ok: boolean; error?: string; members: TeamMember[] };
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
-const MODES: readonly FileMode[] = ["ro", "rw", "add"];
+const MODES: readonly FileMode[] = ["ro", "rw"];
 const toMode = (v: unknown): FileMode => (MODES.includes(v as FileMode) ? (v as FileMode) : "ro");
 
 /** 저장된 권한 하나 — 모양이 틀린 칸은 기본값으로(검사는 저장할 때 cleanProjectAccess) */
@@ -68,7 +68,7 @@ function toLegacy(v: unknown): LegacyAccess {
 
 /**
  * 옛 서버 단위 권한을 프로젝트마다로 옮긴다(10-20 리규형님 "대표님 설정은 지금과 똑같이"). 이미 새 형식(권한이 붙은 프로젝트가 있음)이면 그대로.
- * 프로젝트 경로를 풀권한에 적었으면 읽기쓰기·계정파일만에 적었으면 내가 쓴 파일만·아니면 읽기만 ·
+ * 프로젝트 경로를 풀권한에 적었으면 읽기쓰기·아니면 읽기만(계정파일만 = 옛 "내가 쓴 파일만"은 10-25 에 없애 읽기만) ·
  * 프로젝트 안 하위 폴더(대표님 보고서함)는 같은 카테고리의 숨긴 팀원 프로젝트로 따로 넣는다(숨김 = 지금처럼 팀원 목록에 안 보임) ·
  * 프로젝트 밖이던 폴더는 옛 반영도 열지 않았으므로 버린다 · 포트·기록·비밀 가리기는 그 서버 첫 프로젝트에(서버 단위로 합쳐지니 결과가 같다)
  */
@@ -80,8 +80,8 @@ export function migrateLegacy(id: string, projects: TeamProject[], legacy: Recor
   for (const [server, a] of Object.entries(legacy)) {
     const addOnly = a.addOnly ?? [];
     const own = out.filter((p) => p.host === server);
-    for (const p of own) p.access = { ...defaultProjectAccess(), file: a.writable.includes(p.path) ? "rw" : addOnly.includes(p.path) ? "add" : "ro" };
-    for (const [list, mode] of [[a.writable, "rw"], [addOnly, "add"]] as const) {
+    for (const p of own) p.access = { ...defaultProjectAccess(), file: a.writable.includes(p.path) ? "rw" : "ro" };
+    for (const [list, mode] of [[a.writable, "rw"], [addOnly, "ro"]] as const) {
       for (const path of list) {
         if (under(path, home) || out.some((x) => x.host === server && x.path === path)) continue;
         const parent = own.find((x) => path.startsWith(`${x.path}/`));

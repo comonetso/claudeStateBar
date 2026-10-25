@@ -10,6 +10,11 @@ import { createContextPills } from "./client/contextPill";
 import { createJumpPills } from "./client/jumpPill";
 import { createFollowPills } from "./client/followPill";
 import { createAccountPills } from "./client/accountPill";
+import { createSharePills } from "./client/sharePill";
+import { registerShareReplyRenderer } from "./client/shareReplyRow";
+import { ShareScreen } from "./client/shareScreen";
+import { registerShareClient } from "./client/shareGate";
+import { SHARE_SCREEN_ID } from "./shared/share";
 import { createLoginPills } from "./client/claudeLogin";
 import { createJudge } from "./client/judge";
 import { createThinkingFoldPills } from "./client/thinkingFoldPill";
@@ -151,9 +156,24 @@ export default function contribute(client: PluginClientContext) {
   // 이 호스트가 소리를 낼 수 있으면(윈도우·맥 데몬) 공급자로 등록하고 설정 화면을 붙인다
   void (async () => {
     try {
-      const info = await client.rpc(hostInfo, {});
+      // 처음 물음이 한 번 실패하면 그 화면은 PC 가 켜져 있어도 소리·설정·목록 역할을 끝내 못 맡았다(Codex 261019 09-6, 10-26 고침).
+      // 이 물음만 다시 묻는다 — 5초부터 두 배씩, 60초에서 멈춤. 아래 등록은 답을 받은 뒤 한 번뿐이라 겹치지 않는다
+      const askHostInfo = async () => {
+        for (let attempt = 1, wait = 5000; ; attempt++, wait = Math.min(wait * 2, 60000)) {
+          try { return await client.rpc(hostInfo, {}); }
+          catch (error) {
+            if (disposed) throw error;
+            log(`host info failed (try ${attempt}, again in ${wait / 1000}s): ${String(error)}`);
+            await new Promise((resolve) => setTimeout(resolve, wait));
+            if (disposed) throw error;
+          }
+        }
+      };
+      const info = await askHostInfo();
       if (disposed) return;
       if (info.serverId) cleanups.push(registerSoundOrigin(info.serverId, client));
+      // 같이 보기 답글 줄의 단추가 그 대화의 기기 플러그인에 묻게 기기별 연결을 맡긴다(10-25)
+      if (info.serverId) cleanups.push(registerShareClient(info.serverId, client));
       // 직원용 Paseo(10-11)는 PC 처럼 설정·사용량·프로젝트 목록을 붙인다(관리 탭은 projectsScreen 이 숨김). 직원 데몬은 여럿일 수 있다(10-20
       // 대표님 IVR·콜어드민) — 데몬마다 그 플러그인 연결과 함께 기록해, 목록 칸을 맡은 쪽이 다른 직원 데몬 목록도 받게 한다(client/projectsData)
       cleanups.push(markTeamHost(info.serverId, info.team === true, info.home ?? null, client));
@@ -290,6 +310,14 @@ export default function contribute(client: PluginClientContext) {
   const listPills = createComposerMarkdown(client, log);
   // 대화마다 입력창 위 오른쪽 "생각 상자 모두 접기·펼치기" 알약(10-08)
   const foldPills = createThinkingFoldPills(client, log);
+  // 같이 보기(10-25) — 리규형님 대화 화면의 팀원 답글 줄 · 팀원 화면(별도 화면, 팀원 데몬 플러그인이 연다) · 대화마다 "공유" 알약
+  cleanups.push(registerShareReplyRenderer(client, log));
+  try {
+    cleanups.push(client.addScreen({ id: SHARE_SCREEN_ID, title: "공유", Component: ShareScreen as never }));
+  } catch (error) {
+    log(`share screen: ${String(error)}`);
+  }
+  const sharePills = createSharePills(client, log);
   // 대화마다 입력창 위 "Claude 공급자 바꾸기" 알약(10-14 — 같은 창에서 Claude 공급자를 바꾼다)
   const accountPills = createAccountPills(client, log);
   // 로그인이 풀린 대화 입력창 위 빨간 열쇠 알약 + 설정 화면 칸용 기기별 로그인 기능(10-14 — Claude 다시 로그인)
@@ -313,6 +341,7 @@ export default function contribute(client: PluginClientContext) {
         followPills.observe(entry.agent);
         listPills.observe(entry.agent);
         foldPills.observe(entry.agent);
+        sharePills.observe(entry.agent);
         accountPills.observe(entry.agent);
         loginPills.observe(entry.agent);
         phonePills.observe(entry.agent);
@@ -326,6 +355,7 @@ export default function contribute(client: PluginClientContext) {
           followPills.remove(update.agentId);
           listPills.remove(update.agentId);
           foldPills.remove(update.agentId);
+          sharePills.remove(update.agentId);
           accountPills.remove(update.agentId);
           loginPills.remove(update.agentId);
           phonePills.remove(update.agentId);
@@ -339,6 +369,7 @@ export default function contribute(client: PluginClientContext) {
         followPills.observe(update.agent);
         listPills.observe(update.agent);
         foldPills.observe(update.agent);
+        sharePills.observe(update.agent);
         accountPills.observe(update.agent);
         loginPills.observe(update.agent);
         phonePills.observe(update.agent);
@@ -358,6 +389,7 @@ export default function contribute(client: PluginClientContext) {
             followPills.observe(entry.agent);
             listPills.observe(entry.agent);
             foldPills.observe(entry.agent);
+            sharePills.observe(entry.agent);
             accountPills.observe(entry.agent);
             loginPills.observe(entry.agent);
             phonePills.observe(entry.agent);
@@ -388,6 +420,7 @@ export default function contribute(client: PluginClientContext) {
       () => followPills.dispose(),
       () => listPills.dispose(),
       () => foldPills.dispose(),
+      () => sharePills.dispose(),
       () => accountPills.dispose(),
       () => loginPills.dispose(),
       () => phonePills.dispose(),

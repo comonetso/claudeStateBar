@@ -588,6 +588,11 @@ export const PASEO_BUNDLES: Record<string, { version: string; ids: PaseoModuleId
   // 좁은 화면 시트·포커스 되돌리기 칸이 더해진 것뿐이고 우리가 쓰는 layoutByWorkspace·splitSizesByWorkspace 는 그대로, schema 본문은 같다.
   // hostRuntime 3767 은 acquireScriptStatusDemand 하나가 더해졌을 뿐 우리가 쓰는 listUsageReports 는 같다
   "35dfa9cf1abfa4f304ac50232f52b8f4": { version: "0.12.0", ids: { layout: 3809, schema: 3810, navigate: 3909, sidebarOrder: 4051, queryClient: 852, hostRuntime: 3767 } },
+  // PC 앱 0.13.0 (10-24 밤 자동 설치) — 번호가 모두 바뀌었다(check-bundle.cjs 결과 docs tests-261024/check_bundle_0130). 본문이 바뀐 셋은
+  // module_terms.cjs 로 대조: layout 은 우리가 쓰는 칸(layoutByWorkspace·splitSizesByWorkspace)·저장 이름 그대로(저장 정리만 함수로) ·
+  // navigate 는 받은 값을 그대로 안쪽 이동으로 넘기고 탭 드러내기만 더해짐 · sidebarOrder 는 저장 칸 셋 그대로, 저장 판만 1 → 3
+  // (판이 같은 기기끼리만 옮기므로 모두 0.13.0 이면 그대로). schema·queryClient 본문 같음 · hostRuntime 3525 도 getHostRuntimeStore·getClient 그대로
+  "65a3b645223750cd0d8a429bfc7fa2a7": { version: "0.13.0", ids: { layout: 3364, schema: 3369, navigate: 3362, sidebarOrder: 4340, queryClient: 960, hostRuntime: 3525 } },
 };
 
 /** 이 화면 번들에서 확인한 모듈 번호. 모르는 판이거나 웹이 아니면 null */
