@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AccountKind } from "../shared/account";
 import { renameRetry } from "./renameRetry";
-import { isTeamDaemon } from "./sound";
+import { isTeamDaemon } from "./presentation/sound";
 
 // 기록만 바꾼다. 실행기가 기록을 감시해 Claude 를 끄며 다음 말에 새 계정으로 이어 뜬다.
 /** 사용량 보기용 로그인 폴더(server/usageLogin)도 이 값을 쓴다 — Paseo 홈 계산을 새로 늘리지 않는다(guard G2) */

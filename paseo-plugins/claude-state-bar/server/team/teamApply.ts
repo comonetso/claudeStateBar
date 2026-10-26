@@ -5,8 +5,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { TeamJobAction, TeamMember, TeamProject } from "../../shared/team/team";
 import { combineAccess, fileModeLabel } from "../../shared/team/teamAccess";
-import { SAFE_HOST, sshExe } from "../projectLabels";
-import { listProjects } from "../projects";
+import { SAFE_HOST, sshExe } from "../projects/projectLabels";
+import { listProjects } from "../projects/projects";
 import { memberSnapshot, recordJob, removeMember } from "./team";
 
 // 팀원 관리 → 서버(10-11 리규형님 "계획대로 서버 작업까지"). PC 데몬이 SSH 로 각 서버의 팀원 도구(paseo-team-ctl)와
@@ -294,7 +294,7 @@ async function applyOn(job: Job, m: TeamMember, server: string): Promise<boolean
 const teamHome = (id: string) => `/var/lib/paseo-team/instances/${id}/paseo`;
 /** 이 PC 데몬의 설정 화면 값 — Paseo 가 registerSettings 값을 두는 자리(PASEO_HOME/plugin-settings/<플러그인>/<설정 id>.json) */
 const SETTINGS_FILE = join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "plugin-settings", "claude-state-bar", "sounds.json");
-/** 이 PC 의 공급자 선택(server/speech.ts speechFile 과 같은 자리 — 그 모듈은 Paseo 플러그인 도구를 불러와 여기선 경로만 같게 쓴다) */
+/** 이 PC 의 공급자 선택(server/presentation/speech.ts speechFile 과 같은 자리 — 그 모듈은 Paseo 플러그인 도구를 불러와 여기선 경로만 같게 쓴다) */
 const SPEECH_FILE = join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "claude-state-bar", "speech.json");
 
 /** 팀원에게 처음 줄 설정(base64) — 설정 화면 값과 공급자 선택. 이 PC 에 없는 것은 빈 글 */

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeProviders, PASEO_HOME } from "./account";
-import { isTeamDaemon } from "./sound";
+import { isTeamDaemon } from "./presentation/sound";
 
 // 사용량 보기용 로그인(10-22 리규형님 결정 — PC 가 꺼져도 회사 계정 사용량 카드가 보이게).
 // 서버의 팀 공급자는 env 의 CLAUDE_CODE_OAUTH_TOKEN(1년 열쇠)으로 대화를 돌리는데 그 열쇠로는 사용량 조회가 막혀(10-15 콜어드민 실측 429),

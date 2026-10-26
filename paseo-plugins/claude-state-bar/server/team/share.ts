@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { renameRetry, serializeFileWrite } from "../renameRetry";
-import { soundDataFile } from "../soundJournal";
+import { soundDataFile } from "../presentation/soundJournal";
 import { ADMIN_LABEL, SHARE_FILES_MAX, SHARE_MODE_DEFAULT, SHARE_REPLY_KIND, SHARE_REPLY_VERSION, shareFileKind, shareReplyNative, shareSizeText,
   type ShareMember, type ShareMode, type ShareReplyData, type ShareReplyFile } from "../../shared/team/share";
 
@@ -85,7 +85,7 @@ export function createShare(options: {
   route: () => Promise<{ route: Route | null; reason: string | null }>;
   /** PC 팀원 정보의 "부를 이름"(서버엔 없다) */
   callNames?: () => Promise<Record<string, string>>;
-  /** 답글이 오면 질문처럼 울리기 · 처리하면 거두기(server/push.ts) */
+  /** 답글이 오면 질문처럼 울리기 · 처리하면 거두기(server/presentation/push.ts) */
   ring?: (agent: Agent, paseo: PaseoApi, nativeId: string, title: string, body: string) => unknown;
   unring?: (agentId: string, nativeId: string) => void;
   fetchImpl?: typeof fetch;
@@ -526,7 +526,7 @@ export function createShare(options: {
   };
 }
 
-/** 팀원 데몬의 답글 소리(10-25 명시 지시 5 — 팀원도 같이 보기). 팀원 Paseo 엔 폰 등록이 없어 폰 알림 장치(server/push.ts)를 만들지 않으므로,
+/** 팀원 데몬의 답글 소리(10-25 명시 지시 5 — 팀원도 같이 보기). 팀원 Paseo 엔 폰 등록이 없어 폰 알림 장치(server/presentation/push.ts)를 만들지 않으므로,
  *  답글만 담은 "다시 울릴 질문" 목록을 같은 요청(pushCompactWait)으로 화면에 준다 — 화면(client/compactReady.ts)이 새 항목마다 질문 소리를 낸다.
  *  기다림 25초·판 0 시작은 push.ts 와 같다 */
 export function createStaffShareRinger() {

@@ -1,6 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import type { SoundSettings } from "../shared/settings";
-import { offlineProjectsStatus } from "../shared/offlineProjects";
+import { offlineProjectsStatus } from "../shared/projects/offlineProjects";
 import type { Usage } from "./usageFooter";
 import { runCleanups } from "./cleanup";
 
@@ -65,7 +65,7 @@ export function registerUiRole(input: UiCandidate): () => void {
   return () => { hub().candidates.delete(candidate); choose(); };
 }
 // 서버에 사본이 나중에 도착/교체되어도 표식을 다시 읽는다. PC 부재 판정용 폴링이 아니다.
-// 실패 뒤 재요청은 기존 client/projectsData.ts WAIT_RETRY_MS와 같은 값이다.
+// 실패 뒤 재요청은 기존 client/projects/projectsData.ts WAIT_RETRY_MS와 같은 값이다.
 const WAIT_RETRY_MS = 30_000;
 export function startFallbackCandidate(client: PluginClientContext, candidate: UiCandidate): () => void {
   let stopped = false, withdraw: (() => void) | undefined, retry: ReturnType<typeof setTimeout> | undefined;

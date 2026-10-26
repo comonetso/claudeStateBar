@@ -2,11 +2,11 @@ import { renameRetry } from "../renameRetry";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import type { ProjectsEditOp } from "../../shared/projects";
+import type { ProjectsEditOp } from "../../shared/projects/projects";
 import type { TeamMember, TeamProject } from "../../shared/team/team";
 import { callNameProblem } from "../../shared/team/teamStandard";
 import { cleanProjectAccess, combineAccess, defaultProjectAccess, type FileMode, type LegacyAccess, type ProjectAccess } from "../../shared/team/teamAccess";
-import { SAFE_HOST } from "../projectLabels";
+import { SAFE_HOST } from "../projects/projectLabels";
 
 // 팀원 목록과 팀원 전용 프로젝트(10-11 리규형님: 리규형님 목록과 따로, 팀원 → 그 팀원의 카테고리 → 프로젝트).
 // PC 데몬의 플러그인 전용 파일 하나에 둔다. 서버에 팀원을 만들거나 폴더를 건드리는 일은 여기서 하지 않는다(server/team/teamApply).
@@ -263,7 +263,7 @@ const sameKey = (a: string, b: string) => {
   return a.slice(0, bar(a)) === b.slice(0, bar(b)) && cleanPath(a.slice(bar(a) + 1)) === cleanPath(b.slice(bar(b) + 1));
 };
 
-/** 프로젝트 관리 화면(server/projectsEdit)과 같은 고치기를 한 팀원의 팀원 프로젝트에 — 서버는 프로젝트에서 다시 센다 */
+/** 프로젝트 관리 화면(server/projects/projectsEdit)과 같은 고치기를 한 팀원의 팀원 프로젝트에 — 서버는 프로젝트에서 다시 센다 */
 export function editMemberProjects(memberId: string, op: ProjectsEditOp): Promise<Result> {
   return changeTeam((members) => {
     const m = members.find((x) => x.id === memberId);

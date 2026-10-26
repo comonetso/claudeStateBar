@@ -24,12 +24,17 @@ const CONFIG_DIR = process.env.WORK_LEDGER_HOME || path.join(os.homedir(), ".wor
 // 상태 — 화면·명령이 같은 이름을 쓴다
 export const STATES = ["제안", "할 일", "진행 중", "끝냄", "확인됨", "보류", "버림"];
 const OPEN_STATES = new Set(["제안", "할 일", "진행 중", "끝냄", "보류"]);
-// "묶음" 줄 = 이 항목이 어느 큰 작업의 세부인지(내용 = 큰 작업 번호, "-" 면 큰 작업으로 되돌림). 마지막 줄이 이긴다.
+// "묶음" 줄 = 이 항목이 어느 대작업·중작업 아래인지(내용 = 부모 번호, "-" 면 묶음 풂). 마지막 줄이 이긴다.
 // 사람이 맥락 단위로 보게 큰 작업 하나 아래 고친 것들을 단다(10-26 리규형님 — 조각마다 항목이라 목록이 너무 길었다)
 // "설명" 줄 = 사람이 ? 를 눌러 보는 자세한 설명(마지막 줄이 이긴다). 줄바꿈은 \n 두 글자로 담는다
 // "내 메모" 줄 = 사람만 쓰는 메모(큰 작업 · 프로젝트). AI 는 읽기만. 마지막 줄이 현재 메모, 빈 줄이면 지움(10-26 리규형님)
 // "바뀜" 줄 = 정했던 것이 바뀐 기록(전 → 후 — 이유). 화면에서는 ? 팝업의 "바뀐 것" 칸에만 보인다(10-26 리규형님)
-const LOG_KINDS = new Set([...STATES, "메모", "제목", "묶음", "설명", "내 메모", "바뀜"]);
+// "대작업" 줄 = 이 항목이 대작업(오래 가는 줄기 — 작업 장부·상태바 플러그인 같은 것)이다. 대작업 > 중작업(요청 하나) > 세부(고친 조각)
+// 세 단(10-26 리규형님). 대작업은 상태가 없고 화면·목록에 아래 중작업 요약만 보인다. 내용 "-" 면 대작업을 그만둔다
+// "검증" = AI 끝냄의 검증 범위(10-27 리규형님 — 확인됨은 사람 전용, AI 가 끝까지 검증한 일은 "AI 검증 완료"로 확인 대기에서 빠진다):
+//   "AI" = 범위 전부 AI 가 검증 · "확인: <질문>" = AI 가 볼 수 없는 것이 남음(사람에게 그 질문만). 끝냄이 아닌 상태가 되면 사라진다
+// "현황" = 대작업·프로젝트의 지금 위치 요약(AI·사람 모두 씀, 마지막 것이 보인다) — 장부 탭 첫 화면 "지금 어디까지"
+const LOG_KINDS = new Set([...STATES, "메모", "제목", "묶음", "설명", "내 메모", "바뀜", "대작업", "검증", "현황"]);
 const STATE_ALIASES = {
   suggest: "제안", todo: "할 일", doing: "진행 중", wip: "진행 중", done: "끝냄",
   confirmed: "확인됨", ok: "확인됨", hold: "보류", drop: "버림", dropped: "버림",
@@ -195,16 +200,47 @@ export function parseItem(file, project) {
   let parent = null;
   let desc = "";
   let memo = "";
+  let area = false;
+  let wasArea = false; // 없앤 대작업(ledger area --end) — 화면·개수에서 뺀다(10-27 Codex 의견)
+  // 시작 = 처음 "진행 중"이 된 때, 완료 = 마지막 "끝냄" 시각(그 뒤 다시 진행 중이 되면 비운다) — 화면에 보인다(10-26 리규형님)
+  let started = "";
+  let finished = "";
+  let verify = null; // { ai: true } | { ask: "질문" } — 끝냄일 때만
+  let summary = null; // { text, at } — 대작업 현황
   for (const e of log) {
-    if (STATES.includes(e.kind)) state = e.kind;
+    if (e.kind === "검증") verify = e.text === "AI" ? { ai: true } : { ask: e.text.replace(/^확인:\s*/, "") };
+    if (e.kind === "현황") summary = e.text ? { text: e.text.replace(/\\n/g, "\n"), at: e.at } : null;
+    if (STATES.includes(e.kind)) {
+      verify = null; // 상태가 바뀌면 지난 검증은 끝 — 새 끝냄의 검증 줄은 바로 뒤에 붙는다
+      state = e.kind;
+      if (e.kind === "진행 중") { if (!started) started = e.at; finished = ""; }
+      if (e.kind === "끝냄") finished = e.at;
+      if (e.kind === "할 일" || e.kind === "제안") finished = "";
+    }
     if (e.kind === "제목" && e.text) title = e.text;
     if (e.kind === "묶음") parent = e.text && e.text !== "-" ? e.text : null;
     if (e.kind === "설명") desc = e.text.replace(/\\n/g, "\n");
     if (e.kind === "내 메모") memo = e.text.replace(/\\n/g, "\n");
+    if (e.kind === "대작업") { area = e.text !== "-"; wasArea = true; }
   }
   const created = log[0]?.at || `${id.slice(0, 10)} 00:00:00`;
   const updated = log[log.length - 1]?.at || created;
-  return { id, project, title, state, created, updated, log, file, parent, desc, memo };
+  return { id, project, title, state, created, updated, log, file, parent, desc, memo, area, wasArea: wasArea && !area, started, finished, verify, summary };
+}
+// 대작업 시작 = 아래 중작업·세부 전체에서 가장 이른 "진행 중" — 없으면 가장 이른 등록을 "기록 시작"으로(10-27 Codex 의견: 바로 아래만 보면
+// 옮겨 온 시각을 실제 시작처럼 읽는다. 작업 장부가 14:51 로 나왔지만 실제 첫 진행은 04:32)
+export function areaSince(area, all) {
+  const mids = all.filter((x) => x.parent === area.id && !x.area);
+  const desc = [...mids, ...all.filter((x) => mids.some((m) => m.id === x.parent))];
+  const real = desc.map((x) => x.started).filter(Boolean).sort()[0];
+  if (real) return { at: real, label: "시작" };
+  const first = desc.map((x) => x.created).filter(Boolean).sort()[0];
+  return first ? { at: first, label: "기록 시작" } : null;
+}
+// 화면(장부 탭·HTML)에 넘길 모양 — 없앤 대작업은 빼고, 대작업에는 시작 시각(since)을 붙인다. 두 화면이 같은 계산을 쓰게 여기 한 곳에서
+export function forScreen(items) {
+  const live = items.filter((it) => !it.wasArea);
+  return live.map(({ file, ...r }) => (r.area ? { ...r, since: areaSince(r, live) } : r));
 }
 export function loadAll(cfg) {
   const root = path.join(cfg.dataDir, "projects");
@@ -301,9 +337,13 @@ function fail(s) { process.stderr.write(`✖ ${s}\n`); process.exit(1); }
 
 const ICON = { "제안": "◇", "할 일": "☐", "진행 중": "▶", "끝냄": "◐", "확인됨": "☑", "보류": "‖", "버림": "✕" };
 function shortId(id) { return id.slice(-4); }
-function describe(it) { return `${ICON[it.state] || "·"} ${shortId(it.id)}  [${it.state}]  ${it.title}`; }
+function describe(it) {
+  const v = it.state === "끝냄" && it.verify ? (it.verify.ai ? " (AI 검증 완료)" : ` (직접 확인: ${it.verify.ask})`) : "";
+  return `${ICON[it.state] || "·"} ${shortId(it.id)}  [${it.state}]  ${it.title}${v}`;
+}
 
 // ── 인자 ────────────────────────────────────────────────
+const FLAG_ONLY = new Set(["verified", "closed", "json", "all", "clear", "quiet"]);
 function parseArgs(argv) {
   const pos = []; const opt = {};
   for (let i = 0; i < argv.length; i++) {
@@ -311,7 +351,8 @@ function parseArgs(argv) {
     if (a.startsWith("--")) {
       const [k, v] = a.slice(2).split("=", 2);
       if (v !== undefined) opt[k] = v;
-      else if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) opt[k] = argv[++i];
+      // 값 없는 선택지는 뒤 낱말을 먹지 않는다(--verified 끝냄 처럼 써도 "끝냄"이 상태로 남게)
+      else if (!FLAG_ONLY.has(k) && i + 1 < argv.length && !argv[i + 1].startsWith("--")) opt[k] = argv[++i];
       else opt[k] = true;
     } else pos.push(a);
   }
@@ -372,15 +413,71 @@ function cmdAdd(cfg, pos, opt, defaultState) {
     files.push(file);
     say(`${under ? "  └ " : ""}${ICON[state]} ${shortId(id)}  [${state}]  ${oneLine(title)}   (${under ? `${shortId(under.id)} 아래 · ` : ""}${project})`);
   }
+  // 확인됨·끝냄 중작업에 새 세부가 붙으면 그 중작업을 다시 연다 — 확인은 그때까지의 범위였다(10-27 Codex 의견: 확인된 tatt 아래 pqqo 가
+  // 화면에선 확인 단추 없이, AI 안내에선 아예 빠졌다). 이전 확인 기록은 그대로 남는다
+  if (under && !under.area && ["확인됨", "끝냄"].includes(under.state)) {
+    fs.appendFileSync(under.file, `${logLine(cfg, who, "진행 중", `새 세부 ${titles.length}건 추가로 다시 엶(이전 ${under.state} 범위 밖)`)}\n`, "utf8");
+    files.push(under.file);
+    say(`  ↺ ${shortId(under.id)}  ${under.state} → 진행 중  ${under.title}`);
+  }
   commitAndPush(cfg, files, `ledger: ${state} ${titles.length}건 (${project})`);
   noteActivity(project, `add ${state} ${titles.length}`);
   rebuildQuiet(cfg);
 }
-// 큰 작업은 한 단계만 — 세부 아래에 세부를 달지 않는다(사람이 펼쳐 보는 깊이를 하나로)
+// 세 단까지 — 대작업 아래 = 중작업, 중작업 아래 = 세부. 세부 아래에는 달지 않는다(10-26 리규형님 대작업 > 중작업 > 세부)
 function parentFor(cfg, ref) {
+  const all = loadAll(cfg);
   const p = findItem(cfg, ref);
-  if (p.parent) fail(`${shortId(p.id)} 는 이미 ${shortId(p.parent)} 의 세부입니다 — 큰 작업 번호를 주세요.`);
+  if (!p.area && p.parent && all.find((x) => x.id === p.parent && !x.area)) fail(`${shortId(p.id)} 는 이미 ${shortId(p.parent)} 의 세부입니다 — 대작업이나 중작업 번호를 주세요.`);
   return p;
+}
+/** 항목의 단 — 0 대작업 · 1 중작업(대작업 아래, 또는 아직 대작업이 없는 요청) · 2 세부 */
+function levelOf(it, all) {
+  if (it.area) return 0;
+  if (!it.parent) return 1;
+  const p = all.find((x) => x.id === it.parent);
+  if (!p) return 1;
+  return p.area ? 1 : 2;
+}
+// 대작업 만들기 — ledger area "작업 장부(work-ledger)" [--desc "…"]
+function cmdArea(cfg, pos, opt) {
+  ensureRepo(cfg);
+  // ledger area --end <번호> — 대작업을 없앤다(10-26 리규형님: 주제 아닌 대작업 정리). 아래에 열린 일이 남으면 거부
+  if (opt.end) {
+    const it = findItem(cfg, opt.end === true ? pos[0] : opt.end);
+    if (!it.area) fail(`${shortId(it.id)} 는 대작업이 아닙니다.`);
+    const left = loadAll(cfg).filter((x) => x.parent === it.id && OPEN_STATES.has(x.state));
+    if (left.length) fail(`${shortId(it.id)} 아래에 열린 일 ${left.length}개가 남았습니다 — 먼저 ledger move 로 옮기세요.`);
+    const who = whoFor(cfg, opt);
+    fs.appendFileSync(it.file, `${logLine(cfg, who, "대작업", "-")}\n${logLine(cfg, who, "버림", "대작업 없앰")}\n`, "utf8");
+    say(`대작업 없앰: ${shortId(it.id)}  ${it.title}`);
+    commitAndPush(cfg, [it.file], `ledger: 대작업 없앰 ${it.id}`);
+    noteActivity(it.project, "area-end");
+    rebuildQuiet(cfg);
+    return;
+  }
+  const title = pos.filter(Boolean).join(" ");
+  if (!title) fail('대작업 이름을 주세요: ledger area "작업 장부(work-ledger)"');
+  const project = safeName(opt.project || detectProject(cfg));
+  const dir = path.join(cfg.dataDir, "projects", project, "items");
+  fs.mkdirSync(dir, { recursive: true });
+  const who = whoFor(cfg, opt);
+  const id = newId(cfg, dir);
+  const body = [
+    `# ${oneLine(title)}`,
+    `<!-- work-ledger item ${id} · 아래 기록은 덧붙이기만 한다 -->`,
+    "",
+    "## 기록",
+    logLine(cfg, who, "대작업", ""),
+    ...(opt.desc && opt.desc !== true ? [logLine(cfg, who, "설명", descText(opt.desc))] : []),
+    "",
+  ].join("\n");
+  const file = path.join(dir, `${id}.md`);
+  fs.writeFileSync(file, body, "utf8");
+  say(`■ ${shortId(id)}  [대작업]  ${oneLine(title)}   (${project})`);
+  commitAndPush(cfg, [file], `ledger: 대작업 ${id} (${project})`);
+  noteActivity(project, "area");
+  rebuildQuiet(cfg);
 }
 // 프로젝트 메모 = projects/<프로젝트>/project.md 의 마지막 "내 메모" 줄(덧붙이기만)
 function projectMemoFile(cfg, project) {
@@ -395,6 +492,48 @@ export function projectMemo(cfg, project) {
     .sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
   for (const m of lines) memo = m[3].trim().replace(/\\n/g, "\n");
   return memo;
+}
+/** 프로젝트 현황(마지막 "현황" 줄) — { text, at } 또는 null */
+export function projectSummary(cfg, project) {
+  const file = projectMemoFile(cfg, project);
+  if (!fs.existsSync(file)) return null;
+  const lines = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n").split("\n")
+    .map((l) => l.match(/^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) · ([^·]*?) · 현황 · ?(.*)$/)).filter(Boolean)
+    .sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+  const m = lines[lines.length - 1];
+  return m && m[3].trim() ? { text: m[3].trim().replace(/\\n/g, "\n"), at: m[1] } : null;
+}
+// 현황 요약 — ledger summary project "글" | -   ·   ledger summary <대작업 번호> "글" | -
+// 지금 되는 것·남은 것·다음 후보를 사람 말로 몇 줄. 덧붙이기만 하고 마지막 것이 장부 탭 첫 화면에 보인다(10-27 리규형님 — Codex 시안 "지금 어디까지")
+function cmdSummary(cfg, pos, opt) {
+  ensureRepo(cfg);
+  const [ref, ...rest] = pos;
+  if (!ref) fail('ledger summary project "지금 되는 것·남은 것·다음 후보" | -    또는    ledger summary <대작업 번호> "글" | -');
+  let text = rest.join(" ");
+  if (text === "-") text = fs.readFileSync(0, "utf8");
+  if (!text.trim()) fail("현황 글을 주세요.");
+  text = descText(text);
+  let file;
+  let project;
+  let label;
+  if (ref === "project") {
+    project = safeName(opt.project || detectProject(cfg, opt.cwd || process.cwd()));
+    file = projectMemoFile(cfg, project);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (!fs.existsSync(file)) fs.writeFileSync(file, `# ${project} — 프로젝트 메모\n<!-- work-ledger project memo · 아래 기록은 덧붙이기만 한다 -->\n\n## 기록\n`, "utf8");
+    label = `프로젝트 ${project}`;
+  } else {
+    const it = findItem(cfg, ref);
+    if (!it.area) fail(`${shortId(it.id)} 는 대작업이 아닙니다 — 현황은 대작업이나 project 에만 씁니다(중작업은 설명·기록으로).`);
+    file = it.file;
+    project = it.project;
+    label = `${shortId(it.id)} ${it.title}`;
+  }
+  fs.appendFileSync(file, `${logLine(cfg, whoFor(cfg, opt), "현황", text)}\n`, "utf8");
+  say(`현황 저장: ${label}`);
+  commitAndPush(cfg, [file], `ledger: 현황 ${ref === "project" ? project : ref}`);
+  noteActivity(project, `현황 ${ref}`);
+  rebuildQuiet(cfg);
 }
 // 사람만 쓰는 메모 — ledger memo <번호> "글" | -    ·    ledger memo project "글" | -   (- 면 표준 입력, --clear 면 지움)
 function cmdMemo(cfg, pos, opt) {
@@ -444,7 +583,7 @@ function cmdDescribe(cfg, pos, opt) {
 function cmdMove(cfg, pos, opt) {
   ensureRepo(cfg);
   const refs = pos.filter(Boolean);
-  if (!refs.length || (!opt.under && !opt.top)) fail("ledger move <번호> [번호...] --under <큰 작업 번호>   또는   --top (큰 작업으로 되돌리기)");
+  if (!refs.length || (!opt.under && !opt.top)) fail("ledger move <번호> [번호...] --under <대작업 또는 중작업 번호>   또는   --top (묶음 풀기)");
   const under = opt.under ? parentFor(cfg, opt.under) : null;
   const all = loadAll(cfg);
   const who = whoFor(cfg, opt);
@@ -452,12 +591,14 @@ function cmdMove(cfg, pos, opt) {
   for (const ref of refs) {
     const it = findItem(cfg, ref);
     if (under && it.id === under.id) fail(`자기 아래로는 옮길 수 없습니다: ${shortId(it.id)}`);
-    if (under && all.some((x) => x.parent === it.id)) fail(`${shortId(it.id)} 는 세부를 가진 큰 작업입니다 — 세부부터 옮기세요.`);
+    if (it.area) fail(`${shortId(it.id)} 는 대작업입니다 — 대작업은 옮기지 않습니다.`);
+    // 중작업은 세부를 데리고 대작업 아래로 옮길 수 있다. 중작업 아래(세부 자리)로는 세부 없는 것만
+    if (under && !under.area && all.some((x) => x.parent === it.id)) fail(`${shortId(it.id)} 는 세부를 가진 중작업입니다 — 세부 자리로는 옮길 수 없습니다(대작업 아래로는 됩니다).`);
     const target = under ? under.id : "-";
     if ((it.parent || "-") === target) { say(`이미 그 자리입니다: ${describe(it)}`); continue; }
     fs.appendFileSync(it.file, `${logLine(cfg, who, "묶음", target)}\n`, "utf8");
     files.push(it.file);
-    say(under ? `  └ ${describe(it)}   → ${shortId(under.id)} ${under.title}` : `${describe(it)}   → 큰 작업으로`);
+    say(under ? `  └ ${describe(it)}   → ${shortId(under.id)} ${under.title}` : `${describe(it)}   → 묶음 풂`);
   }
   if (!files.length) return;
   commitAndPush(cfg, files, `ledger: 묶음 ${files.length}건`);
@@ -471,18 +612,25 @@ function cmdStatus(cfg, pos, opt) {
   // 따옴표 없이 친 "진행 중"·"할 일" 은 두 낱말로 갈라져 들어온다 — 붙여서 상태면 그렇게 읽는다
   if (!STATES.includes(st) && rest.length && STATES.includes(`${st} ${rest[0]}`)) st = `${st} ${rest.shift()}`;
   const it = findItem(cfg, ref);
+  if (it.area) fail(`${shortId(it.id)} 는 대작업입니다 — 대작업은 상태가 없습니다(아래 중작업의 상태를 바꾸세요).`);
   const state = normState(st);
   const why = oneLine(opt.why ?? rest.join(" "));
   checkStateAllowed(cfg, state, why);
+  // 검증 범위(끝냄에만): --verified = AI 가 범위 전부 검증 · --ask "질문" = 사람만 볼 수 있는 것이 남음
+  const ask = typeof opt.ask === "string" ? oneLine(opt.ask) : "";
+  if ((opt.verified || opt.ask) && state !== "끝냄") fail("--verified·--ask 는 끝냄과 함께만 씁니다.");
+  if (opt.verified && opt.ask) fail("--verified 와 --ask 중 하나만 — 사람이 볼 것이 남았으면 --ask 입니다.");
+  if (opt.ask && !ask) fail('--ask 에는 리규형님께 드릴 질문을 쉬운 말로: --ask "폰에서 길게 눌러 복사가 되는지 봐 주세요"');
   if (state === it.state && !why) { say(`이미 ${state}입니다: ${describe(it)}`); return; }
   const who = whoFor(cfg, opt);
-  fs.appendFileSync(it.file, `${logLine(cfg, who, state, why)}\n`, "utf8");
-  say(`${ICON[state]} ${shortId(it.id)}  ${it.state} → ${state}  ${it.title}`);
+  const verifyLine = opt.verified ? `${logLine(cfg, who, "검증", "AI")}\n` : ask ? `${logLine(cfg, who, "검증", `확인: ${ask}`)}\n` : "";
+  fs.appendFileSync(it.file, `${logLine(cfg, who, state, why)}\n${verifyLine}`, "utf8");
+  say(`${ICON[state]} ${shortId(it.id)}  ${it.state} → ${state}${opt.verified ? " (AI 검증 완료)" : ask ? ` (직접 확인: ${ask})` : ""}  ${it.title}`);
   const files = [it.file];
-  // 사람은 큰 작업에서 한 번만 확인한다 — 그 아래 끝난 세부도 같이 확인됨(남은 세부는 그대로 둔다)
+  // 사람은 중작업에서 한 번만 확인한다 — 그 아래 끝난 세부도 같이 확인됨(남은 세부는 그대로 둔다)
   if (state === "확인됨") {
     for (const ch of loadAll(cfg).filter((x) => x.parent === it.id && x.state === "끝냄")) {
-      fs.appendFileSync(ch.file, `${logLine(cfg, who, "확인됨", `큰 작업 ${shortId(it.id)} 확인`)}\n`, "utf8");
+      fs.appendFileSync(ch.file, `${logLine(cfg, who, "확인됨", `중작업 ${shortId(it.id)} 확인`)}\n`, "utf8");
       files.push(ch.file);
       say(`  └ ${ICON["확인됨"]} ${shortId(ch.id)}  끝냄 → 확인됨  ${ch.title}`);
     }
@@ -508,6 +656,7 @@ function cmdList(cfg, opt) {
   let all = loadAll(cfg);
   const project = opt.all ? null : safeName(opt.project || detectProject(cfg));
   if (project) all = all.filter((it) => it.project === project);
+  all = all.filter((it) => !it.wasArea); // 없앤 대작업은 끝낸 일이 아니다
   let items = opt.closed ? all : all.filter((it) => OPEN_STATES.has(it.state));
   const order = { "끝냄": 0, "진행 중": 1, "할 일": 2, "제안": 3, "보류": 4, "확인됨": 5, "버림": 6 };
   const byOrder = (a, b) => (order[a.state] - order[b.state]) || (a.updated < b.updated ? 1 : -1);
@@ -516,22 +665,41 @@ function cmdList(cfg, opt) {
   const behind = unpushedCount(cfg);
   if (behind) say(`⚠ GitHub 에 아직 못 올린 기록 ${behind}개 — ledger sync`);
   if (!items.length) { say(project ? `${project}: 남은 일이 없습니다.` : "남은 일이 없습니다."); return; }
-  // 큰 작업 → 그 아래 세부. 세부가 남았으면 닫힌 큰 작업도 머리로 보인다
-  const ids = new Set(all.map((x) => x.id));
-  const tops = new Map();
+  // 대작업 → 중작업 → 세부(10-26 리규형님 세 단). 아래가 남았으면 닫힌 중작업도 머리로 보인다. 대작업은 상태 없이 요약만
+  const byId = new Map(all.map((x) => [x.id, x]));
+  const midOf = (it) => (levelOf(it, all) === 2 ? byId.get(it.parent) : it);
+  const areaOf = (mid) => (mid.parent && byId.get(mid.parent)?.area ? byId.get(mid.parent) : null);
+  const groups = new Map(); // 대작업 id("" = 대작업 없음) → Map(중작업 id → 중작업)
   for (const it of items) {
-    const top = it.parent && ids.has(it.parent) ? it.parent : it.id;
-    if (!tops.has(top)) tops.set(top, all.find((x) => x.id === top));
+    if (it.area) continue;
+    const mid = midOf(it);
+    const key = areaOf(mid)?.id ?? "";
+    if (!groups.has(key)) groups.set(key, new Map());
+    groups.get(key).set(mid.id, mid);
   }
-  const heads = [...tops.values()].sort(byOrder);
+  const tm = (it) => `${it.started ? ` · 시작 ${it.started.slice(5, 16)}` : ""}${it.finished ? ` · 끝 ${it.finished.slice(5, 16)}` : ""}`;
+  // 대작업은 만든 순서로 고정(10-27 리규형님 버튼 — 확인할 때마다 자리가 바뀌던 것). 대작업 없음은 맨 아래
+  const keys = [...groups.keys()].sort((a, b) => (a === "" ? 1 : b === "" ? -1 : byId.get(a).created < byId.get(b).created ? -1 : 1));
   let last = null;
-  for (const h of heads) {
-    if (!project && h.project !== last) { say(`\n■ ${h.project}`); last = h.project; }
-    const kids = items.filter((x) => x.parent === h.id).sort(byOrder);
-    const allKids = all.filter((x) => x.parent === h.id);
-    const done = allKids.filter((x) => ["끝냄", "확인됨", "버림"].includes(x.state)).length;
-    say(`${describe(h)}${allKids.length ? `   (세부 ${done}/${allKids.length})` : ""}`);
-    for (const k of kids) say(`    └ ${describe(k)}`);
+  for (const key of keys) {
+    const mids = [...groups.get(key).values()].sort(byOrder);
+    const proj = key ? byId.get(key).project : mids[0].project;
+    if (!project && proj !== last) { say(`\n■ ${proj}`); last = proj; }
+    if (key) {
+      const a = byId.get(key);
+      const under = all.filter((x) => x.parent === a.id && !x.area);
+      // 끝냄 중 AI 가 범위 전부 검증한 것은 "AI 검증"으로 따로 — 확인 대기는 사람이 볼 것만(10-27 리규형님)
+      const keyOf = (x) => (x.state === "끝냄" && x.verify?.ai ? "AI 검증" : x.state);
+      const counts = ["끝냄", "진행 중", "할 일", "제안", "보류", "AI 검증"].map((s) => [s, under.filter((x) => keyOf(x) === s).length]).filter(([, n]) => n);
+      const since = areaSince(a, all);
+      say(`\n▣ ${shortId(a.id)}  ${a.title}${counts.length ? `   (${counts.map(([s, n]) => `${s === "끝냄" ? "확인 대기" : s} ${n}`).join(" · ")})` : ""}${since ? ` · ${since.label} ${since.at.slice(5, 16)}` : ""}`);
+    } else say("\n▣ (대작업 없음)");
+    for (const m of mids) {
+      const allKids = all.filter((x) => x.parent === m.id);
+      const done = allKids.filter((x) => ["끝냄", "확인됨", "버림"].includes(x.state)).length;
+      say(`  ${describe(m)}${tm(m)}${allKids.length ? `   (세부 ${done}/${allKids.length})` : ""}`);
+      for (const k of items.filter((x) => x.parent === m.id).sort(byOrder)) say(`      └ ${describe(k)}${tm(k)}`);
+    }
   }
 }
 function cmdShow(cfg, pos) {
@@ -581,9 +749,9 @@ function cmdView(cfg, opt) {
   const project = safeName(opt.project || detectProject(cfg, opt.cwd || process.cwd()));
   let items = [];
   let error = null;
-  if (fs.existsSync(path.join(cfg.dataDir, ".git"))) items = loadAll(cfg).filter((it) => it.project === project).map(({ file, ...r }) => r);
+  if (fs.existsSync(path.join(cfg.dataDir, ".git"))) items = forScreen(loadAll(cfg).filter((it) => it.project === project));
   else error = `장부 저장소가 없습니다: ${cfg.dataDir}`;
-  say(JSON.stringify({ project, enabled: cfg.enabledProjects.includes(project), owner: cfg.owner, behind: error ? 0 : unpushedCount(cfg), builtAt: stamp(cfg), error, items, projectMemo: error ? "" : projectMemo(cfg, project) }));
+  say(JSON.stringify({ project, enabled: cfg.enabledProjects.includes(project), owner: cfg.owner, behind: error ? 0 : unpushedCount(cfg), builtAt: stamp(cfg), error, items, projectMemo: error ? "" : projectMemo(cfg, project), projectSummary: error ? null : projectSummary(cfg, project) }));
 }
 function cmdInstall(cfg, opt) {
   // 명령·훅을 고정 위치(~/.work-ledger/app)에 두고 짧은 이름(~/bin/ledger)을 만든다
@@ -606,7 +774,7 @@ function cmdInstall(cfg, opt) {
 // ── 화면 ────────────────────────────────────────────────
 async function buildHtml(cfg) {
   const { renderHtml } = await import("./render.mjs");
-  const items = loadAll(cfg).map(({ file, ...r }) => r);
+  const items = forScreen(loadAll(cfg));
   const out = path.join(cfg.dataDir, "_site", "index.html");
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, renderHtml(items, { builtAt: stamp(cfg), owner: cfg.owner }), "utf8");
@@ -623,14 +791,17 @@ function openFile(file) {
 
 const HELP = `work-ledger — 프로젝트별 작업 장부
 
-  ledger add "제목" [--note 메모] [--chat 대화] [--state 상태]   큰 작업 추가(여럿 가능)
-  ledger add "제목" --desc "자세한 설명"                          설명과 함께 추가(화면의 ? 로 봄)
+  ledger area "대작업 이름" [--desc 설명]                          대작업(오래 가는 줄기) 만들기 — 상태 없음
+  ledger area --end <번호>                                       대작업 없애기(아래 열린 일을 먼저 옮겨야 함)
+  ledger add "요청" --under <대작업 번호> [--desc 설명]           그 대작업 아래 중작업(요청 하나) 추가
+  ledger add "조각" --under <중작업 번호>                         그 중작업 아래 세부(고친 조각) 추가
+  ledger add "제목" [--note 메모] [--chat 대화] [--state 상태]   묶음 없이 추가(여럿 가능)
   ledger describe <번호> "자세한 설명" | -                         설명 넣기·바꾸기(- 면 표준 입력, 여러 줄)
-  ledger memo <번호> "글" | -  ·  ledger memo project "글" | -     내 메모(사람만 · 큰 작업·프로젝트, --clear 지움)
-  ledger add "세부" --under <큰 작업 번호>                       그 큰 작업 아래 세부 추가
-  ledger move <번호...> --under <큰 작업 번호> | --top            세부로 옮기기·큰 작업으로 되돌리기
+  ledger memo <번호> "글" | -  ·  ledger memo project "글" | -     내 메모(사람만 · 중작업·프로젝트, --clear 지움)
+  ledger move <번호...> --under <대작업|중작업 번호> | --top      옮기기(중작업은 세부를 데리고 대작업 아래로)·묶음 풀기
   ledger suggest "제목" ["제목"...]                              AI 제안 넣기(사람이 채택)
-  ledger status <번호> <상태> [--why 근거]                        상태 바꾸기
+  ledger status <번호> <상태> [--why 근거] [--verified | --ask "질문"]  상태 바꾸기 — 끝냄에 --verified = AI 가 범위 전부 검증(확인 대기에서 빠짐), --ask = 사람만 볼 것이 남음
+  ledger summary project|<대작업 번호> "글" | -                   현황(지금 되는 것·남은 것·다음 후보) — 장부 탭 첫 화면
   ledger note <번호> "메모"                                        메모 덧붙이기
   ledger rename <번호> "새 제목"                                   제목 바꾸기
   ledger change <번호> "전 → 후" --why "이유"                      정했던 것이 바뀐 기록(? 팝업 "바뀐 것" 칸)
@@ -644,8 +815,9 @@ const HELP = `work-ledger — 프로젝트별 작업 장부
   ledger install                                                  명령·훅을 ~/.work-ledger/app 에 설치
 
 상태: ${STATES.join(" · ")}
-  · "끝냄"을 AI 가 찍을 때는 --why 근거 필수 · "확인됨"은 사람만(큰 작업을 확인하면 끝난 세부도 같이)
-묶음: 사람 요청 하나 = 큰 작업 하나, 그 안에서 고친 것 = 세부(한 단계만)
+  · "끝냄"을 AI 가 찍을 때는 --why 근거 필수 · "확인됨"은 사람만(중작업을 확인하면 끝난 세부도 같이)
+묶음: 대작업(줄기) > 중작업(사람 요청 하나) > 세부(그 안에서 고친 것) — 세 단까지. 대작업은 상태 없이 아래 요약만
+시각: 시작 = 처음 "진행 중", 끝 = 마지막 "끝냄" — 목록·화면에 보인다
 번호: 항목 이름 끝 4자(예 a7k2)로 충분합니다.`;
 
 async function main() {
@@ -654,12 +826,14 @@ async function main() {
   const cfg = loadConfig();
   switch (cmd) {
     case "add": return cmdAdd(cfg, pos, opt, "할 일");
+    case "area": return cmdArea(cfg, pos, opt);
     case "suggest": return cmdAdd(cfg, pos, { ...opt, state: "제안" }, "제안");
     case "status": case "st": return cmdStatus(cfg, pos, opt);
     case "note": return cmdNote(cfg, pos, opt, "메모");
     case "move": case "mv": return cmdMove(cfg, pos, opt);
     case "describe": case "desc": return cmdDescribe(cfg, pos, opt);
     case "memo": return cmdMemo(cfg, pos, opt);
+    case "summary": return cmdSummary(cfg, pos, opt);
     case "rename": return cmdNote(cfg, pos, opt, "제목");
     case "change": return cmdNote(cfg, pos, opt, "바뀜");
     case "list": case "ls": return cmdList(cfg, opt);

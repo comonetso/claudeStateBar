@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { currentSessionSince } from "../activity/workflows";
-import { findAllCodexDirs, type CodexDirs } from "../chime/scan";
+import { findAllCodexDirs, type CodexDirs } from "../presentation/chime/scan";
 import { fm, parseEntries, parseInflight, parseStamp, pendingFrom, type ChatEntry, type InflightMarker } from "./chatParse";
 
 // codex_rescue 채팅(핑퐁) 대화: <저장소>/docs/codex_rescue/<시각>_chat_<slug>.md 와 진행 중 표시 .log/.chat_<slug>.inflight.

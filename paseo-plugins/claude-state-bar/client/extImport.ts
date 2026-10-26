@@ -1,6 +1,6 @@
 import type { RpcOutput } from "@getpaseo/plugin";
 import type { extSettingsImport } from "../shared/extSettings";
-import type { SoundKind } from "../shared/sound";
+import type { SoundKind } from "../shared/presentation/sound";
 import type { SettingsText } from "./settingsI18n";
 
 // VS Code 확장 설정 가져오기(리규형님 10-08 결정)의 화면 쪽 — 데몬이 돌려준 값으로 입력 칸(draft)만 채우고, 무엇을 가져왔고

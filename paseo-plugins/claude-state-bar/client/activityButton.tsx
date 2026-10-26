@@ -10,10 +10,10 @@ import type { ActivityCounts } from "../shared/activity";
 import { ACTIVITY_PANEL_ID, KINDS } from "./activityKinds";
 import { mergeActivitySplit, openActivitySplit } from "./activitySplit";
 import { useActivityOpen } from "./activityVisible";
-import { retainMaximizedPane } from "./paneMaximized";
+import { retainMaximizedPane } from "./presentation/paneMaximized";
 import { retainSharedStyle } from "./sharedStyle";
 import { runCleanups } from "./cleanup";
-import { releaseMaximizedPane } from "./paneMaxWatch";
+import { releaseMaximizedPane } from "./presentation/paneMaxWatch";
 import { currentSettings } from "./sounds";
 import { currentWorkspaceFromUrl, isCompactWidth, phonePillsShown, setStyleSheet, watchCompactWidth, watchWorkspaceInput } from "./web";
 

@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ChatTrashItem } from "../../shared/codex";
-import { findCodexDirs } from "../chime/scan";
+import { findCodexDirs } from "../presentation/chime/scan";
 import { fm, parseEntries } from "./chatParse";
 import { isPlainName, moveNoClobber, serialized } from "./safeFs";
 

@@ -2,7 +2,7 @@ import { uiProvider } from "./uiRole";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import type { LayoutSnapshot } from "../shared/layoutSync";
 import { DEFAULT_SETTINGS, type SoundSettings } from "../shared/settings";
-import type { SoundKind } from "../shared/sound";
+import type { SoundKind } from "../shared/presentation/sound";
 import type { Usage } from "./usageFooter";
 
 // 앱은 호스트마다 이 플러그인을 따로 띄우지만 실행 공간(globalThis)은 하나다.

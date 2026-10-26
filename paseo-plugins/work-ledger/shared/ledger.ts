@@ -21,6 +21,17 @@ export const LedgerItem = z.object({
   desc: z.string().optional(),
   /** 사람만 쓰는 큰 작업 메모 */
   memo: z.string().optional(),
+  /** 대작업(오래 가는 줄기) — 상태 없이 아래 중작업 요약만 보인다(10-26 리규형님 대작업 > 중작업 > 세부) */
+  area: z.boolean().optional(),
+  /** 처음 진행 중이 된 때 · 마지막 끝냄 시각(다시 진행 중이면 빈 값) */
+  started: z.string().optional(),
+  finished: z.string().optional(),
+  /** 대작업만 — 하위 전체의 첫 진행(label "시작"), 없으면 첫 등록(label "기록 시작"). 장부 명령이 계산해 넘긴다 */
+  since: z.object({ at: z.string(), label: z.string() }).nullable().optional(),
+  /** 끝냄의 검증 범위 — ai = AI 가 전부 검증(확인 대기에서 빠짐) · ask = 사람만 볼 것(그 질문) */
+  verify: z.object({ ai: z.boolean().optional(), ask: z.string().optional() }).nullable().optional(),
+  /** 대작업 현황 — 지금 되는 것·남은 것·다음 후보(마지막 것) */
+  summary: z.object({ text: z.string(), at: z.string() }).nullable().optional(),
 });
 export type LedgerItem = z.infer<typeof LedgerItem>;
 
@@ -34,6 +45,8 @@ export const LedgerView = z.object({
   items: z.array(LedgerItem),
   /** 사람만 쓰는 프로젝트 메모 */
   projectMemo: z.string().optional(),
+  /** 프로젝트 현황 — 장부 탭 첫 화면 "지금 어디까지"(10-27 리규형님) */
+  projectSummary: z.object({ text: z.string(), at: z.string() }).nullable().optional(),
 });
 export type LedgerView = z.infer<typeof LedgerView>;
 

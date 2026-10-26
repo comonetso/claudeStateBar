@@ -1,26 +1,33 @@
 import { type PluginWorkspacePanelProps, useRpc, useWorkspace } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { confirmItem, type LedgerItem, type LedgerView, saveMemo, viewLedger } from "../shared/ledger";
 
 // 작업 공간 옆 "작업 장부" 탭 — 그 프로젝트의 장부를 날짜별로 보여 준다.
 // 확인 대기(끝냄) 항목의 [확인] 은 사람이 "확인됨"을 찍는 유일한 화면 단추다.
 
 type Theme = PluginWorkspacePanelProps["theme"];
-type Tone = "accent" | "muted" | "warning" | "success";
+// 상태 색은 부트스트랩 5 색으로 고정(10-27 리규형님 "진행중 success · AI검증완료 info · 확인대기 warning") — 테마 색은 accent·success 가 둘 다 초록이라 헷갈렸다
+type Tone = "accent" | "muted" | "warning" | "success" | "info" | "suggest" | "bsSuccess" | "bsWarning";
+const INFO = "#0dcaf0";
+const BS_SUCCESS = "#198754";
+const BS_WARNING = "#ffc107";
+const SUGGEST = "#a78bfa";
 
 const META: Record<string, { icon: string; label: string; tone: Tone }> = {
-  "제안": { icon: "◇", label: "제안", tone: "accent" },
+  "제안": { icon: "◇", label: "제안", tone: "suggest" },
   "할 일": { icon: "○", label: "할 일", tone: "muted" },
-  "진행 중": { icon: "▶", label: "진행 중", tone: "accent" },
-  "끝냄": { icon: "◐", label: "확인 대기", tone: "warning" },
+  "진행 중": { icon: "▶", label: "진행 중", tone: "bsSuccess" },
+  "끝냄": { icon: "◐", label: "확인 대기", tone: "bsWarning" },
+  // 화면 전용 — 끝냄 중 AI 가 범위 전부 검증한 것(10-27 리규형님: 확인됨은 사람 전용, 이건 확인 대기에서 빠진다)
+  "AI 검증": { icon: "✓", label: "AI 검증 완료", tone: "info" },
   "확인됨": { icon: "✓", label: "확인됨", tone: "success" },
   "보류": { icon: "‖", label: "보류", tone: "muted" },
   "버림": { icon: "✕", label: "버림", tone: "muted" },
 };
 const OPEN = new Set(["제안", "할 일", "진행 중", "끝냄", "보류"]);
-const DONE = new Set(["끝냄", "확인됨", "버림"]);
-const ORDER: Record<string, number> = { "끝냄": 0, "진행 중": 1, "할 일": 2, "제안": 3, "보류": 4, "확인됨": 5, "버림": 6 };
+const DONE = new Set(["끝냄", "AI 검증", "확인됨", "버림"]);
+const ORDER: Record<string, number> = { "끝냄": 0, "진행 중": 1, "할 일": 2, "제안": 3, "보류": 4, "AI 검증": 5, "확인됨": 6, "버림": 7 };
 const WEEKDAY = "일월화수목금토";
 
 function toneColor(theme: Theme, tone: Tone): string {
@@ -28,6 +35,10 @@ function toneColor(theme: Theme, tone: Tone): string {
   if (tone === "accent") return c.accent;
   if (tone === "warning") return c.statusWarning;
   if (tone === "success") return c.statusSuccess;
+  if (tone === "info") return INFO;
+  if (tone === "bsSuccess") return BS_SUCCESS;
+  if (tone === "bsWarning") return BS_WARNING;
+  if (tone === "suggest") return SUGGEST;
   return c.foregroundMuted;
 }
 function dayLabel(d: string): string {
@@ -40,8 +51,44 @@ function shortDay(d: string): string {
 }
 function lastNote(it: LedgerItem) {
   // 설명·바뀐 것은 ? 팝업, 내 메모는 노트 아이콘, 묶음 줄은 부모 번호라 — 카드의 마지막 메모 줄에서 뺀다
-  for (let i = it.log.length - 1; i >= 0; i--) if (it.log[i].text && !["설명", "묶음", "내 메모", "바뀜"].includes(it.log[i].kind)) return it.log[i];
+  for (let i = it.log.length - 1; i >= 0; i--) if (it.log[i].text && !["설명", "묶음", "내 메모", "바뀜", "검증", "현황", "제목"].includes(it.log[i].kind)) return it.log[i];
   return null;
+}
+/** 시작·끝 시각 — 처음 진행 중 · 마지막 끝냄(10-26 리규형님) */
+function timeText(it: LedgerItem): string {
+  return [it.started ? `시작 ${it.started.slice(5, 16)}` : "", it.finished ? `끝 ${it.finished.slice(5, 16)}` : ""].filter(Boolean).join(" · ");
+}
+/** 항목 번호 — 장부 명령이 받는 4자(10-26 리규형님 "번호가 있으면 좋겠어") */
+function shortId(it: LedgerItem): string {
+  return it.id.slice(-4);
+}
+/** 브라우저 클립보드에 넣는다 — 못 쓰는 곳(폰 앱 웹뷰 등)이면 false. 상태바 플러그인 client/web.ts copyText 와 같은 처리 */
+async function copyText(text: string): Promise<boolean> {
+  const nav = (globalThis as { navigator?: { clipboard?: { writeText?: (t: string) => Promise<void> } } }).navigator;
+  if (!nav?.clipboard?.writeText) return false;
+  try {
+    await nav.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+type MenuNode = {
+  __ledgerMenu?: () => void;
+  addEventListener(type: string, fn: (e: { preventDefault(): void; stopPropagation(): void }) => void): void;
+};
+/** 오른쪽 클릭에 할 일을 단다(웹만) — 브라우저 메뉴는 막는다. ref 마다 불려도 듣기는 한 번, 할 일은 마지막에 준 것. 상태바 setContextMenu 와 같은 처리 */
+function onRightClick(node: unknown, fn: () => void): void {
+  if (Platform.OS !== "web" || !node) return;
+  const el = node as MenuNode;
+  const first = !el.__ledgerMenu;
+  el.__ledgerMenu = fn;
+  if (!first) return;
+  el.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    el.__ledgerMenu?.();
+  });
 }
 /** 정했던 것이 바뀐 기록(전 → 후 — 이유) — ? 팝업 맨 아래 "바뀐 것" 칸에만 보인다(10-26 리규형님) */
 function changesOf(it: LedgerItem) {
@@ -61,7 +108,17 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
   // ? 로 연 설명 팝업의 항목 번호(10-26 리규형님 — 이름만으론 맥락뿐이라, 무엇을 왜 했는지는 팝업으로)
   const [helpId, setHelpId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  // 펼친 대작업들 — 처음엔 모두 접힘(대작업 > 중작업 > 세부를 따라 들어간다, 10-26 리규형님) · 창이 열린 동안만 기억
+  const [openAreas, setOpenAreas] = useState<Set<string>>(() => new Set());
   const [notice, setNotice] = useState<string | null>(null);
+  // 오른쪽 클릭(폰은 길게 누르기)으로 "번호 제목"을 복사한 항목 — 그 번호 자리에 잠깐 "복사됨"(10-26 리규형님 "너한테 제시하기 편하게")
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copyItem = useCallback(async (it: LedgerItem) => {
+    if (await copyText(`${shortId(it)} ${it.title}`)) {
+      setCopiedId(it.id);
+      setTimeout(() => setCopiedId((cur) => (cur === it.id ? null : cur)), 2000);
+    } else setNotice(`복사하지 못했습니다 — 번호는 ${shortId(it)} 입니다.`);
+  }, []);
   // 내 메모 팝업 — id = 큰 작업 번호, null = 프로젝트 메모. 메모가 있으면 보기 → 수정 누르면 입력칸(10-26 리규형님)
   const [memoFor, setMemoFor] = useState<{ id: string | null; title: string; text: string } | null>(null);
   const [memoEdit, setMemoEdit] = useState(false);
@@ -172,13 +229,30 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
       danger: { backgroundColor: c.statusWarning, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 7 },
       countNum: { fontSize: 17, fontWeight: "700" as const },
       day: { color: c.foregroundMuted, fontSize: 12, fontWeight: "700" as const, marginTop: 12 },
+      // 대작업 머리 카드 — 누르면 아래 중작업이 펼쳐진다 · 중작업 카드는 그 아래 조금 들여 쓴다(10-26 리규형님 대작업 > 중작업 > 세부)
+      areaHead: { backgroundColor: c.surface2, borderWidth: 1, borderColor: c.border, borderRadius: 12, padding: compact ? 10 : 12, gap: 4, marginTop: 4 },
+      areaTitle: { color: c.foreground, fontSize: 16, fontWeight: "700" as const, flexShrink: 1 },
+      areaArrow: { color: c.foregroundMuted, fontSize: 14, width: 14 },
+      indent: { marginLeft: compact ? 10 : 18 },
       row: { backgroundColor: c.surface1, borderWidth: 1, borderColor: c.border, borderRadius: 12, padding: compact ? 10 : 12, gap: 4 },
+      // 첫 화면 카드 둘(10-27 리규형님 — Codex 시안 "지금 어디까지"·"내가 판단할 일")
+      nowCard: { backgroundColor: c.surface1, borderWidth: 1, borderColor: c.border, borderLeftWidth: 4, borderLeftColor: c.accent, borderRadius: 12, padding: compact ? 12 : 16, gap: 6 },
+      judgeCard: { backgroundColor: c.surface1, borderWidth: 1, borderColor: c.border, borderLeftWidth: 4, borderLeftColor: c.statusWarning, borderRadius: 12, padding: compact ? 12 : 16, gap: 8 },
+      cardHead: { color: c.foreground, fontSize: compact ? 16 : 17, fontWeight: "700" as const },
+      cardText: { color: c.foreground, fontSize: 15, lineHeight: 23 },
+      judgeRow: { flexDirection: "row" as const, alignItems: "flex-start" as const, gap: 10 },
+      areaNow: { color: c.foregroundMuted, fontSize: 12, lineHeight: 18 }, // 작고 흐리게 — 제목과 같으면 펼친 내용처럼 보였다(10-27 리규형님)
+      areaMeta: { color: c.foreground, fontSize: 14, fontWeight: "700" as const },
+      areaMetaRow: { flexDirection: "row" as const, flexWrap: "wrap" as const, alignItems: "center" as const, gap: 6 },
+      areaBadge: { borderWidth: 1, borderColor: c.statusSuccess, borderRadius: 99, paddingHorizontal: 8, paddingVertical: 0 },
+      areaBadgeText: { color: c.statusSuccess, fontSize: 13, fontWeight: "700" as const, lineHeight: 18 }, // 대작업 개수·시작 줄 — 밝게·굵게·조금 크게(10-27 리규형님 "잘 안 보인다")
       top: { flexDirection: compact ? ("column" as const) : ("row" as const), alignItems: compact ? ("flex-start" as const) : ("center" as const), gap: compact ? 4 : 10 },
       pill: { borderRadius: 99, paddingHorizontal: 9, paddingVertical: 2, backgroundColor: c.surface2, borderWidth: 1 },
       pillText: { fontSize: 12, fontWeight: "600" as const },
       itemTitle: { color: c.foreground, fontSize: 15, fontWeight: "600" as const, flexShrink: 1 },
       itemTitleClosed: { color: c.foregroundMuted },
       meta: { color: c.foregroundMuted, fontSize: 12 },
+      idTag: { fontSize: 12 },
       note: { color: c.foregroundMuted, fontSize: 13 },
       hist: { borderTopWidth: 1, borderColor: c.border, marginTop: 6, paddingTop: 6, gap: 3 },
       histLine: { color: c.foregroundMuted, fontSize: 12 },
@@ -191,14 +265,17 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
     [c, compact],
   );
 
-  const items = data?.items ?? [];
+  // AI 가 범위 전부 검증한 끝냄은 화면에서 "AI 검증" — 확인 대기·남은 일에서 빠진다. 실제 장부 상태는 끝냄 그대로(확인 단추는 번호로만 움직인다)
+  const items = useMemo(() => (data?.items ?? []).map((it) => (it.state === "끝냄" && it.verify?.ai ? { ...it, state: "AI 검증" } : it)), [data]);
   // 날짜 단추 = 기록이 남은 날(그날 한 일) · 최근 날부터
   const touched = (it: LedgerItem, d: string) => it.created.slice(0, 10) === d || it.log.some((e) => e.at.slice(0, 10) === d);
   const allDays = [...new Set(items.flatMap((it) => [it.created.slice(0, 10), ...it.log.map((e) => e.at.slice(0, 10))]))]
     .filter((d) => /^\d{4}-\d\d-\d\d$/.test(d)).sort().reverse();
-  // 목록·숫자 칸은 큰 작업 기준 — 세부는 카드를 눌러 펼쳐 본다(10-26 리규형님). 부모가 사라진 세부는 큰 작업으로 본다
+  // 대작업 > 중작업 > 세부(10-26 리규형님). 목록·숫자 칸은 중작업 기준 — 세부는 카드를 눌러 펼쳐 본다. 부모가 사라진 세부는 중작업으로 본다
   const ids = new Set(items.map((it) => it.id));
-  const tops = items.filter((it) => !it.parent || !ids.has(it.parent));
+  const areas = items.filter((it) => it.area);
+  const areaIds = new Set(areas.map((a) => a.id));
+  const tops = items.filter((it) => !it.area && (!it.parent || !ids.has(it.parent) || areaIds.has(it.parent)));
   const kidsOf = (id: string) => items.filter((x) => x.parent === id);
   const fits = (it: LedgerItem) =>
     (stateOnly ? it.state === stateOnly : filter === "all" || OPEN.has(it.state)) && (!dayOnly || touched(it, dayOnly));
@@ -210,13 +287,31 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
     : tops.filter((t) => fits(t) || kidsOf(t.id).some(fits));
   const counts: Record<string, number> = {};
   for (const it of tops) counts[it.state] = (counts[it.state] ?? 0) + 1;
-  const days = new Map<string, LedgerItem[]>();
+  // 날짜 대신 대작업으로 묶는다(날짜는 위 날짜 단추로 거른다) — "" = 대작업 없음, 맨 아래
+  const groups = new Map<string, LedgerItem[]>();
   for (const it of shown) {
-    const d = dayOnly ?? it.created.slice(0, 10);
-    days.set(d, [...(days.get(d) ?? []), it]);
+    const k = it.parent && areaIds.has(it.parent) ? it.parent : "";
+    groups.set(k, [...(groups.get(k) ?? []), it]);
   }
-  const dayKeys = [...days.keys()].sort().reverse();
+  const firstOrder = (k: string) => Math.min(...(groups.get(k) ?? []).map((x) => ORDER[x.state] ?? 9));
+  // 대작업은 만든 순서로 고정(10-27 리규형님 버튼 — 확인할 때마다 자리가 바뀌던 것). 대작업 없음은 맨 아래
+  const createdOf = (k: string) => items.find((x) => x.id === k)?.created ?? "";
+  const groupKeys = [...groups.keys()].sort((a, b) => (a === "" ? 1 : b === "" ? -1 : createdOf(a) < createdOf(b) ? -1 : 1));
+  // 내가 판단할 일 = 사람 확인이 남은 중작업(AI 검증 완료는 빠짐) — 질문은 그 중작업과 끝낸 세부의 --ask
+  const judge = tops.filter((t) => t.state === "끝냄").map((it) => ({
+    it,
+    asks: [it, ...kidsOf(it.id).filter((k) => k.state === "끝냄")].map((x) => x.verify?.ask).filter((q): q is string => !!q),
+  }));
+  // 현황 요약 뒤로 바뀐 기록이 있으면 "예전 요약"으로 알린다(Codex 의견 — 옛 요약이 숫자보다 더 강하게 사람을 오도한다)
+  const summaryAt = data?.projectSummary?.at ?? "";
+  // 대작업은 빼고 센다 — 대작업 현황을 쓰면 그 대작업의 마지막 기록 시각도 바뀌어, 방금 쓴 요약이 "예전 요약"으로 나왔다(10-27 화면 사진)
+  const summaryStale = !!summaryAt && items.some((x) => !x.area && x.updated > summaryAt);
+  // 숫자 칸·날짜 단추로 거를 때는 걸린 것이 바로 보이게 대작업을 모두 펼친다
+  const filtering = !!stateOnly || !!dayOnly;
 
+  // 대작업 카드 상태 알약 색 — 종류마다 다르게(10-27 리규형님 "눈에 확 띄게"). 빨강은 오류처럼 보여 안 씀 · 색은 위 Tone 표와 같다
+  const badgeColor = (s: string): string =>
+    ({ "끝냄": BS_WARNING, "진행 중": BS_SUCCESS, "AI 검증": INFO, "할 일": c.foreground, "보류": c.foregroundMuted, "제안": SUGGEST } as Record<string, string>)[s] ?? c.foreground;
   const pill = (state: string) => {
     const m = META[state] ?? { icon: "·", label: state, tone: "muted" as Tone };
     const col = toneColor(theme, m.tone);
@@ -232,6 +327,10 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
       <Text style={styles.confirmText}>✓ 확인</Text>
     </Pressable>
   );
+
+  // 번호는 화면에 안 보이고 복사할 때만 들어간다(10-26 리규형님 "복사할 때만, 코드는 안 보이게") — 복사한 직후 2초만 제목 앞에 "복사됨"
+  const idTag = (it: LedgerItem) =>
+    copiedId === it.id ? <Text style={[styles.idTag, { color: theme.colors.statusSuccess }]}>복사됨</Text> : null;
 
   const helpBtn = (it: LedgerItem) => (
     <Pressable style={styles.help} onPress={() => setHelpId(it.id)} accessibilityRole="button" accessibilityLabel={`${it.title} 자세한 설명`} hitSlop={8}>
@@ -267,8 +366,37 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
       {data?.error ? <Text style={styles.err}>{data.error}</Text> : null}
       {notice ? <Text style={styles.sub}>{notice}</Text> : null}
 
+      {/* 첫 화면 — 지금 어디까지(프로젝트 현황, AI 가 ledger summary 로 씀) · 내가 판단할 일(사람 확인이 남은 것만) — 10-27 리규형님 */}
+      {data && !data.error ? (
+        <View style={styles.nowCard}>
+          <Text style={styles.cardHead}>지금 어디까지</Text>
+          {data.projectSummary ? (
+            <>
+              <Text style={styles.cardText}>{data.projectSummary.text}</Text>
+              <Text style={styles.sub}>{`${data.projectSummary.at.slice(5, 16)} 기준${summaryStale ? " · 그 뒤로 바뀐 기록이 있습니다(예전 요약)" : ""}`}</Text>
+            </>
+          ) : (
+            <Text style={styles.sub}>아직 현황 요약이 없습니다 — AI 가 다음 작업을 끝낼 때 씁니다.</Text>
+          )}
+        </View>
+      ) : null}
+      {judge.length ? (
+        <View style={styles.judgeCard}>
+          <Text style={styles.cardHead}>{`내가 판단할 일 ${judge.length}`}</Text>
+          {judge.map(({ it, asks }) => (
+            <View key={it.id} style={styles.judgeRow}>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={styles.cardText}>{it.title}</Text>
+                <Text style={styles.sub}>{asks.length ? asks.join(" · ") : "끝났습니다 — 결과를 보고 확인해 주세요."}</Text>
+              </View>
+              {confirmBtn(it)}
+            </View>
+          ))}
+        </View>
+      ) : null}
+
       <View style={styles.chips}>
-        {(["끝냄", "진행 중", "할 일", "제안", "보류"] as const).filter((k) => counts[k]).map((k) => {
+        {(["끝냄", "진행 중", "할 일", "제안", "보류", "AI 검증"] as const).filter((k) => counts[k]).map((k) => {
           const col = toneColor(theme, META[k].tone);
           const on = stateOnly === k;
           return (
@@ -312,10 +440,39 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
         <Text style={styles.empty}>{stateOnly || dayOnly ? "고른 조건에 맞는 항목이 없습니다." : filter === "open" ? "남은 일이 없습니다." : "이 프로젝트 장부가 비어 있습니다."}</Text>
       ) : null}
 
-      {dayKeys.map((d) => (
-        <View key={d} style={{ gap: 8 }}>
-          <Text style={styles.day}>{dayLabel(d)}</Text>
-          {(days.get(d) ?? [])
+      {groupKeys.map((g) => {
+        const area = g ? items.find((x) => x.id === g) ?? null : null;
+        const areaOpen = !g || filtering || openAreas.has(g);
+        const under = g ? items.filter((x) => x.parent === g && !x.area) : [];
+        // 대작업은 상태 없이 아래 중작업 요약만(10-26 리규형님)
+        const sum = (["끝냄", "진행 중", "할 일", "제안", "보류", "AI 검증"] as const)
+          .map((s) => [s, under.filter((x) => x.state === s).length] as const).filter(([, n]) => n > 0);
+        // 대작업 시작은 장부 명령이 계산해 넘긴다(하위 전체의 첫 진행, 없으면 "기록 시작" — 10-27 Codex 의견)
+        const since = area?.since ?? null;
+        const toggleArea = () => setOpenAreas((cur) => { const n = new Set(cur); if (n.has(g)) n.delete(g); else n.add(g); return n; });
+        return (
+        <View key={g || "-"} style={{ gap: 8 }}>
+          {area ? (
+            <Pressable style={styles.areaHead} onPress={toggleArea} accessibilityRole="button" accessibilityLabel={`${area.title} ${areaOpen ? "접기" : "펼치기"}`}>
+              <View ref={(node: unknown) => onRightClick(node, () => void copyItem(area))} style={styles.titleRow}>
+                <Text style={styles.areaArrow}>{areaOpen ? "▾" : "▸"}</Text>
+                {idTag(area)}
+                <Text onLongPress={() => void copyItem(area)} style={styles.areaTitle}>{area.title}</Text>
+                {area.desc || changesOf(area).length ? helpBtn(area) : null}
+              </View>
+              {area.summary ? <Text style={styles.areaNow}>{area.summary.text}</Text> : null}
+              {/* 시작 시각을 맨 앞에, 상태 개수는 붙여 쓴 이름의 얇은 초록 알약(10-27 리규형님) */}
+              <View style={styles.areaMetaRow}>
+                {since ? <Text style={styles.areaMeta}>{`${since.label} ${since.at.slice(5, 16)}`}</Text> : null}
+                {sum.length ? sum.map(([s, n]) => (
+                  <View key={s} style={[styles.areaBadge, { borderColor: badgeColor(s) }]}>
+                    <Text style={[styles.areaBadgeText, { color: badgeColor(s) }]}>{`${(META[s]?.label ?? s).replace(/\s+/g, "")} ${n}`}</Text>
+                  </View>
+                )) : <Text style={styles.areaMeta}>{`중작업 ${under.length}`}</Text>}
+              </View>
+            </Pressable>
+          ) : areas.length ? <Text style={styles.day}>대작업 없음</Text> : null}
+          {!areaOpen ? null : (groups.get(g) ?? [])
             .sort((a, b) => (ORDER[a.state] ?? 9) - (ORDER[b.state] ?? 9) || (a.updated < b.updated ? 1 : -1))
             .map((it) => {
               const ln = lastNote(it);
@@ -323,22 +480,32 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
               const closed = !OPEN.has(it.state);
               const kids = kidsOf(it.id).sort((a, b) => (ORDER[a.state] ?? 9) - (ORDER[b.state] ?? 9) || (a.created < b.created ? -1 : 1));
               const done = kids.filter((k) => DONE.has(k.state)).length;
-              const meta = `${kids.length ? `${isOpen ? "▾" : "▸"} 세부 ${done}/${kids.length} · ` : ""}${it.id.slice(-4)} · ${it.updated.slice(5, 16)}`;
-              const title = (
-                <View style={[styles.titleRow, compact ? null : { flex: 1 }]}>
-                  <Text style={[styles.itemTitle, closed ? styles.itemTitleClosed : null]}>{it.title}</Text>
+              // 번호는 화면에 안 보인다(복사 때만) — 이 줄은 세부 개수와 시작·끝 시각(없으면 마지막 고친 때, 10-26 리규형님)
+              const meta = `${kids.length ? `${isOpen ? "▾" : "▸"} 세부 ${done}/${kids.length} · ` : ""}${timeText(it) || it.updated.slice(5, 16)}`;
+              const icons = (
+                <>
                   {it.desc || changesOf(it).length ? helpBtn(it) : null}
                   {noteBtn(it.id, it.title, it.memo ?? "", "내 메모")}
+                </>
+              );
+              // 제목 줄 오른쪽 클릭(폰은 제목 길게 누르기) = "번호 제목" 복사
+              const title = (
+                <View ref={(node: unknown) => onRightClick(node, () => void copyItem(it))} style={[styles.titleRow, compact ? null : { flex: 1 }]}>
+                  {idTag(it)}
+                  <Text onLongPress={() => void copyItem(it)} style={[styles.itemTitle, closed ? styles.itemTitleClosed : null]}>{it.title}</Text>
+                  {compact ? null : icons}
                 </View>
               );
               return (
-                <Pressable key={it.id} style={styles.row} onPress={() => setOpenId(isOpen ? null : it.id)} accessibilityRole="button" accessibilityLabel={it.title}>
+                <Pressable key={it.id} style={[styles.row, g ? styles.indent : null]} onPress={() => setOpenId(isOpen ? null : it.id)} accessibilityRole="button" accessibilityLabel={it.title}>
                   {/* 확인 단추는 첫 줄 상태 표시 바로 옆 — PC·폰 같게(높이도 그 표시와 같게) · 세로 공간 절약(10-26 리규형님) */}
                   {compact ? (
                     <View style={styles.top}>
+                      {/* 폰은 ?·메모 아이콘도 첫 줄 확인 단추 옆 — 제목 아래 한 줄을 아낀다(10-26 리규형님) */}
                       <View style={styles.pillRow}>
                         {pill(it.state)}
-                        {it.state === "끝냄" ? confirmBtn(it) : null}
+                        {it.state === "끝냄" || it.state === "AI 검증" ? confirmBtn(it) : null}
+                        {icons}
                       </View>
                       {title}
                       <Text style={styles.meta}>{meta}</Text>
@@ -346,12 +513,12 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
                   ) : (
                     <View style={styles.top}>
                       {pill(it.state)}
-                      {it.state === "끝냄" ? confirmBtn(it) : null}
+                      {it.state === "끝냄" || it.state === "AI 검증" ? confirmBtn(it) : null}
                       {title}
                       <Text style={styles.meta}>{meta}</Text>
                     </View>
                   )}
-                  {ln ? <Text style={styles.note} numberOfLines={isOpen ? undefined : 2}>{`${ln.who}: ${ln.text}`}</Text> : null}
+                  {it.verify?.ask ? <Text style={styles.note}>{`직접 확인: ${it.verify.ask}`}</Text> : ln ? <Text style={styles.note} numberOfLines={isOpen ? undefined : 2}>{`${ln.who}: ${ln.text}`}</Text> : null}
                   {isOpen && kids.length ? (
                     <View style={styles.kids}>
                       {kids.map((k) => {
@@ -361,10 +528,12 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
                           <View key={k.id} style={styles.kidRow}>
                             <Text style={[styles.kidState, { color: toneColor(theme, km.tone) }]}>{`${km.icon} ${km.label}`}</Text>
                             <View style={{ flex: 1, gap: 2 }}>
-                              <View style={styles.titleRow}>
-                                <Text style={[styles.kidTitle, OPEN.has(k.state) ? null : styles.itemTitleClosed]}>{k.title}</Text>
+                              <View ref={(node: unknown) => onRightClick(node, () => void copyItem(k))} style={styles.titleRow}>
+                                {idTag(k)}
+                                <Text onLongPress={() => void copyItem(k)} style={[styles.kidTitle, OPEN.has(k.state) ? null : styles.itemTitleClosed]}>{k.title}</Text>
                                 {k.desc || changesOf(k).length ? helpBtn(k) : null}
                               </View>
+                              {timeText(k) ? <Text style={styles.histLine}>{timeText(k)}</Text> : null}
                               {kl ? <Text style={styles.histLine}>{`${kl.who}: ${kl.text}`}</Text> : null}
                             </View>
                           </View>
@@ -383,14 +552,15 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
               );
             })}
         </View>
-      ))}
+        );
+      })}
     </ScrollView>
     {helpItem ? (
       <Pressable style={styles.overlay} onPress={() => setHelpId(null)} accessibilityRole="button" accessibilityLabel="설명 닫기">
         {/* 안쪽을 눌러도 닫히지 않게 — 바깥 어두운 곳이나 ✕ 로만 닫는다 */}
         <Pressable style={styles.pop} onPress={() => {}} accessibilityRole="none">
           <View style={styles.popHead}>
-            {pill(helpItem.state)}
+            {helpItem.area ? <Text style={styles.meta}>대작업</Text> : pill(helpItem.state)}
             <Text style={styles.popTitle}>{helpItem.title}</Text>
             <Pressable style={styles.ghost} onPress={() => setHelpId(null)} accessibilityRole="button" accessibilityLabel="설명 닫기">
               <Text style={styles.ghostText}>✕</Text>
@@ -398,7 +568,7 @@ export function LedgerPanel({ theme, layout, workspaceId }: PluginWorkspacePanel
           </View>
           <ScrollView contentContainerStyle={styles.popBody}>
             <Text style={styles.popText} selectable>{helpItem.desc || "설명이 아직 없습니다."}</Text>
-            {helpKids.length ? <Text style={styles.popSub}>{`세부 ${helpKids.filter((k) => DONE.has(k.state)).length}/${helpKids.length}`}</Text> : null}
+            {helpKids.length ? <Text style={styles.popSub}>{`${helpItem.area ? "중작업" : "세부"} ${helpKids.filter((k) => DONE.has(k.state)).length}/${helpKids.length}`}</Text> : null}
             {helpKids.map((k) => (
               <Text key={k.id} style={styles.popText}>{`${kidMeta(k.state).icon} ${k.title}  (${kidMeta(k.state).label})`}</Text>
             ))}

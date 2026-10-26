@@ -15,7 +15,7 @@ type ImportResult = RpcOutput<typeof extSettingsImport>;
 type Skipped = ImportResult["skipped"][number];
 type SoundKey = "completion" | "question" | "warning" | "danger" | "workflow";
 
-// 복사본: 같은 플러그인 server/projects.ts vscodeUserDir(그 파일은 내보내지 않아 여기 둔다 — 고치면 둘 다)
+// 복사본: 같은 플러그인 server/projects/projects.ts vscodeUserDir(그 파일은 내보내지 않아 여기 둔다 — 고치면 둘 다)
 function vscodeUserDir(): string {
   if (process.platform === "win32") return join(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "Code", "User");
   if (process.platform === "darwin") return join(homedir(), "Library", "Application Support", "Code", "User");

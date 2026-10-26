@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { codexLogDir } from "../chime/scan";
+import { codexLogDir } from "../presentation/chime/scan";
 
 // 복사본: VS Code 확장 src/providers/codexRescue/usageFile.ts 의 parseUsage(2026-10-05). 확장 쪽을 고치면 여기도.
 // codex_rescue 1.17.3+ 가 정리를 마칠 때마다 <저장소>/docs/codex_rescue/.log/_usage.json 에 적는 기록 용량을 읽기만 한다.

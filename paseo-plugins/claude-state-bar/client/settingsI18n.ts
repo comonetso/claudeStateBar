@@ -1,6 +1,6 @@
 import type { ShortcutId } from "../shared/shortcuts";
 import type { ExtImportField } from "../shared/extSettings";
-import type { SoundKind } from "../shared/sound";
+import type { SoundKind } from "../shared/presentation/sound";
 import { uiLanguage } from "./appLanguage";
 import type { FeatureId, HealthReason, HealthState } from "./health";
 

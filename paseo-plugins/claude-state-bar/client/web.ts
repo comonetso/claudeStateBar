@@ -1,12 +1,12 @@
 import { Linking, Platform } from "react-native";
 import { pageHidden } from "./pageVisible";
-import type { Edit } from "./markdownList";
-import type { AudioFile, ThinkingAudio } from "./thinkingPlayer";
-import { shellMuted, watchShellMute } from "./shellMute";
-import { createShellAudio, shellCanSpeak } from "./shellSpeech";
+import type { Edit } from "./presentation/markdownList";
+import type { AudioFile, ThinkingAudio } from "./presentation/thinkingPlayer";
+import { shellMuted, watchShellMute } from "./presentation/shellMute";
+import { createShellAudio, shellCanSpeak } from "./presentation/shellSpeech";
 import { comboOfKey, shortcutMatches, type KeyLike } from "../shared/shortcuts";
-import { joinSplitParens } from "./readParts";
-import { followPlan, koreanMostly, translationGate, type TranslationMark, type TranslationWait } from "../shared/thinkingContract";
+import { joinSplitParens } from "./presentation/readParts";
+import { followPlan, koreanMostly, translationGate, type TranslationMark, type TranslationWait } from "../shared/presentation/thinkingContract";
 import { joinSharedDevice, type SharedDevice } from "./sharedDevice";
 
 /** 키 이벤트 → 단축키 표(shared/shortcuts.ts)가 보는 모양 */
@@ -1263,7 +1263,7 @@ declare class Blob { constructor(parts: Uint8Array[], options: { type: string })
 declare const URL: { createObjectURL(blob: Blob): string; revokeObjectURL(url: string): void };
 
 /**
- * 생각 읽기·따라 읽기·목소리 미리 듣기 소리. 폰 앱이 소리를 틀 수 있으면 앱에 넘기고(client/shellSpeech.ts — 10-16 22시 리규형님
+ * 생각 읽기·따라 읽기·목소리 미리 듣기 소리. 폰 앱이 소리를 틀 수 있으면 앱에 넘기고(client/presentation/shellSpeech.ts — 10-16 22시 리규형님
  * "앱이 소리를 직접 튼다"), 아니면(PC·브라우저) 웹 Audio 하나로 튼다. 틀 때마다 고르고, 나머지 조작은 마지막으로 튼 쪽에 보낸다.
  * 🔴 재생이 둘로 갈린다 — 빠르기·일시정지·음소거·끝남을 고치면 아래 웹 판과 shellSpeech.ts 를 다 고친다. 다른 알림 소리 함수는 기존 동작 그대로.
  */
@@ -2561,7 +2561,7 @@ type FollowState = {
   skip: Set<string>;
   /** 말 단위마다 넘긴 문단 수 */
   taken: Map<string, number>;
-  /** 문단을 하나라도 재생기에 넘긴 말 — 읽기 순서 커서(이보다 앞에 늦게 생긴 말은 끼워 넣지 않는다, shared/thinkingContract followPlan) */
+  /** 문단을 하나라도 재생기에 넘긴 말 — 읽기 순서 커서(이보다 앞에 늦게 생긴 말은 끼워 넣지 않는다, shared/presentation/thinkingContract followPlan) */
   pushed: Set<string>;
   /** 뒤에 다른 항목이 생겨 끝까지 넘긴 말 — 다시 화면 글을 모으지 않는다 */
   done: Set<string>;
@@ -2569,7 +2569,7 @@ type FollowState = {
   where: { key: string; part: number }[];
   /** 따라 읽는 대화 화면이 숨어 새 문단을 기다리는 중(10-20) — 바뀔 때만 기록에 남긴다 */
   away?: boolean;
-  /** DeepL 번역을 기다리는 문단(10-24) — 그 문단과 뒤 문단은 넘기지 않는다(shared/thinkingContract translationGate) */
+  /** DeepL 번역을 기다리는 문단(10-24) — 그 문단과 뒤 문단은 넘기지 않는다(shared/presentation/thinkingContract translationGate) */
   wait?: TranslationWait;
   /** 번역을 기다리며 화면 가운데로 옮긴 문단("key#part") — 같은 문단은 한 번만 옮긴다 */
   scrolled?: string;
@@ -2688,7 +2688,7 @@ function followStep(st: FollowState, follow: FollowBinding, stream: string, log:
   };
   // 옛 말 거르기 — 화면에 읽지 않는 말이 보이면 그 마지막 것보다 앞, 안 보이면 넘긴 말 중 첫 것보다 앞에 새로 그려진 것은 켜기 전의
   // 옛 말이다(위로 올려 가며 다시 그려진 것). 10-18 C4: 이미 재생기에 넘긴 말보다 앞에 늦게 생긴 말(생각 상자에서 늦게 꺼낸 말)은
-  // 지금 읽는 순서 뒤에 끼워 넣지 않고 건너뛴다 — 읽기 순서는 앞으로만 간다(shared/thinkingContract followPlan).
+  // 지금 읽는 순서 뒤에 끼워 넣지 않고 건너뛴다 — 읽기 순서는 앞으로만 간다(shared/presentation/thinkingContract followPlan).
   // 아는 말이 하나도 안 보이면(위로 멀리 올려 화면이 옛 기록만 그림) 새로 넘기지 않는다 — 옛 말을 새 말로 잘못 읽지 않게
   const plan = followPlan(units.map((u) => u.key), st);
   // 다른 대화로 가 있는 동안(따라 읽는 대화 화면이 숨음 — Paseo 는 앞 대화 화면을 폭 0 으로 남겨 둔다)은 새 문단을 넘기지 않고 기다린다.

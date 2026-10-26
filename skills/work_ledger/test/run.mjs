@@ -137,7 +137,7 @@ ok(r.status !== 0, "세부를 가진 큰 작업을 남의 아래로 → 거부")
 ledger("Claude", A, ["status", kid1, "끝냄", "--why", "화면 확인"]);
 ledger("Claude", A, ["status", big, "끝냄", "--why", "세부 확인"]);
 r = ledger("human", A, ["list", "--project", "grp"]);
-ok(/세부 1\/3/.test(r.stdout) && (r.stdout.match(/└/g) || []).length === 3 && r.stdout.trim().split("\n").filter((l) => l.trim() && !/└|⚠/.test(l)).length === 1, "목록 = 큰 작업 한 줄 + 세부 셋 들여쓰기", r.stdout);
+ok(/세부 1\/3/.test(r.stdout) && (r.stdout.match(/└/g) || []).length === 3 && r.stdout.trim().split("\n").filter((l) => l.trim() && !/└|⚠|▣/.test(l)).length === 1, "목록 = 큰 작업 한 줄 + 세부 셋 들여쓰기", r.stdout);
 r = ledger("human", A, ["status", big, "확인됨"]);
 ok(r.status === 0 && (r.stdout.match(/└/g) || []).length === 1, "사람이 큰 작업 확인 → 끝난 세부 하나만 같이 확인됨", r.stdout + r.stderr);
 r = ledger("human", A, ["show", kid1]);
@@ -145,7 +145,54 @@ ok(/\[확인됨\]/.test(r.stdout), "끝냄이던 세부가 확인됨이 됨", r.
 r = ledger("human", A, ["list", "--project", "grp"]);
 ok(/장부 화면 다듬기/.test(r.stdout) && (r.stdout.match(/└/g) || []).length === 2, "세부가 남으면 확인된 큰 작업도 머리로 보임", r.stdout);
 r = ledger("Claude", A, ["move", loose, "--top"]);
-ok(r.status === 0 && /큰 작업으로/.test(r.stdout), "세부를 큰 작업으로 되돌림", r.stdout + r.stderr);
+ok(r.status === 0 && /묶음 풂/.test(r.stdout), "세부를 큰 작업으로 되돌림", r.stdout + r.stderr);
+
+console.log("\n[대작업 > 중작업 > 세부]");
+{
+  r = ledger("Claude", A, ["area", "작업 장부", "--project", "tri"]);
+  const area = idOf(r.stdout);
+  ok(r.status === 0 && /대작업/.test(r.stdout) && area, "대작업 만들기", r.stdout + r.stderr);
+  r = ledger("Claude", A, ["add", "번호 복사", "--under", area]);
+  const mid = idOf(r.stdout);
+  ok(r.status === 0 && /tri/.test(r.stdout), "대작업 아래 중작업(프로젝트도 따라감)", r.stdout + r.stderr);
+  r = ledger("Claude", A, ["add", "제목 앞 번호", "--under", mid]);
+  const leaf = idOf(r.stdout);
+  ok(r.status === 0, "중작업 아래 세부", r.stdout + r.stderr);
+  r = ledger("Claude", A, ["add", "네 번째 단", "--under", leaf]);
+  ok(r.status !== 0 && /세부입니다/.test(r.stderr), "세부 아래 → 거부(세 단까지)", r.stderr);
+  r = ledger("Claude", A, ["status", area, "진행 중"]);
+  ok(r.status !== 0 && /대작업/.test(r.stderr), "대작업 상태 바꾸기 → 거부", r.stderr);
+  r = ledger("Claude", A, ["move", area, "--under", mid]);
+  ok(r.status !== 0 && /대작업/.test(r.stderr), "대작업 옮기기 → 거부", r.stderr);
+  r = ledger("Claude", A, ["area", "--end", area]);
+  ok(r.status !== 0 && /열린 일/.test(r.stderr), "열린 일 남은 대작업 없애기 → 거부", r.stderr);
+  r = ledger("Claude", A, ["area", "빈 줄기", "--project", "tri"]);
+  const empty = idOf(r.stdout);
+  r = ledger("Claude", A, ["area", "--end", empty]);
+  const l2 = ledger("human", A, ["list", "--project", "tri"]);
+  ok(r.status === 0 && !/빈 줄기/.test(l2.stdout), "빈 대작업 없애기 → 목록에서 빠짐", r.stdout + r.stderr + l2.stdout);
+  r = ledger("Claude", A, ["add", "따로 온 요청", "--project", "tri"]);
+  const lone = idOf(r.stdout);
+  ledger("Claude", A, ["add", "그 조각", "--under", lone]);
+  r = ledger("Claude", A, ["move", lone, "--under", area]);
+  ok(r.status === 0, "세부 가진 중작업을 대작업 아래로 옮김(세부는 따라감)", r.stdout + r.stderr);
+  ledger("Claude", A, ["status", mid, "진행 중"]);
+  ledger("Claude", A, ["status", leaf, "진행 중"]);
+  ledger("Claude", A, ["status", leaf, "끝냄", "--why", "화면 확인"]);
+  r = ledger("human", A, ["list", "--project", "tri"]);
+  const lines = r.stdout.split("\n");
+  const head = lines.findIndex((l) => /^▣ .*작업 장부/.test(l));
+  ok(head >= 0 && /진행 중 1/.test(lines[head]) && /할 일 1/.test(lines[head]), "목록: 대작업 머리 줄에 아래 중작업 요약", r.stdout);
+  ok(lines.some((l) => /^  \S.*번호 복사.*시작 /.test(l)) && lines.some((l) => /^      └ .*제목 앞 번호.*시작 .*끝 /.test(l)) && lines.some((l) => /^      └ .*그 조각/.test(l)), "목록: 중작업 두 칸·세부 여섯 칸 들여쓰기, 시작·끝 시각", r.stdout);
+  r = ledger("human", A, ["list", "--project", "tri", "--json"]);
+  const js = JSON.parse(r.stdout || "[]");
+  const jl = js.find((x) => x.id.endsWith(leaf));
+  ok(jl && jl.started && jl.finished && jl.started <= jl.finished && js.find((x) => x.id.endsWith(area))?.area === true, "JSON: area·started·finished", r.stdout);
+  ledger("Claude", A, ["status", leaf, "진행 중"]);
+  r = ledger("human", A, ["list", "--project", "tri", "--json"]);
+  const again = JSON.parse(r.stdout || "[]").find((x) => x.id.endsWith(leaf));
+  ok(again && again.started && !again.finished, "다시 진행 중이면 완료 시각 비움", r.stdout);
+}
 
 console.log("\n[설명]");
 {
@@ -249,6 +296,71 @@ const shim = path.join(tmp, "bin", "ledger");
 ok(fs.existsSync(shim) && /exec node ".+ledger\.mjs" "\$@"\n$/.test(fs.readFileSync(shim, "utf8")), "짧은 이름 ledger 만들어짐", fs.existsSync(shim) ? fs.readFileSync(shim, "utf8") : "없음");
 r = spawnSync(process.execPath, [path.join(app, "ledger.mjs"), "list"], { cwd: A, encoding: "utf8", env: baseEnv(path.join(tmp, "home-pc"), A) });
 ok(r.status === 0 && /훅 시험 항목/.test(r.stdout), "설치본으로 목록 보기", r.stdout + r.stderr);
+
+console.log("\n[Codex 의견 반영 — 순서 고정·다시 열기·시작 시각·없앤 대작업]");
+{
+  r = ledger("Claude", A, ["area", "먼저 만든 줄기", "--project", "ord"]); const a1 = idOf(r.stdout);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1100); // 기록 시각이 초 단위 — 같은 초면 만든 순서를 가릴 수 없다
+  r = ledger("Claude", A, ["area", "나중 만든 줄기", "--project", "ord"]); const a2 = idOf(r.stdout);
+  r = ledger("Claude", A, ["add", "앞 요청", "--under", a1]); const m1 = idOf(r.stdout);
+  r = ledger("Claude", A, ["add", "뒤 요청", "--under", a2]); const m2 = idOf(r.stdout);
+  ledger("Claude", A, ["status", m2, "진행 중"]);
+  ledger("Claude", A, ["status", m2, "끝냄", "--why", "시험"]);
+  r = ledger("human", A, ["list", "--project", "ord"]);
+  ok(r.stdout.indexOf("먼저 만든 줄기") < r.stdout.indexOf("나중 만든 줄기"), "대작업은 만든 순서(확인 대기가 있어도 자리 그대로)", r.stdout);
+  r = ledger("human", A, ["status", m2, "확인됨"]);
+  r = ledger("Claude", A, ["add", "확인 뒤 붙은 조각", "--under", m2]);
+  ok(r.status === 0 && /↺/.test(r.stdout), "확인된 중작업에 세부를 넣으면 다시 엶", r.stdout + r.stderr);
+  r = ledger("human", A, ["show", m2]);
+  ok(/\[진행 중\]/.test(r.stdout), "다시 연 중작업은 진행 중", r.stdout);
+  r = ledger("Claude", A, ["add", "세부만 진행", "--under", m1]); const p1 = idOf(r.stdout);
+  ledger("Claude", A, ["status", p1, "진행 중"]);
+  const v = JSON.parse(ledger("human", A, ["view", "--project", "ord"]).stdout);
+  const av = v.items.find((x) => x.id.endsWith(a1));
+  ok(av && av.since && av.since.label === "시작", "대작업 시작 = 하위 세부의 진행까지 봄", JSON.stringify(av && av.since));
+  r = ledger("Claude", A, ["area", "빈 줄기2", "--project", "ord"]); const a3 = idOf(r.stdout);
+  const v0 = JSON.parse(ledger("human", A, ["view", "--project", "ord"]).stdout);
+  const a3v = v0.items.find((x) => x.id.endsWith(a3));
+  ok(a3v && a3v.since === null, "아래가 없는 대작업은 시작 시각 없음", JSON.stringify(a3v));
+  ledger("Claude", A, ["area", "--end", a3]);
+  const v3 = JSON.parse(ledger("human", A, ["view", "--project", "ord"]).stdout);
+  ok(!v3.items.some((x) => x.id.endsWith(a3)), "없앤 대작업은 화면 데이터에서 빠짐", JSON.stringify(v3.items.map((x) => x.title)));
+}
+
+console.log("\n[AI 검증 완료·직접 확인 질문·현황 요약]");
+{
+  r = ledger("Claude", A, ["area", "검증 줄기", "--project", "vf"]); const av = idOf(r.stdout);
+  r = ledger("Claude", A, ["add", "AI 가 다 본 일", "--under", av]); const t1 = idOf(r.stdout);
+  r = ledger("Claude", A, ["add", "사람이 볼 일", "--under", av]); const t2 = idOf(r.stdout);
+  ledger("Claude", A, ["status", t1, "진행 중"]);
+  r = ledger("Claude", A, ["status", t1, "끝냄", "--verified", "--why", "시험·화면 확인"]);
+  ok(r.status === 0 && /AI 검증 완료/.test(r.stdout), "끝냄 --verified", r.stdout + r.stderr);
+  r = ledger("Claude", A, ["status", t2, "끝냄", "--why", "시험", "--ask", "폰에서 길게 눌러 복사가 되는지 봐 주세요"]);
+  ok(r.status === 0 && /직접 확인/.test(r.stdout), "끝냄 --ask 질문", r.stdout + r.stderr);
+  let v = JSON.parse(ledger("human", A, ["view", "--project", "vf"]).stdout);
+  const g1 = v.items.find((x) => x.id.endsWith(t1)); const g2 = v.items.find((x) => x.id.endsWith(t2));
+  ok(g1.verify && g1.verify.ai === true && g2.verify && /복사/.test(g2.verify.ask), "화면 데이터에 검증 표시·질문", JSON.stringify([g1.verify, g2.verify]));
+  ledger("Claude", A, ["status", t1, "진행 중"]);
+  v = JSON.parse(ledger("human", A, ["view", "--project", "vf"]).stdout);
+  ok(!v.items.find((x) => x.id.endsWith(t1)).verify, "다시 진행 중이면 검증 표시 사라짐", "");
+  r = ledger("Claude", A, ["status", t1, "끝냄", "--why", "x", "--verified", "--ask", "q"]);
+  ok(r.status !== 0, "--verified 와 --ask 같이 → 거부", r.stderr);
+  r = ledger("Claude", A, ["status", t1, "진행 중", "--verified"]);
+  ok(r.status !== 0 && /끝냄과 함께만/.test(r.stderr), "끝냄이 아닌데 --verified → 거부", r.stderr);
+  r = ledger("Claude", A, ["status", t1, "--verified", "끝냄", "--why", "순서 바꿔 씀"]);
+  ok(r.status === 0 && /AI 검증 완료/.test(r.stdout), "--verified 가 뒤 낱말(끝냄)을 먹지 않음", r.stdout + r.stderr);
+  r = ledger("Claude", A, ["summary", av, "장부 탭에서 확인 대기가 줄었다 · 남은 것: 폰 복사"]);
+  ok(r.status === 0, "대작업 현황 쓰기", r.stdout + r.stderr);
+  r = ledger("Claude", A, ["summary", "project", "--project", "vf", "PC 에서 쓰는 중 · 다음: 서버"]);
+  ok(r.status === 0, "프로젝트 현황 쓰기", r.stdout + r.stderr);
+  v = JSON.parse(ledger("human", A, ["view", "--project", "vf"]).stdout);
+  const ga = v.items.find((x) => x.id.endsWith(av));
+  ok(ga.summary && /확인 대기가 줄었다/.test(ga.summary.text) && v.projectSummary && /서버/.test(v.projectSummary.text), "화면 데이터에 대작업·프로젝트 현황", JSON.stringify([ga.summary, v.projectSummary]));
+  r = ledger("Claude", A, ["summary", t2, "중작업엔 안 씀"]);
+  ok(r.status !== 0 && /대작업이 아닙니다/.test(r.stderr), "중작업에 현황 → 거부", r.stderr);
+  r = ledger("human", A, ["list", "--project", "vf"]);
+  ok(/AI 검증 1/.test(r.stdout) && /확인 대기 1/.test(r.stdout), "목록 대작업 줄: AI 검증과 확인 대기 따로 셈", r.stdout);
+}
 
 console.log(`\n결과: 통과 ${pass} · 실패 ${failN}`);
 if (!process.env.KEEP) fs.rmSync(tmp, { recursive: true, force: true });

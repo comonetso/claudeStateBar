@@ -124,10 +124,14 @@ h2 { font-size: 20px; margin: 0 0 16px; }
 (function () {
   var D = JSON.parse(document.getElementById("data").textContent);
   var S = D.states;
+  // AI 가 범위 전부 검증한 끝냄은 "AI 검증 완료" — 확인 대기·남은 일에서 빠진다(10-27 리규형님, 장부 탭과 같게)
+  S["AI 검증"] = { icon: "✓", tone: "green", label: "AI 검증 완료" };
+  D.items.forEach(function (it) { if (it.state === "끝냄" && it.verify && it.verify.ai) it.state = "AI 검증"; });
   var OPEN = { "제안": 1, "할 일": 1, "진행 중": 1, "끝냄": 1, "보류": 1 };
-  var ORDER = { "끝냄": 0, "진행 중": 1, "할 일": 2, "제안": 3, "보류": 4, "확인됨": 5, "버림": 6 };
+  var ORDER = { "끝냄": 0, "진행 중": 1, "할 일": 2, "제안": 3, "보류": 4, "AI 검증": 5, "확인됨": 6, "버림": 7 };
   var IDS = Object.create(null);
-  D.items.forEach(function (it) { IDS[it.id] = true; });
+  var AREA = Object.create(null);
+  D.items.forEach(function (it) { IDS[it.id] = true; if (it.area) AREA[it.id] = it; });
   var main = document.getElementById("main");
   var state = { view: "projects", project: null, filter: "open" };
 
@@ -188,25 +192,40 @@ h2 { font-size: 20px; margin: 0 0 16px; }
     var kids = kidsOf(it.id);
     var done = kids.filter(function (k) { return k.state === "끝냄" || k.state === "확인됨" || k.state === "버림"; }).length;
     var kidHtml = kids.length ? '<div class="kids">' + kids.map(function (k) {
-      return '<div class="kid">' + pill(k.state) + " " + esc(k.title) + "</div>";
+      return '<div class="kid">' + pill(k.state) + " " + esc(k.title) + (tm(k) ? ' <span class="meta">' + esc(tm(k)) + "</span>" : "") + "</div>";
     }).join("") + "</div>" : "";
+    // 번호는 화면에 안 보인다(10-26 리규형님) — 줄 끝은 세부 개수와 시작·끝 시각
     return '<div class="' + cls + '"><div class="top">' + pill(it.state) + '<span class="title">' + esc(it.title) + (it.desc ? ' <span class="qm" title="펼치면 설명">?</span>' : "") +
-      '</span><span class="meta">' + (kids.length ? "세부 " + done + "/" + kids.length + " · " : "") + esc(it.id.slice(-4)) + " · " + esc(it.updated.slice(5, 16)) + "</span></div>" +
+      '</span><span class="meta">' + (kids.length ? "세부 " + done + "/" + kids.length + (tm(it) ? " · " : "") : "") + esc(tm(it) || it.updated.slice(5, 16)) + "</span></div>" +
       (ln ? '<div class="last">' + esc(ln.who) + ": " + esc(ln.text) + "</div>" : "") +
       '<div class="hist">' + (it.desc ? '<div class="desc">' + esc(it.desc) + "</div>" : "") + kidHtml + hist + "</div></div>";
   }
-  function isTop(it) { return !it.parent || !IDS[it.parent]; }
+  // 시작 = 처음 진행 중, 끝 = 마지막 끝냄(10-26 리규형님)
+  function tm(it) { return (it.started ? "시작 " + it.started.slice(5, 16) : "") + (it.finished ? (it.started ? " · " : "") + "끝 " + it.finished.slice(5, 16) : ""); }
+  // 대작업 > 중작업 > 세부(10-26 리규형님). 중작업 = 대작업 아래이거나 아직 대작업이 없는 요청
+  function isTop(it) { return !it.area && (!it.parent || !IDS[it.parent] || AREA[it.parent]); }
   function kidsOf(id) { return D.items.filter(function (x) { return x.parent === id; }); }
 
   function project(name) {
     var list = D.items.filter(function (it) { return it.project === name && isTop(it) && (visible(it) || kidsOf(it.id).some(visible)); });
     var head = '<button class="back" data-go="">← 프로젝트 목록</button><h2>' + esc(name) + "</h2>";
     if (!list.length) return head + '<div class="empty">' + (state.filter === "open" ? "남은 일이 없습니다." : "항목이 없습니다.") + "</div>";
-    var days = Object.create(null);
-    list.forEach(function (it) { var d = it.created.slice(0, 10); (days[d] = days[d] || []).push(it); });
-    return head + Object.keys(days).sort().reverse().map(function (d) {
-      var rows = days[d].sort(function (a, b) { return (ORDER[a.state] - ORDER[b.state]) || (a.updated < b.updated ? 1 : -1); });
-      return '<div class="day">' + dayLabel(d) + '</div><div class="list">' + rows.map(itemRow).join("") + "</div>";
+    // 대작업별로 묶는다 — 대작업은 상태 없이 아래 중작업 요약만(대작업 없는 요청은 맨 아래)
+    var groups = Object.create(null);
+    list.forEach(function (it) { var k = it.parent && AREA[it.parent] ? it.parent : ""; (groups[k] = groups[k] || []).push(it); });
+    var first = function (k) { return Math.min.apply(null, groups[k].map(function (x) { return ORDER[x.state]; })); };
+    // 대작업은 만든 순서로 고정(10-27 리규형님) — 대작업 없음은 맨 아래
+    return head + Object.keys(groups).sort(function (a, b) { return a === "" ? 1 : b === "" ? -1 : AREA[a].created < AREA[b].created ? -1 : 1; }).map(function (k) {
+      var rows = groups[k].sort(function (a, b) { return (ORDER[a.state] - ORDER[b.state]) || (a.updated < b.updated ? 1 : -1); });
+      var area = k ? AREA[k] : null;
+      var all = k ? D.items.filter(function (x) { return x.parent === k && !x.area; }) : [];
+      var sum = ["끝냄", "진행 중", "할 일", "제안", "보류"].map(function (s) {
+        var n = all.filter(function (x) { return x.state === s; }).length;
+        return n ? (S[s] ? S[s].label : s) + " " + n : "";
+      }).filter(Boolean).join(" · ");
+      // 대작업 시작은 장부 명령이 계산해 넘긴다(areaSince — 하위 전체의 첫 진행, 없으면 "기록 시작")
+      if (area && area.since) sum = (sum ? sum + " · " : "") + area.since.label + " " + area.since.at.slice(5, 16);
+      return '<div class="day">' + (area ? "▣ " + esc(area.title) + (sum ? ' <span class="meta">' + esc(sum) + "</span>" : "") + (area && area.summary ? '<div class="note">' + esc(area.summary.text) + '</div>' : "") : "대작업 없음") + '</div><div class="list">' + rows.map(itemRow).join("") + "</div>";
     }).join("");
   }
 

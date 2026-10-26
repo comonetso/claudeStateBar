@@ -2,8 +2,8 @@ import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { TEAM_LOGS } from "../../shared/team/teamAccess";
-import { projectHosts } from "../projectsEdit";
-import { SAFE_HOST, sshExe } from "../projectLabels";
+import { projectHosts } from "../projects/projectsEdit";
+import { SAFE_HOST, sshExe } from "../projects/projectLabels";
 import { claudeConfigDir } from "../claudePaths";
 
 // 팀원 관리 시험판(10-11) — 직원에게 줄 스킬·명령어 목록.

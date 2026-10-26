@@ -2,7 +2,7 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { RunCard, RunItem, RunPhase } from "../../shared/codex";
-import { findAllCodexDirs, type CodexDirs } from "../chime/scan";
+import { findAllCodexDirs, type CodexDirs } from "../presentation/chime/scan";
 import { createRunState, feedExecLine, type CodexRunState } from "./execEvents";
 
 // codex_rescue 실행 기록을 카드로 읽는다. 규칙은 확장 src/providers/codexRescue/runDiscovery.ts 와 같게 옮겨 썼다.

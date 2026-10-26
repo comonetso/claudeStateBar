@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { LoginSnapshot, LoginTarget } from "../shared/claudeLogin";
 import { isClaudeProvider, PERSONAL_PROVIDER, readProviders, switchedProvider } from "./account";
-import { isTeamDaemon } from "./sound";
+import { isTeamDaemon } from "./presentation/sound";
 import { tokenProviders, usageLoginDir, usageLoginState } from "./usageLogin";
 import { deliveredTimeline, turnEndedTimeline } from "./turnTimeline";
 import type { PluginHookContext } from "@getpaseo/plugin/server";

@@ -10,7 +10,7 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import { loginCancel, loginCode, loginStart, loginWait, type LoginSnapshot } from "../shared/claudeLogin";
-import { hostInfo } from "../shared/sound";
+import { hostInfo } from "../shared/presentation/sound";
 import { FoldTitle } from "./sectionTitle";
 import { settingsText, type SettingsText } from "./settingsI18n";
 import { buttonStyle, UiInput } from "./ui";

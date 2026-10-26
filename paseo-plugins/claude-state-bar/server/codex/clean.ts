@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { findCodexDirs } from "../chime/scan";
+import { findCodexDirs } from "../presentation/chime/scan";
 import { globalClaudeHome } from "../claudePaths";
 import type { CleanItemKey, CleanRefusal } from "../../shared/codexClean";
 import { CLEAN_ITEMS, parseUsage } from "./usage";

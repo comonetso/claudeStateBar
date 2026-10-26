@@ -1,7 +1,7 @@
 import { createJsonlReader } from "./jsonlReader";
 import { addSessionFact, createSessionFacts } from "./activity/openSessions";
-import { createTaskNoticeState, addTaskNoticeLines, taskNoticesOf } from "./chime/notices";
-import { createBackgroundTaskState, addBackgroundTaskLines, backgroundTasksOf } from "./chime/backgroundTasks";
+import { createTaskNoticeState, addTaskNoticeLines, taskNoticesOf } from "./presentation/chime/notices";
+import { createBackgroundTaskState, addBackgroundTaskLines, backgroundTasksOf } from "./presentation/chime/backgroundTasks";
 
 // 작업 현황과 소리 판정이 같은 대화 판독·진행 중 읽기를 공유한다. 판정 규칙과 2분 기준은 기존 그대로다.
 const LONG_COMMAND_MS = 2 * 60 * 1000;

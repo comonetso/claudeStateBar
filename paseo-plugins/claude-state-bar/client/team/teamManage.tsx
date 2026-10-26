@@ -3,7 +3,7 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { projectsHosts } from "../../shared/projects";
+import { projectsHosts } from "../../shared/projects/projects";
 import {
   teamCategoryOrder,
   teamJobStart,
@@ -22,8 +22,8 @@ import {
 } from "../../shared/team/team";
 import { CALL_NAME_MAX, callNameProblem, isTeamStandard } from "../../shared/team/teamStandard";
 import { scaled, useFontScale } from "../fontScale";
-import { type HostIndex, type ProjectsData } from "../projectsData";
-import { ProjectsEditor, type EditScope } from "../projectsManage";
+import { type HostIndex, type ProjectsData } from "../projects/projectsData";
+import { ProjectsEditor, type EditScope } from "../projects/projectsManage";
 import { accessNote, TeamAccessPanel } from "./teamAccessPanel";
 import { FIELD_WIDTH, lineColor, UiButton, UiInput } from "../ui";
 import { copyText, setNoTranslate } from "../web";

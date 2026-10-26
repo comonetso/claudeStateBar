@@ -1,5 +1,5 @@
 import type { PluginHookContext, PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import { checkpointCommandLine } from "./chime/lastTurn";
+import { checkpointCommandLine } from "./presentation/chime/lastTurn";
 import { deliveredTimeline, isAsideItem, turnEndedTimeline, type TurnItem } from "./turnTimeline";
 
 // 압축 명령 자동 넣기(10-24 리규형님 — Mesa 메인·하위 대화가 자는 동안 압축 준비에서 멈춰 무중단이 깨졌다. 버튼: 플러그인이 대신 넣기 ·

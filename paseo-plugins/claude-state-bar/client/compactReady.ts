@@ -1,9 +1,9 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { pushCompactWait } from "../shared/push";
-import { hostInfo } from "../shared/sound";
+import { pushCompactWait } from "../shared/presentation/push";
+import { hostInfo } from "../shared/presentation/sound";
 
 // 압축 준비 아이콘(10-15 리규형님 "프로젝트 매니저에 질문지 올라올 때 ? 넣듯이") — 데몬마다 압축 명령어를 기다리는 대화를
-// 그 데몬의 푸시 판정(server/push.ts)에서 받는다. 플러그인 RPC 는 자기 데몬에만 닿아서, 호스트마다 도는 인스턴스가 받아
+// 그 데몬의 푸시 판정(server/presentation/push.ts)에서 받는다. 플러그인 RPC 는 자기 데몬에만 닿아서, 호스트마다 도는 인스턴스가 받아
 // 화면 공용 게시판에 올리고 프로젝트 목록(projectsData useLiveSessions)이 읽는다 — claudeLogin.tsx 의 hub 와 같은 방식
 type Hub = { hosts: Map<string, { owner: object; ids: Set<string> }>; listeners: Set<() => void> };
 

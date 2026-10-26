@@ -1,6 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { projectEntrySchema, projectsEditOpSchema } from "../projects";
+import { projectEntrySchema, projectsEditOpSchema } from "../projects/projects";
 
 // 팀원 관리(10-11 → 10-20 리규형님 "새로 만들자") — 팀원을 추가할 때는 아이디와 그 직원에게 맞는 스킬·명령어만 고른다
 // (서버마다 그 서버의 글로벌 것에서). 서버는 따로 고르지 않는다 — 팀원 프로젝트에 서버가 들어 있어 팀원 프로젝트가 있는 서버에만

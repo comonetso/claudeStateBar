@@ -1,9 +1,9 @@
 import { getPaseoClient } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { accountsWait, isTeamUsageSource, TEAM_USAGE_SOURCE_ID } from "../shared/account";
-import { alertNameOfWorkspace } from "./headerTitles";
-import { useOnlineHosts } from "./projectsData";
-import { soundOrigin, watchSoundOrigins } from "./soundScreen";
+import { alertNameOfWorkspace } from "./projects/headerTitles";
+import { useOnlineHosts } from "./projects/projectsData";
+import { soundOrigin, watchSoundOrigins } from "./presentation/soundScreen";
 
 // 사용량 칸 카드 이름 옆 숫자(10-23 리규형님 "현재 몇 개의 플젝에서 현재 계정을 사용하고 있는지 · 마우스를 오버하면
 // Admin DEV, CrewPhoneApp 처럼 현재 사용하고 있는 플젝을 표시"). 붙어 있는 기기마다 대화 목록을 구독해, 보관 안 된 대화의

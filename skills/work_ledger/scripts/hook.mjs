@@ -29,35 +29,59 @@ function sessionKey(input) {
 }
 
 const ORDER = { "끝냄": 0, "진행 중": 1, "할 일": 2, "제안": 3, "보류": 4 };
+// AI 가 범위 전부 검증한 끝냄은 사람 확인 대기가 아니다(10-27 리규형님)
+const labelOf = (it) => (it.state === "끝냄" && it.verify ? (it.verify.ai ? "AI verified" : "awaiting user: " + it.verify.ask) : LABEL[it.state]);
 const LABEL = { "끝냄": "awaiting user check", "진행 중": "in progress", "할 일": "todo", "제안": "suggestion", "보류": "on hold" };
 
 function sessionStart(cfg, project) {
-  const open = loadAll(cfg).filter((it) => it.project === project && ORDER[it.state] !== undefined)
+  const all = loadAll(cfg);
+  const open = all.filter((it) => it.project === project && ORDER[it.state] !== undefined)
     .sort((a, b) => (ORDER[a.state] - ORDER[b.state]) || (a.updated < b.updated ? 1 : -1));
   const lines = [
     `[work-ledger] Project "${project}" keeps a work ledger shared by the user and every AI tool. Command: ${LEDGER_CMD}  (in Git Bash also just: ledger)`,
     "Rules:",
-    '- One user request = ONE big task: ledger add "<title in the user\'s language, the context a person remembers>". Each piece you fix or change inside it is a sub-item under it: ledger add "<piece>" --under <big task id>. Do not add pieces as top-level items — a person scans the big tasks and opens one to see its pieces. Put follow-up requests in the same context under the existing big task. Existing loose items can be moved: ledger move <id...> --under <big task id>.',
-    '- Starting: ledger status <id> 진행 중. Finished: ledger status <id> 끝냄 --why "<how you verified it>" (sub-items too, then the big task). Only the user marks 확인됨 — on the big task, which also confirms its finished sub-items.',
-    '- When the user changes something already decided or built (a layout, a rule, an approach), record it on the big task: ledger change <id> "<before> → <after>" --why "<the user\'s reason>". It shows only in the ? popup, so it is the trail of why things ended up this way.',
+    '- Three levels: AREA > TASK > PIECE. An area is a long-running line of work (e.g. "작업 장부(work-ledger)", a plugin, deployment). One user request = ONE task under the area it belongs to: ledger add "<title in the user\'s language, the context a person remembers>" --under <area id>. Make a PIECE only for a part that must be tracked or finished on its own (ledger add "<piece>" --under <task id>); plain edits, test runs and progress go on the task itself as notes: ledger note <task id> "<what you did>". Adding a piece under a task that is already finished or confirmed reopens that task (the old confirmation covered only the old scope). If no listed area fits, create one first: ledger area "<area name>" (areas have no state; the screen shows a summary of their tasks). Put follow-up requests in the same context under the existing task. Never add pieces at the top level. Move loose items with: ledger move <id...> --under <area or task id> (a task takes its pieces along).',
+    '- Choosing the area: pick by each area\'s rule line below, not by its name. When you create a new TASK, tell the user in one line of chat which area and title you used, so a wrong placement is caught at once. Creating a new AREA is rare: first ask the user with buttons (2-3 name candidates, each with its one-line rule), then: ledger area "<name>" --desc "<rule: what belongs here>". Without buttons, ask in plain text. In an unattended run, never create an area — add the task without --under (it shows under "no area") and report it.',
+    '- Starting: ledger status <id> 진행 중 (this records the start time). Finished: ledger status <id> 끝냄 --why "<how you verified it>" (records the finish time; pieces too, then the task). Only the user marks 확인됨 — on the task, which also confirms its finished pieces.',
+    '- Verify it yourself first. When finishing, say what is left for the user: add --verified if you checked the WHOLE scope yourself (tests, real screen via browser-check, real run) — it leaves the check list of the user. Add --ask "<one plain question for the user>" when part of it only a person can judge (sound, feel on the phone, taste, a real-world result) — only that question is shown to the user. Type checks or unit tests alone do not verify what a person sees or hears. Never ask the user to approve every finished task.',
+    '- Keep the "where are we" summary current: when a task finishes or the picture changes, rewrite the area summary in 2-3 plain lines (what works now · what is left · next candidates): ledger summary <area id> "<text>". Rewrite the project summary the same way when the big picture moves: ledger summary project "<text>". These are the first thing the user reads.',
+    '- When the user changes something already decided or built (a layout, a rule, an approach), record it on the task: ledger change <id> "<before> → <after>" --why "<the user\'s reason>". It shows only in the ? popup, so it is the trail of why things ended up this way.',
     '- When you offer several options or next steps, put them in: ledger suggest "<title>" "<title>" ...',
     '- If this turn has nothing to record (a question answered, a chat), run: ledger skip "<reason>". A turn that ends with no ledger record is blocked by a hook.',
     "- Use the 4-character id (e.g. a7k2). Keep titles short and concrete. Never edit the ledger files by hand.",
   ];
   const n = unpushedCount(cfg);
   if (n > 0) lines.push(`- Note: ${n} ledger commit(s) are not on GitHub yet — run: ledger sync`);
-  if (open.length) {
-    // big tasks first, their open sub-items indented under them
-    const ids = new Set(open.map((it) => it.id));
-    const heads = open.filter((it) => !it.parent || !ids.has(it.parent));
-    lines.push(`Open items (${open.length}; big tasks with their sub-items indented):`);
-    let n = 0;
-    for (const h of heads) {
-      if (n >= 40) break;
-      lines.push(`  ${h.id.slice(-4)} [${LABEL[h.state]}] ${h.title}${h.parent ? ` (sub-item of ${h.parent.slice(-4)})` : ""}`); n++;
-      for (const k of open.filter((x) => x.parent === h.id)) { lines.push(`      └ ${k.id.slice(-4)} [${LABEL[k.state]}] ${k.title}`); n++; }
+  // areas (all of them, so a new task can be placed) → their open tasks → open pieces
+  const areas = all.filter((it) => it.project === project && it.area);
+  const tasks = open.filter((it) => !it.area && (!it.parent || areas.some((a) => a.id === it.parent) || !all.some((x) => x.id === it.parent)));
+  const pieces = open.filter((it) => !it.area && !tasks.includes(it));
+  // 대작업마다 "여기에 들어가는 일" 기준 한 줄(설명 첫 줄)을 같이 보인다 — AI 가 이름만 보고 짐작하지 않게(10-26 리규형님)
+  if (areas.length) {
+    lines.push("Areas (pick the one whose rule fits; create a new area only when none fits):");
+    for (const a of areas) {
+      const rule = (a.desc || "").split("\n").map((s) => s.trim()).find(Boolean) || "(no rule yet)";
+      lines.push(`  ${a.id.slice(-4)} ${a.title} — ${rule}`);
     }
-    if (open.length > n) lines.push(`  … ${open.length - n} more: ledger list`);
+  }
+  if (tasks.length || pieces.length) {
+    lines.push(`Open items (${tasks.length + pieces.length}; area > task > piece):`);
+    let n = 0;
+    const show = (t, pad) => {
+      if (n >= 40) return;
+      lines.push(`${pad}${t.id.slice(-4)} [${labelOf(t)}] ${t.title}`); n++;
+      for (const k of pieces.filter((x) => x.parent === t.id)) { if (n >= 40) return; lines.push(`${pad}    └ ${k.id.slice(-4)} [${labelOf(k)}] ${k.title}`); n++; }
+    };
+    for (const a of areas) {
+      const mine = tasks.filter((t) => t.parent === a.id);
+      if (!mine.length || n >= 40) continue;
+      lines.push(`  ▣ ${a.id.slice(-4)} ${a.title}`);
+      for (const t of mine) show(t, "    ");
+    }
+    const loose = tasks.filter((t) => !t.parent || !areas.some((a) => a.id === t.parent));
+    if (loose.length && n < 40) { lines.push("  ▣ (no area — move these under one)"); for (const t of loose) show(t, "    "); }
+    const shown = n;
+    if (tasks.length + pieces.length > shown) lines.push(`  … ${tasks.length + pieces.length - shown} more: ledger list`);
   } else lines.push("Open items: none.");
   process.stdout.write(`${lines.join("\n")}\n`);
 }
