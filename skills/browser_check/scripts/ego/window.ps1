@@ -2,6 +2,10 @@
 #   window.ps1 list            -> one JSON line: ego windows (visible / minimized / title length)
 #   window.ps1 ensure [<exe>]  -> if no ego window is visible (all closed with X, or ego not running), start ego.exe
 #                                 again and minimize every window it shows, at once and without activating it.
+#   window.ps1 restart [<exe>] -> stop ego completely (polite close first, force only if it stays), then 'ensure'.
+#                                 For an ego that is up but no longer answers ego-browser (2026-10-25: one tab held
+#                                 the agent channel and every run timed out for 2.5 h; closing the window with X only
+#                                 hid it, the main process from 04:15 stayed). The profile (logins, cookies) is kept.
 # Why (measured 2026-10-21): X does not close an ego window, ego hides it and stops painting it; a task space opened
 # while every window is hidden goes into a new hidden window that never paints, so capture gets nothing. Running
 # ego.exe again shows the hidden window (a "-WindowStyle Minimized" start is ignored); minimizing it right away keeps
@@ -45,6 +49,31 @@ function DefaultExe {
 
 if ($Action -eq 'list') { (State) | ConvertTo-Json -Compress; exit 0 }
 
+$stopped = $null
+if ($Action -eq 'restart') {
+  $procs = @(Get-CimInstance Win32_Process -Filter "Name='ego.exe'")
+  $all = @($procs | ForEach-Object { [uint32]$_.ProcessId })
+  # the browser process is the ego.exe whose parent is not another ego.exe; its children go with it
+  $main = @($procs | Where-Object { $all -notcontains [uint32]$_.ParentProcessId })
+  $stopped = 'not-running'
+  if ($procs.Count -gt 0) {
+    $stopped = 'closed'
+    foreach ($m in $main) { & taskkill.exe /PID $m.ProcessId 2>&1 | Out-Null }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt 8000 -and @(Get-Process ego -ErrorAction SilentlyContinue).Count -gt 0) { Start-Sleep -Milliseconds 200 }
+    if (@(Get-Process ego -ErrorAction SilentlyContinue).Count -gt 0) {
+      $stopped = 'forced'
+      foreach ($m in $main) { & taskkill.exe /F /T /PID $m.ProcessId 2>&1 | Out-Null }
+      $sw.Restart()
+      while ($sw.ElapsedMilliseconds -lt 10000 -and @(Get-Process ego -ErrorAction SilentlyContinue).Count -gt 0) { Start-Sleep -Milliseconds 200 }
+    }
+    $left = @(Get-Process ego -ErrorAction SilentlyContinue).Count
+    if ($left -gt 0) { @{ ok = $false; why = "ego still running after a forced stop ($left processes)"; stopped = $stopped } | ConvertTo-Json -Compress; exit 0 }
+    Start-Sleep -Milliseconds 1500   # let the profile lock go before the new start
+  }
+  $Action = 'ensure'
+}
+
 if ($Action -eq 'ensure') {
   $before = State
   if ($before.visible -gt 0) { @{ ok = $true; action = 'none'; before = $before } | ConvertTo-Json -Compress; exit 0 }
@@ -73,7 +102,7 @@ if ($Action -eq 'ensure') {
     Start-Sleep -Milliseconds 20
   }
   $after = State
-  @{ ok = ($after.visible -gt 0); action = $(if ($before.running) { 'reopened' } else { 'started' }); firstVisibleMs = $firstAt; minimizedWindows = $seen.Count; before = $before; after = $after } | ConvertTo-Json -Compress
+  @{ ok = ($after.visible -gt 0); action = $(if ($before.running) { 'reopened' } else { 'started' }); stopped = $stopped; firstVisibleMs = $firstAt; minimizedWindows = $seen.Count; before = $before; after = $after } | ConvertTo-Json -Compress
   exit 0
 }
 @{ ok = $false; why = "unknown action $Action" } | ConvertTo-Json -Compress

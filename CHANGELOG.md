@@ -232,6 +232,18 @@ skill list: Claude Code reports `Failed to parse YAML frontmatter` for such a fi
 without its name and description, so none of them could be picked or called by name. The description is now a folded block (`>-`) with
 the same text, and nothing else changed.
 
+browser-check 0.2.3 (2026-10-26) captures pages opened in a minimized ego window, closes live pages
+after a run and restarts an ego that stopped answering. A tab opened in a minimized window that had
+never been shown got a 0×0 page: nothing painted, the page text read only `root` and the capture had
+no frame. `look` and `bc.run` now give such a page the size of its window, and `bc.shot` does the same
+for pages a script opened itself; the window is left as it is. A page that keeps only read requests
+open, as live pages such as Paseo web always do, is now blanked and closed after the wait instead of
+staying open as `leftOpen`; a page with a write still in flight is still left open. On the PC relay,
+three timed-out runs in a row make it probe ego, and it restarts ego only if the probe fails too: a
+polite close first, force only if ego stays, the profile and its logins kept, at most once every 15
+minutes. Until now an ego that stopped answering had to be restarted by hand; on 2026-10-25 every run
+timed out for two and a half hours.
+
 Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
 reports every task the old process left behind in a single notification that names several tasks, and
 only the first one was read, so the rest kept running in the background tab for good. A monitor that

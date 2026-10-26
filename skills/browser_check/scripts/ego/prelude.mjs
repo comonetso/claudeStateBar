@@ -25,7 +25,7 @@ try { const __origTask = globalThis.taskSpace; if (typeof __origTask === 'functi
 // K.safeClose (counting CDP network events missed long requests and stayed above 0, measured 2026-10-21).
 // __bcGuard, when on, rejects non-GET fetch/XHR/sendBeacon and form submits unless the path is allowed.
 const __bcHook = `(() => {
-  const w = window; if (w.__bcHooked) return; w.__bcHooked = 1; w.__bcInflight = 0;
+  const w = window; if (w.__bcHooked) return; w.__bcHooked = 1; w.__bcInflight = 0; w.__bcInflightWrite = 0;
   w.__bcGuard = w.__bcGuard || null;
   const safe = (m) => !m || /^(GET|HEAD|OPTIONS)$/i.test(m);
   const allowed = (u) => { const g = w.__bcGuard; if (!g) return true; try { const x = new URL(u, location.href); return g.allow.some((a) => x.pathname === a || x.pathname.startsWith(a.endsWith('/') ? a : a + '/') || x.href === a); } catch (e) { return false; } };
@@ -34,7 +34,8 @@ const __bcHook = `(() => {
   if (of) w.fetch = function (input, init) {
     const m = (init && init.method) || (input && input.method) || 'GET'; const u = (input && input.url) || String(input);
     if (w.__bcGuard && !safe(m) && !allowed(u)) { note('fetch', m, u); return Promise.reject(new TypeError('bc-guard: blocked ' + m)); }
-    w.__bcInflight++; return of.apply(this, arguments).finally(() => { w.__bcInflight--; });
+    const wr = !safe(m); w.__bcInflight++; if (wr) w.__bcInflightWrite++;
+    return of.apply(this, arguments).finally(() => { w.__bcInflight--; if (wr) w.__bcInflightWrite--; });
   };
   const X = w.XMLHttpRequest && w.XMLHttpRequest.prototype;
   if (X) {
@@ -42,7 +43,8 @@ const __bcHook = `(() => {
     X.open = function (m, u) { this.__bcM = m; this.__bcU = u; return oo.apply(this, arguments); };
     X.send = function () {
       if (w.__bcGuard && !safe(this.__bcM) && !allowed(this.__bcU)) { note('xhr', this.__bcM, this.__bcU); throw new TypeError('bc-guard: blocked ' + this.__bcM); }
-      w.__bcInflight++; let done = false; const end = () => { if (!done) { done = true; w.__bcInflight--; } };
+      const wr = !safe(this.__bcM); w.__bcInflight++; if (wr) w.__bcInflightWrite++;
+      let done = false; const end = () => { if (!done) { done = true; w.__bcInflight--; if (wr) w.__bcInflightWrite--; } };
       this.addEventListener('loadend', end); return os.apply(this, arguments);
     };
   }
@@ -86,14 +88,34 @@ const bc = {
     await page.cdp('Page.addScriptToEvaluateOnNewDocument', { source: __bcHook }, { timeout: 5000 });
     try { await page.evaluate(__bcHook); } catch { /* about:blank before the first navigation */ }
     if (light) await page.cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] }, { timeout: 5000 });
-    return { light };
+    const viewport = await bc.fixViewport(page);
+    return { light, viewport };
+  },
+
+  /**
+   * A tab opened in a minimized ego window that was never shown has a 0x0 page (measured 2026-10-26: innerWidth 0,
+   * windowState "minimized") — nothing paints, so screencast gets no frame and the page text is only "root". Such a
+   * page gets its window's size (else 1280x800) through device metrics, the way --width does; the window itself is
+   * not touched. A page that already has a size is left alone.
+   */
+  async fixViewport(page) {
+    let size;
+    try { size = await page.evaluate(() => [innerWidth, innerHeight]); } catch (e) { return { fixed: false, why: String(e && e.message || e).slice(0, 120) }; }
+    if (size[0] > 0 && size[1] > 0) return { fixed: false, size };
+    let width = 1280, height = 800;
+    try {
+      const w = await page.cdp('Browser.getWindowForTarget', {}, { timeout: 5000 }); const b = w && w.bounds;
+      if (b && b.width > 200 && b.height > 200) { width = b.width; height = b.height; }
+    } catch { /* default size */ }
+    await page.cdp('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, { timeout: 5000 });
+    return { fixed: true, size, width, height };
   },
 
   /** Wait until no fetch/XHR is open and the resource count is stable for 5 checks 500 ms apart. */
   async settle(page, maxMs = __bcCfg.settleMs) {
     const t0 = Date.now(); let ok = 0; let lastN = -1; let s = null;
     while (Date.now() - t0 < maxMs) {
-      try { s = await page.evaluate(() => ({ p: typeof window.__bcInflight === 'number' ? window.__bcInflight : null, n: performance.getEntriesByType('resource').length, url: location.href })); }
+      try { s = await page.evaluate(() => ({ p: typeof window.__bcInflight === 'number' ? window.__bcInflight : null, w: typeof window.__bcInflightWrite === 'number' ? window.__bcInflightWrite : null, n: performance.getEntriesByType('resource').length, url: location.href })); }
       catch (e) { s = { p: null, err: String(e && e.message || e).slice(0, 120) }; }
       if (s.url === 'about:blank') return { settled: true, ms: Date.now() - t0, s };
       if (s.p === 0 && s.n === lastN) { if (++ok >= 5) return { settled: true, ms: Date.now() - t0, s }; } else ok = 0;
@@ -103,9 +125,25 @@ const bc = {
     return { settled: false, ms: Date.now() - t0, s };
   },
 
-  /** Close the task space only after the page settles; otherwise leave it open and say so. */
+  /**
+   * Close the task space only after the page settles; otherwise leave it open and say so.
+   * A page that never settles with only read requests open (no POST/PUT/… in flight) is blanked first, then closed:
+   * live pages keep a GET waiting forever — Paseo web holds /__gate/screen/wait open — so every space that looked at
+   * one stayed open and piled up in ego (2026-10-26, six spaces; owner decision). Cutting a GET changes nothing; an
+   * open write (a token refresh, say) still leaves the space open, as before.
+   */
   async finish(task, page) {
     const st = page ? await bc.settle(page) : { settled: true };
+    if (!st.settled && st.s && st.s.w === 0) {
+      try {
+        // The last sample is up to 500 ms old — a write started since then must keep the space open (10-26 Codex review)
+        const w = await page.evaluate(() => (typeof window.__bcInflightWrite === 'number' ? window.__bcInflightWrite : null));
+        if (w !== 0) throw new Error(`write in flight (${w})`);
+        await page.goto('about:blank');
+        await task.finish({ keep: [] });
+        return { closed: true, settle: { ms: st.ms, cut: 'read requests only', state: st.s } };
+      } catch (e) { st.cutError = String(e && e.message || e).slice(0, 120); }
+    }
     if (!st.settled) { bc.out('LEFT_OPEN', { space: task.name, why: 'requests still in flight', state: st.s }); return { closed: false, settle: st }; }
     await task.finish({ keep: [] });
     return { closed: true, settle: { ms: st.ms } };
@@ -130,11 +168,13 @@ const bc = {
       const why = String(e && e.message || e);
       // A painting window answers within a few hundred ms; 1.5 s without a frame means nothing is painting.
       let frame = await bc.__cast(page, { waitMs: 1500 });
-      let reopened = null;
+      let reopened = null, viewport;
+      // A 0x0 page (a page this run opened itself, not through bc.run) paints once it has a size.
+      if (!frame) { viewport = await bc.fixViewport(page); if (viewport.fixed) frame = await bc.__cast(page); }
       if (!frame && __bcCfg.windowScript) { reopened = bc.ensureWindow(); frame = await bc.__cast(page); }
-      if (!frame) return { ok: false, ms: Date.now() - t0, why: why.slice(0, 160), reopened };
+      if (!frame) return { ok: false, ms: Date.now() - t0, why: why.slice(0, 160), reopened, viewport };
       bc.img(name + '.png', Buffer.from(frame, 'base64'));
-      return { ok: true, via: 'screencast', ms: Date.now() - t0, firstTry: why.slice(0, 80), reopened, fullPage: fullPage ? 'not available on screencast' : undefined };
+      return { ok: true, via: 'screencast', ms: Date.now() - t0, firstTry: why.slice(0, 80), reopened, viewport: viewport && viewport.fixed ? viewport : undefined, fullPage: fullPage ? 'not available on screencast' : undefined };
     }
   },
   async __guardTime(p, ms) { let t; try { return await Promise.race([p, new Promise((_, j) => { t = setTimeout(() => j(new Error('timeout ' + ms + 'ms')), ms); })]); } finally { clearTimeout(t); } },

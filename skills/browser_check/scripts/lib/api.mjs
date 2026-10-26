@@ -8,7 +8,7 @@ import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const BC_API = [
-  { name: 'bc.run', sig: "const r = await bc.run('<short-task-name>', async ({ task, page }) => { … }, { prep? })", what: 'Open (or resume) your own task space, prep the page, run fn, then close the space once 0 requests are in flight — also when fn throws. r = { result, closed }. If it never settles the space is left open and LEFT_OPEN is reported.' },
+  { name: 'bc.run', sig: "const r = await bc.run('<short-task-name>', async ({ task, page }) => { … }, { prep? })", what: 'Open (or resume) your own task space, prep the page, run fn, then close the space once 0 requests are in flight — also when fn throws. r = { result, closed }. If it never settles with only GETs open (a live page) it is blanked and closed (closed.settle.cut); with a write open it is left open and LEFT_OPEN is reported.' },
   { name: 'bc.shot', sig: "bc.out('SHOT', await bc.shot(page, '<name>', { fullPage?, timeoutMs? }))", what: 'A PNG capture that also works while ego is minimized (screencast) or closed with X (reopens it minimized). Returns { ok, via, ms, reopened? }; the image becomes a file in `images`. fullPage only works through page.screenshot.' },
   { name: 'bc.watch', sig: 'await bc.watch(page)', what: 'Start recording console, exceptions, log and network events. Call before the step you want to watch.' },
   { name: 'bc.problems', sig: "bc.out('PROBLEMS', await bc.problems(page))", what: 'Errors only: console errors, exceptions, log errors, failed requests, 4xx/5xx responses; browser-extension noise in .ext. Has .summary counts.' },
@@ -17,7 +17,8 @@ export const BC_API = [
   { name: 'bc.events', sig: 'await bc.events(page, { keep? })', what: "Pull ego's event buffer (use this, never page.events() — that empties the buffer bc.problems reads)." },
   { name: 'bc.settle', sig: 'await bc.settle(page, maxMs?)', what: 'Wait until no fetch/XHR is open and the resource count is stable (5 checks, 500 ms apart). { settled, ms }.' },
   { name: 'bc.finish', sig: 'await bc.finish(task, page)', what: 'Close the space after it settles (bc.run does this for you).' },
-  { name: 'bc.prep', sig: 'await bc.prep(page, { light? })', what: 'In-flight counter and the light colour scheme (bc.run does this for you).' },
+  { name: 'bc.prep', sig: 'await bc.prep(page, { light? })', what: 'In-flight counter, the light colour scheme and bc.fixViewport (bc.run does this for you).' },
+  { name: 'bc.fixViewport', sig: 'await bc.fixViewport(page)', what: "A page with no size (0x0 — a tab opened in a minimized ego window that was never shown) gets its window's size through device metrics, so it paints and captures; a page with a size is left alone, the window is not touched. bc.run and bc.shot do this for you." },
   { name: 'bc.guardWrites', sig: "await bc.guardWrites(page, { allow: ['/api/token/refresh'] })", what: 'Refuse non-GET fetch/XHR/sendBeacon/form submits in the page unless the path is allowed (self-tests first). Prefer the --guard-writes option. On a logged-in site the token-refresh path must be allowed — ask the user for it.' },
   { name: 'bc.guardReport', sig: 'await bc.guardReport(page)', what: 'What the guard refused: { blocked: [{ kind, method, url }], allow }.' },
   { name: 'bc.kit', sig: "await bc.kit(page, '<kit>')", what: 'Run one of the in-page kits (list below) in the page; write the name literally so the runner sends that kit.' },
