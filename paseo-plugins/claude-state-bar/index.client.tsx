@@ -37,6 +37,7 @@ import { layoutLoad } from "./shared/layoutSync";
 import { registerThinking } from "./client/presentation/thinking";
 import { registerAskAnswer } from "./client/presentation/askAnswer";
 import { registerPeerMailCard } from "./client/team/peerMailCard";
+import { registerSkillCall } from "./client/presentation/askAnswer";
 import { hideSubagentsPill } from "./client/presentation/hideSubagentsPill";
 import { fixAgentControlsValues } from "./client/presentation/agentControlsValues";
 import { startHaptics } from "./client/presentation/haptics";
@@ -103,6 +104,8 @@ export default function contribute(client: PluginClientContext) {
   cleanups.push(registerAskAnswer(client, log));
   // 다른 대화에서 온 글(peer_mail)은 화면에서 한 줄로 접는다(10-16) — 처리 결과는 Claude 가 요약해 알린다
   cleanups.push(registerPeerMailCard(client, log));
+  // 스킬 호출은 "다른 도구 N개"에 묻히지 않게 "스킬 불러옴 · 이름" 한 줄로(10-27 — korean-rule 을 불렀는지 화면에서 안 보였다)
+  cleanups.push(registerSkillCall(client, log));
   // Paseo "하위 에이전트 N개" 알약 숨기기(10-09 리규형님 — 워크플로우·백그라운드는 우리 작업 현황 패널에서 본다)
   cleanups.push(hideSubagentsPill());
   // 폰 "모델 선택" 창의 모델·사고·모드 값이 "Opus …" 로 잘리던 Paseo 규칙을 그 창 안에서만 푼다(10-21 리규형님)

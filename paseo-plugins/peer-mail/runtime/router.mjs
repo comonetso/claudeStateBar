@@ -433,8 +433,9 @@ function composeFor(host, message, kind, requestId, opened = false) {
   const paste = (cmd, what) => ["node " + m + " " + cmd + " <<'" + end + "'", what, end];
   const exact = "Use the commands exactly as written — this path form, no files — so they run without a permission prompt. The " + end + " line starts at the beginning of its line.";
   // 사람 규칙 먼저 — 중계기가 연 대화는 korean-rule 없이 움직였다(10-27 리규형님: 새 대화 훅 안내를 "리규형님 첫 말이 아니다"로 넘기고
-  // peer_mail 스킬만 불렀다 — BluemingScreenShot·WebVideoControl 기록). /start 는 지난 기록까지 읽어 무거워 부르지 않는다
-  const rule = "Before anything else: if this conversation has not loaded the korean-rule skill yet, invoke it now with the Skill tool (not /start) and follow it to the end — it holds this user's working rules (Korean only, one line of narration per tool, plain words).";
+  // peer_mail 스킬만 불렀다 — BluemingScreenShot·WebVideoControl 기록). /start 는 지난 기록까지 읽어 무거워 부르지 않는다.
+  // 부르기 전 한 줄 알림(10-27 리규형님 버튼): Paseo 는 스킬 호출을 이름 없이 "기타 도구 1개"로 접어, 말없이 부르면 화면에선 안 부른 것처럼 보였다(Admin DEV)
+  const rule = "Before anything else: if this conversation has not loaded the korean-rule skill yet, first write one short line on screen in Korean saying you are turning on the Korean working rules (korean-rule), then invoke it with the Skill tool (not /start) and follow it to the end — it holds this user's working rules (Korean only, one line of narration per tool, plain words).";
   const how =
     kind === "request"
       ? [

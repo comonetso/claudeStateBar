@@ -75,3 +75,58 @@ export function registerAskAnswer(client: PluginClientContext, log: (message: st
     void b();
   };
 }
+
+// 스킬 호출을 이름과 함께 한 줄로(10-27 리규형님 버튼 "둘 다"). Paseo 는 스킬 호출을 다른 도구와 함께 "다른 도구 N개 사용함"으로 접어,
+// 중계기가 연 Admin DEV 대화가 korean-rule 을 먼저 불렀는데도 화면에선 peer_mail 만 부른 것처럼 보였다(기록엔 korean-rule → peer_mail).
+// 대화 기록 변환기로 Skill 도구 줄만 "스킬 불러옴 · 이름" 줄로 바꾼다. 묶음 요약 문구는 앱 본체 것이라 못 고치므로 묶음에서 빼서 따로 그린다.
+// 데이터: tool_call · name "Skill" · detail.input.skill(스킬 이름) — Paseo 기록 줄도 "[Skill] korean-rule" 로 찍힌다
+
+const SKILL_KIND = "skill-call";
+type SkillData = { skill: string; state: "running" | "completed" | "failed" };
+const skillSchema = z.object({ skill: z.string(), state: z.enum(["running", "completed", "failed"]) });
+
+function skillOf(item: { detail?: unknown }): string | undefined {
+  const d = item.detail as { type?: unknown; label?: unknown; input?: { skill?: unknown } } | undefined;
+  // 0.13.0 Claude: detail { type "plain_text", label "korean-rule", text "Launching skill: korean-rule" }(10-27 진단 줄 실측) — 다른 판 대비로 input.skill 도 본다
+  if (d?.type === "plain_text" && typeof d.label === "string" && d.label) return d.label;
+  return typeof d?.input?.skill === "string" && d.input.skill ? d.input.skill : undefined;
+}
+
+const SKILL_LABEL: Record<SkillData["state"], string> = { running: "스킬 부르는 중", completed: "스킬 불러옴", failed: "스킬 못 부름" };
+
+function SkillRow(props: PluginTimelineItemProps<SkillData>) {
+  const c = props.theme.colors;
+  const { skill, state } = props.item.data;
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginVertical: 2 }}>
+      <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>{SKILL_LABEL[state]} ·</Text>
+      <Text style={{ color: state === "failed" ? c.statusWarning : c.foreground, fontSize: 13, fontWeight: "600" }}>
+        {skill}
+      </Text>
+    </View>
+  );
+}
+
+export function registerSkillCall(client: PluginClientContext, log: (message: string) => void): () => void {
+  const a = client.addTimelineTransformer({
+    id: "skill-call",
+    query: { itemType: "tool_call" },
+    transform: ({ item }) => {
+      if (item.name !== "Skill") return undefined;
+      try {
+        const skill = skillOf(item);
+        if (!skill) return undefined;
+        const state: SkillData["state"] = item.status === "completed" ? "completed" : item.status === "failed" ? "failed" : "running";
+        return { items: [{ type: "plugin", kind: SKILL_KIND, version: 1, data: { skill, state } }] };
+      } catch (error) {
+        log(`skill call: ${String(error)}`);
+        return undefined;
+      }
+    },
+  });
+  const b = client.addTimelineRenderer({ kind: SKILL_KIND, version: 1, schema: skillSchema, Component: SkillRow });
+  return () => {
+    void a();
+    void b();
+  };
+}
