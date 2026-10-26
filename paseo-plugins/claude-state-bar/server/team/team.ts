@@ -1,15 +1,15 @@
-import { renameRetry } from "./renameRetry";
+import { renameRetry } from "../renameRetry";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import type { ProjectsEditOp } from "../shared/projects";
-import type { TeamMember, TeamProject } from "../shared/team";
-import { callNameProblem } from "../shared/teamStandard";
-import { cleanProjectAccess, combineAccess, defaultProjectAccess, type FileMode, type LegacyAccess, type ProjectAccess } from "../shared/teamAccess";
-import { SAFE_HOST } from "./projectLabels";
+import type { ProjectsEditOp } from "../../shared/projects";
+import type { TeamMember, TeamProject } from "../../shared/team/team";
+import { callNameProblem } from "../../shared/team/teamStandard";
+import { cleanProjectAccess, combineAccess, defaultProjectAccess, type FileMode, type LegacyAccess, type ProjectAccess } from "../../shared/team/teamAccess";
+import { SAFE_HOST } from "../projectLabels";
 
 // 팀원 목록과 팀원 전용 프로젝트(10-11 리규형님: 리규형님 목록과 따로, 팀원 → 그 팀원의 카테고리 → 프로젝트).
-// PC 데몬의 플러그인 전용 파일 하나에 둔다. 서버에 팀원을 만들거나 폴더를 건드리는 일은 여기서 하지 않는다(server/teamApply).
+// PC 데몬의 플러그인 전용 파일 하나에 둔다. 서버에 팀원을 만들거나 폴더를 건드리는 일은 여기서 하지 않는다(server/team/teamApply).
 // 10-20 리규형님 "팀원 관리 새로": 팀원은 아이디·스킬만, 권한은 팀원 프로젝트마다(project.access), 서버는 팀원 프로젝트에서 센다.
 // 모양: { members: [{ id, servers, skills, categoryOrder, projects: [{ name, category, enabled, host, path, access }], applied, links, … }] }
 

@@ -1,13 +1,13 @@
 // 팀원 권한 — 서버 팀원 도구에 보낼 값의 모양·기본값·검사.
 // 10-20 리규형님 "팀원 관리 새로": 권한은 서버마다가 아니라 팀원 프로젝트마다 준다(팀원 프로젝트 관리 탭). 같은 서버의 프로젝트 권한은
-// combineAccess 가 모아 서버 하나에 보낼 값으로 만든다 — 저장 검사(server/team)·서버 반영(server/teamApply)·화면이 이 한 함수를 쓴다.
-// 다른 묶음을 불러오지 않는다 — PC 데몬 쪽 코드와 시험·화면이 Paseo 묶음 없이 쓴다(검사 정의는 shared/team.ts 의 projectAccessSchema)
+// combineAccess 가 모아 서버 하나에 보낼 값으로 만든다 — 저장 검사(server/team/team)·서버 반영(server/team/teamApply)·화면이 이 한 함수를 쓴다.
+// 다른 묶음을 불러오지 않는다 — PC 데몬 쪽 코드와 시험·화면이 Paseo 묶음 없이 쓴다(검사 정의는 shared/team/team.ts 의 projectAccessSchema)
 
 /**
  * 파일 권한 두 가지 — 서버 팀원 도구(team-daemon policy.py)의 mount mode 와 같은 값.
  * ro = 읽기만 · rw = 읽기쓰기(리규형님(root)과 같은 권한 — 고치기·지우기·git 커밋까지. 10-25 부터 서버가 root 의 파일 권한 검사 건너뛰기로 연다).
  * "내가 쓴 파일만"(add, 10-20)은 10-25 에 없앴다(리규형님) — 팀원이 root 처럼 권한 검사를 건너뛰어 "자기 파일만 고친다"를 지킬 수 없다.
- * 옛 기록의 add 는 읽기만으로 읽는다(server/team toMode)
+ * 옛 기록의 add 는 읽기만으로 읽는다(server/team/team toMode)
  */
 export type FileMode = "ro" | "rw";
 export const FILE_MODES: readonly { mode: FileMode; label: string; note: string }[] = [
@@ -30,7 +30,7 @@ export type ProjectAccess = { file: FileMode; outside: OutsidePath[]; ports: num
 /** 새로 넣은 팀원 프로젝트 — 읽기만, 밖·포트·기록 없음, 비밀 파일 그대로(10-11 리규형님 "열면 내 권한과 같게" — 서버 도구 생략값과 같다) */
 export const defaultProjectAccess = (): ProjectAccess => ({ file: "ro", outside: [], ports: [], logs: [], hideSecrets: false });
 
-/** 옛 서버 단위 권한(10-11~10-19 형식) — team.json 을 읽을 때 새 형식으로 옮기는 데만 쓴다(server/team migrateLegacy) */
+/** 옛 서버 단위 권한(10-11~10-19 형식) — team.json 을 읽을 때 새 형식으로 옮기는 데만 쓴다(server/team/team migrateLegacy) */
 export type LegacyAccess = { writable: string[]; addOnly?: string[]; ports: number[]; logs: string[]; hideSecrets: boolean };
 
 /**

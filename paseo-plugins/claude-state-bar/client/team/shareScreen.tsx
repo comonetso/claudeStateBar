@@ -2,7 +2,7 @@ import * as ui from "@getpaseo/plugin/client/ui";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { SHARE_ACCEPT, SHARE_ALLOWED_TEXT, SHARE_FILES_MAX, SHARE_FILE_MAX_BYTES, SHARE_FILES_TOTAL_BYTES, shareFileAllowed, shareSizeText } from "../shared/share";
+import { SHARE_ACCEPT, SHARE_ALLOWED_TEXT, SHARE_FILES_MAX, SHARE_FILE_MAX_BYTES, SHARE_FILES_TOTAL_BYTES, shareFileAllowed, shareSizeText } from "../../shared/team/share";
 import { getShare, sendShareReply, shareErrorText, shareGateReachable, type ShareFull, type ShareOutFile } from "./shareGate";
 
 // 같이 보기 — 팀원 화면(10-25 리규형님 "공유화면은 별도의 화면으로 간단하게, 깔쌈하게"). 공유받은 대화의 사람 말·Claude 답을 읽기 전용으로
@@ -292,7 +292,7 @@ export function ShareScreen({ theme, params, layout }: Props) {
   );
 }
 
-// 대화에 들어간 답글은 "<이름> 답글: …"(server/share.ts) — 말한 사람을 이름 칸으로 올려 참여자끼리 서로의 답글을 가른다(10-25 명시 지시 6-3).
+// 대화에 들어간 답글은 "<이름> 답글: …"(server/team/share.ts) — 말한 사람을 이름 칸으로 올려 참여자끼리 서로의 답글을 가른다(10-25 명시 지시 6-3).
 // 그 밖의 사람 말은 공유한 사람의 말이다
 const REPLY_HEAD = /^(\S[^\n]{0,39}?) 답글:(?: |\n|$)/;
 function speakerOf(text: string, owner: string): { name: string; body: string } {

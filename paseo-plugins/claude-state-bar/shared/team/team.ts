@@ -1,10 +1,10 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { projectEntrySchema, projectsEditOpSchema } from "./projects";
+import { projectEntrySchema, projectsEditOpSchema } from "../projects";
 
 // 팀원 관리(10-11 → 10-20 리규형님 "새로 만들자") — 팀원을 추가할 때는 아이디와 그 직원에게 맞는 스킬·명령어만 고른다
 // (서버마다 그 서버의 글로벌 것에서). 서버는 따로 고르지 않는다 — 팀원 프로젝트에 서버가 들어 있어 팀원 프로젝트가 있는 서버에만
-// 그 팀원의 Paseo 를 만든다. 권한은 "팀원 프로젝트 관리" 탭에서 프로젝트마다 준다(shared/teamAccess.ts). 리규형님 프로젝트 목록과는 따로다.
+// 그 팀원의 Paseo 를 만든다. 권한은 "팀원 프로젝트 관리" 탭에서 프로젝트마다 준다(shared/team/teamAccess.ts). 리규형님 프로젝트 목록과는 따로다.
 
 const item = z.object({ kind: z.enum(["skill", "command"]), name: z.string(), description: z.string() });
 
@@ -24,7 +24,7 @@ export const teamServerSkills = defineRpc({
 });
 
 const fileMode = z.enum(["ro", "rw"]);
-/** 팀원 프로젝트 하나의 권한 — 모양·기본값·검사는 shared/teamAccess.ts */
+/** 팀원 프로젝트 하나의 권한 — 모양·기본값·검사는 shared/team/teamAccess.ts */
 export const projectAccessSchema = z.object({
   file: fileMode,
   outside: z.array(z.object({ path: z.string(), mode: fileMode })),
@@ -110,7 +110,7 @@ export const teamMemberSave = defineRpc({
   }),
   output: teamResult,
 });
-// 표준판 이름·부를 이름 검사는 shared/teamStandard.ts(10-21 — 아무것도 가져오지 않는 파일)
+// 표준판 이름·부를 이름 검사는 shared/team/teamStandard.ts(10-21 — 아무것도 가져오지 않는 파일)
 
 /** 팀원 삭제 — 그 직원의 팀원 프로젝트 목록도 함께 지운다(서버 폴더는 건드리지 않는다) */
 export const teamMemberRemove = defineRpc({

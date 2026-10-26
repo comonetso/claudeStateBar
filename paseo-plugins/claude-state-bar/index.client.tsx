@@ -10,11 +10,11 @@ import { createContextPills } from "./client/contextPill";
 import { createJumpPills } from "./client/jumpPill";
 import { createFollowPills } from "./client/followPill";
 import { createAccountPills } from "./client/accountPill";
-import { createSharePills } from "./client/sharePill";
-import { registerShareReplyRenderer } from "./client/shareReplyRow";
-import { ShareScreen } from "./client/shareScreen";
-import { registerShareClient } from "./client/shareGate";
-import { SHARE_SCREEN_ID } from "./shared/share";
+import { createSharePills } from "./client/team/sharePill";
+import { registerShareReplyRenderer } from "./client/team/shareReplyRow";
+import { ShareScreen } from "./client/team/shareScreen";
+import { registerShareClient } from "./client/team/shareGate";
+import { SHARE_SCREEN_ID } from "./shared/team/share";
 import { createLoginPills } from "./client/claudeLogin";
 import { createJudge } from "./client/judge";
 import { createThinkingFoldPills } from "./client/thinkingFoldPill";
@@ -27,16 +27,16 @@ import { ProjectsSidebarItem } from "./client/projectsSidebar";
 import { createTurnReadButtons } from "./client/selectionRead";
 import { createComposerMarkdown } from "./client/composerMarkdown";
 import { createSettingsScreen, SETTINGS_TITLE } from "./client/settingsScreen";
-import { chainButtons, createSyncButtons, SETTINGS_SCREEN_ID, settingsBehavior } from "./client/settingsButton";
+import { chainButtons, SETTINGS_SCREEN_ID, settingsBehavior } from "./client/settingsButton";
 import { browserLabel, startScreenRole } from "./client/screenRole";
 import { startSettingsSync } from "./client/settingsSync";
-import { startLayoutAutoPull, startLayoutSave, syncMenuItem } from "./client/layoutSync";
+import { startLayoutAutoPull, startLayoutSave } from "./client/layoutSync";
 import { startPaneMaxWatch, togglePaneMaximized } from "./client/paneMaxWatch";
 import { personalLoginKeep } from "./shared/account";
 import { layoutLoad } from "./shared/layoutSync";
 import { registerThinking } from "./client/thinking";
 import { registerAskAnswer } from "./client/askAnswer";
-import { registerPeerMailCard } from "./client/peerMailCard";
+import { registerPeerMailCard } from "./client/team/peerMailCard";
 import { hideSubagentsPill } from "./client/hideSubagentsPill";
 import { fixAgentControlsValues } from "./client/agentControlsValues";
 import { startHaptics } from "./client/haptics";
@@ -54,7 +54,7 @@ import { soundOriginObserve, soundOriginPrepare } from "./shared/soundEvents";
 import { clientLog } from "./shared/log";
 import { DEFAULT_SETTINGS, settingsSchema, soundSettings, type SoundSettings } from "./shared/settings";
 import { hostInfo, soundDataV2, type SoundKind } from "./shared/sound";
-import { markTeamHost } from "./client/teamMode";
+import { markTeamHost } from "./client/team/teamMode";
 import { startAlertSounds, startPushOpen, startPushToken } from "./client/pushShell";
 import { onPageVisible } from "./client/pageVisible";
 import { startCompactReady } from "./client/compactReady";
@@ -95,7 +95,7 @@ export default function contribute(client: PluginClientContext) {
   // 그 왼쪽에 "사용량" 단추(10-06 — 지금 웹(안정판)에도 있는 머리줄 단추라 웹·폰에서도 사용량이 보인다)
   // 그 왼쪽 끝에 웹의 "대표 배치 가져오기"(PC 앱은 없음). 톱니는 10-18 부터 입력창 위 알약 줄 맨 오른쪽(phonePills) —
   // Paseo 는 플러그인 단추를 셋까지만 머리줄에 내놓아 톱니·가져오기를 메뉴 하나로 합쳤더니 매번 두 번 눌러야 해서 불편했다(리규형님 10-18)
-  cleanups.push(createActivityButtons(client, log, chainButtons(createSyncButtons(client, syncMenuItem()), createUsageButtons(client))));
+  cleanups.push(createActivityButtons(client, log, chainButtons(createUsageButtons(client))));
 
   // 생각 상자: 영어 → 한국어(끝난 문장부터) + 맨 아래로 따라가기(10-06). 호스트마다 그 호스트 대화의 생각을 그린다
   cleanups.push(registerThinking(client));

@@ -8,8 +8,8 @@ import type { MutableSoundKind } from "../shared/projects";
 import { SoundJournal, soundDataFile } from "./soundJournal";
 import { phoneTook } from "./push";
 import { baseQuestionId } from "../shared/push";
-import { shareReplyOf } from "../shared/share";
-import { shareReplyPending } from "./share";
+import { shareReplyOf } from "../shared/team/share";
+import { shareReplyPending } from "./team/share";
 import { baseOf } from "./account";
 import { waitedLong } from "./diagStall";
 

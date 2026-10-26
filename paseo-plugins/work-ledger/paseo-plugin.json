@@ -1,0 +1,6 @@
+{
+  "id": "work-ledger",
+  "requirements": {
+    "paseo": ">=0.11.1"
+  }
+}

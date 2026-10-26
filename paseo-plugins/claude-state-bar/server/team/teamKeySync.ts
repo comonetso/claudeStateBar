@@ -1,8 +1,8 @@
-import { watchSafe } from "./watchSafe";
+import { watchSafe } from "../watchSafe";
 import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { googleKeysFile } from "./googleKeys";
-import { isTeamDaemon } from "./sound";
+import { googleKeysFile } from "../googleKeys";
+import { isTeamDaemon } from "../sound";
 
 // 리규형님 키가 바뀌면 같은 서버 팀원의 키 사본도 같은 내용으로 맞춘다(10-13 리규형님 결정 "따라가게 하기").
 // 그 전에는 팀원 관리 화면의 "서버에 반영" 때만 서버 팀원 도구(team-daemon ctl.py)가 복사해서, 리규형님이 나중에 넣은

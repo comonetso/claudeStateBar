@@ -3,10 +3,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { TeamJobAction, TeamMember, TeamProject } from "../shared/team";
-import { combineAccess, fileModeLabel } from "../shared/teamAccess";
-import { SAFE_HOST, sshExe } from "./projectLabels";
-import { listProjects } from "./projects";
+import type { TeamJobAction, TeamMember, TeamProject } from "../../shared/team/team";
+import { combineAccess, fileModeLabel } from "../../shared/team/teamAccess";
+import { SAFE_HOST, sshExe } from "../projectLabels";
+import { listProjects } from "../projects";
 import { memberSnapshot, recordJob, removeMember } from "./team";
 
 // 팀원 관리 → 서버(10-11 리규형님 "계획대로 서버 작업까지"). PC 데몬이 SSH 로 각 서버의 팀원 도구(paseo-team-ctl)와

@@ -15,10 +15,10 @@ import { PROJECTS_SCREEN_ID } from "./projectsScreen";
 import { settingsText } from "./settingsI18n";
 import { clearSyncNotice, useSyncNotice } from "./settingsSync";
 import { soundProvider } from "./sounds";
-import { takeStaffHome } from "./teamMode";
+import { takeStaffHome } from "./team/teamMode";
 import { atStartScreen, measureRoomAbove, overlapFromRight, watchSizeOf } from "./web";
 import { lineColor } from "./ui";
-import { ShareGroup } from "./shareList";
+import { ShareGroup } from "./team/shareList";
 
 // 왼쪽 목록 칸 맨 위(리규형님 10-06 결정): 프로젝트 목록을 바로 보이고, 보이는 동안 아래 워크스페이스 목록은 가린다(웹·데스크톱).
 // 칸 높이는 아래쪽 줄(사용량)까지 남은 높이로 맞춘다. 칸에는 대화로 바로 가는 기능이 주어지지 않아서(플러그인 도구에서

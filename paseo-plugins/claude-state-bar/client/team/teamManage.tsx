@@ -3,7 +3,7 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { projectsHosts } from "../shared/projects";
+import { projectsHosts } from "../../shared/projects";
 import {
   teamCategoryOrder,
   teamJobStart,
@@ -19,14 +19,14 @@ import {
   type TeamJobAction,
   type TeamMember,
   type TeamProject,
-} from "../shared/team";
-import { CALL_NAME_MAX, callNameProblem, isTeamStandard } from "../shared/teamStandard";
-import { scaled, useFontScale } from "./fontScale";
-import { type HostIndex, type ProjectsData } from "./projectsData";
-import { ProjectsEditor, type EditScope } from "./projectsManage";
+} from "../../shared/team/team";
+import { CALL_NAME_MAX, callNameProblem, isTeamStandard } from "../../shared/team/teamStandard";
+import { scaled, useFontScale } from "../fontScale";
+import { type HostIndex, type ProjectsData } from "../projectsData";
+import { ProjectsEditor, type EditScope } from "../projectsManage";
 import { accessNote, TeamAccessPanel } from "./teamAccessPanel";
-import { FIELD_WIDTH, lineColor, UiButton, UiInput } from "./ui";
-import { copyText, setNoTranslate } from "./web";
+import { FIELD_WIDTH, lineColor, UiButton, UiInput } from "../ui";
+import { copyText, setNoTranslate } from "../web";
 
 // 팀원 관리(10-11 리규형님: "먼저 팀원관리 프로토타입을 제시하고, 내가 검토 후 수정") → 10-20 리규형님 "싹 갈아엎고 새로":
 // 팀원 = 회사 팀원(외부인 아님). 팀원을 추가할 때는 아이디와 그 팀원에 맞는 글로벌 스킬·명령어만 고른다(서버 고르기·서버별 권한·
@@ -37,8 +37,8 @@ import { copyText, setNoTranslate } from "./web";
 // Claude 플러그인 칸은 만들지 않는다(서버 세 플러그인 모두 리규형님 계정·세션에 묶여 있어 주면 울타리가 뚫림).
 // 업무 서버 = ~/.ssh/config 의 Host 중 리규형님 프로젝트 목록에 프로젝트가 있는 서버(GitHub 같은 항목은 저절로 빠진다).
 // 팀원 프로젝트는 리규형님 목록과 따로(팀원 → 그 팀원의 카테고리 → 프로젝트) — 리규형님만 넣고 고친다. 권한은 그 줄의 "권한" 단추로
-// 프로젝트마다 준다(읽기만·읽기쓰기·내가 쓴 파일만 · 밖 경로 두 칸 · DB 접속 · 서버 기록 · 비밀 가리기 — shared/teamAccess.ts).
-// 서버는 따로 고르지 않는다 — 팀원 프로젝트가 있는 서버에만 그 팀원 Paseo 를 만들고(server/teamApply), 마지막 프로젝트를 빼면 지운다(홈 유지).
+// 프로젝트마다 준다(읽기만·읽기쓰기·내가 쓴 파일만 · 밖 경로 두 칸 · DB 접속 · 서버 기록 · 비밀 가리기 — shared/team/teamAccess.ts).
+// 서버는 따로 고르지 않는다 — 팀원 프로젝트가 있는 서버에만 그 팀원 Paseo 를 만들고(server/team/teamApply), 마지막 프로젝트를 빼면 지운다(홈 유지).
 // 10-11 저녁 리규형님: "서버에 반영" 단추는 없앤다 — 저장·프로젝트 고치기가 곧 반영(실패했을 때만 "다시 시도") ·
 // 비밀번호·OTP 는 초대 키(일회용·24시간)로 팀원이 로그인 페이지에서 직접 · 삭제는 "완전 삭제"·"홈 디렉터리 유지" 중 고른다.
 

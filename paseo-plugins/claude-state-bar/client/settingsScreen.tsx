@@ -13,9 +13,10 @@ import { announceOrders, announcePins } from "./projectsData";
 import { settingsText } from "./settingsI18n";
 import { MainDeviceSection, VersionStatusSection } from "./versionStatus";
 import { FoldTitle, SectionTitle } from "./sectionTitle";
+import { LayoutSyncPanel, layoutSyncAvailable } from "./layoutSync";
 import { captureShortcutKey, playSoundUrl, readLocal, writeLocal } from "./web";
 import { RESERVED_COMBOS, SHORTCUTS, effectiveCombo, formatCombo, paseoConflicts, pluginConflict, reservedConflict, type ShortcutId } from "../shared/shortcuts";
-import { hasWebGate, WebLoginSection } from "./webLoginSection";
+import { hasWebGate, WebLoginSection } from "./team/webLoginSection";
 import { ClaudeLoginSection } from "./claudeLogin";
 
 /** Paseo 설정 안의 우리 항목 이름(10-07: "Claude 상태 소리" → 웹 로그인·소리를 칸으로 나눈 플러그인 설정 화면). */
@@ -395,6 +396,11 @@ export function createSettingsScreen(onSaved: () => void, readOnly = false) {
             <Text style={styles.muted}>{t.syncIntro}</Text>
             {syncSwitch("syncWorkspaceOrder", t.syncWorkspaceOrder, t.syncWorkspaceOrderHint)}
             {syncSwitch("syncLayout", t.syncLayout, t.syncLayoutHint)}
+            {layoutSyncAvailable() ? (
+              <View style={styles.card}>
+                <LayoutSyncPanel theme={theme} />
+              </View>
+            ) : null}
           </>
         ) : null}
 

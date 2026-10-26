@@ -8,9 +8,9 @@ import { scaled, useFontScale } from "./fontScale";
 import { openProjectOn, openProjectsFile, serverOf, useHostIndex, useLiveSessions, useProjectsData } from "./projectsData";
 import { ProjectsList } from "./projectsList";
 import { ProjectsManage } from "./projectsManage";
-import { TeamManage } from "./teamManage";
+import { TeamManage } from "./team/teamManage";
 import { setNoTranslate } from "./web";
-import { isTeamMember } from "./teamMode";
+import { isTeamMember } from "./team/teamMode";
 
 // 화면 안 탭(10-11 리규형님: 목록 → 관리로 가면 돌아올 길이 없었다 — 탭으로 토글). 같은 날 오후 리규형님: 프로젝트 목록 탭은
 // 왼쪽 목록과 같아 필요 없다 → 빼고, 그 탭의 "목록 파일 직접 편집"은 "프로젝트 파일 수정"으로 프로젝트 관리 탭 맨 위 오른쪽에.

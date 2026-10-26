@@ -5,7 +5,7 @@ import { isPublisher, onOwnerChange, ownerState, screenKey } from "./screenRole"
 import { refreshSettingsCache, watchPluginSettings } from "./settingsCache";
 import { soundProvider } from "./sounds";
 import { onPageVisible } from "./pageVisible";
-import { isTeamMember } from "./teamMode";
+import { isTeamMember } from "./team/teamMode";
 import {
   appBundleId,
   isDesktopApp,

@@ -1,5 +1,5 @@
 // 팀원 표준판(10-21 리규형님) — 리규형님판 규칙·압축 준비·시작·마무리는 고르지 않고, 서버 팀원 도구가 표준판을 팀원 홈에 없을 때만 넣는다.
-// 화면(client/teamManage)과 저장(server/team)이 같이 쓴다. 아무것도 가져오지 않는다 — 저장 모듈을 따로 떼어 도는 시험(team-rebuild)이 있다
+// 화면(client/team/teamManage)과 저장(server/team/team)이 같이 쓴다. 아무것도 가져오지 않는다 — 저장 모듈을 따로 떼어 도는 시험(team-rebuild)이 있다
 
 /** 서버 도구 team-daemon policy.py STANDARD 와 같은 이름이어야 한다 */
 export const TEAM_STANDARD: Readonly<Record<"skill" | "command", readonly string[]>> = {

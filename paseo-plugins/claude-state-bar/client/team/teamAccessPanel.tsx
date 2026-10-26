@@ -1,8 +1,8 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useEffect, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { defaultProjectAccess, FILE_MODES, fileModeLabel, OUTSIDE_MAX, TEAM_LOGS, type FileMode, type ProjectAccess, type TeamProject } from "../shared/team";
-import { FIELD_WIDTH, HelpTip, lineColor, UiButton, UiInput } from "./ui";
+import { defaultProjectAccess, FILE_MODES, fileModeLabel, OUTSIDE_MAX, TEAM_LOGS, type FileMode, type ProjectAccess, type TeamProject } from "../../shared/team/team";
+import { FIELD_WIDTH, HelpTip, lineColor, UiButton, UiInput } from "../ui";
 
 // 팀원 프로젝트 하나의 권한 칸(10-20 리규형님 "팀원 관리 새로") — 팀원 프로젝트 관리 탭의 줄마다 "권한" 단추로 펼친다.
 // 파일 권한 셋(읽기만·읽기쓰기·내가 쓴 파일만) · 프로젝트 밖 경로 두 칸(경로마다 같은 셋) · DB 접속 포트 · 서버 기록 · 비밀 파일 가리기.

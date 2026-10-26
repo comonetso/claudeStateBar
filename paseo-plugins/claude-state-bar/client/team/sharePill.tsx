@@ -7,12 +7,12 @@ import {
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useState, useSyncExternalStore } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
-import { SHARE_MODE_DEFAULT, SHARE_MODE_LABEL, shareModes, shareSet, shareWait, type ShareMember, type ShareMode } from "../shared/share";
-import { agentOf } from "./accountPill";
-import { phonePillsShown, watchCompactWidth } from "./web";
+import { SHARE_MODE_DEFAULT, SHARE_MODE_LABEL, shareModes, shareSet, shareWait, type ShareMember, type ShareMode } from "../../shared/team/share";
+import { agentOf } from "../accountPill";
+import { phonePillsShown, watchCompactWidth } from "../web";
 
 // 같이 보기 — 입력창 위 "공유" 알약(10-25 리규형님 결정: 공유 켜는 자리 = 입력창 위 알약 · 대화 하나씩 · 켜진 동안 "공유 중 · 대표님").
-// 누르면 볼 팀원을 고르고 켜기·바꾸기·끄기. 이 기기 플러그인이 게이트에 사본을 올린다(server/share.ts) — 게이트 길이 없는 기기·팀원 데몬엔 안 붙인다.
+// 누르면 볼 팀원을 고르고 켜기·바꾸기·끄기. 이 기기 플러그인이 게이트에 사본을 올린다(server/team/share.ts) — 게이트 길이 없는 기기·팀원 데몬엔 안 붙인다.
 // 폰(좁은 화면)은 다른 알약처럼 아이콘만, 공유 중이면 아이콘 색으로.
 
 type AgentLike = { id: string; workspaceId?: string | null; archivedAt?: string | null };

@@ -2,12 +2,12 @@ import type { PluginHookContext, PluginLifecycleEvents } from "@getpaseo/plugin/
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { renameRetry, serializeFileWrite } from "./renameRetry";
-import { soundDataFile } from "./soundJournal";
+import { renameRetry, serializeFileWrite } from "../renameRetry";
+import { soundDataFile } from "../soundJournal";
 import { ADMIN_LABEL, SHARE_FILES_MAX, SHARE_MODE_DEFAULT, SHARE_REPLY_KIND, SHARE_REPLY_VERSION, shareFileKind, shareReplyNative, shareSizeText,
-  type ShareMember, type ShareMode, type ShareReplyData, type ShareReplyFile } from "../shared/share";
+  type ShareMember, type ShareMode, type ShareReplyData, type ShareReplyFile } from "../../shared/team/share";
 
-// 같이 보기 — 리규형님 쪽(10-25 리규형님 결정, shared/share.ts 머리 설명). 공유를 켠 대화만 몇 초마다 기록 끝을 다시 읽어 사람 말·답 글만
+// 같이 보기 — 리규형님 쪽(10-25 리규형님 결정, shared/team/share.ts 머리 설명). 공유를 켠 대화만 몇 초마다 기록 끝을 다시 읽어 사람 말·답 글만
 // 콜어드민 웹 게이트에 사본으로 올린다(바뀌었을 때만). 팀원 답글은 게이트에서 기다렸다 받아 이 대화 화면에 플러그인 줄로 넣고(Claude 에게 안 감)
 // 질문처럼 소리·폰 알림을 낸다. 리규형님이 줄의 "대화에 넣기"를 누르면 "<이름> 답글: …" 으로 대화에 보낸다(쉬고 있을 때만).
 // 게이트 열쇠는 폰 알림 중앙 경로와 같다(push-route — 이 데몬이 중앙 경로가 아니면 공유를 못 켠다). 팀원 데몬에서는 돌지 않는다.

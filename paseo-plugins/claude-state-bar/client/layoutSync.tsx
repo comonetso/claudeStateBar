@@ -339,3 +339,12 @@ export function syncMenuItem(): PluginButtonMenuEntry | null {
   if (Platform.OS !== "web" || isDesktopApp()) return null;
   return { kind: "item", id: "layout-sync", title: "대표 배치 가져오기", icon: "MonitorDown", behavior: { kind: "popover", Content: SyncPopover } };
 }
+
+/** 대표 배치 가져오기를 쓸 수 있는 화면인가(웹·폰 웹 감싸기 앱 — PC 앱은 아님) */
+export function layoutSyncAvailable(): boolean {
+  return syncMenuItem() !== null;
+}
+/** 설정 화면 "기기 사이 맞추기" 칸 안의 가져오기 — 머리줄 단추에서 옮김(10-26 리규형님: 머리줄 자리를 작업 장부 단추에) */
+export function LayoutSyncPanel({ theme }: { theme: PluginButtonContentProps["theme"] }) {
+  return <SyncPopover {...({ theme } as PluginButtonContentProps)} />;
+}

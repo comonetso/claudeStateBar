@@ -24,7 +24,7 @@ import {
 import { countsTotal, useProjectCounts, type ProjectCounts, type ProjectTarget } from "./projectCounts";
 import { ACTIVE_GROUP, groupProjects, mainsOf, PINNED_GROUP } from "./projectSubs";
 import { mostUrgent, StatusIndicator } from "./statusIndicator";
-import { isTeamMember } from "./teamMode";
+import { isTeamMember } from "./team/teamMode";
 import { lineColor, UiInput } from "./ui";
 import { setContextMenu, setDraggableRow, setHoverTitle, setNoTranslate } from "./web";
 import { ProjectMenu, type ProjectMenuAt } from "./projectMenu";

@@ -256,7 +256,7 @@ export function createPush(options: {
   // 대화마다 차례 시작·보관 횟수 — 끝난 차례 기록을 다시 읽는 사이(0.13.0) 상황이 바뀌었는지 본다
   const turns = new Map<string, number>();
   const bumpTurn = (agentId: string) => turns.set(agentId, (turns.get(agentId) ?? 0) + 1);
-  // 같이 보기 팀원 답글(10-25 — "질문처럼 소리·폰 알림"). 화면엔 질문 다시 알림과 같은 목록으로 실려 한 번 울린다(server/share.ts)
+  // 같이 보기 팀원 답글(10-25 — "질문처럼 소리·폰 알림"). 화면엔 질문 다시 알림과 같은 목록으로 실려 한 번 울린다(server/team/share.ts)
   const shareRings = new Map<string, { agentId: string; nativeId: string }>();
   let serverId: Promise<string | null> | null = null;
   let rev = 0;

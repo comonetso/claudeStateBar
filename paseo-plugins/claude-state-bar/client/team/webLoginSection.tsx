@@ -1,10 +1,10 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { buttonStyle, UiInput } from "./ui";
-import { FoldTitle, SectionTitle } from "./sectionTitle";
-import type { SettingsText } from "./settingsI18n";
-import { isGateMember, readLocal, reloadPage, writeLocal } from "./web";
+import { buttonStyle, UiInput } from "../ui";
+import { FoldTitle, SectionTitle } from "../sectionTitle";
+import type { SettingsText } from "../settingsI18n";
+import { isGateMember, readLocal, reloadPage, writeLocal } from "../web";
 
 // 설정 화면 맨 위 "웹 로그인" 칸(리규형님 10-07 결정). 우리가 직접 올린 웹은 로그인 서버(web-gate)가 앞에 서 있고,
 // 그 서버가 Paseo 화면 맨 앞에 guard.js 를 끼워 window.paseoGate 를 만든다 — 그게 있을 때만 이 칸이 동작한다.

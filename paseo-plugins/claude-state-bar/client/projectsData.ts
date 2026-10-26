@@ -4,7 +4,7 @@ import { getPaseoClient, useHosts, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { projectsManager, projectsOrder, projectsOrderSet, projectsPinOrder, projectsPinSet, projectsPins, projectsWait, type ProjectEntry } from "../shared/projects";
 import { agentBucket, mostUrgent, type StatusBucket } from "./statusIndicator";
-import { staffClient, staffServerId, staffServerIds, watchStaffHosts } from "./teamMode";
+import { staffClient, staffServerId, staffServerIds, watchStaffHosts } from "./team/teamMode";
 import { mergeStaffProjects, type StaffPart } from "./staffProjects";
 import { isCompactReady, onCompactReady } from "./compactReady";
 import { canOpenWorkspaceFile, currentWorkspaceFromUrl, markWorkspaceInteraction, openWorkspaceFile, watchLocation } from "./web";

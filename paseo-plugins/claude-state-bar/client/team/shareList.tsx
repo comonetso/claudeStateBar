@@ -1,7 +1,7 @@
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { SHARE_SCREEN_ID } from "../shared/share";
+import { SHARE_SCREEN_ID } from "../../shared/team/share";
 import { listShares, shareGateReachable, type ShareBrief } from "./shareGate";
 
 // 같이 보기 — 왼쪽 목록 맨 위 "공유" 묶음(10-25 · 10-20 리규형님 구상 "팀원 화면 프로젝트 탭 안 공유"). 공유받은 대화가 있을 때만 보이고,

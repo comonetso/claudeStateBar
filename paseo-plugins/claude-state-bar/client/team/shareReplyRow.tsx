@@ -3,10 +3,10 @@ import * as ui from "@getpaseo/plugin/client/ui";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useState, type ComponentType } from "react";
 import { Image, Pressable, Text, View } from "react-native";
-import { SHARE_REPLY_KIND, SHARE_REPLY_VERSION, shareReplyAction, shareReplyData, shareReplyFileGet, shareSizeText, type ShareReplyData, type ShareReplyFile } from "../shared/share";
+import { SHARE_REPLY_KIND, SHARE_REPLY_VERSION, shareReplyAction, shareReplyData, shareReplyFileGet, shareSizeText, type ShareReplyData, type ShareReplyFile } from "../../shared/team/share";
 import { shareClientFor } from "./shareGate";
 
-// 같이 보기 — 리규형님 대화 화면 안 "팀원 답글" 줄(10-25 리규형님 결정 "내게 오고 눌러야 대화에"). 서버(server/share.ts)가 그 대화 기록에
+// 같이 보기 — 리규형님 대화 화면 안 "팀원 답글" 줄(10-25 리규형님 결정 "내게 오고 눌러야 대화에"). 서버(server/team/share.ts)가 그 대화 기록에
 // 플러그인 줄로 넣는다 — Paseo 는 그 줄을 화면에만 그리고 Claude 에게 보내지 않는다. "대화에 넣기"를 누르면 그 기기 플러그인이
 // "<이름> 답글: …" 으로 대화에 보낸다(쉬고 있을 때만). 단추는 그 대화가 도는 기기(host.id)의 플러그인 연결로 묻는다(shareGate 등록부)
 
