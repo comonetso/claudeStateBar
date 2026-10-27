@@ -66,7 +66,7 @@ function setup({ preHeld } = {}) {
   const agents = {
     PC: [{ id: "11111111-1111-4111-8111-111111111111", cwd: "C:/source", status: "idle", pendingPermissions: [] }],
     ServerA: [{ id: "22222222-2222-4222-8222-222222222222", cwd: "/srv/attacker", status: "idle", pendingPermissions: [] }],
-    ServerB: [{ id: "33333333-3333-4333-8333-333333333333", cwd: "/srv/target", status: "running", pendingPermissions: [] }],
+    ServerB: [{ id: "33333333-3333-4333-8333-333333333333", cwd: "/srv/target", status: "idle", pendingPermissions: [] }],
   };
   const sends = [];
   const creates = [];
@@ -429,6 +429,24 @@ test("받는 대화가 압축 중이면 넣지 않고 보류 — 압축이 끝�
   assert.equal(t.api.getHeld().length, 0);
 });
 
+test("받는 대화가 일하는 중이면 끼워 넣지 않고 보류 — 차례가 끝나면 넣는다(10-27 질문 버튼 걸림)", async () => {
+  // 일하는 중에 끼워 넣은 글의 번호가 Paseo 에 남으면 그 대화의 질문 버튼이 띄우는 순간 모두 닫힌다 — 쉬는 중에만 넣는다
+  const t = setup();
+  t.agents.ServerB[0].status = "running";
+  const r = request();
+  await handle(t, "PC", r);
+  assert.equal(toB(t).length, 0);
+  assert.equal(t.api.getHeld().length, 1);
+  assert.ok(t.inboxes.some((x) => x.item.kind === "relay" && x.item.status === "held" && /is working/.test(x.item.detail)));
+  await t.api.retryHeld();
+  assert.equal(toB(t).length, 0); // 아직 일하는 중
+  t.agents.ServerB[0].status = "idle";
+  await t.api.retryHeld();
+  assert.equal(toB(t).length, 1);
+  assert.equal(t.api.getHeld().length, 0);
+  assert.ok(t.inboxes.some((x) => x.item.status === "delivered" && /after it was free/.test(x.item.detail)));
+});
+
 test("보낸 대화 번호가 Paseo 형식(UUID)이 아니면 영구 실패로 버린다 — 짧은 접두어 위조가 계속 다시 오지 않게", async () => {
   const t = setup();
   const r = Object.assign(request(), { from_agent: "11111111" });
@@ -468,9 +486,13 @@ test("받는 대화가 없으면 그 프로젝트에 새 대화를 묻기 모드
   assert.match(first, /nobody is watching it\. Investigate with the file tools only/); // 새로 연 대화에만(10-26 DB 서버 시험이 셸 권한 창에서 멈춤)
   assert.equal(t.api.ledger[r.request_id].dst_agent, c.id);
   assert.ok(t.inboxes.some((x) => x.host === "PC" && x.item.status === "delivered" && /opened a new one/.test(x.item.detail)));
-  // 다음 요청은 이미 열린 그 대화로 끼워 넣는다(새로 열지 않음)
+  // 다음 요청은 이미 열린 그 대화로 넣는다(새로 열지 않음) — 그 대화가 첫 요청을 처리하는 동안은 보류했다가 쉬면 넣는다(10-27)
   await handle(t, "PC", request());
   assert.equal(t.creates.length, 1);
+  assert.equal(toB(t).length, 0);
+  assert.equal(t.api.getHeld().length, 1);
+  t.agents.ServerB.find((a) => a.id === c.id).status = "idle";
+  await t.api.retryHeld();
   assert.equal(toB(t).length, 1);
   assert.equal(toB(t)[0].id, c.id);
   assert.ok(!/nobody is watching/.test(toB(t)[0].msg), "이미 있는 대화에 끼워 넣는 글에는 그 안내가 없다");
@@ -523,6 +545,9 @@ test("같은 프로젝트로 거의 동시에 온 두 요청 — 대화는 하�
   const id = t.creates[0].id;
   assert.equal(t.api.ledger[a.request_id].dst_agent, id);
   assert.equal(t.api.ledger[b.request_id].dst_agent, id);
+  assert.equal(toB(t).length, 0); // 열린 대화가 첫 요청을 처리하는 중 — 둘째는 보류(10-27)
+  t.agents.ServerB.find((x) => x.id === id).status = "idle";
+  await t.api.retryHeld();
   assert.equal(toB(t).length, 1);
   assert.equal(toB(t)[0].id, id);
 });

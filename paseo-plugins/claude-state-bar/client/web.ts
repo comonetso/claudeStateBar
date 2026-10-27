@@ -593,6 +593,9 @@ export const PASEO_BUNDLES: Record<string, { version: string; ids: PaseoModuleId
   // navigate 는 받은 값을 그대로 안쪽 이동으로 넘기고 탭 드러내기만 더해짐 · sidebarOrder 는 저장 칸 셋 그대로, 저장 판만 1 → 3
   // (판이 같은 기기끼리만 옮기므로 모두 0.13.0 이면 그대로). schema·queryClient 본문 같음 · hostRuntime 3525 도 getHostRuntimeStore·getClient 그대로
   "65a3b645223750cd0d8a429bfc7fa2a7": { version: "0.13.0", ids: { layout: 3364, schema: 3369, navigate: 3362, sidebarOrder: 4340, queryClient: 960, hostRuntime: 3525 } },
+  // PC 앱 0.13.2 (10-27 저녁 자동 설치) — 모듈 수·번호 모두 0.13.0 과 같고, 우리가 쓰는 일곱 모듈(이 표 여섯 + 받아쓰기 4766)은
+  // 본문이 글자까지 같다(check-bundle.cjs + 모듈 본문 대조, 결과 docs tests-261027/check_bundle_0132)
+  "28c20820ac99aadc9968e445b53733c4": { version: "0.13.2", ids: { layout: 3364, schema: 3369, navigate: 3362, sidebarOrder: 4340, queryClient: 960, hostRuntime: 3525 } },
 };
 
 /** 이 화면 번들에서 확인한 모듈 번호. 모르는 판이거나 웹이 아니면 null */

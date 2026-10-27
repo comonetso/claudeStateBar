@@ -166,7 +166,12 @@ async function listAgents(host) {
   return ((r && (r.entries || r.agents)) || []).map(agentOf).filter((a) => a && a.id && !a.archivedAt);
 }
 
-// 넣기 — 권한·질문 창이 떠 있으면 넣지 않는다. 일하는 중이면 끼워 넣는다(steer)
+// 넣기 — 권한·질문 창이 떠 있거나 압축 중이거나 일하는 중이면 넣지 않고 미룬다(waits — HELD_MS 마다 다시 넣는다)
+//   일하는 중(10-27 리규형님 버튼 "피어메일은 차례가 끝난 뒤 넣기"): 일하는 중에 끼워 넣은(steer) 글은 Paseo 가 번호를 적어 두고
+//   Claude 가 그 글을 시작했다고 알릴 때 지운다. 그 신호가 빠져 번호가 남으면 그 대화의 질문 버튼이 띄우는 순간 모두 "글로 답함"으로
+//   닫힌다(Paseo 0.13.2 서버 providers/claude/agent.js permissionClearingSteerUuids · IVR 특허 조사 대화 10-27 19:39 피어메일 뒤
+//   19:51 부터 끝까지). 쉬는 중에 넣으면 새 차례로 시작해 번호가 남지 않는다. 상태를 본 뒤 넣기 전 그 틈에 차례가 시작되면 끼워
+//   넣기로 들어간다 — steer 말고는 진행 중인 차례를 새 글로 대체(중단)하므로 그대로 steer 로 보낸다
 //   verify(a) — 넣기 직전에 받는 대화를 한 번 더 본다(그 프로젝트에 아직 열려 있는가). 문제가 있으면 이유 글을 돌려준다
 async function inject(host, agentId, text, messageId, verify) {
   const a = await getAgent(host, agentId);
@@ -175,6 +180,7 @@ async function inject(host, agentId, text, messageId, verify) {
   if (moved) return { ok: false, reason: "moved", detail: moved };
   if ((a.pendingPermissions || []).length) return { ok: false, reason: "permission" };
   if (await compacting(host, agentId)) return { ok: false, reason: "compacting" };
+  if (a.status === "running") return { ok: false, reason: "busy" };
   await withDaemon(host, (c) => c.sendAgentMessage(agentId, text, { activeTurnBehavior: "steer", messageId }));
   return { ok: true, status: a.status, title: a.title || null };
 }
@@ -203,8 +209,8 @@ async function compacting(host, agentId) {
   return !!(it && it.type === "compaction" && it.status === "loading");
 }
 
-// 권한 창이 떠 있거나 압축 중이면 미뤘다 다시 넣는다
-const waits = (r) => r.reason === "permission" || r.reason === "compacting";
+// 권한 창이 떠 있거나 압축 중이거나 일하는 중이면 미뤘다 다시 넣는다
+const waits = (r) => r.reason === "permission" || r.reason === "compacting" || r.reason === "busy";
 
 // ── 연결(채널): PC 자신 + 서버마다 SSH
 const channels = new Map(); // host → { send(obj), hello }
@@ -621,11 +627,13 @@ async function routeRequest(host, item) {
     await notifySender(host, item.from_agent, item.request_id, item.id, "delivered", "delivered to " + target.name + " · " + (chosen.title || chosen.id.slice(0, 8)) + (r.status === "running" ? " (it was working — slipped in without interrupting)" : ""), null, false);
   } else if (waits(r)) {
     holdInject(target.host, chosen.id, text, item.id, { kind: "request", request_id: item.request_id, src_host: host, src_agent: item.from_agent, src_key: srcProj.key, dst_key: tKey, attempt_id: item.id, target: target.name }, "request");
-    const why = r.reason === "compacting" ? "is compacting its conversation" : "is waiting on a permission prompt";
+    const why = r.reason === "compacting" ? "is compacting its conversation" : r.reason === "busy" ? "is working" : "is waiting on a permission prompt";
     log("held request " + util.shortId(item.request_id) + " — " + target.host + " " + chosen.id.slice(0, 8) + " " + why);
     const detail = r.reason === "compacting"
       ? target.name + " is compacting its conversation — it will be delivered once that finishes"
-      : target.name + " is waiting on its user's permission/question prompt — it will be delivered once that is answered";
+      : r.reason === "busy"
+        ? target.name + " is working — it will be delivered when its current turn ends"
+        : target.name + " is waiting on its user's permission/question prompt — it will be delivered once that is answered";
     await notifySender(host, item.from_agent, item.request_id, item.id, "held", detail, null, false);
   } else {
     await notifySender(host, item.from_agent, item.request_id, item.id, "unreachable", r.reason === "moved" ? "the chosen conversation is no longer open in " + target.name : "the conversation in " + target.name + " closed before delivery", null, true);
@@ -774,7 +782,7 @@ async function retryHeld() {
         const r = await inject(h.host, h.agent, m.text, h.messageId, verify);
         if (r.ok) {
           log("delivered a held message to " + h.host + " " + h.agent.slice(0, 8));
-          if (kind === "request") await notifySender(h.after.src_host, h.after.src_agent, h.after.request_id, h.after.attempt_id, "delivered", "delivered to " + h.after.target + " after its permission prompt was answered", null, false);
+          if (kind === "request") await notifySender(h.after.src_host, h.after.src_agent, h.after.request_id, h.after.attempt_id, "delivered", "delivered to " + h.after.target + " after it was free (its permission prompt answered, compaction finished or turn ended)", null, false);
         } else if (waits(r)) rest.push(h);
         else if (kind === "request") await giveUpHeldRequest(h, (r.reason === "moved" ? "the chosen conversation is no longer open in " : "the conversation closed before delivery in ") + (h.after.target || "the target"));
         else log("dropped a held message — " + h.host + " " + h.agent.slice(0, 8) + " is gone");

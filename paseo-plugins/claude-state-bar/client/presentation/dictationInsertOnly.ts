@@ -14,6 +14,8 @@ const DICTATION_MODULE: Record<string, number> = {
   "35dfa9cf1abfa4f304ac50232f52b8f4": 4942,
   // PC 앱 0.13.0(10-24 밤 자동 설치) — 번호만 4766 으로 바뀌고 내보내기 같음 · applyDictationTranscript 본문은 0.12.0 과 글자까지 같다
   "65a3b645223750cd0d8a429bfc7fa2a7": 4766,
+  // PC 앱 0.13.2(10-27 저녁 자동 설치) — 같은 번호 4766 · 모듈 본문이 0.13.0 과 글자까지 같다(docs tests-261027/check_bundle_0132)
+  "28c20820ac99aadc9968e445b53733c4": 4766,
 };
 // 감싼 함수에 원본을 달아 둔다 — 플러그인이 다시 읽혀 같은 페이지에 옛 판이 남아 있어도 원본을 한 번만 감싼다
 const ORIGINAL = "__claudeStateBar_originalApplyDictation";
