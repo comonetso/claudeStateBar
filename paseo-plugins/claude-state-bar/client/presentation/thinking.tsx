@@ -506,7 +506,8 @@ export function registerThinking(client: PluginClientContext): () => void {
   const b = client.addTimelineRenderer({ kind: KIND, version: 1, schema, Component });
   // 입력창 위 "생각 상자 모두 접기·펼치기" 알약의 상태를 따른다(10-08, thinkingFold) — 기억된 상태로 시작하고 바뀌면 전부 따라간다
   applyReadingSettings();
-  const stopSpeedKeys = listenTtsSpeedKeys(() => ({ active: controller.isReading(), adjust: (direction) => controller.stepSpeed(direction) }));
+  const stopSpeedKeys = listenTtsSpeedKeys(() => ({ active: controller.isReading(), adjust: (direction) => controller.stepSpeed(direction),
+    previous: () => controller.previous(), next: () => controller.next() }));
   controller.setAllOpen(thinkingAllOpen());
   const stopFold = onThinkingAllOpen((open) => controller.setAllOpen(open));
   // 상자 안 선택 자리부터 읽기(10-08) — 마지막 선택을 기억해 둔다(웹·데스크톱만, 폰은 아무것도 안 함)

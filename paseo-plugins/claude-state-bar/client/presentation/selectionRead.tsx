@@ -100,7 +100,8 @@ export function createTurnReadButtons(client: PluginClientContext, log: (message
     player.start(next, false);
     follows.set(agentId, f);
     f.stopPlayback = player.subscribePlayback(refresh);
-    f.stopSpeed = listenTtsSpeedKeys(() => ({ active: player.isReading() && !player.diagnostic(next).held, adjust: (direction) => player.stepSpeed(direction) }));
+    f.stopSpeed = listenTtsSpeedKeys(() => ({ active: player.isReading() && !player.diagnostic(next).held, adjust: (direction) => player.stepSpeed(direction),
+      previous: () => player.previous(), next: () => player.next() }));
     log(`follow read: 켬 ${agentId.slice(0, 8)}${from ? " · 시작 문단 있음" : ""}`);
     followChanged();
     dom.refresh();

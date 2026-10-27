@@ -4,16 +4,19 @@
 // 바뀐다(web.ts listenGlobalKey 주석) · 한글 자판에서도 같은 자리.
 
 // 10-16 리규형님: 입력창 목록 키(Shift+Enter·Tab·Backspace)는 설정에서 빼고 고정 · 작업 현황 탭 넘기기(Ctrl+Tab)는 기능째 없앰
-export type ShortcutId = "projects-toggle" | "pane-max" | "activity-open" | "read-slower" | "read-faster";
+export type ShortcutId = "projects-toggle" | "pane-max" | "activity-open" | "read-prev" | "read-next" | "read-slower" | "read-faster";
 
 /** ctrlOptional: Ctrl 을 같이 눌러도 된다(10-15 리규형님 읽기 속도 "Ctrl 없이도 — Ctrl 과 함께도") */
 export const SHORTCUTS: { id: ShortcutId; defaultCombo: string; ctrlOptional?: boolean }[] = [
   { id: "projects-toggle", defaultCombo: "Ctrl+Alt+Shift+KeyB" },
   { id: "pane-max", defaultCombo: "Ctrl+Alt+Shift+KeyF" },
   { id: "activity-open", defaultCombo: "Ctrl+Alt+Shift+KeyW" },
-  // 10-17 리규형님: 기본 < > 는 읽는 동안 입력창에 < > 를 못 친다 → Ctrl+← → (Ctrl 없이 받는 규칙도 뺐다 — 방향키만 누르면 커서가 안 움직인다)
-  { id: "read-slower", defaultCombo: "Ctrl+ArrowLeft" },
-  { id: "read-faster", defaultCombo: "Ctrl+ArrowRight" },
+  // 10-17 리규형님: 기본 < > 는 읽는 동안 입력창에 < > 를 못 친다 → Ctrl+방향키 (Ctrl 없이 받는 규칙도 뺐다 — 방향키만 누르면 커서가 안 움직인다)
+  // 10-27 리규형님 "다음 문단 알약을 방향키로 — 쓸데없는 건 빨리 건너뛰게" · 버튼 "자리 바꾸기": 좌우는 문단 앞뒤, 속도는 위(높이기)·아래(늦추기)로 옮김
+  { id: "read-prev", defaultCombo: "Ctrl+ArrowLeft" },
+  { id: "read-next", defaultCombo: "Ctrl+ArrowRight" },
+  { id: "read-slower", defaultCombo: "Ctrl+ArrowDown" },
+  { id: "read-faster", defaultCombo: "Ctrl+ArrowUp" },
 ];
 
 /** 바꿀 수 없는 입력창 목록 키 — 다른 단축키로 고르면 입력창에서 목록 쓰기가 안 먹으니 막는다(client/web.ts listenComposer) */
@@ -79,11 +82,15 @@ function overrides(): Record<string, string> {
   }
 }
 
+/** 10-27 자리 바꾸기 전 읽기 속도 키. 이 값이 저장돼 있으면 옛 배치이므로 새 처음 값을 쓴다 — PC 설정에 이 둘이 저장돼 있어
+ *  속도가 계속 Ctrl+← → 에 남고 문단 키에 가려 속도를 바꿀 키가 없었다(10-27 ego 실측). 다른 키를 고르면 그 키는 그대로 쓴다 */
+const RETIRED_COMBOS: Partial<Record<ShortcutId, string>> = { "read-slower": "Ctrl+ArrowLeft", "read-faster": "Ctrl+ArrowRight" };
+
 /** 지금 쓰는 키 — 바꾼 값이 있고 읽을 수 있으면 그것, 아니면 기본 */
 export function effectiveCombo(id: ShortcutId, table: Record<string, string> = overrides()): string {
   const def = SHORTCUTS.find((s) => s.id === id)!;
   const custom = table[id];
-  return custom && parseCombo(custom) ? custom : def.defaultCombo;
+  return custom && custom !== RETIRED_COMBOS[id] && parseCombo(custom) ? custom : def.defaultCombo;
 }
 
 export function shortcutMatches(id: ShortcutId, e: KeyLike): boolean {

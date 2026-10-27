@@ -1981,12 +1981,14 @@ export function hideButtonTooltip(titlePrefix: string): () => void {
 }
 
 // ── 대화의 턴·말 읽기(10-09) — Paseo 본문은 그대로 두고 웹 단추만 덧붙인다 ──
-type SpeedKeyBinding = { active: boolean; adjust(direction: -1 | 1): void };
+// previous·next 는 조절 줄 "이전 문단"·"다음 문단" 단추와 같은 함수. 옛 판 재생기는 없을 수 있다(그때는 키를 가로채지 않는다)
+type SpeedKeyBinding = { active: boolean; adjust(direction: -1 | 1): void; previous?(): void; next?(): void };
 type SpeedKeyHub = SharedDevice & { users: Map<object, () => SpeedKeyBinding> };
-// 3(10-16): 키를 단축키 표에서 읽는다 — 옛 판(< > 고정) 듣기는 물러난다
-const SPEED_KEYS_VERSION = 4;
+// 3(10-16): 키를 단축키 표에서 읽는다 — 옛 판(< > 고정) 듣기는 물러난다 · 5(10-27): 문단 이전·다음 키도 받는다
+// 6(10-27): 옛 배치 저장값(속도 Ctrl+← →)을 무시하는 단축키 표로 — 같은 페이지에 남은 5판 듣기(그 저장값을 그대로 씀)를 넘겨받는다
+const SPEED_KEYS_VERSION = 6;
 /** 같은 페이지의 호스트·옛 판이 남아도 키 듣기는 하나. 가장 나중에 등록한 읽기 중 재생기 하나만 조절한다.
- *  키 = 단축키 표(처음 값 Ctrl+← →, 10-17 — 옛 처음 값 < > 는 읽는 동안 입력창에 < > 를 못 쳤다). 읽는 중에만 가로챈다 */
+ *  키 = 단축키 표(처음 값 문단 Ctrl+← → · 속도 Ctrl+↑ ↓, 10-27 — 옛 처음 값 < > 는 읽는 동안 입력창에 < > 를 못 쳤다). 읽는 중에만 가로챈다 */
 export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
   if (!isWeb()) return () => {};
   const g = globalThis as Record<string, unknown>;
@@ -1995,12 +1997,19 @@ export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
   hub.users.set(token, binding);
   return joinSharedDevice(hub, SPEED_KEYS_VERSION, () => {
     const onKey = (event: KeyEventLike) => {
-      // 키는 설정 화면 단축키 칸에서 바꾼다(10-16, 처음 값 Ctrl+← → 10-17)
-      const slower = shortcutMatches("read-slower", keyLike(event));
-      if (event.isComposing || (!slower && !shortcutMatches("read-faster", keyLike(event)))) return;
+      // 키는 설정 화면 단축키 칸에서 바꾼다(10-16 · 10-27 리규형님 "다음 문단 알약을 방향키로")
+      if (event.isComposing) return;
+      const key = keyLike(event);
+      const action = shortcutMatches("read-prev", key) ? "previous" : shortcutMatches("read-next", key) ? "next"
+        : shortcutMatches("read-slower", key) ? "slower" : shortcutMatches("read-faster", key) ? "faster" : null;
+      if (!action) return;
       const active = [...hub.users.values()].reverse().map((get) => get()).find((b) => b.active);
       if (!active) return;
-      active.adjust(slower ? -1 : 1);
+      if (action === "previous" || action === "next") {
+        const step = active[action];
+        if (!step) return;
+        step.call(active);
+      } else active.adjust(action === "slower" ? -1 : 1);
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
