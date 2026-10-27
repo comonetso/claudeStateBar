@@ -4,7 +4,7 @@
 // 바뀐다(web.ts listenGlobalKey 주석) · 한글 자판에서도 같은 자리.
 
 // 10-16 리규형님: 입력창 목록 키(Shift+Enter·Tab·Backspace)는 설정에서 빼고 고정 · 작업 현황 탭 넘기기(Ctrl+Tab)는 기능째 없앰
-export type ShortcutId = "projects-toggle" | "pane-max" | "activity-open" | "read-prev" | "read-next" | "read-slower" | "read-faster";
+export type ShortcutId = "projects-toggle" | "pane-max" | "activity-open" | "read-pause" | "read-prev" | "read-next" | "read-slower" | "read-faster";
 
 /** ctrlOptional: Ctrl 을 같이 눌러도 된다(10-15 리규형님 읽기 속도 "Ctrl 없이도 — Ctrl 과 함께도") */
 export const SHORTCUTS: { id: ShortcutId; defaultCombo: string; ctrlOptional?: boolean }[] = [
@@ -12,6 +12,8 @@ export const SHORTCUTS: { id: ShortcutId; defaultCombo: string; ctrlOptional?: b
   { id: "pane-max", defaultCombo: "Ctrl+Alt+Shift+KeyF" },
   { id: "activity-open", defaultCombo: "Ctrl+Alt+Shift+KeyW" },
   // 10-17 리규형님: 기본 < > 는 읽는 동안 입력창에 < > 를 못 친다 → Ctrl+방향키 (Ctrl 없이 받는 규칙도 뺐다 — 방향키만 누르면 커서가 안 움직인다)
+  // 10-28 리규형님 "일시정지/시작을 Ctrl+Space 로" — Windows 는 중국어 입력기에만 쓰고 Paseo 단축키엔 없다(Space 단독 마이크 키는 Ctrl 이 붙으면 다른 키)
+  { id: "read-pause", defaultCombo: "Ctrl+Space" },
   // 10-27 리규형님 "다음 문단 알약을 방향키로 — 쓸데없는 건 빨리 건너뛰게" · 버튼 "자리 바꾸기": 좌우는 문단 앞뒤, 속도는 위(높이기)·아래(늦추기)로 옮김
   { id: "read-prev", defaultCombo: "Ctrl+ArrowLeft" },
   { id: "read-next", defaultCombo: "Ctrl+ArrowRight" },

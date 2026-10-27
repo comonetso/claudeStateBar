@@ -1981,14 +1981,17 @@ export function hideButtonTooltip(titlePrefix: string): () => void {
 }
 
 // ── 대화의 턴·말 읽기(10-09) — Paseo 본문은 그대로 두고 웹 단추만 덧붙인다 ──
-// previous·next 는 조절 줄 "이전 문단"·"다음 문단" 단추와 같은 함수. 옛 판 재생기는 없을 수 있다(그때는 키를 가로채지 않는다)
-type SpeedKeyBinding = { active: boolean; adjust(direction: -1 | 1): void; previous?(): void; next?(): void };
-type SpeedKeyHub = SharedDevice & { users: Map<object, () => SpeedKeyBinding> };
+// previous·next 는 조절 줄 "이전 문단"·"다음 문단" 단추와 같은 함수, toggle 은 조절 줄 일시정지·재생 단추와 같은 함수.
+// 옛 판 재생기는 없을 수 있다(그때는 키를 가로채지 않는다). paused = 멈춘 채 조절 줄에 남아 다시 읽을 수 있음
+type SpeedKeyBinding = { active: boolean; paused?: boolean; adjust(direction: -1 | 1): void; previous?(): void; next?(): void; toggle?(): void };
+type SpeedKeyHub = SharedDevice & { users: Map<object, () => SpeedKeyBinding>; pausedByKey?: object };
 // 3(10-16): 키를 단축키 표에서 읽는다 — 옛 판(< > 고정) 듣기는 물러난다 · 5(10-27): 문단 이전·다음 키도 받는다
 // 6(10-27): 옛 배치 저장값(속도 Ctrl+← →)을 무시하는 단축키 표로 — 같은 페이지에 남은 5판 듣기(그 저장값을 그대로 씀)를 넘겨받는다
-const SPEED_KEYS_VERSION = 6;
+// 7(10-28): 멈춤·다시 시작 키(Ctrl+Space)도 받는다 — 멈춘 재생기도 붙잡는다
+const SPEED_KEYS_VERSION = 7;
 /** 같은 페이지의 호스트·옛 판이 남아도 키 듣기는 하나. 가장 나중에 등록한 읽기 중 재생기 하나만 조절한다.
- *  키 = 단축키 표(처음 값 문단 Ctrl+← → · 속도 Ctrl+↑ ↓, 10-27 — 옛 처음 값 < > 는 읽는 동안 입력창에 < > 를 못 쳤다). 읽는 중에만 가로챈다 */
+ *  키 = 단축키 표(처음 값 멈춤·다시 시작 Ctrl+Space · 문단 Ctrl+← → · 속도 Ctrl+↑ ↓, 10-27 — 옛 처음 값 < > 는 읽는 동안 입력창에 < > 를 못 쳤다).
+ *  읽는 중에만 가로챈다 — 멈춘 동안은 멈춤·다시 시작 키만(10-28 리규형님 버튼 "지금처럼 놓아주기" — 입력창 Ctrl+← → 단어 이동이 그대로 되게) */
 export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
   if (!isWeb()) return () => {};
   const g = globalThis as Record<string, unknown>;
@@ -1997,15 +2000,23 @@ export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
   hub.users.set(token, binding);
   return joinSharedDevice(hub, SPEED_KEYS_VERSION, () => {
     const onKey = (event: KeyEventLike) => {
-      // 키는 설정 화면 단축키 칸에서 바꾼다(10-16 · 10-27 리규형님 "다음 문단 알약을 방향키로")
+      // 키는 설정 화면 단축키 칸에서 바꾼다(10-16 · 10-27 리규형님 "다음 문단 알약을 방향키로" · 10-28 "일시정지/시작을 Ctrl+Space 로")
       if (event.isComposing) return;
       const key = keyLike(event);
-      const action = shortcutMatches("read-prev", key) ? "previous" : shortcutMatches("read-next", key) ? "next"
+      const action = shortcutMatches("read-pause", key) ? "toggle" : shortcutMatches("read-prev", key) ? "previous" : shortcutMatches("read-next", key) ? "next"
         : shortcutMatches("read-slower", key) ? "slower" : shortcutMatches("read-faster", key) ? "faster" : null;
       if (!action) return;
-      const active = [...hub.users.values()].reverse().map((get) => get()).find((b) => b.active);
-      if (!active) return;
-      if (action === "previous" || action === "next") {
+      const users = [...hub.users.entries()].reverse().map(([owner, get]) => ({ owner, b: get() }));
+      const reading = users.find((u) => u.b.active);
+      // 읽는 것이 없으면 다시 읽을 것 — 이 키로 멈춘 것이 먼저(재생기 여럿이 멈춰 있어도 방금 멈춘 것을 이어 읽게), 없으면 가장 나중에 등록한 멈춘 것
+      const target = reading ?? (action === "toggle" ? users.find((u) => u.owner === hub.pausedByKey && u.b.paused) ?? users.find((u) => u.b.paused) : undefined);
+      if (!target) return;
+      const active = target.b;
+      if (action === "toggle") {
+        if (!active.toggle) return;
+        active.toggle();
+        hub.pausedByKey = reading ? target.owner : undefined;
+      } else if (action === "previous" || action === "next") {
         const step = active[action];
         if (!step) return;
         step.call(active);
@@ -2016,7 +2027,7 @@ export function listenTtsSpeedKeys(binding: () => SpeedKeyBinding): () => void {
     };
     document.addEventListener("keydown", onKey, true);
     hub.stop = () => document.removeEventListener("keydown", onKey, true);
-  }, () => { hub.users.delete(token); return !hub.users.size; }, () => !hub.users.size);
+  }, () => { hub.users.delete(token); if (hub.pausedByKey === token) hub.pausedByKey = undefined; return !hub.users.size; }, () => !hub.users.size);
 }
 
 type ReadSpeedState = { rate: number; options: number[]; color: string; background: string; border: string; px: number };
