@@ -15,6 +15,7 @@
 //   ingest  --message-file <f>                         받은 결과(또는 접수 확인)를 보낸 쪽 기록에 넣기
 //   inbox   [--mark-reported]                          중계기가 넣어 둔 알림을 기록에 반영하고, 알리지 않은 것을 보여 준다
 //   status  [--id <id>]
+//   open-config [--keep | --model <id> --effort <…> --mode <…>]  중계기가 새로 여는 대화의 모델·에포트·권한(lib/openconfig.cjs)
 //
 // 출력은 모두 JSON. Node 버전에 기대지 않는다(CommonJS · ES2017 · 오래된 API 만).
 //
@@ -29,6 +30,7 @@ const store = require('./lib/store.cjs');
 const state = require('./lib/state.cjs');
 const mailbox = require('./lib/mailbox.cjs');
 const projects = require('./lib/projects.cjs');
+const openconfig = require('./lib/openconfig.cjs');
 
 const PEER = 'peer'; // 보낸 요청의 받는 쪽은 늘 하나 — 기록의 받는 쪽 열쇠
 
@@ -172,6 +174,16 @@ function cmdSend(args, cwd) {
   }
   const pickAgent = opt(args, 'agent');
   if (pickAgent && !/^[0-9a-f-]{8,36}$/i.test(pickAgent)) throw new UsageError('--agent must be a Paseo conversation id');
+  // 받는 대화가 없으면 중계기가 새로 연다 — 그 대화의 설정을 이 대화에서 아직 확인하지 않았으면 보내지 않고 묻게 한다(lib/openconfig.cjs)
+  const oc = openconfig.load();
+  if (!openconfig.confirmedHere(oc, agent)) {
+    return print({
+      ok: false,
+      needs_open_config: true,
+      current: oc.config,
+      instruction: 'nothing was sent. Ask the user about the settings the relay uses when it has to open a new conversation for this request (skill peer_mail, "New-conversation settings"): ' + (oc.config ? 'keep the current ones, or change them' : 'nothing is stored yet — ask model, effort and permission') + '. Then run open-config, and run this send again',
+    });
+  }
   const dir = store.requestDir(root, requestId);
   // 커밋 정책은 건드리지 않는다 — 기록 폴더 .gitignore 에 "커밋 안 함" 블록이 있으면 그대로 둔다(store.applyCommitPolicy 주석)
   const env = envl.makeRequest({
@@ -194,6 +206,7 @@ function cmdSend(args, cwd) {
     to: { host: target.host, path: target.path, agent: pickAgent || null },
     message: envl.renderMessage(env),
   };
+  if (oc.config) item.open = oc.config; // 중계기가 대화를 새로 열 때만 쓴다(router.mjs openAgent)
   requireFits(item, 'the request');
   if (!opt(args, 'request-id')) {
     store.createRequestRecord(dir, {
@@ -457,7 +470,29 @@ function cmdStatus(args, cwd) {
   print({ root: root, pulled: pulled, count: all.length, requests: all.slice(0, Number(opt(args, 'limit')) || 20) });
 }
 
-const COMMANDS = { targets: cmdTargets, whoami: cmdWhoami, send: cmdSend, receive: cmdReceive, reply: cmdReply, ingest: cmdIngest, inbox: cmdInbox, status: cmdStatus };
+// ───────── open-config (중계기가 새로 여는 대화의 모델·에포트·권한) ─────────
+
+//   (없음)                                   지금 기억된 값과 이 대화에서 확인했는지
+//   --keep                                   기억된 값을 그대로 쓴다고 이 대화에 적는다(비어 있으면 그 기기 기본으로 열린다)
+//   --model <id> --effort <…> --mode <…>     세 값을 기억하고 이 대화에 적는다
+function cmdOpenConfig(args) {
+  const agent = requireAgent();
+  if (args.keep) {
+    const s = openconfig.confirm(agent, null);
+    return print({ ok: true, kept: true, config: s.config, instruction: (s.config ? 'kept' : 'nothing is stored, so the relay opens new conversations with the machine defaults (permission: ask) — kept') + ' for this conversation. Run the send again' });
+  }
+  const want = { model: opt(args, 'model'), thinkingOptionId: opt(args, 'effort'), modeId: opt(args, 'mode') };
+  if (want.model || want.thinkingOptionId || want.modeId) {
+    const p = openconfig.problems(want);
+    if (p.length) throw new UsageError(p.join(' / '));
+    const s = openconfig.confirm(agent, want);
+    return print({ ok: true, saved: true, config: s.config, file: openconfig.file(), instruction: 'saved on this machine and kept for this conversation. Run the send again' });
+  }
+  const s = openconfig.load();
+  print({ config: s.config, confirmed_here: openconfig.confirmedHere(s, agent), efforts: openconfig.EFFORTS, modes: openconfig.MODES, file: openconfig.file() });
+}
+
+const COMMANDS = { targets: cmdTargets, whoami: cmdWhoami, send: cmdSend, receive: cmdReceive, reply: cmdReply, ingest: cmdIngest, inbox: cmdInbox, status: cmdStatus, 'open-config': cmdOpenConfig };
 
 function main() {
   const argv = process.argv.slice(2);

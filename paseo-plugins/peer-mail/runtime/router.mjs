@@ -33,6 +33,7 @@ const util = require("./lib/util.cjs");
 const envl = require("./lib/envelope.cjs");
 const mailbox = require("./lib/mailbox.cjs");
 const projects = require("./lib/projects.cjs");
+const openconfig = require("./lib/openconfig.cjs");
 
 const PING_MS = 30_000;
 const RETRY_MIN_MS = 5_000;
@@ -178,12 +179,17 @@ async function inject(host, agentId, text, messageId, verify) {
   return { ok: true, status: a.status, title: a.title || null };
 }
 
-// 받는 대화가 없는 프로젝트에 새 Claude 대화를 연다 — 요청을 첫 말로 넣고, 권한은 묻기 모드로 못 박는다(앱 기본값이 무엇이든 —
-// 10-26 리규형님 버튼 "기본 묻기 그대로, 피어메일 명령만 미리 허용"). 계정·모델은 그 기기의 기본. 같은 시도를 두 번 받아도
-// 대화를 둘 만들지 않게 시도 번호로 묶는다. 돌려주는 것은 새 대화
+// 받는 대화가 없는 프로젝트에 새 Claude 대화를 연다 — 요청을 첫 말로 넣는다. 모델·에포트·권한은 보낸 대화가 확인한 값(우편 항목
+// item.open → openConfigOf, 10-27 리규형님 버튼 "보낸 대화마다 처음 한 번 묻고 그 대화 동안 유지 · 기기마다 기억"). 값이 없으면
+// (옛 판 기기에서 온 요청 · 아무도 정하지 않은 기기) 권한은 묻기 모드로 못 박고(앱 기본값이 무엇이든 — 10-26 리규형님 버튼),
+// 모델·에포트는 그 기기의 기본. 계정은 그 기기의 기본. 같은 시도를 두 번 받아도 대화를 둘 만들지 않게 시도 번호로 묶는다.
+// 돌려주는 것은 새 대화
 const opening = new Map(); // 프로젝트 키 → 여는 중인 대화(Promise)
-async function openAgent(host, cwd, text, attemptId) {
-  const r = await withDaemon(host, (c) => c.createAgent({ provider: "claude", cwd, modeId: "default", initialPrompt: text, clientMessageId: attemptId, idempotencyKey: "peer-mail:" + attemptId, labels: { "peer-mail": "opened" } }));
+function openConfigOf(item) {
+  return { modeId: "default", ...(openconfig.clean(item.open) || {}) };
+}
+async function openAgent(host, cwd, text, attemptId, open) {
+  const r = await withDaemon(host, (c) => c.createAgent({ provider: "claude", cwd, ...open, initialPrompt: text, clientMessageId: attemptId, idempotencyKey: "peer-mail:" + attemptId, labels: { "peer-mail": "opened" } }));
   return agentOf(r);
 }
 
@@ -423,8 +429,10 @@ function mailCmd(host) {
 // 받은 봉투 블록·답은 파일로 쓰지 않고 명령에 바로 붙여 넣게 한다 — 파일 쓰기는 묻기 모드에서 권한 창이 떠 중계기가 자동으로 연
 // 대화(받는 대화가 없을 때)가 거기서 멈춘다(10-26 리규형님 버튼 "피어메일 명령만 미리 허용"). 끝 표시는 요청마다 달라 글 안에 우연히 나오지 않는다
 //   opened — 중계기가 이 요청 때문에 새로 연 대화: 지켜보는 사람이 없어 셸 명령의 권한 창에서 멈춘다(10-26 DB 서버 시험 — README 를 ls·head 로
-//   찾다 멈춤) → 조사는 파일 도구로만(작업 폴더 안 읽기는 묻지 않는다, 리규형님 버튼 "파일 도구로만 조사하라고 안내")
-function composeFor(host, message, kind, requestId, opened = false) {
+//   찾다 멈춤) → 조사는 파일 도구로만(작업 폴더 안 읽기는 묻지 않는다, 리규형님 버튼 "파일 도구로만 조사하라고 안내").
+//   openMode — 그 대화를 연 권한. 묻기 계열일 때만 그 문장을 넣는다(10-27 부터 보낸 대화가 고른 권한으로 연다 — 전부 허용이면 셸도 멈추지 않는다).
+//   또 그 대화가 피어메일을 보내면 새 대화 설정 질문에 답할 사람이 없다 → 묻지 말고 기억된 값을 쓰게 한다(open-config --keep)
+function composeFor(host, message, kind, requestId, opened = false, openMode = "default") {
   const nl = message.indexOf("\n");
   const first = nl < 0 ? message : message.slice(0, nl);
   const rest = nl < 0 ? "" : message.slice(nl);
@@ -442,7 +450,11 @@ function composeFor(host, message, kind, requestId, opened = false) {
           rule,
           "How to handle it (peer_mail relay — if a skill named peer_mail is available, load it first). " + exact,
           ...(opened
-            ? ["The relay opened this conversation for this request — nobody is watching it. Investigate with the file tools only (Read, Grep, Glob): a shell command asks for permission and would stop here. If the question cannot be answered without one, say so in your answer."]
+            ? [
+                "The relay opened this conversation for this request — nobody is watching it." +
+                  (openconfig.asking(openMode) ? " Investigate with the file tools only (Read, Grep, Glob): a shell command asks for permission and would stop here. If the question cannot be answered without one, say so in your answer." : ""),
+                "If you ever send a peer_mail from this conversation, nobody can answer the new-conversation settings question: run `node " + m + " open-config --keep` once instead of asking.",
+              ]
             : []),
           "1. Record it — paste the ```peer_mail block at the end of this message (with its ``` lines), unchanged, between these lines:",
           ...paste("receive --message-file -", "<the ```peer_mail block>"),
@@ -574,8 +586,9 @@ async function routeRequest(host, item) {
     const pending = opening.get(tKey);
     if (pending) chosen = await pending.catch(() => null);
     else {
-      const text = composeFor(target.host, envl.renderRelayed(env), "request", item.request_id, true);
-      const p = openAgent(target.host, target.path, text, item.id);
+      const open = openConfigOf(item);
+      const text = composeFor(target.host, envl.renderRelayed(env), "request", item.request_id, true, open.modeId);
+      const p = openAgent(target.host, target.path, text, item.id, open);
       opening.set(tKey, p);
       let opened = null, why = null;
       try { opened = await p; } catch (e) { why = e && e.message ? e.message : String(e); } finally { opening.delete(tKey); }
@@ -586,7 +599,7 @@ async function routeRequest(host, item) {
       }
       ledger[item.request_id] = { src_host: host, src_agent: item.from_agent, src_key: srcProj.key, dst_host: target.host, dst_agent: opened.id, dst_key: tKey, at: new Date().toISOString(), opened: true };
       saveJson("ledger.json", ledger);
-      log("opened a conversation for request " + util.shortId(item.request_id) + " " + host + " → " + target.host + " " + opened.id.slice(0, 8));
+      log("opened a conversation for request " + util.shortId(item.request_id) + " " + host + " → " + target.host + " " + opened.id.slice(0, 8) + " " + JSON.stringify(open));
       await notifySender(host, item.from_agent, item.request_id, item.id, "delivered", "no conversation was open in " + target.name + " — opened a new one (" + opened.id.slice(0, 8) + ") and gave it the request", null, false);
       return;
     }

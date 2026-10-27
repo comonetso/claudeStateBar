@@ -25,6 +25,7 @@ const util = require(path.join(RT, "lib", "util.cjs"));
 const envl = require(path.join(RT, "lib", "envelope.cjs"));
 const mailbox = require(path.join(RT, "lib", "mailbox.cjs"));
 const projects = require(path.join(RT, "lib", "projects.cjs"));
+const openconfig = require(path.join(RT, "lib", "openconfig.cjs"));
 
 const SRC = fs.readFileSync(path.join(RT, "router.mjs"), "utf8");
 function cut(from, to) {
@@ -80,6 +81,7 @@ function setup({ preHeld } = {}) {
     envl,
     mailbox,
     projects,
+    openconfig,
     console: { log: (l) => logs.push(l) },
     process: { pid: 424242, kill() { throw new Error("no process in test"); }, exit() { throw new Error("exit in test"); } },
     setInterval: () => ({ unref() {} }),
@@ -450,7 +452,10 @@ test("받는 대화가 없으면 그 프로젝트에 새 대화를 묻기 모드
   assert.equal(t.creates.length, 1);
   const c = t.creates[0];
   assert.equal(c.host, "ServerB");
+  // 우편에 새 대화 설정(item.open)이 없으면(옛 판 기기) 묻기 모드 · 모델·에포트는 그 기기 기본
   assert.deepEqual([c.opts.provider, c.opts.cwd, c.opts.modeId], ["claude", "/srv/target", "default"]);
+  assert.equal(c.opts.model, undefined);
+  assert.equal(c.opts.thinkingOptionId, undefined);
   assert.equal(c.opts.idempotencyKey, "peer-mail:" + r.id);
   assert.equal(toB(t).length, 0); // 끼워 넣기가 아니라 첫 말
   const first = c.opts.initialPrompt;
@@ -469,6 +474,32 @@ test("받는 대화가 없으면 그 프로젝트에 새 대화를 묻기 모드
   assert.equal(toB(t).length, 1);
   assert.equal(toB(t)[0].id, c.id);
   assert.ok(!/nobody is watching/.test(toB(t)[0].msg), "이미 있는 대화에 끼워 넣는 글에는 그 안내가 없다");
+});
+
+// ── 10-27 보낸 대화가 고른 새 대화 설정(리규형님 버튼: 대화마다 처음 한 번 묻기 · 기기마다 기억) ─────────────────────────
+test("보낸 대화가 고른 설정(item.open)으로 새 대화를 연다 — 전부 허용이면 '파일 도구로만' 안내가 없고, 틀린 칸은 버린다", async () => {
+  const t = setup();
+  t.agents.ServerB.length = 0;
+  const r = Object.assign(request(), { open: { model: "claude-opus-5-5", thinkingOptionId: "xhigh", modeId: "bypassPermissions" } });
+  await handle(t, "PC", r);
+  assert.equal(t.creates.length, 1);
+  const o = t.creates[0].opts;
+  assert.deepEqual([o.model, o.thinkingOptionId, o.modeId], ["claude-opus-5-5", "xhigh", "bypassPermissions"]);
+  assert.match(o.initialPrompt, /nobody is watching it\./);
+  assert.ok(!/file tools only/.test(o.initialPrompt), "셸도 묻지 않는 권한이면 그 안내는 틀린 말");
+  assert.ok(o.initialPrompt.includes("node /x/mail.cjs open-config --keep"), "새로 연 대화가 보낼 땐 묻지 않고 기억값");
+
+  // 틀린 칸은 버리고 묻기 모드로 — 권한 칸에 엉뚱한 값을 넣어 넓히지 못한다
+  const t2 = setup();
+  t2.agents.ServerB.length = 0;
+  const bad = Object.assign(request(), { open: { model: "gpt-5; rm -rf /", thinkingOptionId: "ultracode", modeId: "plan", extra: 1 } });
+  await handle(t2, "PC", bad);
+  const o2 = t2.creates[0].opts;
+  assert.equal(o2.modeId, "default");
+  assert.equal(o2.model, undefined);
+  assert.equal(o2.thinkingOptionId, undefined);
+  assert.equal(o2.extra, undefined);
+  assert.match(o2.initialPrompt, /file tools only/);
 });
 
 test("새 대화 열기에 실패하면 보낸 쪽에 전달 안 됨과 이유", async () => {

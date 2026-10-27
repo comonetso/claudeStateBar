@@ -37,6 +37,10 @@ function setup({ hideB = false } = {}) {
   const f = path.join(home, "plugin-data", "claude-state-bar", "project-list", "projects.json");
   fs.mkdirSync(path.dirname(f), { recursive: true });
   fs.writeFileSync(f, JSON.stringify(list));
+  // 보내기 전 새 대화 설정 확인(10-27 open-config) — 시험 대화들은 "기억값 그대로"로 미리 확인해 둔다. 확인 전 동작은 따로 시험한다
+  const at = "2026-10-27T00:00:00.000Z";
+  fs.mkdirSync(path.join(home, "peer-mail"), { recursive: true });
+  fs.writeFileSync(path.join(home, "peer-mail", "open-config.json"), JSON.stringify({ config: null, confirmed: { "agent-a": at, "agent-b": at, "agent-x": at } }));
   const env = (agent) => ({ ...process.env, PASEO_HOME: home, PASEO_AGENT_ID: agent, PEER_MAIL_HOME: "" });
   const run = (cwd, agent, args) => JSON.parse(execFileSync(process.execPath, [MAIL, ...args], { cwd, env: env(agent), encoding: "utf8" }));
   // 실패해야 하는 명령 — 종료 코드와 출력(JSON)을 돌려준다
@@ -400,4 +404,48 @@ test("보내기·받기·답하기·결과 받기를 파일 없이 붙여 넣기
   const ing = pipe(t.A, "agent-a", ["ingest", "--message-file", "-"], blockOf(res.message));
   assert.equal(ing.status, "completed");
   assert.ok(fs.readFileSync(ing.result_file, "utf8").includes("src/a.js:1 · D:\\data\\b"));
+});
+
+// ── 10-27 중계기가 새로 여는 대화의 설정 — 보낸 대화마다 처음 한 번 묻고 그 대화 동안 유지 · 기기마다 기억(리규형님 버튼) ──
+test("새 대화 설정을 이 대화에서 확인하기 전엔 보내지 않는다 — 확인한 값은 우편에 실리고, 다른 대화는 다시 묻는다", () => {
+  const t = setup();
+  const body = t.textFile(t.A, "q.txt", "q");
+  const send = (agent) => t.run(t.A, agent, ["send", "--to", "Proj B", "--intent", "query", "--body-file", body]);
+  // 처음 — 비어 있어 세 값을 물어야 한다. 아무것도 넣지 않는다
+  const first = send("agent-new");
+  assert.equal(first.ok, false);
+  assert.equal(first.needs_open_config, true);
+  assert.equal(first.current, null);
+  assert.equal(t.items("outbox").length, 0);
+  assert.deepEqual(t.run(t.A, "agent-new", ["open-config"]), { config: null, confirmed_here: false, efforts: ["low", "medium", "high", "xhigh", "max"], modes: ["default", "acceptEdits", "auto", "bypassPermissions"], file: path.join(t.home, "peer-mail", "open-config.json") });
+  // 틀린 값은 저장하지 않는다
+  const bad = t.runFail(t.A, "agent-new", ["open-config", "--model", "gpt-5", "--effort", "huge", "--mode", "plan"]);
+  assert.equal(bad.status, 2);
+  assert.match(bad.out.error, /--model .* \/ --effort .* \/ --mode/);
+  // 세 값을 고르면 기억하고 이 대화에서 확인한 것으로 — 보내면 우편에 실린다
+  const saved = t.run(t.A, "agent-new", ["open-config", "--model", "claude-opus-5-5", "--effort", "xhigh", "--mode", "bypassPermissions"]);
+  assert.equal(saved.saved, true);
+  const want = { model: "claude-opus-5-5", thinkingOptionId: "xhigh", modeId: "bypassPermissions" };
+  assert.equal(send("agent-new").ok, true);
+  assert.deepEqual(t.take("outbox")[0].open, want);
+  // 같은 대화는 다시 묻지 않는다
+  assert.equal(send("agent-new").ok, true);
+  t.take("outbox");
+  // 다른 대화는 처음 보낼 때 다시 묻는다 — 이번엔 지금 값을 보여 주고 유지할지
+  const other = send("agent-other");
+  assert.equal(other.needs_open_config, true);
+  assert.deepEqual(other.current, want);
+  const kept = t.run(t.A, "agent-other", ["open-config", "--keep"]);
+  assert.equal(kept.kept, true);
+  assert.equal(send("agent-other").ok, true);
+  assert.deepEqual(t.take("outbox")[0].open, want);
+});
+
+test("아무도 정하지 않은 기기에서 기억값 그대로(--keep)면 우편에 설정이 없다 — 중계기는 묻기 모드·기기 기본으로 연다", () => {
+  const t = setup();
+  const body = t.textFile(t.A, "q.txt", "q");
+  const kept = t.run(t.A, "agent-new", ["open-config", "--keep"]);
+  assert.equal(kept.config, null);
+  assert.equal(t.run(t.A, "agent-new", ["send", "--to", "Proj B", "--intent", "query", "--body-file", body]).ok, true);
+  assert.equal(t.take("outbox")[0].open, undefined);
 });
