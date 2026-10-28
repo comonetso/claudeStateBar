@@ -230,7 +230,7 @@ export function createSoundOrigins(file = soundDataFile("sound-origin-v2.jsonl")
   // 대화 기록을 읽어 차례 끝을 가린다. 앞 단계(index.server.ts checkSession)·생각 경계(thinkingBoundary.ts)와 같은 판정이다
   const claudeSession = (a: PaseoAgent) => (baseOf(a.provider) && a.persistence?.sessionId) || null;
   // 압축 준비(10-15 — 체크포인트 보고로 끝난 차례는 끝남 대신 compact)는 10-24 리규형님 버튼 "폰 알림 없애고 보통 끝남 소리로"로 없앴다 —
-  // 압축 명령은 플러그인이 1분 뒤 대신 넣어(autoCompact.ts) 사람이 할 일이 없다. 보고 차례도 보통 끝남이고 compact 사건은 만들지 않는다(옛 사건은 무효)
+  // 압축 명령은 플러그인이 5초 뒤 대신 넣어(autoCompact.ts) 사람이 할 일이 없다. 보고 차례도 보통 끝남이고 compact 사건은 만들지 않는다(옛 사건은 무효)
   const valid = async (a: PaseoAgent, kind: SoundKind, nativeId: string, cfg: Config, cycle: number, paseo: PaseoApi) => {
     if (a.archivedAt || a.status === "closed") return false;
     // 허락 요청은 종류와 상관없이 질문이다 — 도구 사용 허락 포함(10-21 리규형님 "똑같이 질문으로 소리", client/presentation/judge.ts 와 같은 뜻).

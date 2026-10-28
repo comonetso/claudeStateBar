@@ -403,7 +403,7 @@ export default function contribute(server: PluginServerContext) {
       () => push.stop(),
     );
   }
-  // 압축 명령 자동 넣기(10-24 — 모든 대화, 직원 데몬도). 체크포인트 보고로 끝난 답 뒤 1분 동안 말이 없으면 그 명령어 줄을 대신 넣는다
+  // 압축 명령 자동 넣기(10-24 — 모든 대화, 직원 데몬도). 체크포인트 보고로 끝난 답 뒤 5초 동안 말이 없으면 그 명령어 줄을 대신 넣는다
   const autoCompact = createAutoCompact();
   const guardAuto = (work: () => unknown) => {
     try {

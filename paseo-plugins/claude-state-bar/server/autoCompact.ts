@@ -3,17 +3,18 @@ import { checkpointCommandLine } from "./presentation/chime/lastTurn";
 import { deliveredTimeline, isAsideItem, turnEndedTimeline, type TurnItem } from "./turnTimeline";
 
 // 압축 명령 자동 넣기(10-24 리규형님 — Mesa 메인·하위 대화가 자는 동안 압축 준비에서 멈춰 무중단이 깨졌다. 버튼: 플러그인이 대신 넣기 ·
-// 모든 대화 · 답이 끝나고 1분 동안 말이 없으면 — 처음엔 3분, 같은 날 1분으로 줄임). 체크포인트 보고(start_compact)로 끝난 답이면 그 대화에 1분을 예약하고, 그 사이 새 차례가
-// 시작되면(사람 말·다른 입력) 취소한다. 1분이 지나면 대화가 쉬고 있는지·마지막 답이 아직 그 보고인지 다시 보고, 보고 안의 명령어 줄을
+// 모든 대화 · 답이 끝나고 5초 동안 말이 없으면 — 처음엔 3분, 같은 날 1분, 10-28 5초로 줄임). 체크포인트 보고(start_compact)로 끝난 답이면 그 대화에 5초를 예약하고, 그 사이 새 차례가
+// 시작되면(사람 말·다른 입력) 취소한다. 5초가 지나면 대화가 쉬고 있는지·마지막 답이 아직 그 보고인지 다시 보고, 보고 안의 명령어 줄을
 // 그대로 보낸다(Paseo 는 /compact 를 입력창과 같은 길로 Claude Code 에 넘긴다 — 되감기만 자체 처리). 한 답에 한 번만(같은 글 번호면 데몬도
 // 두 번 받지 않는다). 압축이 끝나면 깨우기 감시(start_compact compact_wake.js)가 Claude 를 깨워 하던 일을 잇는다.
-// 한계: 예약은 이 플러그인 프로세스 안에만 있다 — 1분 안에 데몬·플러그인이 다시 뜨면 그 대화는 지금처럼 사람을 기다린다
+// 한계: 예약은 이 플러그인 프로세스 안에만 있다 — 5초 안에 데몬·플러그인이 다시 뜨면 그 대화는 지금처럼 사람을 기다린다
 
 type PaseoApi = PluginHookContext["paseo"];
 type TimelineItem = { type: string; text?: string };
 
-/** 1분 — 압축 준비 소리를 듣고 와서 다른 말을 먼저 할 틈(10-24 리규형님 버튼 "3분 기다렸다가, 그 사이 말이 없으면" → 같은 날 "1분으로 줄여, 압축 들어갈 때 할 말은 흔치 않다") */
-export const AUTO_COMPACT_DELAY_MS = 60_000;
+/** 5초 — 보고가 끝나고 대화가 쉬는 상태로 넘어갈 여유만 둔다(10-24 리규형님 버튼 "3분 기다렸다가, 그 사이 말이 없으면" → 같은 날 "1분으로 줄여, 압축 들어갈 때 할 말은 흔치 않다"
+ *  → 10-28 "5초에 바로 — 기다리는 동안 할 일이 없고, 틈을 주면 그 사이 다른 글이 끼어든다") */
+export const AUTO_COMPACT_DELAY_MS = 5_000;
 
 /** 차례 끝 기록에서 마지막 답의 압축 명령어 줄 — 답 글 뒤에 도구를 불렀거나 사람 말이 끼면 없다(push.ts endsWithCheckpoint 와 같은 판정) */
 export function compactCommandOf(timeline: readonly TimelineItem[]): string | null {

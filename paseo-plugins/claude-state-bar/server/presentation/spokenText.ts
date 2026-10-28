@@ -5,6 +5,11 @@ import type { TargetLang } from "../../shared/presentation/translate";
 // (claude-state-bar → "claude 대시 state 대시 bar"). 이제 띄어 읽고, 나머지 기호는 지우거나 쉼표(잠깐 쉼)로 바꾼다
 const REPEATED_CHARS_MAX = 3;
 const PAUSE = ", ";
+// 줄 끝 쉼(10-28 리규형님 버튼 "세 곳 모두 줄 끝에서 쉬기" — PC 읽기 앱 요청 40817fda). 음성 나누기(tts.ts splitInput)가 줄바꿈을 띄어쓰기로
+// 이어 붙여 제목·목록·표 줄이 다음 줄과 한 문장처럼 붙어 들렸다("- 사과↵- 배" → "사과 배"). 다음 줄이 이어지는 줄이 공백·문장 부호로 끝나지 않으면
+// 마침표를 붙여 엔진이 쉬게 한다. 부호 목록은 크롬 읽기 확장 js/speech.js needsPeriod 와 같고, 이 함수가 남기는 아랍어 쉼 부호(، ؛ ؟)를 더했다.
+// 문단 마지막 줄은 그 뒤에서 재생이 끝나 어차피 쉬므로 붙이지 않는다(한 줄 글은 그대로)
+const LINE_NEEDS_PERIOD = /[^\s.!?,;:…。！？、，；：،؛؟](?=\n)/g;
 
 // 구분줄 — 칸마다 대시 하나 이상, 정렬 표시(:--·:-:·--:) 가능
 const TABLE_RULE = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
@@ -210,8 +215,107 @@ export function readNumbersKo(text: string): string {
     .replace(/([\d%가-힣A-Za-z])[ \t]*~[ \t]*(?=[\d일이삼사오육칠팔구십백천만억조영]|공[공영일이삼사오육칠팔구])/g, "$1에서 ");
 }
 
-/** 화면 글은 바꾸지 않는다. 음성에만 필요한 마크다운·코드 이름 정리를 적용한다. */
-export function makeSpokenText(text: string, lang: TargetLang): string {
+// ── 대문자 영어 낱말을 낱말로 읽기(10-28 리규형님 "README 를 read me 로 — 세 곳 같은 UX") — 크롬 읽기 확장 js/spoken-text.js speakNames 를 그대로 옮김.
+// 사전(englishWords.ts englishWordMap, SCOWL)에 있는 대문자 낱말은 소문자로(README → read me · CHANGELOG → change log · IN_PROGRESS → in progress),
+// 약어(API·SSH — 사전에 없거나 모음이 없음)·두 글자 이하(PC·IT)는 대문자 그대로, 대문자 낱말이 이어진 문장("DO NOT EDIT")에선 짧은 낱말도 읽는다.
+// 한국어·영어 음성에서 사전을 넘길 때만 — 넘기지 않으면 spacedName(10-28 전과 같다)
+const NAME = /[A-Za-z][A-Za-z0-9_]*(?:[./\\-][A-Za-z0-9_]+)*/g;
+const NAME_WITH_TAIL = /[A-Za-z][A-Za-z0-9_]*(?:[./\\-][A-Za-z0-9_]+)*(?:['’](?:[A-Z]+|s)(?![A-Za-z0-9_]))?/g;
+// 대문자 낱말이 이어지거나(TODO → to do) 문장을 이룰 때(DO NOT EDIT 의 DO) 낱말로 읽는 두 글자. am·it·no·us 는 대문자면 약어인 때가 많아 뺀다
+const SPOKEN_SHORT_WORDS = new Set(["an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "me", "my", "of", "on", "or", "so", "to", "up", "we"]);
+const SPOKEN_LONGEST_WORD = 32; // splitIntoWords 가 이보다 긴 낱말은 찾지 않는다
+const camel = (token: string) => token.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z])([A-Z][a-z])/g, "$1 $2");
+// 영어 이름 안 기호는 소리로 읽지 않고 띄운다(readaloud_text.py → "readaloud text py"). 대문자 두 글자(PC·OK·DB)는 떼지 않는다 — 원본의
+// "두 글자 대문자를 떼어 준다(VS → V S)"를 옮겼다가 "P C"·"O K"로 읽혀 리규형님이 어색하다고 해 없앴다(10-14)
+const spacedName = (token: string) => camel(token).replace(/[._/\\-]+/g, " ");
+
+function speakNames(text: string, words: ReadonlyMap<string, number>): string {
+  // 가장 적은 낱말, 그다음 가장 흔한 낱말(SCOWL 단계 합이 작은 쪽)로 w 를 나눈다 — 세 글자 이상이거나 SPOKEN_SHORT_WORDS 만. 못 나누거나 한 낱말이면 null
+  const splitIntoWords = (w: string): string[] | null => {
+    const best: ({ from: number; count: number; level: number } | undefined)[] = [{ from: 0, count: 0, level: 0 }];
+    for (let i = 2; i <= w.length; i++) {
+      for (let j = Math.max(0, i - SPOKEN_LONGEST_WORD); j <= i - 2; j++) {
+        const prev = best[j];
+        if (!prev) continue;
+        const part = w.slice(j, i);
+        const level = part.length > 2 ? words.get(part) : SPOKEN_SHORT_WORDS.has(part) ? 0 : undefined;
+        if (level == null) continue;
+        const count = prev.count + 1, sum = prev.level + level;
+        const cur = best[i];
+        if (!cur || count < cur.count || (count === cur.count && sum < cur.level)) best[i] = { from: j, count, level: sum };
+      }
+    }
+    const end = best[w.length];
+    if (!end || end.count < 2) return null;
+    const parts: string[] = [];
+    for (let i = w.length; i > 0; i = best[i]!.from) parts.unshift(w.slice(best[i]!.from, i));
+    return parts;
+  };
+  const speakCapitals = (word: string, inCapitalRun: boolean): string => {
+    const lower = word.toLowerCase();
+    // 두 글자 이하는 대문자 그대로 — 대문자 문장 안의 짧은 낱말만 읽는다(DO NOT EDIT 의 DO)
+    if (word.length <= 2) return inCapitalRun && SPOKEN_SHORT_WORDS.has(lower) ? lower : word;
+    // 모음 없는 낱말은 소리(ssh·hmm) — 대문자면 약어(SSH)
+    if (!/[aeiouy]/.test(lower)) return word;
+    if (words.has(lower)) return lower;
+    const run = splitIntoWords(lower);
+    return run ? run.join(" ") : word;
+  };
+  // 작은따옴표 붙은 낱말 — 대문자 줄임말(DON'T·I'M)이나 낱말과 's(README's·USER'S)
+  const speakApostrophe = (part: string, stem: string, tail: string, inCapitalRun: boolean): string => {
+    if (/\d/.test(stem) || stem !== stem.toUpperCase()) return camel(stem) + tail;
+    if (part === part.toUpperCase() && words.has(part.toLowerCase().replace(/’/g, "'"))) return part.toLowerCase();
+    if (!/^['’]s$/i.test(tail)) return part;
+    const spoken = speakCapitals(stem, inCapitalRun);
+    return spoken + (spoken === stem ? tail : tail.toLowerCase());
+  };
+  const speakPart = (part: string, inCapitalRun: boolean): string => {
+    if (!part) return part;
+    const apostrophe = /^([A-Za-z0-9_]+)(['’][A-Za-z]+)$/.exec(part);
+    if (apostrophe) return speakApostrophe(part, apostrophe[1], apostrophe[2], inCapitalRun);
+    if (/\d/.test(part)) return camel(part);
+    // 약어 복수(APIs·READMEs) — 약어 다음 s, 두 글자 약어(PCs)는 그대로
+    const plural = /^([A-Z]{2,})s$/.exec(part);
+    if (plural) {
+      if (plural[1].length <= 2) return part;
+      const stem = speakCapitals(plural[1], inCapitalRun);
+      return stem === plural[1] ? part : stem + "s";
+    }
+    if (/^[A-Z]+$/.test(part)) return speakCapitals(part, inCapitalRun);
+    // 낙타 표기(getHTTPResponse·loadREADMEFile)는 띄우고, 그 안 대문자 낱말은 위처럼
+    return camel(part).split(" ").map((word) => (/^[A-Z]{3,}$/.test(word) ? speakCapitals(word, false) : word)).join(" ");
+  };
+  const speakName = (token: string, inCapitalRun: boolean): string => {
+    const parts = token.split(/[._/\\-]+/);
+    // 전부 대문자이고 영어 낱말이 든 이름(IN_PROGRESS)은 대문자 문장처럼
+    const capitalName = parts.length > 1 && parts.every((part) => /^[A-Z]+$/.test(part))
+      && parts.some((part) => part.length > 2 && speakCapitals(part, false) !== part);
+    return parts.map((part) => speakPart(part, inCapitalRun || capitalName)).join(" ");
+  };
+  // 사이에 빈칸·부호만 있는 대문자 낱말들에 영어 낱말이 하나라도 있으면 대문자 문장 — 그 안 짧은 낱말도 읽는다(DO NOT EDIT 의 DO)
+  type Token = { text: string; at: number };
+  const tokens: Token[] = Array.from(text.matchAll(NAME_WITH_TAIL), (m) => ({ text: m[0], at: m.index ?? 0 }));
+  const inRun = new Set<number>();
+  const isCapitalWord = (token: Token) => /^[A-Z]+(?:['’][A-Z]+)?$/.test(token.text);
+  const lowers = (token: Token) => token.text.length > 2 && speakPart(token.text, false) !== token.text;
+  let run: Token[] = [];
+  const flush = () => {
+    if (run.some(lowers)) for (const token of run) inRun.add(token.at);
+    run = [];
+  };
+  for (let k = 0; k < tokens.length; k++) {
+    const token = tokens[k], prev = tokens[k - 1];
+    if (!isCapitalWord(token)) { flush(); continue; }
+    if (run.length && /[\p{L}\p{N}]/u.test(text.slice(prev.at + prev.text.length, token.at))) flush();
+    run.push(token);
+  }
+  flush();
+  return text.replace(NAME_WITH_TAIL, (token: string, at: number) => speakName(token, inRun.has(at)));
+}
+
+/** 화면 글은 바꾸지 않는다. 음성에만 필요한 마크다운·코드 이름 정리를 적용한다.
+ *  words = 영어 낱말 사전(englishWords.ts englishWordMap) — 넘기면 한국어·영어 음성에서 대문자 영어 낱말을 낱말로 읽는다(tts.ts 가 넘긴다) */
+export function makeSpokenText(text: string, lang: TargetLang, words?: ReadonlyMap<string, number> | null): string {
   let spoken = text
     .replace(/^\s*(`{3,}|~{3,})[^\n]*$/gm, "")
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
@@ -234,12 +338,8 @@ export function makeSpokenText(text: string, lang: TargetLang): string {
     .replace(/[|]/g, " ")
     .replace(/→|⇒|->|=>|←|⇐|<-/g, PAUSE)
     .replace(/([^\d\s])\1{3,}/gu, (_, char: string) => char.repeat(REPEATED_CHARS_MAX));
-  // 영어 이름 안 기호는 소리로 읽지 않고 띄운다(readaloud_text.py → "readaloud text py").
-  // 대문자 두 글자(PC·OK·DB)는 떼지 않고 그대로 넘긴다 — 원본 readaloud_text.py 의 "한국어 음성은 두 글자 대문자를 떼어 준다
-  // (VS → V S)"를 옮겼다가 "P C"·"O K"로 읽혀 리규형님이 어색하다고 해 없앴다(10-14)
-  spoken = spoken.replace(/[A-Za-z][A-Za-z0-9_]*(?:[./\\-][A-Za-z0-9_]+)*/g, (token) =>
-    token.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z])([A-Z][a-z])/g, "$1 $2").replace(/[._/\\-]+/g, " "),
-  );
+  // 영어 이름 — 사전이 있으면(한국어·영어 음성) 대문자 낱말을 낱말로 읽고, 없으면 기호만 띄운다(speakNames · spacedName)
+  spoken = words && (lang === "ko" || lang === "en") ? speakNames(spoken, words) : spoken.replace(NAME, spacedName);
   // 남은 기호 — 숫자 안 점·콜론·쉼표(1.5 · 19:41 · 1,000)와 %, 영어 낱말 안 작은따옴표, 문장 끝 부호만 둔다
   spoken = spoken
     .replace(/[•◦▪▫▸▹►▶●○■□◆◇★☆※]/g, " ") // 글머리·표시 기호
@@ -255,5 +355,5 @@ export function makeSpokenText(text: string, lang: TargetLang): string {
     .replace(/([.?!]),+/g, "$1") // 마침표 뒤에 붙은 쉼표
     .replace(/,(?:[ \t\u00a0]*,)+/g, ",") // 겹친 쉼표
     .replace(/^[ \t\u00a0]*[,.]+/gm, ""); // 줄머리 쉼표·마침표
-  return spoken.replace(/[ \t\u00a0]+/g, " ").replace(/ +\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return spoken.replace(/[ \t\u00a0]+/g, " ").replace(/ +\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim().replace(LINE_NEEDS_PERIOD, "$&.");
 }

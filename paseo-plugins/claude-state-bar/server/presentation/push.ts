@@ -478,7 +478,7 @@ export function createPush(options: {
       dropRepeats((r) => r.agentId === agent.id);
       resolve((m) => m.agentId === agent.id);
       if (outcome.kind !== "completed") return;
-      // 압축 준비 폰 알림은 없앴다(10-24 리규형님 버튼 "폰 알림 없애고 보통 끝남 소리로" — 압축 명령은 autoCompact.ts 가 1분 뒤 대신 넣는다).
+      // 압축 준비 폰 알림은 없앴다(10-24 리규형님 버튼 "폰 알림 없애고 보통 끝남 소리로" — 압축 명령은 autoCompact.ts 가 5초 뒤 대신 넣는다).
       // 목록 아이콘(압축 대기 중 표시)만 켜 둔다 — 새 차례가 시작되거나 보관하면 꺼진다
       const mark = (timeline: readonly TurnItem[]) => {
         if (!endsWithCheckpoint(timeline)) return;
