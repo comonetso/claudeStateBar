@@ -397,7 +397,7 @@ Claude Code & Codex Status Bar는 주요 이벤트에 설정 가능한 WAV 사�
 
 **워크플로우 완료 비프 게이트** — 이번 세션에서 실제로 워크플로우가 실행 중 → 완료로 전환되는 것을 확인했을 때만 비프가 울립니다. Claude 워크플로우(`wf_*`)는 실행 완료 기록(`workflows/<wfId>.json`의 `status: "completed"`)까지 기다립니다. Codex는 최신 부모 `task_started` 이후의 명시적인 `source.subagent.thread_spawn.parent_thread_id` 연결을 중첩 자손까지 따라가고, 연결된 spawned-agent rollout이 전부 끝난 뒤 부모 `task_complete`까지 확인합니다. 즉 `agent-turn-complete`와 같은 최종 경계입니다. 그래서 **순차 배치**도 중간 공백에는 울리지 않고 **맨 끝에 딱 한 번** 울립니다. 실패·중단된 실행은 워크플로 성공음을 울리지 않으며, VS Code 시작 전부터 이미 완료된 작업은 베이스라인 처리되어 무음입니다.
 
-**Paseo에서 시작한 대화** — [Paseo](https://paseo.sh)는 Claude Code와 Codex를 데스크톱·모바일에서 쓰는 앱입니다. 이 저장소의 Paseo 플러그인 `claude-state-bar`가 설치되어 켜져 있으면, 플러그인이 Paseo 대화의 완료·질문·경고·위험 사운드를 Paseo 앱에서 재생하므로 확장은 그 대화에서 이 네 가지를 건너뜁니다. 그러지 않으면 같은 소리가 두 번 납니다. 워크플로우 사운드는 모든 대화에서 지금처럼 확장이 재생합니다. 플러그인도 이 소리를 내므로, 플러그인을 쓰면 두 번 날 수 있습니다. Paseo 대화인지는 세션 ID가 `~/.paseo/agents/` 아래 Paseo 기록에 있는지로, 플러그인이 켜져 있는지는 `~/.paseo/config.json`으로 판단하며, 둘 다 창이 가리키는 기계에서 읽습니다. 읽는 때는 소리를 낼 순간뿐입니다. Paseo나 플러그인이 없으면 달라지는 것이 없습니다.
+**Paseo에서 시작한 대화** — [Paseo](https://paseo.sh)는 Claude Code와 Codex를 데스크톱·모바일에서 쓰는 앱입니다. 만든 이가 따로 쓰는 Paseo 플러그인 `claude-state-bar`(공개하지 않음)가 설치되어 켜져 있으면, 플러그인이 Paseo 대화의 완료·질문·경고·위험 사운드를 Paseo 앱에서 재생하므로 확장은 그 대화에서 이 네 가지를 건너뜁니다. 그러지 않으면 같은 소리가 두 번 납니다. 워크플로우 사운드는 모든 대화에서 지금처럼 확장이 재생합니다. 플러그인도 이 소리를 내므로, 플러그인을 쓰면 두 번 날 수 있습니다. Paseo 대화인지는 세션 ID가 `~/.paseo/agents/` 아래 Paseo 기록에 있는지로, 플러그인이 켜져 있는지는 `~/.paseo/config.json`으로 판단하며, 둘 다 창이 가리키는 기계에서 읽습니다. 읽는 때는 소리를 낼 순간뿐입니다. Paseo나 플러그인이 없으면 달라지는 것이 없습니다.
 
 ---
 

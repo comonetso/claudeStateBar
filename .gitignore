@@ -25,6 +25,14 @@ whats-next.md
 !/docs/codex-rescue-guide.ko.md
 /.git-docs/
 
+# paseo-plugins/ is private too: the Paseo plugins name servers and local paths and are not
+# published. Since 2026-11-03 they are versioned in the private repository
+# comonetso/blueming-paseo-plugins — git directory .git-paseo, work tree paseo-plugins/
+# (tools/paseo-git.sh). Before that they sat on the plugins-next branch. The PC's Paseo loads
+# them straight from this folder, so it stays where it is.
+/paseo-plugins/
+/.git-paseo/
+
 # IDE
 .vscode/
 !.vscode/launch.json

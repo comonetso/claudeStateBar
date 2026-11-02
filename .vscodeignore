@@ -2,6 +2,8 @@
 # Private docs repository (git dir for docs/). Not covered by **/.git — without this line
 # the whole private history would be packed into the VSIX.
 .git-docs/**
+# Private Paseo plugin repository (git dir for paseo-plugins/, since 2026-11-03) — same reason.
+.git-paseo/**
 **/.svn
 **/.hg
 **/CVS
@@ -27,6 +29,7 @@ skills/**
 # Claude Code plugin marketplace for that skill (`/plugin marketplace add comonetso/claudeStateBar`).
 .claude-plugin/**
 # Paseo plugins are installed into Paseo itself (`paseo plugin install`), not shipped with the extension.
+# They live in a private repository (tools/paseo-git.sh); the folder is git-ignored here.
 paseo-plugins/**
 images/provider-icons-src/**
 images/provider-icons/*.json
