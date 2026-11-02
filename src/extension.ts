@@ -4424,8 +4424,12 @@ function codexRescueSkillInstalled(): boolean {
     return codexRescueLegacyInstalled() || codexRescuePluginInstalled();
 }
 
-/** Plugin id from the repo's `.claude-plugin/marketplace.json` (plugin `codex-rescue`, marketplace `comonetso`). */
-const CODEX_PLUGIN_ID = 'codex-rescue@comonetso';
+/**
+ * The plugin is `codex-rescue` in any marketplace: `comonetso` (this repo's own list, which the setup notice points
+ * to) and `blueming` (the public list `comonetso/blueming`, which points at the same folder of this repo — owner's
+ * decision 2026-11-03: the panel shows for an install from either). Keyed `<plugin>@<marketplace>`.
+ */
+const CODEX_PLUGIN_NAME = 'codex-rescue';
 
 /** The manual-copy install. Still supported, but no longer updates itself — see maybeShowCodexPluginNotice. */
 function codexRescueLegacyDir(): string {
@@ -4457,9 +4461,10 @@ function codexRescuePluginInstalled(): boolean {
         const mtimeMs = fs.statSync(file).mtimeMs;
         if (codexPluginCache && codexPluginCache.mtimeMs === mtimeMs) return codexPluginCache.installed;
         const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-        const entries: unknown = data?.plugins?.[CODEX_PLUGIN_ID];
-        const installed = Array.isArray(entries) && entries.some((e: any) =>
-            typeof e?.installPath === 'string' && fs.existsSync(path.join(e.installPath, 'SKILL.md')));
+        const plugins = data?.plugins && typeof data.plugins === 'object' ? data.plugins : {};
+        const installed = Object.keys(plugins).some((id) => id.startsWith(CODEX_PLUGIN_NAME + '@')
+            && Array.isArray(plugins[id]) && plugins[id].some((e: any) =>
+                typeof e?.installPath === 'string' && fs.existsSync(path.join(e.installPath, 'SKILL.md'))));
         codexPluginCache = { mtimeMs, installed };
         return installed;
     } catch {

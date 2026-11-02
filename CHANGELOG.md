@@ -1,5 +1,71 @@
 # Changelog
 
+## [1.17.3] - 2026-11-03
+
+The Codex progress and Codex chat tabs of the Activity panel, and the Codex counts in the session menu's
+Activity entry, now show when codex-rescue was installed from the public plugin list `comonetso/blueming`
+too. The extension recognised the plugin only under this repository's own list `comonetso`, so an install
+from the public list, which fetches the same plugin folder, counted as not installed and both Codex tabs
+stayed hidden. The auto-update notice and its menu entry still cover the `comonetso` list only; on the public
+list auto-update is turned on in Claude Code under `/plugin` → Marketplaces.
+
+browser-check 0.2.3 (2026-10-26) captures pages opened in a minimized ego window, closes live pages
+after a run and restarts an ego that stopped answering. A tab opened in a minimized window that had
+never been shown got a 0×0 page: nothing painted, the page text read only `root` and the capture had
+no frame. `look` and `bc.run` now give such a page the size of its window, and `bc.shot` does the same
+for pages a script opened itself; the window is left as it is. A page that keeps only read requests
+open, as live pages such as Paseo web always do, is now blanked and closed after the wait instead of
+staying open as `leftOpen`; a page with a write still in flight is still left open. On the PC relay,
+three timed-out runs in a row make it probe ego, and it restarts ego only if the probe fails too: a
+polite close first, force only if ego stays, the profile and its logins kept, at most once every 15
+minutes. Until now an ego that stopped answering had to be restarted by hand; on 2026-10-25 every run
+timed out for two and a half hours.
+
+browser-check 0.2.4 (2026-11-02) sees page errors again on ego lite 0.6.2. That release hides console
+messages and call stacks from agents by default, so a page throwing errors reported none and looked
+clean. `bc.watch` now turns the hiding off and checks that a probe line arrives, and
+`problems.consoleState` says whether the counts can be trusted; when they cannot, they are `null`
+rather than 0. `--no-console` keeps the hiding, for a site that reacts to automation. Two results
+change: a failed `look` step now gives the status `step-failed` and exit code 1 where it gave `ok` and
+0, and `look` refuses `@12` references before it starts, because a reference from an earlier run means
+nothing in a new one. A window opened by a click now gets the write guard, and its text, capture,
+problems and sent requests are in the result; a POST sent while that window is still loading cannot be
+stopped, so the result reports that it may have gone out. A script stops itself at its time limit and
+closes its space, because stopping the caller does not stop a script. `--width` now gives the width
+asked for, where the page zoom turned 1280 into 1164, full-page captures work while ego is minimized,
+`retentionDays` now removes old run folders, and the ego update notice reaches `hints`.
+
+browser-check 0.2.5 (2026-11-02) reads better outside the setup it was built in. Its instructions,
+recipes and comments no longer assume a particular everyday browser or name the sites it was tried on,
+and the comments in the in-page check scripts are now in English; nothing it does has changed. Both
+READMEs now say where it has been tested: Windows 11 only, the PC and three Linux servers through the
+relay. It has not been tried on macOS, and the relay and the reopening of a closed ego window are
+Windows-only. The safety summary also says now that the write guard cannot stop a POST that a newly
+opened window sends in its first moments.
+
+codex-rescue 1.18.2 (2026-11-03) runs a follow-up on the model and reasoning level you pick. When you
+picked Codex's own settings, the instructions said to pass nothing, and on a follow-up an omitted value
+does not mean the settings: Codex keeps what that conversation last ran on. A conversation started on
+another model therefore went on with it, while the report showed `(codex config)` (seen on a server,
+where a quality comparison between two models came out wrong because of it). Claude now passes both
+values every time, the live path fills a missing one from Codex's settings before the turn and stops
+if it cannot, and a short back-and-forth carries the pair from its first turn to the next ones. The
+report now separates `requested` from `ran with`, the model and reasoning level read from Codex's own
+record of that turn, and warns when the two differ. The release also ships two earlier changes: an
+optional block that asks Codex to check every execution order of code with the formal-verification
+skill, and cleanup scripts that run correctly when called through a junction folder. The README says
+where it has been tested: Windows 11 and three Linux servers, not a real Mac.
+
+browser-check 0.2.6 (2026-11-03) tells a first-time user's Claude when to stop. On a machine with no
+config, `setup` that finds something only a person can do (install the relay on the PC, add an ssh Host
+for it) writes nothing, so `look` and `doctor` kept saying "run setup" and Claude could go back and
+forth between them. Both now say that when setup answers not-ready, its `!` lines are for a person, so
+Claude tells the user and stops. Nothing else changed.
+
+codex-rescue 1.18.3 (2026-11-03) says how to sign in when Codex is not signed in on the machine. The
+limit lookup reported only "authentication required"; it now adds that a person runs `codex login` in
+a terminal, because a run started then would fail the same way.
+
 ## [1.17.2] - 2026-10-22
 
 The workflow, background-task, Codex progress and Codex chat panels are now tabs of one panel, Claude
@@ -231,63 +297,6 @@ space and double quotes, which YAML does not allow. From 2026-10-14 the four wer
 skill list: Claude Code reports `Failed to parse YAML frontmatter` for such a file and loads the skill
 without its name and description, so none of them could be picked or called by name. The description is now a folded block (`>-`) with
 the same text, and nothing else changed.
-
-browser-check 0.2.3 (2026-10-26) captures pages opened in a minimized ego window, closes live pages
-after a run and restarts an ego that stopped answering. A tab opened in a minimized window that had
-never been shown got a 0×0 page: nothing painted, the page text read only `root` and the capture had
-no frame. `look` and `bc.run` now give such a page the size of its window, and `bc.shot` does the same
-for pages a script opened itself; the window is left as it is. A page that keeps only read requests
-open, as live pages such as Paseo web always do, is now blanked and closed after the wait instead of
-staying open as `leftOpen`; a page with a write still in flight is still left open. On the PC relay,
-three timed-out runs in a row make it probe ego, and it restarts ego only if the probe fails too: a
-polite close first, force only if ego stays, the profile and its logins kept, at most once every 15
-minutes. Until now an ego that stopped answering had to be restarted by hand; on 2026-10-25 every run
-timed out for two and a half hours.
-
-browser-check 0.2.4 (2026-11-02) sees page errors again on ego lite 0.6.2. That release hides console
-messages and call stacks from agents by default, so a page throwing errors reported none and looked
-clean. `bc.watch` now turns the hiding off and checks that a probe line arrives, and
-`problems.consoleState` says whether the counts can be trusted; when they cannot, they are `null`
-rather than 0. `--no-console` keeps the hiding, for a site that reacts to automation. Two results
-change: a failed `look` step now gives the status `step-failed` and exit code 1 where it gave `ok` and
-0, and `look` refuses `@12` references before it starts, because a reference from an earlier run means
-nothing in a new one. A window opened by a click now gets the write guard, and its text, capture,
-problems and sent requests are in the result; a POST sent while that window is still loading cannot be
-stopped, so the result reports that it may have gone out. A script stops itself at its time limit and
-closes its space, because stopping the caller does not stop a script. `--width` now gives the width
-asked for, where the page zoom turned 1280 into 1164, full-page captures work while ego is minimized,
-`retentionDays` now removes old run folders, and the ego update notice reaches `hints`.
-
-browser-check 0.2.5 (2026-11-02) reads better outside the setup it was built in. Its instructions,
-recipes and comments no longer assume a particular everyday browser or name the sites it was tried on,
-and the comments in the in-page check scripts are now in English; nothing it does has changed. Both
-READMEs now say where it has been tested: Windows 11 only, the PC and three Linux servers through the
-relay. It has not been tried on macOS, and the relay and the reopening of a closed ego window are
-Windows-only. The safety summary also says now that the write guard cannot stop a POST that a newly
-opened window sends in its first moments.
-
-codex-rescue 1.18.2 (2026-11-03) runs a follow-up on the model and reasoning level you pick. When you
-picked Codex's own settings, the instructions said to pass nothing, and on a follow-up an omitted value
-does not mean the settings: Codex keeps what that conversation last ran on. A conversation started on
-another model therefore went on with it, while the report showed `(codex config)` (seen on a server,
-where a quality comparison between two models came out wrong because of it). Claude now passes both
-values every time, the live path fills a missing one from Codex's settings before the turn and stops
-if it cannot, and a short back-and-forth carries the pair from its first turn to the next ones. The
-report now separates `requested` from `ran with`, the model and reasoning level read from Codex's own
-record of that turn, and warns when the two differ. The release also ships two earlier changes: an
-optional block that asks Codex to check every execution order of code with the formal-verification
-skill, and cleanup scripts that run correctly when called through a junction folder. The README says
-where it has been tested: Windows 11 and three Linux servers, not a real Mac.
-
-browser-check 0.2.6 (2026-11-03) tells a first-time user's Claude when to stop. On a machine with no
-config, `setup` that finds something only a person can do (install the relay on the PC, add an ssh Host
-for it) writes nothing, so `look` and `doctor` kept saying "run setup" and Claude could go back and
-forth between them. Both now say that when setup answers not-ready, its `!` lines are for a person, so
-Claude tells the user and stops. Nothing else changed.
-
-codex-rescue 1.18.3 (2026-11-03) says how to sign in when Codex is not signed in on the machine. The
-limit lookup reported only "authentication required"; it now adds that a person runs `codex login` in
-a terminal, because a run started then would fail the same way.
 
 Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
 reports every task the old process left behind in a single notification that names several tasks, and
