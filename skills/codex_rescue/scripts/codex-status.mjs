@@ -403,7 +403,11 @@ function render(o, st, hist) {
 
     const snap = pickSnapshot(st.rateLimits);
     if (st.errors.rateLimits || st.errors.appServer || st.errors.lib) {
-        L.push(`limits: lookup failed — ${st.errors.rateLimits || st.errors.appServer || st.errors.lib}`);
+        const why = st.errors.rateLimits || st.errors.appServer || st.errors.lib;
+        L.push(`limits: lookup failed — ${why}`);
+        // The wording of a machine where nobody signed in to Codex (measured 2026-11-03: "codex account authentication
+        // required to read rate limits (code -32600)"). A run started now fails the same way, so say what fixes it.
+        if (/authentication required/i.test(String(why))) L.push('→ not signed in to Codex on this machine: a person runs `codex login` in a terminal, then ask again — a run started now would fail the same way');
     } else if (!snap) {
         L.push('limits: the response has no limit data');
     } else {

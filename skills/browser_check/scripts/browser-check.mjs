@@ -59,7 +59,8 @@ const dataDir = dataDirGuess();
 function notReady() {
   const why = cfgRes.errors || [];
   let next = 'run `browser-check doctor` and tell the user what it says';
-  if (why.includes('config file not found')) next = 'run `browser-check setup`, show the user the values it set (notes), then run this again';
+  // setup that answers not-ready writes nothing, so this answer comes back unchanged until a person has done its `!` lines.
+  if (why.includes('config file not found')) next = 'run `browser-check setup`, show the user the values it set (notes), then run this again. If setup itself answers not-ready, its `!` lines are for a person: tell the user and stop — running this again gives the same answer until they are done';
   if (cfgRes.oldLayout) next = 'run `browser-check setup --migrate` (keeps the site rules, backs the old file up), show the user, then run this again';
   print({ status: 'not-ready', config: cfgRes.path || configPath(), why, next });
   process.exit(1);
@@ -134,7 +135,7 @@ if (cmd === 'setup') {
 if (cmd === 'doctor') {
   const report = { config: { path: cfgRes.path, ok: cfgRes.ok, errors: cfgRes.errors } };
   if (cfgRes.ok) { const { probe } = await import('./lib/capabilities.mjs'); report.capabilities = await probe(cfgRes.config); }
-  if (!cfgRes.ok && cfgRes.errors.includes('config file not found')) report.next = 'run `browser-check setup` — it looks this machine over and writes the config';
+  if (!cfgRes.ok && cfgRes.errors.includes('config file not found')) report.next = 'run `browser-check setup` — it looks this machine over and writes the config; when it answers not-ready, its `!` lines are for a person (tell the user and stop)';
   if (cfgRes.oldLayout) report.next = 'run `browser-check setup --migrate` — the config is the old Aside layout';
   if (flag('--json')) { print(report); process.exit(cfgRes.ok && report.capabilities.ready ? 0 : 1); }
   console.log(`config       ${cfgRes.ok ? 'ok' : 'INVALID'} ${cfgRes.path || ''}`);

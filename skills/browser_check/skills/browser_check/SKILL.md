@@ -104,7 +104,7 @@ Helpers: `bc.run` · `bc.shot` · `bc.watch` · `bc.problems` · `bc.sent` / `bc
 Signing in to a site in ego · 2FA/CAPTCHA · permission prompts · approving data changes · the real clipboard · OS pickers · real devices · installing or updating ego lite · `browser-check relay install` on the PC · design judgement · anything in the user's own tabs in another browser.
 
 ## First use on a machine (only when an answer says `not-ready`)
-- `config file not found` ⇒ `browser-check setup`. It looks the machine over (ego-browser on the PC; on a server it asks each ssh Host whether it is a PC with the relay), writes the config and lists what it set — **show those values to the user**. It never touches a current config.
+- `config file not found` ⇒ `browser-check setup`. It looks the machine over (ego-browser on the PC; on a server it asks each ssh Host whether it is a PC with the relay), writes the config and lists what it set — **show those values to the user**. It never touches a current config. When setup itself answers `not-ready` it wrote nothing: its `!` lines are human tasks — tell the user and stop (look and setup give the same answer until they are done).
 - A config from 0.1.x (the old Aside layout) ⇒ `browser-check setup --migrate` (site rules kept, old file backed up) — show the user.
 - `choose-host` ⇒ show the candidates and run `browser-check setup --remote-host "<name>"` with the one the user picks.
 - Anything else ⇒ `browser-check doctor` and relay its `todo` (install ego lite and sign in · `relay install` on the PC · an ssh Host for the PC — human tasks).

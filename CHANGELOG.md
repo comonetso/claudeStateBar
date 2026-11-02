@@ -279,6 +279,16 @@ optional block that asks Codex to check every execution order of code with the f
 skill, and cleanup scripts that run correctly when called through a junction folder. The README says
 where it has been tested: Windows 11 and three Linux servers, not a real Mac.
 
+browser-check 0.2.6 (2026-11-03) tells a first-time user's Claude when to stop. On a machine with no
+config, `setup` that finds something only a person can do (install the relay on the PC, add an ssh Host
+for it) writes nothing, so `look` and `doctor` kept saying "run setup" and Claude could go back and
+forth between them. Both now say that when setup answers not-ready, its `!` lines are for a person, so
+Claude tells the user and stops. Nothing else changed.
+
+codex-rescue 1.18.3 (2026-11-03) says how to sign in when Codex is not signed in on the machine. The
+limit lookup reported only "authentication required"; it now adds that a person runs `codex login` in
+a terminal, because a run started then would fail the same way.
+
 Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
 reports every task the old process left behind in a single notification that names several tasks, and
 only the first one was read, so the rest kept running in the background tab for good. A monitor that
