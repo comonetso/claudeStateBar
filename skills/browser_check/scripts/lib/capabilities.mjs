@@ -5,12 +5,13 @@
  *            with X — minimized is fine) · the relay servers call (scripts/ego/relay.mjs)
  *   server : the PC relay's /health over ssh
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { remoteHealth } from './ego.mjs';
+import { newerVersion } from './runHints.mjs';
 
 const execFileP = promisify(execFile);
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,12 @@ async function localEgo(bin) {
       r.running = w.running; r.windows = w.visible + ' visible (' + w.minimized + ' minimized) of ' + w.windows;
       if (w.running && w.visible === 0) r.note = 'every ego window is closed with X — a capture will reopen one minimized (about 0.1-0.2 s on screen)';
     } catch (e) { r.running = null; r.windowsError = String(e.message).slice(0, 80); }
+    // An update ego has already downloaded takes effect at its next restart, with or without anyone asking (2026-11-02:
+    // 0.6.2.5 was waiting in the folder, and it changes what scripts see).
+    try {
+      const newer = newerVersion(r.version, readdirSync(join(process.env.ProgramFiles || 'C:\\Program Files', 'Citro Labs', 'ego lite', 'Application')));
+      if (newer) r.update = newer + ' is downloaded and waiting for ego to restart';
+    } catch { /* installed elsewhere */ }
   }
   return r;
 }

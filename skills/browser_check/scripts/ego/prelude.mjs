@@ -1,24 +1,54 @@
 // browser_check ego prelude — `browser-check run` (and `look`) puts this in front of every script it sends to ego-browser.
 // It runs inside ego-browser's own Node runtime on the PC (top-level await works; taskSpace/listTaskSpaces/help are
 // ego globals). The script after it uses `bc.*`. The line below is replaced with this run's settings.
-const __bcCfg = /*__BC_CFG__*/ { windowScript: null, kit: {}, light: true, settleMs: 15000, url: null, guard: null };
+const __bcCfg = /*__BC_CFG__*/ { windowScript: null, kit: {}, light: true, settleMs: 15000, url: null, guard: null, console: true, deadlineMs: 0 };
 const __bcFs = await import('node:fs');
 const __bcCp = await import('node:child_process');
+// In ego's script host a script that has loaded a module and not yet talked to the browser never gets its timers
+// back: `await sleep(200)` before the first browser call hung until the caller's limit (measured 2026-11-02, 0.6.1.13;
+// with one browser call first it ran normally). This read-only round trip keeps a wait at the top of a script working.
+try { await listTaskSpaces(); } catch { /* the script's own first browser call will report it */ }
+
+// Every script runs in one long-lived Node process inside ego (same pid across runs, measured 2026-11-02), so killing
+// the ego-browser client at a time limit does NOT stop it: it kept running and kept its space open. A script therefore
+// checks its own limit before every browser call and stops itself there; closing the space is never cut short.
+const __bcT0 = Date.now();
+let __bcClosing = false;
+const __bcCheckDeadline = () => {
+  if (__bcCfg.deadlineMs && !__bcClosing && Date.now() - __bcT0 > __bcCfg.deadlineMs) {
+    throw Object.assign(new Error(`browser_check: this run passed its time limit (${__bcCfg.deadlineMs} ms) and stopped before its next browser call`), { code: 'BC_DEADLINE' });
+  }
+};
+const __bcKey = (page) => (page.spaceId ?? '') + ':' + (page.label || 'p1');
 
 // Commands a browser_check script must not send (each from a rule or a measurement): clearing cookies, cache or
 // storage reaches the user's whole ego profile · closing the browser · window bounds/state (on 2026-10-21 a "minimize
 // my space's window" call minimized the user's own window — the space's tab belongs to it) · Fetch interception
 // (deadlocks in ego: the paused request waits on a page command queued behind it) · creating or closing targets
-// outside ego's task-space API. Wrapped once on the first TaskSpace/Page seen.
+// outside ego's task-space API. Wrapped once per class (TaskSpace, Page, its keyboard and mouse): every method also
+// checks the time limit, and an action whose receipt reports a new window hands it to bc.popups at once, so the write
+// guard reaches it before anything else happens (measured 2026-11-02: a window a click opened had no guard).
 const __bcDeny = /^(Storage\.|Network\.(clearBrowserCookies|clearBrowserCache|deleteCookies|setCookies?$|getCookies$|getAllCookies$)|Browser\.(close|setWindowBounds|crash|resetPermissions|grantPermissions|setDownloadBehavior)|Fetch\.|Target\.(closeTarget|createTarget|createBrowserContext|disposeBrowserContext)|Page\.(close|crash|setDownloadBehavior)|Debugger\.pause)/;
+const __bcOpeners = new Set(['click', 'dblclick', 'press']);
 const __bcWrap = (obj) => {
   const proto = obj && Object.getPrototypeOf(obj);
-  if (!proto || proto.__bcWrapped || typeof proto.cdp !== 'function') return;
-  const orig = proto.cdp;
-  proto.cdp = function (method, ...rest) { if (__bcDeny.test(String(method))) throw new Error('browser_check refuses ' + method + ' (SKILL.md §1)'); return orig.call(this, method, ...rest); };
+  if (!proto || proto === Object.prototype || proto.__bcWrapped) return;
+  for (const name of Object.getOwnPropertyNames(proto)) {
+    const d = Object.getOwnPropertyDescriptor(proto, name);
+    if (name === 'constructor' || !d || typeof d.value !== 'function') continue;
+    const orig = d.value;
+    proto[name] = function (...args) {
+      __bcCheckDeadline();
+      if (name === 'cdp' && __bcDeny.test(String(args[0]))) throw new Error('browser_check refuses ' + args[0] + ' (SKILL.md §1)');
+      const r = orig.apply(this, args);
+      if (!__bcOpeners.has(name) || !r || typeof r.then !== 'function') return r;
+      return r.then(async (rec) => { if (rec && rec.popups && rec.popups.length && bc.__task) await bc.popups(bc.__task); return rec; });
+    };
+  }
   proto.__bcWrapped = true;
 };
-try { const __origTask = globalThis.taskSpace; if (typeof __origTask === 'function') globalThis.taskSpace = async (...a) => { const t = await __origTask(...a); __bcWrap(t); try { __bcWrap(t.page('p1')); } catch { /* no p1 */ } return t; }; } catch { /* read-only global — bc.run still wraps */ }
+const __bcWrapPage = (p) => { __bcWrap(p); try { __bcWrap(p.keyboard); __bcWrap(p.mouse); } catch { /* not a full page handle */ } };
+try { const __origTask = globalThis.taskSpace; if (typeof __origTask === 'function') globalThis.taskSpace = async (...a) => { const t = await __origTask(...a); __bcWrap(t); try { __bcWrapPage(t.page('p1')); } catch { /* no p1 */ } return t; }; } catch { /* read-only global — bc.run still wraps */ }
 
 // In-page hooks, installed before the page's own scripts on every document (Page.addScriptToEvaluateOnNewDocument)
 // and once into the current document. __bcInflight counts fetch/XHR still open — the same idea as Aside's
@@ -68,20 +98,65 @@ const bc = {
   async run(name, fn, { prep = true } = {}) {
     const task = await taskSpace(name);
     const page = task.page('p1');
-    __bcWrap(task); __bcWrap(page);
+    __bcWrap(task); __bcWrapPage(page);
+    __bcClosing = false; bc.__task = task; bc.__seen.add(__bcKey(page));
     let result; let error = null;
     try {
       if (prep) await bc.prep(page);
       if (__bcCfg.guard) bc.out('GUARD', await bc.guardWrites(page, { allow: __bcCfg.guard.allow || [] }));
       result = await fn({ task, page });
     } catch (e) { error = e; }
+    __bcClosing = true;
     // What the guard refused — on a logged-in site this shows the token-refresh POST if it was not allowed
     // (Mesa fell to its login screen with the guard on, 2026-10-21; nothing reached the server, the login survived).
-    if (__bcCfg.guard) { try { bc.out('GUARD_BLOCKED', await bc.guardReport(page)); } catch { /* page gone */ } }
+    if (__bcCfg.guard) {
+      try {
+        const rep = await bc.guardReport(page);
+        for (const p of await bc.otherPages(task, page)) { const r = await bc.guardReport(p).catch(() => null); if (r && rep) rep.blocked.push(...r.blocked.map((b) => ({ ...b, page: p.label }))); }
+        bc.out('GUARD_BLOCKED', rep);
+      } catch { /* page gone */ }
+    }
     const closed = await bc.finish(task, page);
-    if (error) throw error;
+    // `kind`, not `code`: the redactor masks any field named code (an OAuth code), and this one has to stay readable.
+    if (error) { bc.out('RUN_ERROR', { kind: error.code || null, message: String(error.message || error).slice(0, 300) }); throw error; }
     return { result, closed };
   },
+
+  /** The task's pages other than `page`. */
+  async otherPages(task, page) { return (await task.pages()).filter((p) => p.label !== page.label); },
+
+  /**
+   * New windows of this task (a click on a target=_blank link, a window.open): each gets the same write guard, in-flight
+   * counter and event record as the first page, and is settled before the space closes. bc.run's page actions call this
+   * when their receipt reports a window; call it yourself after anything else that may open one. Returns the new ones as
+   * [{ label, url, error? }]. Limit: the guard is installed when the window is noticed, so a request sent in the first
+   * moments of its load goes out unblocked (measured 2026-11-02) — bc.beforeGuard names those afterwards.
+   */
+  async popups(task) {
+    const found = [];
+    let pages;
+    try { pages = await task.pages(); } catch { return found; }
+    for (const p of pages) {
+      const key = __bcKey(p);
+      if (bc.__seen.has(key)) continue;
+      bc.__seen.add(key);
+      __bcWrapPage(p);
+      const item = { label: p.label };
+      try {
+        if (__bcCfg.guard) await bc.guardWrites(p, { allow: __bcCfg.guard.allow || [] });
+        await bc.prep(p);
+        if (bc.__watching) await bc.watch(p);
+      } catch (e) { item.error = String(e && e.message || e).slice(0, 160); }
+      try { item.url = await p.url(); } catch { /* still loading */ }
+      found.push(item);
+    }
+    return found;
+  },
+  __seen: new Set(),
+  __task: null,
+  __watching: false,
+  __console: {},
+  __metrics: {},
 
   /** Hooks for in-flight counting (and the write guard), light colour scheme, extension UI detected. */
   async prep(page, { light = __bcCfg.light } = {}) {
@@ -108,7 +183,28 @@ const bc = {
       if (b && b.width > 200 && b.height > 200) { width = b.width; height = b.height; }
     } catch { /* default size */ }
     await page.cdp('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, { timeout: 5000 });
+    bc.__metrics[__bcKey(page)] = { raw: { width, height, deviceScaleFactor: 1, mobile: false } };
     return { fixed: true, size, width, height };
+  },
+
+  /**
+   * Give the page an exact CSS width. A desktop-style override is scaled by ego's page zoom: with zoom 110 %, asking for
+   * 768 / 1024 / 1280 gave innerWidth 698 / 931 / 1164 — the wrong side of a breakpoint (measured 2026-11-02) — so the
+   * size is corrected from what the page reports (then exact on all three). mobile: true is not scaled. Zoom is kept per
+   * site, so call it again after a navigation that changes site. Undo with Emulation.clearDeviceMetricsOverride.
+   */
+  async setWidth(page, width, height = 844, { mobile = width < 768 } = {}) {
+    const set = (w, h) => page.cdp('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: mobile ? 3 : 1, mobile }, { timeout: 5000 });
+    const read = async () => { await page.waitForTimeout(150); return page.evaluate(() => [innerWidth, innerHeight]); };
+    await set(width, height);
+    let got = await read();
+    if (!mobile && got[0] > 0 && got[0] !== width) {
+      const k = width / got[0];
+      await set(Math.round(width * k), Math.round(height * k));
+      got = await read();
+    }
+    bc.__metrics[__bcKey(page)] = { width, height, mobile };
+    return { asked: width, width: got[0], height: got[1] };
   },
 
   /** Wait until no fetch/XHR is open and the resource count is stable for 5 checks 500 ms apart. */
@@ -130,23 +226,32 @@ const bc = {
    * A page that never settles with only read requests open (no POST/PUT/… in flight) is blanked first, then closed:
    * live pages keep a GET waiting forever — Paseo web holds /__gate/screen/wait open — so every space that looked at
    * one stayed open and piled up in ego (2026-10-26, six spaces; owner decision). Cutting a GET changes nothing; an
-   * open write (a token refresh, say) still leaves the space open, as before.
+   * open write (a token refresh, say) still leaves the space open, as before. Every window of the task is treated the
+   * same way: closing the space closes them all, so a window a click opened must not be cut mid-write either (2026-11-02).
    */
   async finish(task, page) {
-    const st = page ? await bc.settle(page) : { settled: true };
-    if (!st.settled && st.s && st.s.w === 0) {
-      try {
-        // The last sample is up to 500 ms old — a write started since then must keep the space open (10-26 Codex review)
-        const w = await page.evaluate(() => (typeof window.__bcInflightWrite === 'number' ? window.__bcInflightWrite : null));
-        if (w !== 0) throw new Error(`write in flight (${w})`);
-        await page.goto('about:blank');
-        await task.finish({ keep: [] });
-        return { closed: true, settle: { ms: st.ms, cut: 'read requests only', state: st.s } };
-      } catch (e) { st.cutError = String(e && e.message || e).slice(0, 120); }
+    __bcClosing = true;
+    let pages = page ? [page] : [];
+    try { await bc.popups(task); pages = page ? [page, ...(await bc.otherPages(task, page))] : await task.pages(); } catch { /* the first page alone */ }
+    const states = await Promise.all(pages.map(async (p) => ({ p, st: await bc.settle(p) })));
+    let cut = null;
+    for (const { p, st } of states) {
+      if (!st.settled && st.s && st.s.w === 0) {
+        try {
+          // The last sample is up to 500 ms old — a write started since then must keep the space open (10-26 Codex review)
+          const w = await p.evaluate(() => (typeof window.__bcInflightWrite === 'number' ? window.__bcInflightWrite : null));
+          if (w !== 0) throw new Error(`write in flight (${w})`);
+          await p.goto('about:blank');
+          st.settled = true; cut = st.s;
+        } catch (e) { st.cutError = String(e && e.message || e).slice(0, 120); }
+      }
+      if (!st.settled) { bc.out('LEFT_OPEN', { space: task.name, page: p.label, why: 'requests still in flight', state: st.s }); return { closed: false, settle: st }; }
     }
-    if (!st.settled) { bc.out('LEFT_OPEN', { space: task.name, why: 'requests still in flight', state: st.s }); return { closed: false, settle: st }; }
     await task.finish({ keep: [] });
-    return { closed: true, settle: { ms: st.ms } };
+    const ms = states.length ? Math.max(...states.map(({ st }) => st.ms || 0)) : 0;
+    const settle = cut ? { ms, cut: 'read requests only', state: cut } : { ms };
+    if (states.length > 1) settle.windows = states.length;
+    return { closed: true, settle };
   },
 
   /**
@@ -155,10 +260,14 @@ const bc = {
    *    window is minimized", chrome.dll), and times out in a never-painted hidden window;
    * 2. screencast — keeps painting while minimized; frames are acked and the last one after a short wait is used,
    *    because the first frame can be the one painted before the latest change (measured 2026-10-21);
-   * 3. no frame at all = every ego window was closed with X (ego hides them and stops painting): reopen the ego
-   *    window and minimize it at once (owner decision 2026-10-21), then screencast again.
+   * 3. no frame after a timeout = every ego window was closed with X (ego hides them and stops painting): reopen the
+   *    ego window and minimize it at once (owner decision 2026-10-21), then screencast again. A refusal for another
+   *    reason ("Cannot capture this page." — DRM content since 0.6.1.9) is not a window problem, so nothing is reopened.
+   * fullPage on screencast: the page is resized to its own height for one frame (bc.__castFull).
+   * The first try waits 3 s, not longer: a window that paints answers in under 2 s (0.06-1.9 s measured 2026-10-21), and
+   * a hidden one never does — an 8 s wait made a capture in a window closed with X take 19 s.
    */
-  async shot(page, name = 'shot', { fullPage = false, timeoutMs = 8000 } = {}) {
+  async shot(page, name = 'shot', { fullPage = false, timeoutMs = 3000 } = {}) {
     const t0 = Date.now();
     try {
       const p = await bc.__guardTime(page.screenshot({ fullPage }), timeoutMs);
@@ -166,15 +275,44 @@ const bc = {
       bc.img(name + '.png', buf); return { ok: true, via: 'screenshot', ms: Date.now() - t0 };
     } catch (e) {
       const why = String(e && e.message || e);
-      // A painting window answers within a few hundred ms; 1.5 s without a frame means nothing is painting.
-      let frame = await bc.__cast(page, { waitMs: 1500 });
-      let reopened = null, viewport;
+      // After a timeout, 1.5 s without a frame means nothing is painting. A minimized window does paint, only later: with
+      // a second tab open its first frame took 1-1.6 s (measured 2026-11-02, 0.6.2.5), which 1.5 s sometimes missed.
+      let frame = await bc.__cast(page, { waitMs: /minimized/i.test(why) ? 4000 : 1500 });
+      let reopened = null, viewport, full;
       // A 0x0 page (a page this run opened itself, not through bc.run) paints once it has a size.
       if (!frame) { viewport = await bc.fixViewport(page); if (viewport.fixed) frame = await bc.__cast(page); }
-      if (!frame && __bcCfg.windowScript) { reopened = bc.ensureWindow(); frame = await bc.__cast(page); }
+      if (!frame && /timeout/i.test(why) && __bcCfg.windowScript) { reopened = bc.ensureWindow(); frame = await bc.__cast(page); }
       if (!frame) return { ok: false, ms: Date.now() - t0, why: why.slice(0, 160), reopened, viewport };
+      if (fullPage) { full = await bc.__castFull(page); if (full.frame) frame = full.frame; delete full.frame; }
       bc.img(name + '.png', Buffer.from(frame, 'base64'));
-      return { ok: true, via: 'screencast', ms: Date.now() - t0, firstTry: why.slice(0, 80), reopened, viewport: viewport && viewport.fixed ? viewport : undefined, fullPage: fullPage ? 'not available on screencast' : undefined };
+      return { ok: true, via: 'screencast', ms: Date.now() - t0, firstTry: why.slice(0, 80), reopened, viewport: viewport && viewport.fixed ? viewport : undefined, fullPage: full };
+    }
+  },
+  /**
+   * The whole page on screencast, which only ever sends the viewport: make the viewport as tall as the document for one
+   * frame (measured 2026-11-02 with a 5800 px page: the mark at its very bottom was in the frame, 0.9 s, window
+   * minimized), then put the size back. Limits: 10000 CSS px (5000 at a mobile width — that frame is 3x larger), and a
+   * page that scrolls inside its own panel does not grow, so only what the panel shows is captured.
+   */
+  async __castFull(page) {
+    const k = __bcKey(page); const keep = bc.__metrics[k]; const mobile = !!(keep && keep.mobile);
+    const max = mobile ? 5000 : 10000;
+    const dim = () => page.evaluate(() => ({ w: innerWidth, h: innerHeight, sh: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0) }));
+    const d0 = await dim();
+    if (d0.sh <= d0.h) return { frame: null, whole: true, note: 'the document fits the viewport; a panel that scrolls inside the page is not expanded' };
+    try {
+      await bc.setWidth(page, d0.w, Math.min(d0.sh, max), { mobile });
+      let d1 = await dim();
+      // Taller viewport, taller page (100vh sections): follow it once, no further.
+      if (d1.sh > d1.h && d1.h < max) { await bc.setWidth(page, d0.w, Math.min(d1.sh, max), { mobile }); d1 = await dim(); }
+      await page.waitForTimeout(300);
+      const frame = await bc.__cast(page, { waitMs: 5000 });
+      return { frame, whole: d1.sh <= d1.h, height: d1.h, pageHeight: d1.sh };
+    } finally {
+      // Put back exactly what was there: bc.setWidth's exact width, or the plain override bc.fixViewport set (not scaled).
+      if (keep && keep.raw) { await page.cdp('Emulation.setDeviceMetricsOverride', keep.raw, { timeout: 5000 }).catch(() => {}); bc.__metrics[k] = keep; }
+      else if (keep) await bc.setWidth(page, keep.width, keep.height, { mobile: keep.mobile }).catch(() => {});
+      else { await page.cdp('Emulation.clearDeviceMetricsOverride', {}, { timeout: 5000 }).catch(() => {}); delete bc.__metrics[k]; }
     }
   },
   async __guardTime(p, ms) { let t; try { return await Promise.race([p, new Promise((_, j) => { t = setTimeout(() => j(new Error('timeout ' + ms + 'ms')), ms); })]); } finally { clearTimeout(t); } },
@@ -198,25 +336,55 @@ const bc = {
     } catch (e) { return { ok: false, why: String(e && e.message || e).slice(0, 160) }; }
   },
 
-  /** Console, exceptions, log and network events. Call before the step you want to watch. */
-  async watch(page) {
+  /**
+   * Console, exceptions, log and network events. Call before the step you want to watch.
+   * ego's SDK from v2.2 asks every page session to hide console messages and call stacks from CDP, because a page can
+   * notice them and detect automation (browser-runtime.ts, enableEgoAutomation). With that on, a page throwing errors
+   * reports console 0 and exceptions 0 and the guard loses its record across a move (measured 2026-11-02), so this
+   * turns it off unless the run asked not to (--no-console): a checking tool that cannot see errors reports a false
+   * clean bill. While off, the page can detect CDP. An older browser has no such domain and already reports everything.
+   * A one-line probe then shows whether console messages really arrive; bc.problems says so instead of counting 0.
+   */
+  async watch(page, { console: wantConsole = __bcCfg.console } = {}) {
+    const k = __bcKey(page);
+    // Asked for either way, so --no-console means the same on a browser whose SDK leaves the hiding off (before v2.2).
+    try { await page.cdp(wantConsole ? 'egoAutomated.disable' : 'egoAutomated.enable', {}, { timeout: 5000 }); } catch { /* older browser */ }
     for (const d of ['Runtime', 'Network', 'Log']) await page.cdp(d + '.enable', {}, { timeout: 5000 });
     await bc.events(page);
+    bc.__watching = true;
+    bc.__console[k] = wantConsole ? await bc.__probeConsole(page) : 'hidden';
     return true;
+  },
+  /** 'on' when a console line written now reaches the event record, 'blind' when it does not. */
+  async __probeConsole(page) {
+    const mark = '[bc-watch] ' + Math.random().toString(36).slice(2);
+    try { await page.evaluate((m) => { console.debug(m); }, mark); } catch { return 'blind'; }
+    const seen = (e) => e.method === 'Runtime.consoleAPICalled' && e.params && e.params.args && e.params.args[0] && e.params.args[0].value === mark;
+    for (let i = 0; i < 10; i++) {
+      await bc.events(page);
+      if ((bc.__ev[__bcKey(page)] || []).some(seen)) return 'on';
+      await page.waitForTimeout(50);
+    }
+    return 'blind';
   },
   /** Pull ego's event buffer (reading it empties it) and keep it per page so helpers can share it. */
   async events(page, { keep = () => true } = {}) {
     const got = await page.events();
-    const k = page.label || 'p1';
+    const k = __bcKey(page);
     bc.__ev[k] = bc.__ev[k] || [];
     for (const e of got) if (keep(e)) { bc.__ev[k].push(e); if (bc.__ev[k].length > 20000) bc.__ev[k].shift(); }
     return got;
   },
   __ev: {},
-  /** Only what matters: errors, failed or 4xx/5xx requests — browser-extension noise kept apart. */
+  /**
+   * Only what matters: errors, failed or 4xx/5xx requests — browser-extension noise kept apart. consoleState: 'on' (the
+   * counts can be trusted) · 'hidden' (--no-console) · 'blind' (console reporting is off in this ego) · 'not watched'.
+   * Unless it is 'on', a console or exception count of 0 means "not known" and is null in summary.
+   */
   async problems(page) {
     await bc.events(page);
-    const ev = bc.__ev[page.label || 'p1'] || [];
+    const k = __bcKey(page);
+    const ev = bc.__ev[k] || [];
     const isExt = (u) => /^(chrome|moz)-extension:\/\//.test(String(u || ''));
     const reqUrl = {}; for (const e of ev) if (e.method === 'Network.requestWillBeSent') reqUrl[e.params.requestId] = e.params.request.url;
     const out = { console: [], exceptions: [], log: [], failed: [], http: [], ext: [] };
@@ -239,6 +407,8 @@ const bc = {
       }
     }
     out.summary = { console: out.console.length, exceptions: out.exceptions.length, log: out.log.length, failed: out.failed.length, http: out.http.length, ext: out.ext.length };
+    out.consoleState = bc.__console[k] || 'not watched';
+    if (out.consoleState === 'hidden' || out.consoleState === 'blind') { out.summary.console = out.summary.console || null; out.summary.exceptions = out.summary.exceptions || null; }
     return out;
   },
 
@@ -249,7 +419,7 @@ const bc = {
    */
   async sent(page, { since = 0 } = {}) {
     await bc.events(page);
-    const ev = (bc.__ev[page.label || 'p1'] || []).slice(since);
+    const ev = (bc.__ev[__bcKey(page)] || []).slice(since);
     const list = []; const byId = {};
     for (const e of ev) {
       const p = e.params || {};
@@ -262,7 +432,7 @@ const bc = {
     return list;
   },
   /** A position in this page's event record, for bc.sent(page, { since }). */
-  async mark(page) { await bc.events(page); return (bc.__ev[page.label || 'p1'] || []).length; },
+  async mark(page) { await bc.events(page); return (bc.__ev[__bcKey(page)] || []).length; },
 
   /**
    * Opt-in write guard for this page: non-GET fetch/XHR/sendBeacon and form submits are refused in the page unless
@@ -272,7 +442,7 @@ const bc = {
    * deadlocks in ego: a request paused by Fetch waits on a page command queued behind it — measured 2026-10-21.)
    */
   async guardWrites(page, { allow = [] } = {}) {
-    const set = `window.__bcGuard = { allow: ${JSON.stringify(allow)}, blocked: [] };`;
+    const set = `window.__bcGuard = { allow: ${JSON.stringify(allow)}, blocked: [] }; window.__bcGuardAt = performance.now();`;
     await page.cdp('Page.addScriptToEvaluateOnNewDocument', { source: set }, { timeout: 5000 });
     await page.cdp('Page.addScriptToEvaluateOnNewDocument', { source: __bcHook }, { timeout: 5000 });
     await page.evaluate(set + __bcHook);
@@ -281,6 +451,16 @@ const bc = {
     await page.evaluate(() => { const g = window.__bcGuard; if (g) g.blocked = g.blocked.filter((b) => !/__bc_guard_selftest/.test(b.url)); });
     return { selfTest: 'passed', allow };
   },
+  /**
+   * Requests that started in this document before the guard reached it, from the page's own timing record. A window a
+   * click opens starts loading before it can be guarded: a POST it sent while loading reached the server and was on no
+   * list (measured 2026-11-02). The record has no method, so these MAY have written; they cannot be undone, only told.
+   */
+  async beforeGuard(page) {
+    return page.evaluate(() => (typeof window.__bcGuardAt !== 'number' ? [] : performance.getEntriesByType('resource')
+      .filter((e) => ['fetch', 'xmlhttprequest', 'beacon'].includes(e.initiatorType) && e.startTime < window.__bcGuardAt)
+      .map((e) => e.name.slice(0, 200))));
+  },
   async guardReport(page) {
     const here = await page.evaluate(() => (window.__bcGuard ? { blocked: window.__bcGuard.blocked, allow: window.__bcGuard.allow } : null));
     // A page that moves to another document (a failed login refresh redirecting to /login) starts that document's list
@@ -288,7 +468,7 @@ const bc = {
     await bc.events(page);
     const seen = new Set(); const blocked = [];
     const add = (b) => { if (!b || /__bc_guard_selftest/.test(String(b.url))) return; const key = b.kind + ' ' + b.method + ' ' + b.url; if (!seen.has(key)) { seen.add(key); blocked.push(b); } };
-    for (const e of bc.__ev[page.label || 'p1'] || []) {
+    for (const e of bc.__ev[__bcKey(page)] || []) {
       if (e.method !== 'Runtime.consoleAPICalled') continue;
       const a = e.params && e.params.args && e.params.args[0];
       const s = a && typeof a.value === 'string' ? a.value : '';

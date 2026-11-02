@@ -244,6 +244,20 @@ polite close first, force only if ego stays, the profile and its logins kept, at
 minutes. Until now an ego that stopped answering had to be restarted by hand; on 2026-10-25 every run
 timed out for two and a half hours.
 
+browser-check 0.2.4 (2026-11-02) sees page errors again on ego lite 0.6.2. That release hides console
+messages and call stacks from agents by default, so a page throwing errors reported none and looked
+clean. `bc.watch` now turns the hiding off and checks that a probe line arrives, and
+`problems.consoleState` says whether the counts can be trusted; when they cannot, they are `null`
+rather than 0. `--no-console` keeps the hiding, for a site that reacts to automation. Two results
+change: a failed `look` step now gives the status `step-failed` and exit code 1 where it gave `ok` and
+0, and `look` refuses `@12` references before it starts, because a reference from an earlier run means
+nothing in a new one. A window opened by a click now gets the write guard, and its text, capture,
+problems and sent requests are in the result; a POST sent while that window is still loading cannot be
+stopped, so the result reports that it may have gone out. A script stops itself at its time limit and
+closes its space, because stopping the caller does not stop a script. `--width` now gives the width
+asked for, where the page zoom turned 1280 into 1164, full-page captures work while ego is minimized,
+`retentionDays` now removes old run folders, and the ego update notice reaches `hints`.
+
 Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
 reports every task the old process left behind in a single notification that names several tasks, and
 only the first one was read, so the rest kept running in the background tab for good. A monitor that

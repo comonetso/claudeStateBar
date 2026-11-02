@@ -5,7 +5,7 @@ Prerequisite: SKILL.md §0–§2. Events come two ways: CDP events (`bc.watch` �
 ## Console errors
 1. Inside `bc.run`: `await bc.watch(page)` **before** `goto` (events start there) → optional recorder: `page.cdp('Page.addScriptToEvaluateOnNewDocument', { source: bc.kitSource(page, 'diag-v2.1') })` → `goto` → (the action the user described) → `bc.problems(page)`; with the recorder also `page.evaluate(() => __diag.dump({ types: ['error','rejection','resource-error','resource-status','csp','ws-error','worker-error','sse-error','console'] }))`.
    🔴 The recorder's `summary().problems` is truncated — take only counts from it and the contents from `dump`.
-2. Errors from browser extensions are in `problems.ext` — not page errors.
+2. Errors from browser extensions are in `problems.ext` — not page errors. 🔴 Read `problems.consoleState` first: only `on` means the console and exception counts are real. `hidden` (`--no-console`) and `blind` mean they are unknown (`null`) — never report those as "no errors". A raw `page.cdp('Runtime.enable')` does not show console messages on ego 0.6.2 and later; use `bc.watch`.
 3. To raise an error on purpose use an **inline `<script>`** (rejections raised from evaluate aren't caught).
 4. Mark segments: `__diag.mark('step')` before an action → `dump({ since })`.
 

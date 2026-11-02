@@ -36,7 +36,7 @@ export function buildScript(user, settings = {}, { kitDir = KIT_DIR, prelude = r
     if (!existsSync(f)) throw new Error('unknown kit: ' + n + ' (scripts/kit/' + n + '.js)');
     kit[n] = readFileSync(f, 'utf8');
   }
-  const cfg = { windowScript: null, light: true, settleMs: 15000, url: null, guard: null, ...settings, kit };
+  const cfg = { windowScript: null, light: true, settleMs: 15000, url: null, guard: null, console: true, deadlineMs: 0, ...settings, kit };
   const marker = /\/\*__BC_CFG__\*\/[^\n]*;/;
   if (!marker.test(prelude)) throw new Error('prelude has no settings marker');
   return prelude.replace(marker, () => '/*__BC_CFG__*/ ' + JSON.stringify(cfg) + ';') + '\n' + user + '\n';
@@ -69,7 +69,9 @@ export function sshArgs(host, remoteCommand, { controlDir = CONTROL_DIR } = {}) 
 
 export async function runRemote({ host, entry = DEFAULT_RELAY_ENTRY, script, timeoutMs = 300000, controlDir = CONTROL_DIR }) {
   mkdirSync(controlDir, { recursive: true, mode: 0o700 });
-  const r = await spawnCollect('ssh', sshArgs(host, `"${entry}" ${timeoutMs}`, { controlDir }), script, timeoutMs + 20000, { ...process.env, GIT_TERMINAL_PROMPT: '0' });
+  // The same 5 s of headroom as runLocal: the script stops itself before timeoutMs and needs a moment to close its space
+  // and report why. With none, the relay cut it at the limit and the result was a bare "timeout" (measured 2026-11-02).
+  const r = await spawnCollect('ssh', sshArgs(host, `"${entry}" ${timeoutMs + 5000}`, { controlDir }), script, timeoutMs + 20000, { ...process.env, GIT_TERMINAL_PROMPT: '0' });
   const raw = r.stdout.trim();
   let j = null; try { j = JSON.parse(raw); } catch { /* not JSON */ }
   if (!j || j.ok === false) return { exit: -1, ms: r.ms, timedOut: r.timedOut, transportError: (j && j.why) || (r.stderr || raw).slice(0, 400) || 'no answer from the PC relay', stdout: '', stderr: r.stderr };

@@ -9,9 +9,13 @@ import { join } from 'node:path';
 
 export const BC_API = [
   { name: 'bc.run', sig: "const r = await bc.run('<short-task-name>', async ({ task, page }) => { … }, { prep? })", what: 'Open (or resume) your own task space, prep the page, run fn, then close the space once 0 requests are in flight — also when fn throws. r = { result, closed }. If it never settles with only GETs open (a live page) it is blanked and closed (closed.settle.cut); with a write open it is left open and LEFT_OPEN is reported.' },
-  { name: 'bc.shot', sig: "bc.out('SHOT', await bc.shot(page, '<name>', { fullPage?, timeoutMs? }))", what: 'A PNG capture that also works while ego is minimized (screencast) or closed with X (reopens it minimized). Returns { ok, via, ms, reopened? }; the image becomes a file in `images`. fullPage only works through page.screenshot.' },
-  { name: 'bc.watch', sig: 'await bc.watch(page)', what: 'Start recording console, exceptions, log and network events. Call before the step you want to watch.' },
-  { name: 'bc.problems', sig: "bc.out('PROBLEMS', await bc.problems(page))", what: 'Errors only: console errors, exceptions, log errors, failed requests, 4xx/5xx responses; browser-extension noise in .ext. Has .summary counts.' },
+  { name: 'bc.shot', sig: "bc.out('SHOT', await bc.shot(page, '<name>', { fullPage?, timeoutMs? }))", what: 'A PNG capture that also works while ego is minimized (screencast) or closed with X (reopens it minimized). Returns { ok, via, ms, reopened? }; the image becomes a file in `images`. fullPage also works minimized (the page is resized to its own height for one frame; result in fullPage: { whole, height, pageHeight }).' },
+  { name: 'bc.setWidth', sig: 'await bc.setWidth(page, width, height?, { mobile? })', what: "An exact CSS width: corrects for ego's page zoom, which made a plain Emulation.setDeviceMetricsOverride of 1280 come out as 1164. mobile defaults to width < 768. Returns { asked, width, height }. Undo with Emulation.clearDeviceMetricsOverride." },
+  { name: 'bc.popups', sig: 'await bc.popups(task)', what: 'Windows of this task not seen yet get the same guard, in-flight counter and event record as the first page; returns the new ones [{ label, url, error? }]. Page actions in bc.run do this from their receipt; call it after anything else that may open a window. A request in the first moments of the window can still go out unblocked.' },
+  { name: 'bc.beforeGuard', sig: 'await bc.beforeGuard(page)', what: 'URLs of fetch/XHR/beacon requests that started in this document before the guard reached it (a window that was already loading). They were not blocked and may have written — report them.' },
+  { name: 'bc.otherPages', sig: 'await bc.otherPages(task, page)', what: "The task's pages other than this one, e.g. the windows a click opened." },
+  { name: 'bc.watch', sig: 'await bc.watch(page, { console? })', what: "Start recording console, exceptions, log and network events. Call before the step you want to watch. It turns off ego's hiding of console messages (a page can then detect CDP) unless console: false or --no-console." },
+  { name: 'bc.problems', sig: "bc.out('PROBLEMS', await bc.problems(page))", what: 'consoleState says whether console counts can be trusted (on · hidden · blind · not watched; unless on, a 0 is reported as null). Errors only: console errors, exceptions, log errors, failed requests, 4xx/5xx responses; browser-extension noise in .ext. Has .summary counts.' },
   { name: 'bc.sent', sig: 'await bc.sent(page, { since? })', what: 'Every request other than GET/HEAD/OPTIONS the page sent since bc.watch (or since a bc.mark index), with its response status — what a click saved or sent.' },
   { name: 'bc.mark', sig: 'const at = await bc.mark(page)', what: 'A position in the event record, for bc.sent(page, { since: at }).' },
   { name: 'bc.events', sig: 'await bc.events(page, { keep? })', what: "Pull ego's event buffer (use this, never page.events() — that empties the buffer bc.problems reads)." },
@@ -54,7 +58,7 @@ export function answer(query, egoBlocks, kitNames) {
       ego: ego.map((x) => x.name),
       kits: kitNames,
       egoAvailable: !!egoBlocks,
-      selectors: "@12 / ref=12 from a snapshot · text=… · loc=role:button[name='Save'] · loc=css:… · raw CSS — exactly one match or it fails",
+      selectors: "@12 / ref=12 from a snapshot of the same page · text=… (text=\"…\" is exact) · loc=role:button[name='Save'] · loc=css:… · loc=href:… · xpath=… · raw CSS · >> nth=0 picks one of several — exactly one match or it fails",
     };
   }
   const hit = (name) => name.toLowerCase().includes(q);

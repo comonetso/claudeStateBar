@@ -3,7 +3,7 @@
 Prerequisite: SKILL.md §0–§2. Everything here is CDP emulation through `page.cdp` — no extra requests, also safe on logged-in apps. Revert it in a `finally` inside the run.
 
 ## Widths
-1. For each width (e.g. 320 · 375 · 390 · 768 · 1024 · 1280): `page.cdp('Emulation.setDeviceMetricsOverride', { width: w, height: 844, deviceScaleFactor: w < 768 ? 3 : 1, mobile: w < 768 })` → wait a frame (`page.waitForFunction(() => new Promise(r => requestAnimationFrame(() => r(true))))`) → `page.evaluate(() => ({ iw: innerWidth, cw: document.documentElement.clientWidth, sw: document.documentElement.scrollWidth }))` + the overflowing elements → `bc.shot(page, 'w' + w)`. Afterwards **always** `page.cdp('Emulation.clearDeviceMetricsOverride')`.
+1. For each width (e.g. 320 · 375 · 390 · 768 · 1024 · 1280): `await bc.setWidth(page, w, 844)` (mobile below 768; 🔴 never a bare `Emulation.setDeviceMetricsOverride`: page zoom made 1024 come out as 931, the wrong side of a breakpoint) → wait a frame (`page.waitForFunction(() => new Promise(r => requestAnimationFrame(() => r(true))))`) → `page.evaluate(() => ({ iw: innerWidth, cw: document.documentElement.clientWidth, sw: document.documentElement.scrollWidth }))` + the overflowing elements → `bc.shot(page, 'w' + w)`. Afterwards **always** `page.cdp('Emulation.clearDeviceMetricsOverride')`.
    - 🔴 With `mobile: true`, wide content makes `innerWidth` exceed the set width → **`iw > w` or `sw > cw` means horizontal overflow**.
    - Touch branches (`hover:none`, `pointer:coarse`): `Emulation.setTouchEmulationEnabled({ enabled: true, maxTouchPoints: 5 })` → `false` afterwards.
 
