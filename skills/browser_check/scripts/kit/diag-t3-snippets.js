@@ -1,7 +1,7 @@
-/* T3 제안 조각 검증 — 페이지 스크립트(인라인). 기록기에 넣을 Worker 콘솔·요청 중계와 XHR 원인 기록을 흉내 낸다. */
+/* Snippet check (inline page script): mimics the Worker console and request relay and the XHR failure-cause record the recorder may take on. */
 (function () {
   var R = (window.__t3snip = { relayed: [], appMsgs: [], xhr: {}, errs: [] });
-  /* ── (A) Worker 감싸기: 워커 안 console·fetch 를 postMessage 로 중계 ── */
+  /* ── (A) Wrap Worker: relay console and fetch inside a worker through postMessage ── */
   var OW = window.Worker;
   var BOOT =
     "(function(){var P=self.postMessage.bind(self);var S=function(v){try{return typeof v==='string'?v:(v&&v.stack)||JSON.stringify(v)}catch(e){return String(v)}};" +
@@ -34,7 +34,7 @@
   mod.onerror = function (e) { R.errs.push('module ' + e.message); };
   R.subclass = (function () { class MyW extends Worker {} var x = new MyW(URL.createObjectURL(new Blob([''], { type: 'text/javascript' }))); var ok = x instanceof MyW && x instanceof Worker; x.terminate(); return ok; })();
 
-  /* ── (B) XHR 실패 원인: timeout / error / abort 이벤트 ── */
+  /* ── (B) XHR failure cause: timeout / error / abort events ── */
   function x(id, url, setup) {
     var r = new XMLHttpRequest();
     r.open('GET', url);

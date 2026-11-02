@@ -1,5 +1,5 @@
-/* webcheck-extra: webcheck.js 보강(R4 제안). 사용: await page.evaluate(EXTRA_SRC). 즉시 실행 async 식. */
-/* 부작용: focus 이동(끝나면 원래 포커스·스크롤 복원) · 간격 CSS 잠깐 적용 후 제거 · 합성 paste 이벤트(텍스트는 안 들어감) · 같은 출처 HEAD·robots.txt GET. 데이터 변경 없음. */
+/* webcheck-extra: additions to webcheck.js. Use: await page.evaluate(EXTRA_SRC). An immediately invoked async expression. */
+/* Side effects: moves focus (focus and scroll restored afterwards) · applies spacing CSS briefly, then removes it · a synthetic paste event (no text goes in) · same-origin HEAD and robots.txt GET. No data changes. */
 (async () => {
   const MAX = 6;
   const out = {};
@@ -30,7 +30,7 @@
   const rate = (v, t) => (v == null ? null : v <= t[0] ? 'good' : v <= t[1] ? 'needs-improvement' : 'poor');
   const hasOwnText = (el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
 
-  /* 0. 확장 프로그램 오염: 페이지가 정의하지 않은 커스텀 태그(확장 content script 는 격리 세계라 customElements 에 안 잡힌다) */
+  /* 0. Extension pollution: custom tags the page did not define (an extension content script lives in an isolated world, so customElements does not see them) */
   const foreign = [...document.querySelectorAll('*')].filter((e) => e.tagName.includes('-') && !customElements.get(e.tagName.toLowerCase()));
   const foreignRoots = foreign.filter((e) => !foreign.some((f) => f !== e && f.contains(e)));
   const inForeign = (el) => foreignRoots.some((f) => f.contains(el));
@@ -40,10 +40,10 @@
     htmlExtraChildren: [...de.children].filter((e) => !/^(HEAD|BODY)$/.test(e.tagName)).map((e) => e.tagName.toLowerCase()),
     googleTranslate: de.classList.contains('translated-ltr') || de.classList.contains('translated-rtl'),
     grammarly: !!document.querySelector('[data-gr-ext-installed],[data-new-gr-c-s-check-loaded],grammarly-desktop-integration'),
-    rafNote: 'Aside tabs may throttle rAF to ~1 s — this script does not wait for rAF; it measures with a forced layout',
+    rafNote: 'background or minimized tabs may throttle rAF to ~1 s — this script does not wait for rAF; it measures with a forced layout',
   };
 
-  /* 1. Web Vitals — web-vitals 6.2.2 규칙 재현 */
+  /* 1. Web Vitals — rules of web-vitals 6.2.2 reproduced */
   const nav = performance.getEntriesByType('navigation')[0];
   const act = nav ? nav.activationStart || 0 : 0;
   const visE = performance.getEntriesByType('visibility-state');
@@ -97,14 +97,14 @@
     ttfb: ttfb == null ? null : Math.round(ttfb), fcp: fcp == null ? null : Math.round(fcp),
     lcp: lcp == null ? null : { ms: Math.round(lcp), el: describe(lcpEl), url: lcpE.url ? lcpE.url.slice(0, 80) : '', lazy: !!(lcpEl && lcpEl.loading === 'lazy'), fetchpriority: lcpEl ? lcpEl.getAttribute('fetchpriority') : null, breakdown: lcpBreakdown },
     cls: { webVitals: clsAll.value, excludingUnattributed: clsPage.value, largestShift: shiftSources.slice(0, MAX) },
-    inp: inpE ? { ms: inpE.duration, event: inpE.name, target: describe(inpE.target), inputDelay: Math.round(inpE.processingStart - inpE.startTime), processing: Math.round(inpE.processingEnd - inpE.processingStart), presentation: Math.round(inpE.startTime + inpE.duration - inpE.processingEnd), note: 'observed after the fact only at ≥104 ms · Aside tabs inflate presentation delay → trust processing' } : null,
+    inp: inpE ? { ms: inpE.duration, event: inpE.name, target: describe(inpE.target), inputDelay: Math.round(inpE.processingStart - inpE.startTime), processing: Math.round(inpE.processingEnd - inpE.processingStart), presentation: Math.round(inpE.startTime + inpE.duration - inpE.processingEnd), note: 'observed after the fact only at ≥104 ms · background or minimized tabs inflate presentation delay → trust processing' } : null,
     interactionCount: performance.interactionCount,
     tbtApprox: Math.round(tbt), longTasks: ltL.length,
     loafTop: loafL.slice().sort((a, b) => b.blockingDuration - a.blockingDuration).slice(0, 3).map((f) => ({ ms: Math.round(f.duration), blocking: Math.round(f.blockingDuration), scripts: (f.scripts || []).slice(0, 3).map((s) => (s.invoker || '') + ' ' + (s.sourceURL || '').replace(location.origin, '').slice(0, 60) + (s.sourceFunctionName ? ' ' + s.sourceFunctionName : '') + ' ' + Math.round(s.duration) + 'ms') })),
   };
   out.vitals.rating = { ttfb: rate(out.vitals.ttfb, [800, 1800]), fcp: rate(out.vitals.fcp, [1800, 3000]), lcp: rate(out.vitals.lcp && out.vitals.lcp.ms, [2500, 4000]), cls: rate(clsPage.value, [0.1, 0.25]), inp: rate(inpE && inpE.duration, [200, 500]), tbt: rate(out.vitals.tbtApprox, [200, 600]) };
 
-  /* 2. 성능 진단(Lighthouse 진단·인사이트 대응) */
+  /* 2. Performance diagnostics (matching Lighthouse diagnostics and insights) */
   const res = performance.getEntriesByType('resource');
   const byOrigin = {};
   for (const r of res) { let o; try { o = new URL(r.name).origin; } catch (e) { continue; } if (o === location.origin) continue; const b = byOrigin[o] || (byOrigin[o] = { n: 0, kb: 0 }); b.n++; b.kb += (r.transferSize || 0) / 1024; }
@@ -132,7 +132,7 @@
     userTimings: performance.getEntriesByType('mark').length + ' marks / ' + performance.getEntriesByType('measure').length + ' measures',
   };
 
-  /* 3. CSS 결함 */
+  /* 3. CSS defects */
   const rules = [], blockedSheets = [];
   const walk = (list, media) => { for (const r of list) { if (r.cssRules && !(r instanceof CSSStyleRule)) walk(r.cssRules, r.conditionText || media); if (r.style) rules.push({ r, media }); } };
   for (const s of [...document.styleSheets, ...(document.adoptedStyleSheets || [])]) { try { walk(s.cssRules, ''); } catch (e) { blockedSheets.push(s.href); } }
@@ -179,7 +179,7 @@
     duplicateIds: (() => { const m = {}; for (const e of document.querySelectorAll('[id]')) m[e.id] = (m[e.id] || 0) + 1; return Object.entries(m).filter(([, n]) => n > 1).slice(0, MAX).map(([k, n]) => k + ' x' + n); })(),
     scrollContainers: all.filter((e) => /auto|scroll/.test(getComputedStyle(e).overflowY) && e.scrollHeight > e.clientHeight + 1).length,
   };
-  /* 3-b. 포커스 표시(2.4.7)·포커스 가림(2.4.11) — 실제로 focus 해 본다, 끝나면 복원 */
+  /* 3-b. Focus visible (2.4.7) and focus not obscured (2.4.11) — really focuses each one, restored afterwards */
   const prevFocus = document.activeElement, sx = scrollX, sy = scrollY;
   const snapStyle = (e) => { const c = getComputedStyle(e); return [c.outlineStyle, c.outlineWidth, c.outlineColor, c.boxShadow, c.borderTopColor, c.borderBottomWidth, c.backgroundColor, c.color, c.textDecorationLine].join('|'); };
   const focusables = all.filter((e) => e.matches('a[href],button,input:not([type=hidden]),select,textarea,summary,[tabindex]:not([tabindex="-1"])') && !e.disabled && visible(e)).slice(0, 60);
@@ -199,12 +199,12 @@
   if (prevFocus && prevFocus !== document.body && prevFocus.focus) prevFocus.focus({ preventScroll: true });
   scrollTo(sx, sy);
   out.css2.focus = { tested: focusables.length, focusVisibleMatched, noIndicator: sample(noIndicator), obscured: sample(obscured) };
-  /* 3-c. 텍스트 간격(1.4.12) — 간격 CSS 를 잠깐 적용하고 새로 잘리는 요소를 센다 */
+  /* 3-c. Text spacing (1.4.12) — applies the spacing CSS briefly and counts elements that start clipping */
   try {
     const before = clippedSet();
     const sheet = new CSSStyleSheet();
     sheet.replaceSync('*{line-height:1.5!important;letter-spacing:.12em!important;word-spacing:.16em!important}p{margin-bottom:2em!important}');
-    const prevSheets = [...document.adoptedStyleSheets]; /* 살아있는 배열이라 복사해야 복원된다 */
+    const prevSheets = [...document.adoptedStyleSheets]; /* a live array, so copy it to restore it */
     document.adoptedStyleSheets = [...prevSheets, sheet];
     const after = clippedSet();
     document.adoptedStyleSheets = prevSheets;
@@ -238,7 +238,7 @@
     ogTags: ['og:title', 'og:description', 'og:image'].filter((p) => !document.querySelector('meta[property="' + p + '"]')).map((p) => p + ' missing'),
   };
 
-  /* 5. 모범 사례 */
+  /* 5. Best practices */
   const pasteBlocked = [];
   for (const i of [...document.querySelectorAll('input:not([type=hidden]):not([readonly]), textarea')].filter((x) => !inForeign(x) && !x.disabled).slice(0, 30)) {
     const ev = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: new DataTransfer() });
@@ -255,7 +255,7 @@
     permissions: await (async () => { const o = {}; for (const n of ['geolocation', 'notifications']) { try { o[n] = (await navigator.permissions.query({ name: n })).state; } catch (e) { o[n] = 'unavailable'; } } return o; })(),
   };
 
-  /* 6. 보안 */
+  /* 6. Security */
   let headers = null;
   try {
     const h = await fetch(location.href, { method: 'HEAD', cache: 'no-store', credentials: 'same-origin' });

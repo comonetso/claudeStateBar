@@ -5,7 +5,7 @@
  *
  * The 2026-09/10 records showed agents writing a new script file even to look at one page and digging through the
  * plugin's source for function names (152 reads). This builds the script from the command line instead and runs it
- * through the same path as `run` (prelude, PC or relay). Clicking and typing are allowed here by owner decision
+ * through the same path as `run` (prelude, PC or relay). Clicking and typing are allowed here by design
  * (2026-10-21); what they sent is reported in `sent` so a save or a send cannot pass unseen.
  */
 import { undoMsysPath } from './guardHints.mjs';

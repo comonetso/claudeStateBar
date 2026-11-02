@@ -1,4 +1,4 @@
-# 수동 타일 캡처 이어붙이기: 타일 i 를 문서 y = scrollY_i × DPR 위치에 붙인다(뒤 타일이 앞 타일을 덮음)
+# Stitch manual tile captures: tile i goes at document y = scrollY_i × DPR (a later tile covers an earlier one)
 import sys, json
 from PIL import Image
 def stitch(files, sys_list, dpr, doc_h_css, out, crop_w=None):

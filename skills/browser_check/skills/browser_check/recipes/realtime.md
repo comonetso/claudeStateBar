@@ -11,7 +11,7 @@ Prerequisite: SKILL.md §0–§2. Sending, editing or deleting test messages is 
 6. Clean up: delete the test messages (within the approval) → close page B with `b.close()` once its requests are at 0 (`bc.settle(b)`); `bc.run` settles and closes the rest.
 
 ## Verdict
-B updates within 1 s (Aside-era example: send 62 ms · edit 175 ms · delete 38 ms) · reconnect ≈ 1 s · 0 errors. 🔴 Polling inflates this by up to 1 s — measure with an in-page watcher and epoch times.
+B updates within 1 s (example from an earlier browser: send 62 ms · edit 175 ms · delete 38 ms) · reconnect ≈ 1 s · 0 errors. 🔴 Polling inflates this by up to 1 s — measure with an in-page watcher and epoch times.
 Limit: pages in ego's minimized window may be throttled (not measured) and always report focus the way ego sets it → behaviour tied to "the window being looked at" (read receipts) can't be verified.
 
 ## Report

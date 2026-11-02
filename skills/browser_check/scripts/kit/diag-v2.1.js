@@ -1,16 +1,16 @@
 /*
- * dev-diag — 개발 서버 전용 브라우저 진단 기록기 (R5 수정안 · 원본 apps/web/vite/dev-diag.js 기준)
+ * dev-diag — a browser diagnostics recorder for development servers only (version 2.1)
  *
- * R5 수정 요지(각 항목의 재현·검증은 docs/.plan/results/ASIDE-R5.md):
- *  - 가림: 키 이름 **부분 일치** + 값 모양(JWT·Bearer·숫자 인증번호) · 폼/주소/텍스트도 **같은 판정 함수** · summary/prev 주소도 가림
- *  - 대기 요청 수: 링 버퍼와 **분리된 카운터**(넘침·clear() 에 안 흔들림) · XHR send 동기 예외 정리 · Abort 는 'aborted'
- *  - 문제 보관: 소음 링과 **분리**(problems 링 + 첫 로딩 문제 고정 보존) · counts 는 누계
- *  - 응답 본문: content-length ≤ 256KB 일 때만 복제(스트림·큰 응답은 tee 하지 않음 — 앱의 cancel 이 막히던 문제)
- *  - 새 통로: EventSource · BroadcastChannel · sendBeacon · Worker 로드 실패 · 자원 상태(≥400, CSS 배경·폰트·모듈 의존)
- *  - WebSocket: Reflect.construct(상속 클래스 보존) · new 없는 호출은 TypeError · 1005(클라가 닫음)는 정상
- *  - console: assert 실패·trace 기록 · 제한된 미리보기(큰 객체 비용↓, 공유 참조를 순환으로 오표기하지 않음, Map/Set/Event)
- *  - CSP 'inline'/'eval' 원문 유지 · SVG <image href> 주소 · rejectionhandled 로 나중 처리된 거절 제외
- *  - 자원 타이밍 버퍼 250 → 10000
+ * What this version changed:
+ *  - Masking: key names match by **substring** plus value shape (JWT, Bearer, numeric codes) · forms, URLs and text go through **the same test** · summary and previous-page URLs are masked too
+ *  - Pending request count: a **separate counter** from the ring buffer (overflow and clear() do not move it) · synchronous XHR send exceptions cleaned up · Abort is 'aborted'
+ *  - Problem storage: **separate** from the noise ring (a problems ring, and first-load problems kept for good) · counts are totals
+ *  - Response bodies: cloned only when content-length ≤ 256KB (streams and large responses are not teed — that blocked the app's cancel)
+ *  - New channels: EventSource · BroadcastChannel · sendBeacon · Worker load failures · resource status (≥400, CSS backgrounds, fonts, module dependencies)
+ *  - WebSocket: Reflect.construct (keeps subclasses) · a call without new is a TypeError · 1005 (closed by the client) is normal
+ *  - console: assert failures and trace recorded · bounded previews (cheaper on large objects, shared references not mislabelled as cycles, Map/Set/Event)
+ *  - CSP 'inline'/'eval' kept verbatim · SVG <image href> URLs · rejections handled later (rejectionhandled) left out
+ *  - Resource timing buffer 250 → 10000
  */
 (function () {
   'use strict';
@@ -25,7 +25,7 @@
   var PREV_KEY = '__diag_prev';
   var ID_HEADERS = ['x-request-id', 'x-correlation-id', 'x-trace-id'];
 
-  /* ── 비밀 판정(하나의 함수로 JSON·폼·주소·console 전부) ─────────────────── */
+  /* ── Secret test (one function for JSON, forms, URLs and console alike) ─────────────────── */
   var SECRET_NAME =
     /password|passwd|passphrase|^pass$|pwd|secret|token|ticket|otp|api[-_]?key|^key$|authorization|cookie|session[-_]?id|^sid$|jwt|private[-_]?key|credential|signature|x-amz-/i;
   var NOT_SECRET = /(?:_at|At|_length|_ttl(?:_\w+)?|_sec|_ms|_delivery|_count|_hidden)$|^must_|^has_|^is_/;
@@ -51,7 +51,7 @@
           key = decodeURIComponent(k.replace(/\+/g, ' '));
           val = decodeURIComponent(v.replace(/\+/g, ' '));
         } catch {
-          /* 잘못된 % 인코딩은 원문으로 판정 */
+          /* A malformed % encoding is tested as written */
         }
         return isSecret(key, val) ? p + k + '=***' : m;
       }),
@@ -94,7 +94,7 @@
     list.push(e);
     if (list.length > max) list.shift();
   }
-  // 문제·실패 요청은 소음 링과 따로 보관한다(분류가 늦게 정해지는 요청도 settle 때 다시 부른다)
+  // Problems and failed requests are kept apart from the noise ring (a request classified late is called again at settle)
   function note(e) {
     if (kept && kept.has(e)) return e;
     var p = isProblem(e);
@@ -109,7 +109,7 @@
     return e;
   }
 
-  /* ── 문자열화 · 가림 ─────────────────────────────────────────────────── */
+  /* ── Stringify · mask ─────────────────────────────────────────────────── */
 
   function preview(v, depth, budget, ancestors) {
     if (typeof v === 'string') return v.length > 300 ? v.slice(0, 300) + '…' : v;
@@ -213,7 +213,7 @@
       try {
         return JSON.stringify(walk(JSON.parse(s)));
       } catch {
-        /* JSON 이 아니면 아래로 */
+        /* Not JSON: fall through */
       }
     }
     return redactPairs(text);
@@ -236,7 +236,7 @@
       var x = new URL(String(raw), location.href);
       if (x.protocol === 'blob:' || x.protocol === 'data:') return x.protocol + '…';
       var origin = !full && x.origin === location.origin ? '' : x.protocol + '//' + x.host;
-      return origin + x.pathname + (x.search ? redactPairs(x.search) : ''); // 🔴 hash 는 버린다(토큰이 흔히 산다)
+      return origin + x.pathname + (x.search ? redactPairs(x.search) : ''); // 🔴 the hash is dropped (tokens often live there)
     } catch {
       return redactPairs(String(raw));
     }
@@ -247,7 +247,7 @@
         var v = get(ID_HEADERS[i]);
         if (v) return v;
       } catch {
-        /* 교차 출처 */
+        /* Cross-origin */
       }
     }
     return undefined;
@@ -265,16 +265,16 @@
     try {
       Object.defineProperty(Wrapped, 'name', { value: name });
     } catch {
-      /* 무시 */
+      /* Ignore */
     }
     window[name] = Wrapped;
   }
 
-  /* ── 자원 타이밍: 기본 250 상한을 올리고, 실패 상태(≥400)를 기록 ────────── */
+  /* ── Resource timing: raise the default limit of 250 and record failed statuses (≥400) ────────── */
   try {
     performance.setResourceTimingBufferSize(10000);
   } catch {
-    /* 미지원 */
+    /* Not supported */
   }
   try {
     new PerformanceObserver(function (list) {
@@ -285,16 +285,16 @@
       });
     }).observe({ type: 'resource', buffered: true });
   } catch {
-    /* 미지원 */
+    /* Not supported */
   }
 
-  /* ── 이전 페이지 기록 ─────────────────────────────────────────────── */
+  /* ── Previous-page record ───────────────────────────────────────────── */
   var prev = null;
   try {
     prev = JSON.parse(sessionStorage.getItem(PREV_KEY) || 'null');
     sessionStorage.removeItem(PREV_KEY);
   } catch {
-    /* 저장소 차단 */
+    /* Storage blocked */
   }
   window.addEventListener('pagehide', function () {
     try {
@@ -308,7 +308,7 @@
         }),
       );
     } catch {
-      /* 용량 초과 */
+      /* Over quota */
     }
   });
 
@@ -320,7 +320,7 @@
       try {
         note(push('console', { level: level, msg: clip(formatArgs(arguments)) }));
       } catch {
-        /* 기록 실패가 앱을 깨지 않게 */
+        /* So a failed record never breaks the app */
       }
       return orig.apply(console, arguments);
     };
@@ -332,14 +332,14 @@
         try {
           note(push('console', { level: 'error', msg: clip('Assertion failed: ' + formatArgs(Array.prototype.slice.call(arguments, 1))) }));
         } catch {
-          /* 무시 */
+          /* Ignore */
         }
       }
       return origAssert.apply(console, arguments);
     };
   }
 
-  /* ── 예외 · 자원 로드 실패 · CSP ──────────────────────────────────── */
+  /* ── Exceptions · resource load failures · CSP ────────────────────────────────── */
   window.addEventListener(
     'error',
     function (e) {
@@ -432,8 +432,8 @@
           if (readable(ct)) {
             var lenHeader = res.headers.get('content-length');
             var len = Number(lenHeader);
-            // 🔴 길이를 모르는 응답(스트림)·큰 응답은 복제하지 않는다 — tee 는 앱이 cancel 해도 끝까지 당긴다
-            //    v2.1: content-length: 0 도 "알려진 길이"다 — 길이 미상으로 적지 않는다(Codex D5 잔결함 보정)
+            // 🔴 Responses of unknown length (streams) and large ones are not cloned — tee keeps pulling even after the app cancels
+            //    v2.1: content-length: 0 is a known length too — not recorded as unknown
             if (lenHeader !== null && len <= MAX_BODY_BYTES) {
               res
                 .clone()
@@ -484,7 +484,7 @@
         }
       }
       inflight++;
-      // v2.1: 실패 원인 구분 — timeout / error(네트워크·CORS) / abort (Codex D5·T3 조각)
+      // v2.1: failure cause told apart — timeout / error (network, CORS) / abort
       xhr.addEventListener('abort', function () {
         aborted = true;
         ev.reason = 'abort';
@@ -509,7 +509,7 @@
             ev.resBody = clip(redact(xhr.responseText));
           }
         } catch {
-          /* 읽을 수 없는 응답 */
+          /* Unreadable response */
         }
         note(ev);
       });
@@ -529,7 +529,7 @@
   var OrigWS = window.WebSocket;
   if (typeof OrigWS === 'function') {
     var wsSeq = 0;
-    var wsList = []; // v2.1: 앱 소켓 인스턴스 목록 — __diag.sockets() 로 꺼내 재연결 시험에 쓴다(게터 가로채기 불필요)
+    var wsList = []; // v2.1: the app's socket instances — __diag.sockets() returns them for reconnect tests (no getter interception needed)
     wrapCtor(
       'WebSocket',
       function (url, protocols) {
@@ -550,7 +550,7 @@
           push('ws-recv', { id: id, data: typeof data === 'string' ? clip(redact(data)) : '[binary ' + (data.byteLength || data.size || 0) + 'B]' });
         });
         ws.addEventListener('close', function (c) {
-          var normal = byClient || c.code === 1000 || c.code === 1001; // 앱이 스스로 닫은 것(연결 중 닫기=1006·코드 없음=1005 포함)은 실패가 아니다
+          var normal = byClient || c.code === 1000 || c.code === 1001; // the app closing a socket itself is not a failure (closing while connecting = 1006 and no code = 1005 included)
           note(push('ws-close', { id: id, code: c.code, reason: c.reason || undefined, clean: c.wasClean, byClient: byClient || undefined, abnormal: !normal || undefined }));
         });
         ws.addEventListener('error', function () {
@@ -595,7 +595,7 @@
     );
   }
 
-  /* ── BroadcastChannel(탭 간 통신) ─────────────────────────────────── */
+  /* ── BroadcastChannel (messages between tabs) ───────────────────────────────── */
   var OrigBC = window.BroadcastChannel;
   if (typeof OrigBC === 'function') {
     var bcPost = OrigBC.prototype.postMessage;
@@ -604,7 +604,7 @@
         try {
           push('bc-send', { name: this.name, data: clip(redactAny(msg)) });
         } catch {
-          /* 무시 */
+          /* Ignore */
         }
       }
       return bcPost.apply(this, arguments);
@@ -613,7 +613,7 @@
       'BroadcastChannel',
       function (name) {
         var bc = construct(OrigBC, [name], new.target);
-        // 🔴 message 리스너가 있는 채널은 close 전까지 GC 되지 않는다(스펙) — 앱이 close 없이 버리는 채널이면 이 리스너가 붙잡는다
+        // 🔴 A channel with a message listener is not garbage-collected until close (by the spec) — if the app drops a channel without closing it, this listener keeps it alive
         bc.addEventListener('message', function (m) {
           if (config.bcFrames) push('bc-recv', { name: bc.name, data: clip(redactAny(m.data)) });
         });
@@ -640,7 +640,7 @@
         var w = construct(OrigWorker, opts === undefined ? [url] : [url, opts], new.target);
         var u = redactUrl(url);
         w.addEventListener('error', function (e) {
-          // 스크립트 안 예외(ErrorEvent)는 window 로 다시 보고되므로 여기선 로드 실패만
+          // Exceptions inside a script (ErrorEvent) are reported again on window, so only load failures here
           if (!(typeof ErrorEvent === 'function' && e instanceof ErrorEvent && e.message)) {
             note(push('worker-error', { url: u, msg: 'worker script failed to load (404, MIME or CSP)' }));
           }
@@ -651,7 +651,7 @@
     );
   }
 
-  /* ── SPA 화면 이동 ────────────────────────────────────────────────── */
+  /* ── SPA navigation ──────────────────────────────────────────────── */
   ['pushState', 'replaceState'].forEach(function (k) {
     var orig = history[k];
     history[k] = function () {
@@ -664,7 +664,7 @@
     push('nav', { how: 'popstate', url: redactUrl(location.href) });
   });
 
-  /* ── 읽는 창구 ────────────────────────────────────────────────────── */
+  /* ── Read API ──────────────────────────────────────────────────── */
   function isProblem(e) {
     return (
       e.type === 'error' ||
@@ -700,7 +700,7 @@
       });
       return copy(o.limit ? list.slice(-o.limit) : list);
     },
-    // v2.1: 앱이 만든 WebSocket 인스턴스(실제 객체 — copy 하지 않는다). 재연결 시험: sockets()[0].ws.close(3000,'test')
+    // v2.1: WebSocket instances the app created (the real objects — not copied). Reconnect test: sockets()[0].ws.close(3000,'test')
     sockets: function () {
       return (typeof wsList !== 'undefined' ? wsList : []).map(function (x) {
         return { id: x.id, ws: x.ws, readyState: x.ws.readyState, url: redactUrl(x.ws.url) };
@@ -715,7 +715,7 @@
         dropped: dropped,
         counts: totals,
         pendingRequests: inflight,
-        // v2.1: 잘림 표시 — summary 는 앞 10 + 뒤 20 만 보여 준다. 전체는 dump 로(Codex D5·T3)
+        // v2.1: truncation marker — summary shows only the first 10 and the last 20. Everything is in dump
         problemCount: problemCount,
         truncated: problemCount > 30,
         firstProblems: firstProblems.filter(isProblem).slice(0, 10),
@@ -726,7 +726,7 @@
           : null,
       });
     },
-    // 🔴 clear 는 보기 창만 비운다 — 대기 요청 수(inflight)·첫 로딩 문제(firstProblems)는 유지
+    // 🔴 clear empties the view only — the pending request count (inflight) and the first-load problems (firstProblems) stay
     clear: function () {
       events.length = 0;
       problems.length = 0;

@@ -1,4 +1,4 @@
-// Hints about the write guard and login refreshes (2026-10-21, a request from the Mesa conversation).
+// Hints about the write guard and login refreshes (2026-10-21).
 // The guard also blocks the POST a logged-in page sends to refresh its login, so the page falls to its login screen.
 // Allowing only that path (--allow-write) keeps the guard on — but a Claude that did not connect the two kept the guard
 // off for weeks on a real account. These hints put the fix in the result, where it is read.

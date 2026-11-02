@@ -1,5 +1,5 @@
 (() => {
-  // __emu: setViewportSize·emulateMedia 대체 (페이지 안 표준 JS 만). 한 번 설치, apply 여러 번, restore 로 원상복구.
+  // __emu: stands in for setViewportSize and emulateMedia (standard in-page JS only). Install once, apply many times, restore to put everything back.
   if (window.__emu) return 'exists';
   const origMM = window.matchMedia;
   const T = '(min-width: 0px)', F = '(max-width: 0px)';
@@ -8,7 +8,7 @@
   const evaluator = (o) => {
     if (!st.ev) { const f = document.createElement('iframe'); f.setAttribute('aria-hidden', 'true'); f.tabIndex = -1; f.style.cssText = 'position:fixed;left:-30000px;top:0;border:0;visibility:hidden;pointer-events:none'; document.documentElement.appendChild(f); st.ev = f; }
     st.ev.style.width = (o.width || innerWidth) + 'px'; st.ev.style.height = (o.height || innerHeight) + 'px';
-    void st.ev.offsetWidth; // 부모 배치 확정 → 자식 뷰포트 크기 반영
+    void st.ev.offsetWidth; // settle the parent's layout → the child's viewport size takes effect
     return st.ev.contentWindow;
   };
   const subst = (q, o) => {
@@ -55,7 +55,7 @@
       if (!st.attrOrig.has(el)) st.attrOrig.set(el, el.getAttribute('media'));
       el.setAttribute('media', decide(st.attrOrig.get(el), o, ev) ? 'all' : 'not all'); s.attrs++;
     }
-    // light-dark()·UA 색: color-scheme 이 두 값(light dark)인 요소만 원하는 쪽으로 고정
+    // light-dark() and UA colours: only elements whose color-scheme has both values (light dark) are pinned to the wanted one
     for (const [el, v] of st.csSaved) el.style.colorScheme = v; st.csSaved = [];
     if (o.colorScheme) {
       const els = [document.documentElement, ...document.querySelectorAll('body, body *')];
@@ -71,7 +71,7 @@
     };
     return s;
   };
-  // 교차 출처 시트: repl 쪽에서 받은 본문을 같은 자리에 <style> 로 복제하고 원본 link 를 끈다(url() 은 절대 주소로)
+  // Cross-origin sheets: the body fetched on the repl side is copied in place as a <style> and the original link is disabled (url() made absolute)
   const inline = (href, text) => {
     const link = [...document.querySelectorAll('link[rel~="stylesheet"]')].find((l) => l.href === href); if (!link) return 'no-link';
     const abs = text.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (m, q, u) => (/^(data:|blob:|#)/.test(u) ? m : 'url("' + new URL(u, href).href + '")'));

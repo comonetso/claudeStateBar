@@ -258,6 +258,14 @@ closes its space, because stopping the caller does not stop a script. `--width` 
 asked for, where the page zoom turned 1280 into 1164, full-page captures work while ego is minimized,
 `retentionDays` now removes old run folders, and the ego update notice reaches `hints`.
 
+browser-check 0.2.5 (2026-11-02) reads better outside the setup it was built in. Its instructions,
+recipes and comments no longer assume a particular everyday browser or name the sites it was tried on,
+and the comments in the in-page check scripts are now in English; nothing it does has changed. Both
+READMEs now say where it has been tested: Windows 11 only, the PC and three Linux servers through the
+relay. It has not been tried on macOS, and the relay and the reopening of a closed ego window are
+Windows-only. The safety summary also says now that the write guard cannot stop a POST that a newly
+opened window sends in its first moments.
+
 Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
 reports every task the old process left behind in a single notification that names several tasks, and
 only the first one was read, so the rest kept running in the background tab for good. A monitor that

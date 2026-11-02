@@ -1,9 +1,9 @@
-// webcheck (R5 수정안) — 페이지 안에서 한 번 돌려 웹 표준 점검 결과를 객체로 돌려준다(의존 0, 읽기 전용).
-// 사용: const r = await page.evaluate(WEBCHECK_SOURCE)
-// R5 수정 요지: 보임 판정(checkVisibility·조상 opacity·1px sr-only) · 렌더 안 되는 요소 제외(display:none 조상·option·display:contents)
-//   · 대비는 canvas 로 색을 sRGB 로 환산(color-mix·oklch·color()) + 반투명 합성 + 배경 없을 때 color-scheme 캔버스 색 + 가상 요소
-//   · 스크롤/클립 상자 안 넘침·가림 제외 + 안쪽 가로 스크롤 목록 추가 · line-clamp 세로 잘림 · CLS 는 세션 창 방식
-//   · 이름 계산에 자손 img alt·aria-label·svg title 포함(정본은 Aside snapshot) · zoomHint 해석 제거(원값만)
+// webcheck — run once in the page; returns the web-standards check as an object (no dependencies, read-only).
+// Use: const r = await page.evaluate(WEBCHECK_SOURCE)
+// Covers: visibility (checkVisibility, ancestor opacity, 1px sr-only) · elements that do not render left out (display:none ancestor, option, display:contents)
+//   · contrast converts colours to sRGB through canvas (color-mix, oklch, color()) + translucent compositing + the color-scheme canvas colour when there is no background + pseudo-elements
+//   · overflow and clipping inside scroll or clip boxes left out + an inner horizontal scroll list added · line-clamp vertical clipping · CLS by session windows
+//   · names include descendant img alt, aria-label and svg title (the browser's accessibility tree is authoritative) · zoomHint reported raw, not interpreted
 (async () => {
   const MAX = 8;
   const vw = innerWidth, vh = innerHeight;
@@ -16,9 +16,9 @@
     const txt = (el.getAttribute('aria-label') || el.innerText || el.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 30);
     return el.tagName.toLowerCase() + id + cls + (txt ? ' "' + txt + '"' : '');
   };
-  // 렌더되는가(상자가 있는가) — display:none 조상·option·display:contents 는 false
+  // Does it render (does it have a box) — false for a display:none ancestor, option, display:contents
   const rendered = (el) => (el.checkVisibility ? el.checkVisibility() : el.getClientRects().length > 0);
-  // 사람 눈에 보이는가 — 조상 opacity·visibility·content-visibility + 2px 미만(sr-only) + clip rect(0 0 0 0)
+  // Can a person see it — ancestor opacity, visibility, content-visibility + under 2px (sr-only) + clip rect(0 0 0 0)
   const visible = (el) => {
     if (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true })) return false;
     const r = el.getBoundingClientRect();
@@ -28,25 +28,25 @@
     if (cs.clip === 'rect(0px, 0px, 0px, 0px)' || cs.clipPath === 'inset(50%)') return false;
     return true;
   };
-  // 넘침을 가두는 조상(스크롤·클립 상자)
+  // The ancestor that contains overflow (scroll or clip box)
   const clipAncestor = (el) => { for (let p = el.parentElement; p && p !== document.body && p !== de; p = p.parentElement) { const o = getComputedStyle(p).overflowX; if (o !== 'visible') return p; } return null; };
   const pointClipped = (el, x, y) => { for (let p = el.parentElement; p && p !== de; p = p.parentElement) { const cs = getComputedStyle(p); if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue; const r = p.getBoundingClientRect(); if (x < r.left || x > r.right || y < r.top || y > r.bottom) return true; } return false; };
   const inFixed = (el) => { for (let p = el.parentElement; p; p = p.parentElement) if (getComputedStyle(p).position === 'fixed') return true; return false; };
   const hasOwnText = (el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
   const all = [...document.querySelectorAll('body *')];
 
-  // ── 환경 오염 ──
+  // ── Environment pollution ──
   const drOn = !!(document.querySelector('style.darkreader, meta[name="darkreader"]') || de.hasAttribute('data-darkreader-mode') || de.hasAttribute('data-darkreader-scheme'));
   out.env = {
     darkReader: drOn,
     darkReaderHint: drOn ? 'colour/contrast results are invalid — add <meta name="darkreader-lock"> to your own tab and run again' : undefined,
     colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
     reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
-    window: { outerW: outerWidth, innerW: innerWidth, screenW: screen.width }, // 🔴 배율로 해석하지 마라(R5 D1)
+    window: { outerW: outerWidth, innerW: innerWidth, screenW: screen.width }, // 🔴 do not read a zoom factor from these
     lang: navigator.language,
   };
 
-  // ── 성능 ──
+  // ── Performance ──
   const nav = performance.getEntriesByType('navigation')[0];
   const paints = Object.fromEntries(performance.getEntriesByType('paint').map((p) => [p.name, Math.round(p.startTime)]));
   const observe = (type) => new Promise((res) => {
@@ -77,7 +77,7 @@
     domNodes: document.getElementsByTagName('*').length,
   };
 
-  // ── 색: canvas 로 어떤 CSS 색이든 sRGB 로 ──
+  // ── Colour: any CSS colour to sRGB through canvas ──
   const cctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
   const rgba = (c) => { cctx.clearRect(0, 0, 1, 1); cctx.fillStyle = 'rgba(0,0,0,0)'; cctx.fillStyle = c; cctx.fillRect(0, 0, 1, 1); const d = cctx.getImageData(0, 0, 1, 1).data; return [d[0], d[1], d[2], d[3] / 255]; };
   const lumOf = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
@@ -89,7 +89,7 @@
   const ratioOf = (fgColor, el) => { const f = rgba(fgColor); if (f[3] === 0) return null; const { bg, img } = bgOf(el); const fg = f[3] < 1 ? over(f, bg) : f; const a = lumOf(fg), b = lumOf(bg); return { ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05), img }; };
   const bigText = (cs) => parseFloat(cs.fontSize) >= 24 || (parseFloat(cs.fontSize) >= 18.66 && Number(cs.fontWeight) >= 700);
 
-  // ── 접근성 ──
+  // ── Accessibility ──
   const nameOf = (el) => (el.getAttribute('aria-label') || (el.getAttribute('aria-labelledby') && el.getAttribute('aria-labelledby').split(/\s+/).map((i) => document.getElementById(i)?.textContent || '').join(' ')) || el.innerText || el.getAttribute('title') || el.getAttribute('alt') || el.value || el.querySelector('img[alt]:not([alt=""])')?.getAttribute('alt') || el.querySelector('[aria-label]')?.getAttribute('aria-label') || el.querySelector('svg title')?.textContent || '').trim();
   const imgs = [...document.images];
   const fields = [...document.querySelectorAll('input:not([type=hidden]), select, textarea')].filter(visible);
@@ -115,17 +115,17 @@
     imgNoAlt: imgs.filter((i) => !i.hasAttribute('alt')).map(describe).slice(0, MAX),
     fieldsNoLabel: unlabeled.map(describe).slice(0, MAX),
     controlsNoName: btns.filter((b) => !nameOf(b)).map(describe).slice(0, MAX),
-    controlsNoNameNote: 'the Aside snapshot (accessibility tree) is authoritative — this list is only candidates',
+    controlsNoNameNote: 'the browser accessibility tree is authoritative — this list is only candidates',
     headings: heads.join(','),
     headingLevelJumps: heads.filter((lv, i) => i > 0 && lv - heads[i - 1] > 1).length,
     h1Count: heads.filter((l) => l === 1).length,
     lowContrast: { count: lowCount, samples: lowContrast.slice(0, MAX), onBackgroundImage: onImage, canvas: canvasDark ? 'dark' : 'light' },
-    // Tab 으로 실제로 갈 수 있는데(렌더됨) 눈에는 안 보이는 것 — display:none 조상 안 요소는 Tab 불가라 제외
+    // Reachable with Tab (rendered) but invisible — elements under a display:none ancestor are left out because Tab cannot reach them
     focusableHidden: focusables.filter((e) => rendered(e) && !visible(e) && !e.closest('[aria-hidden=true],[inert]')).map((e) => describe(e) + (e.matches('a[href^="#"]') ? ' (may be a skip link)' : '')).slice(0, MAX),
     pointerNotButton: all.filter((e) => visible(e) && getComputedStyle(e).cursor === 'pointer' && !(e.parentElement && getComputedStyle(e.parentElement).cursor === 'pointer') && !e.closest('a,button,[role=button],label,summary,input,select,[role=menuitem],[role=tab],[role=option],[role=link],[role=checkbox],[role=switch]')).map(describe).slice(0, MAX),
   };
 
-  // ── CSS · 레이아웃 ──
+  // ── CSS · layout ──
   const se = document.scrollingElement || de;
   const overflowX = all.filter((e) => { if (!visible(e)) return false; const r = e.getBoundingClientRect(); if (r.right <= vw + 1) return false; const cs = getComputedStyle(e); if (cs.position === 'fixed' || inFixed(e)) return false; return !clipAncestor(e); });
   const innerHScroll = all.filter((e) => { if (!visible(e)) return false; const o = getComputedStyle(e).overflowX; return (o === 'auto' || o === 'scroll') && e.scrollWidth > e.clientWidth + 1; });
@@ -145,11 +145,11 @@
     smallText: { count: smallText.length, samples: smallText.map((e) => getComputedStyle(e).fontSize + ' ' + describe(e)).slice(0, MAX) },
     brokenImages: imgs.filter((i) => i.complete && i.naturalWidth === 0 && i.getAttribute('src')).map((i) => i.getAttribute('src').slice(0, 80)).slice(0, MAX),
     fonts: { status: document.fonts.status, loaded: [...new Set([...document.fonts].filter((f) => f.status === 'loaded').map((f) => f.family))].slice(0, MAX), failed: [...document.fonts].filter((f) => f.status === 'error').map((f) => f.family) },
-    // 렌더되는데 크기 0 — display:none 조상·option·display:contents 는 제외
+    // Rendered but size 0 — display:none ancestor, option and display:contents left out
     zeroSizeWithText: all.filter((e) => { if (!rendered(e) || /^(OPTION|OPTGROUP)$/.test(e.tagName)) return false; const cs = getComputedStyle(e); if (cs.display === 'contents' || cs.position === 'absolute' || cs.position === 'fixed') return false; const r = e.getBoundingClientRect(); return (r.width === 0 || r.height === 0) && e.innerText && e.innerText.trim(); }).map(describe).slice(0, MAX),
   };
 
-  // ── 저장소 ──
+  // ── Storage ──
   const size = (s) => Object.keys(s).reduce((n, k) => n + k.length + (s.getItem(k) || '').length, 0);
   let idb = 'unsupported';
   try { idb = indexedDB.databases ? (await indexedDB.databases()).map((d) => d.name) : 'unsupported'; } catch (e) { idb = 'error ' + e.message; }
@@ -159,7 +159,7 @@
   try { cacheKeys = self.caches ? await caches.keys() : 'unsupported'; } catch (e) { cacheKeys = 'error'; }
   out.storage = { localKeys: Object.keys(localStorage), localBytes: size(localStorage), sessionKeys: Object.keys(sessionStorage), cookieNames: document.cookie ? document.cookie.split(';').map((c) => c.split('=')[0].trim()) : [], indexedDB: idb, serviceWorkers: sw, cacheStorage: cacheKeys };
 
-  // ── 메타 · 보안 ──
+  // ── Meta · security ──
   const meta = (n) => document.querySelector('meta[name="' + n + '"]')?.content ?? null;
   const scripts = [...document.scripts].map((s) => s.src).filter(Boolean);
   out.meta = { charset: document.characterSet, viewport: meta('viewport'), description: meta('description'), colorSchemeMeta: meta('color-scheme'), colorSchemeUsed: schemeDecl, themeColor: meta('theme-color'), manifest: document.querySelector('link[rel=manifest]')?.href ?? null, favicon: document.querySelector('link[rel~=icon]')?.href ?? null, canonical: document.querySelector('link[rel=canonical]')?.href ?? null };

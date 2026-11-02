@@ -1,5 +1,5 @@
 /*
- * First-run config (owner decision 2026-09-26): when browser_check finds no private config it runs `setup`, which
+ * First-run config (2026-09-26): when browser_check finds no private config it runs `setup`, which
  * looks this machine over, writes ${CLAUDE_PLUGIN_DATA}/config.json and reports what went in, so the user sees it
  * before anything else happens. It never overwrites a current config.
  *

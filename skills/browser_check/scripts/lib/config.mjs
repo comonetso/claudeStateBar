@@ -117,7 +117,7 @@ export function load() {
     const st = lstatSync(p);
     if (st.isSymbolicLink()) errors.push('config is a symlink (refused)');
     // Windows has no POSIX mode bits: Node reports 0o666 whatever the ACL says, so this check could only ever fail
-    // there and the plugin never ran on a PC. Owner decision (2026-09-26): skip it on Windows; POSIX keeps it.
+    // there and the plugin never ran on a PC. So since 2026-09-26 it is skipped on Windows; POSIX keeps it.
     if (process.platform !== 'win32') {
       if ((st.mode & 0o077) !== 0) errors.push('config mode must be 0600');
       const pst = lstatSync(dirname(p));

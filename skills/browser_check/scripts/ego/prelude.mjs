@@ -51,8 +51,8 @@ const __bcWrapPage = (p) => { __bcWrap(p); try { __bcWrap(p.keyboard); __bcWrap(
 try { const __origTask = globalThis.taskSpace; if (typeof __origTask === 'function') globalThis.taskSpace = async (...a) => { const t = await __origTask(...a); __bcWrap(t); try { __bcWrapPage(t.page('p1')); } catch { /* no p1 */ } return t; }; } catch { /* read-only global — bc.run still wraps */ }
 
 // In-page hooks, installed before the page's own scripts on every document (Page.addScriptToEvaluateOnNewDocument)
-// and once into the current document. __bcInflight counts fetch/XHR still open — the same idea as Aside's
-// K.safeClose (counting CDP network events missed long requests and stayed above 0, measured 2026-10-21).
+// and once into the current document. __bcInflight counts fetch/XHR still open inside the page,
+// because counting CDP network events missed long requests and stayed above 0 (measured 2026-10-21).
 // __bcGuard, when on, rejects non-GET fetch/XHR/sendBeacon and form submits unless the path is allowed.
 const __bcHook = `(() => {
   const w = window; if (w.__bcHooked) return; w.__bcHooked = 1; w.__bcInflight = 0; w.__bcInflightWrite = 0;
@@ -92,8 +92,8 @@ const bc = {
 
   /**
    * Open (or resume) a task space, run fn({ task, page }), and always close the space afterwards — even when fn
-   * throws (a dead script otherwise left the space open, Mesa run 2026-10-21). Closing waits until the page has no
-   * request in flight; if it never settles the space is left open and reported, never forced (Aside rule).
+   * throws (a dead script otherwise left the space open, measured 2026-10-21). Closing waits until the page has no
+   * request in flight; if it never settles the space is left open and reported, never forced (cutting a token-refresh response can log a site out).
    */
   async run(name, fn, { prep = true } = {}) {
     const task = await taskSpace(name);
@@ -108,7 +108,7 @@ const bc = {
     } catch (e) { error = e; }
     __bcClosing = true;
     // What the guard refused — on a logged-in site this shows the token-refresh POST if it was not allowed
-    // (Mesa fell to its login screen with the guard on, 2026-10-21; nothing reached the server, the login survived).
+    // (a logged-in site fell to its login screen with the guard on, 2026-10-21; nothing reached the server, the login survived).
     if (__bcCfg.guard) {
       try {
         const rep = await bc.guardReport(page);
@@ -224,8 +224,8 @@ const bc = {
   /**
    * Close the task space only after the page settles; otherwise leave it open and say so.
    * A page that never settles with only read requests open (no POST/PUT/… in flight) is blanked first, then closed:
-   * live pages keep a GET waiting forever — Paseo web holds /__gate/screen/wait open — so every space that looked at
-   * one stayed open and piled up in ego (2026-10-26, six spaces; owner decision). Cutting a GET changes nothing; an
+   * live pages keep a GET waiting forever — a long poll held open for the next event — so every space that looked at
+   * one stayed open and piled up in ego (2026-10-26, six spaces). Cutting a GET changes nothing; an
    * open write (a token refresh, say) still leaves the space open, as before. Every window of the task is treated the
    * same way: closing the space closes them all, so a window a click opened must not be cut mid-write either (2026-11-02).
    */
@@ -261,7 +261,7 @@ const bc = {
    * 2. screencast — keeps painting while minimized; frames are acked and the last one after a short wait is used,
    *    because the first frame can be the one painted before the latest change (measured 2026-10-21);
    * 3. no frame after a timeout = every ego window was closed with X (ego hides them and stops painting): reopen the
-   *    ego window and minimize it at once (owner decision 2026-10-21), then screencast again. A refusal for another
+   *    ego window and minimize it at once (2026-10-21), then screencast again. A refusal for another
    *    reason ("Cannot capture this page." — DRM content since 0.6.1.9) is not a window problem, so nothing is reopened.
    * fullPage on screencast: the page is resized to its own height for one frame (bc.__castFull).
    * The first try waits 3 s, not longer: a window that paints answers in under 2 s (0.06-1.9 s measured 2026-10-21), and

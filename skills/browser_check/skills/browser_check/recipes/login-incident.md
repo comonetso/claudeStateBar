@@ -1,6 +1,6 @@
 # "I got logged out" · "Why did it kick me out"
 
-The user's own browser is Aside, which browser_check cannot reach: what their tabs showed is for the Claude inside Aside (or the user's own screenshot). browser_check works from server evidence, and from ego only when the logout happened in ego.
+browser_check cannot reach the browser the user works in: what its tabs showed comes from the user (a screenshot, or an assistant built into that browser). browser_check works from server evidence, and from ego only when the logout happened in ego.
 
 ## Steps
 1. Server evidence: the server's session / refresh-token records for that token family — the revocation reason (e.g. `revoke_reason = 'reuse_detected'` ⇒ a lost response) · the last rotation row (e.g. `rotated_at IS NULL`) · the revocation time. 401s and socket close codes in the API logs. Our own agent activity at that moment (a task space closed with requests in flight · a run cut by its timeout · a `page.fetch` to an auth endpoint · a write guard that refused the refresh POST).
