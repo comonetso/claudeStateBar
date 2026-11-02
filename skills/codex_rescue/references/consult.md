@@ -43,6 +43,13 @@
 
    **2-1. Pre-run confirmation** — `${CLAUDE_SKILL_DIR}/references/preflight.md`. If the sensory question above also applies, ask both in the same message.
 
+   **2-2. Formal verification (optional)** — add the `## 형식 검증` block (request-template.md "형식 검증 문안") **only when** the target is code whose execution order can tangle — several processes, conversations or screens contend for the same state, or restart · retry · hold · lock paths are involved — **and** it is being newly written or substantially changed, or an intermittent bug there has no known cause. Never on every consult or review (user decision, 2026-10-29). Before adding it, check this machine (outside Codex):
+   - `codex plugin list` shows `agent-formal-verify` installed, and `bash <skill folder>/scripts/setup.sh tla` prints `READY`. Not installed or not ready ⇒ leave the block out and say so in one line.
+   - `python3 --version` is 3.9 or later (the helpers use `str.removeprefix`); otherwise put a `PATH` that resolves `python3` to 3.9+ into the block's run line.
+   - The skill folder is `~/.codex/plugins/cache/agent-formal-verify/agent-formal-verify/<version>/skills/formal-verify`. 🔴 **Never write the version folder into the request.** Codex reinstalls plugins from the marketplace when it starts, so the version can change between writing the request and the run (2026-10-29: the request named 0.3.5, the run found only 0.4.0). Keep the block's lookup line, which has Codex find the installed version when it runs; fill only the home folder in it. Never rely on edits made inside that folder either.
+   - First turns only — a CONSULT · EDIT request, or a REVIEW on the live-steer path (review.md). Follow-up turns are read-only, and so is the old `codex exec review`: Codex reads the skill but can't write the model (2026-10-29, a Mesa case). If a follow-up needs it, launch a new CONSULT alongside.
+   - Tell the user in the pre-run question that this run includes it (preflight.md ② 5).
+
 3. **Stamp** — actually run `date "+%y%m%d_%H%M%S"`. Never guess.
 
 4. **Directory** — `mkdir -p docs/codex_rescue`.
@@ -76,7 +83,7 @@
      <the watch command ① printed, exactly as printed>
    ```
 
-   - Prefix the values chosen in §2-1 ④ (only those differing from the current settings): `CR_MODEL=<model> CR_EFFORT=<level> CR_CONFIRMED=1 CR_LIVE_STEER=1 node …`.
+   - Prefix the two values chosen in §2-1 ④ — **both, even when they equal the config** (preflight.md ④): `CR_MODEL=<model> CR_EFFORT=<level> CR_CONFIRMED=1 CR_LIVE_STEER=1 node …`.
    - 🔴 **Never drop `CR_LIVE_STEER=1`.** Without it the run goes through the old `codex exec` and **can't be steered** mid-run. Drop it only when the user asked for "the old way".
    - **EDIT the same way** — after approval: `CR_CONFIRMED=1 CR_ALLOW_EDIT=1 CR_LIVE_STEER=1 node …`. While it runs, something like "leave that file, fix only this" can be passed via steer.md.
    - **If ① says `send.sh ended right away`**, nothing is running: the output is `send.sh`'s refusal (missing `CR_CONFIRMED`, the EDIT gate, a bad argument) and the exit code is `send.sh`'s. Handle it as that refusal says; don't start a watcher.

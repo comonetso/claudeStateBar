@@ -28,6 +28,8 @@ Just say what you want. It reads intent rather than fixed keywords.
 
 One answer isn't the end of it. After reviewing the reply you can ask again, and if Claude read the problem too narrowly Codex will correct that — up to eleven turns.
 
+Before each run Claude asks which model and reasoning level to use, with Codex's own settings offered first. A follow-up runs on what you pick, even when the conversation began on another model, and the finished report shows the model and reasoning level the turn actually ran on, read from Codex's own record of that turn.
+
 ## You can cut in while it's running
 
 Say something while the analysis is in progress and it goes straight to Codex. Codex doesn't throw away what it was doing; it carries on and folds your point in.
@@ -48,6 +50,8 @@ After an edit comes back, saying "이것도 고쳐" (fix this too) continues the
 The Codex CLI must be installed and signed in.
 
 **Node 20 or newer is needed for cutting in** — not for the skill as a whole. Node 22 and above work as they are; Node 20 needs a launch flag that the script adds for you; Node 18 cannot do it. The script checks this itself rather than trusting the version number. If it isn't available only cutting in stops working, and you are told before the run starts.
+
+Tested on Windows 11 and on three Linux servers. It has not been run on a real Mac; the shell parts were checked only under a Mac-like shell (bash 3.2 and BSD sed) on Windows.
 
 ## Where files land
 

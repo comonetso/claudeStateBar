@@ -10,7 +10,7 @@
    - "my current work" · "before committing" → `--uncommitted`
    - nothing said → **pass nothing**; `send.sh` decides (the uncommitted changes if any, otherwise against the default branch)
 
-4. **Do §2-1 (preflight.md), then launch it detached and watch it** (SKILL.md §3). Append the line for the chosen depth to the focus instruction (with no focus, the line alone is the focus):
+4. **Do §2-1 (preflight.md), then launch it detached and watch it** (SKILL.md §3). Append the line for the chosen depth to the focus instruction (with no focus, the line alone is the focus). If consult.md §2-2 applies to the changed code and its machine checks pass, also append `바뀐 코드 중 실행 순서가 꼬일 수 있는 부분은 형식 검증 스킬(<홈>/.codex/plugins/cache/agent-formal-verify/agent-formal-verify/ 아래 가장 큰 판의 skills/formal-verify)의 SKILL.md 를 읽고 agent-formal-verify 로 그 부분만 모형 검사해, 반례와 고칠 안을 지적에 넣어라. 모형은 이번 실행의 작업대(.scratch) 안 formal/ 에 쓰고, 스킬 스크립트를 부를 때 TMPDIR 도 그 안으로 잡아라. 하위 에이전트는 띄우지 마라.` (fill `<홈>` only; never a version folder) — live-steer path only, since the old `codex exec review` is read-only — and say so in the pre-run question (preflight.md ② 5):
    - 얕게: `변경분 안에서 눈에 띄는 결함만 빠르게 짚어라. 변경분 밖 호출부는 따라가지 마라.`
    - 보통: `변경분과 직접 닿는 호출부까지 읽고, 지적마다 파일 경로와 줄 번호를 적어라.`
    - 깊게: `변경분이 닿는 호출 관계와 엣지 케이스까지 따라가고, 지적마다 스스로 반증해 본 뒤 남은 것만 적어라.`

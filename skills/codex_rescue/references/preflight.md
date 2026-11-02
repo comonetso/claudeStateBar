@@ -36,6 +36,7 @@ Which runs get which questions:
 
    Each description says what that depth makes Codex do (the texts are in request-template.md "조사 깊이 문안").
 4. **Limit warning, never an automatic change.** If the line of the combination about to run shows `→ over the baseline` in the query output, put one warning line at the top of the model question (e.g. "this combination once used +5%, more than today's share of 3.1%"). Limit already reached ⇒ say so at the top of the model question. No record, query failed, or no windows ⇒ no warning line.
+5. **Formal verification line.** If the run includes formal verification (consult.md §2-2), put one line at the top of the depth question: "this run also model-checks the code with agent-formal-verify (TLA+) — it may take longer". Otherwise no line.
 
 Limit baseline by **which windows exist**, not by plan name (the tool computes it under `── limit baseline`):
 
@@ -81,12 +82,13 @@ Q3  header "Depth"      "How deep should Codex dig? Recommended normal — <one-
 
 | Answer | Apply |
 |---|---|
-| Model or reasoning = the config value | add nothing — Codex's own config applies |
-| Model or reasoning = another value | `CR_MODEL=<model>` · `CR_EFFORT=<level>` — only the one that differs |
+| Model and reasoning — any answer, the config values included | `CR_MODEL=<model>` · `CR_EFFORT=<level>` — **both, always**, even when they equal the config |
 | Depth | CONSULT · EDIT: put that depth's `## 조사 깊이 — …` section into the request (request-template.md) · FOLLOWUP: into the follow-up file (followup.md) · REVIEW: append that depth's line to the focus instruction (review.md) |
 | "stop" / "중단" in Other | write no request; end |
 
 Both variables work on the live-steer path (passed as `--model` / `--effort`) and the old exec path (`-m` / `-c`).
+
+🔴 **Why both, always** (1.18.2): on a follow-up, a value left out does not mean "the config" — Codex keeps the value stored in that conversation. A follow-up whose first turn ran on another model then runs on that model, and the run looked like the config (real case: the user picked the config value, the turn ran on the first turn's model, and a quality comparison came out wrong). The live path now fills a missing value from the config before the turn, but pass what the user picked. The report's `ran with` line is what this turn actually ran on; `requested` is only what was asked.
 
 ## Old install notice
 

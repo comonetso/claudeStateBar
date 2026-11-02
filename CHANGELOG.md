@@ -266,6 +266,19 @@ relay. It has not been tried on macOS, and the relay and the reopening of a clos
 Windows-only. The safety summary also says now that the write guard cannot stop a POST that a newly
 opened window sends in its first moments.
 
+codex-rescue 1.18.2 (2026-11-03) runs a follow-up on the model and reasoning level you pick. When you
+picked Codex's own settings, the instructions said to pass nothing, and on a follow-up an omitted value
+does not mean the settings: Codex keeps what that conversation last ran on. A conversation started on
+another model therefore went on with it, while the report showed `(codex config)` (seen on a server,
+where a quality comparison between two models came out wrong because of it). Claude now passes both
+values every time, the live path fills a missing one from Codex's settings before the turn and stops
+if it cannot, and a short back-and-forth carries the pair from its first turn to the next ones. The
+report now separates `requested` from `ran with`, the model and reasoning level read from Codex's own
+record of that turn, and warns when the two differ. The release also ships two earlier changes: an
+optional block that asks Codex to check every execution order of code with the formal-verification
+skill, and cleanup scripts that run correctly when called through a junction folder. The README says
+where it has been tested: Windows 11 and three Linux servers, not a real Mac.
+
 Background tasks that ended when Claude Code restarted no longer stay "running". On restart Claude Code
 reports every task the old process left behind in a single notification that names several tasks, and
 only the first one was read, so the rest kept running in the background tab for good. A monitor that

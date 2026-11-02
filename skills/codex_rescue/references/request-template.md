@@ -255,3 +255,22 @@ Copy the block for the depth chosen in §2-1 as it is, heading included. In **�
 호출 관계와 엣지 케이스까지 따라가라. 대표 사례와 대조군은 원본으로 끝까지 대조해라.
 찾은 결론을 스스로 반증해 보고, 반증에 실패한 것만 확정으로 적어라. 근거는 파일 경로와 줄 번호로 적어라.
 ```
+
+## 형식 검증 문안 — formal verification block (optional)
+
+Only when consult.md §2-2 applies — never by default. Put this block **right after** `## 조사 깊이` in a CONSULT · EDIT request — 🔴 **never in a follow-up file**: follow-up turns are read-only (followup.md), so Codex reads the skill but can't write the model and reports it unchecked (2026-10-29, a Mesa case). When a follow-up needs it, launch a new CONSULT alongside. Fill `<…>` with what you checked on this machine — except `<스킬 폴더>`: keep it as written, because the lookup line has Codex resolve it at run time (consult.md §2-2). Fill `<홈>` with the home folder (`/root`, `C:/Users/<name>`).
+
+```markdown
+## 형식 검증 — 순서가 꼬일 수 있는 코드
+이 건은 여러 실행 흐름이 같은 상태를 다투거나 재시작·재시도·보류가 얽힌 코드다. 시험으로는 드문 순서까지 보려고
+형식 검증 스킬 `agent-formal-verify` 로 모형을 만들어 모든 순서를 검사해 달라.
+- 스킬 폴더 찾기: 판 번호 폴더는 Codex 가 시작할 때 바뀔 수 있다. 먼저 `<홈>/.codex/plugins/cache/agent-formal-verify/agent-formal-verify/` 아래 판 번호 폴더 중 가장 큰 판의 `skills/formal-verify` 를 찾고, 아래 `<스킬 폴더>` 는 그 경로로 읽어라
+- 방법: `<스킬 폴더>/SKILL.md` 와 `<스킬 폴더>/references/tla-brief.md`(산술·경계 성질이면 `lean-brief.md`)를 끝까지 읽고 그 절차를 따라라
+- 대상 표 → 모형 → 순서표 → TLC → 반례를 코드 줄로 읽기 → 버그 심기까지 한다. 스킬이 말하는 하위 에이전트는 띄우지 말고 네가 직접 모형을 써라
+- 스킬의 고치기 단계는 하지 마라 — 반례·재현·고칠 안까지만 적는다(이 요청의 작업 규칙이 스킬보다 우선한다)
+- 모형·순서표·버그 목록·재현 시험은 `docs/codex_rescue/.scratch/<스탬프>/formal/` 에 LF 줄 끝으로 써라. 재현 시험은 저장소 시험 파일을 고치지 말고 그 안에 따로 만들어라
+- 스킬의 검사·버그 심기 스크립트는 임시 폴더(`mktemp`)에 사본을 만든다 — 스크립트를 부를 때 `TMPDIR` 을 그 작업대 안 폴더로 잡아라
+- 이 기계의 실행 방법(Claude 가 확인한 것): <예 — `PATH=<python 3.9 이상 폴더>:$PATH bash <스킬 폴더>/scripts/tlc-matrix.sh <순서표>`>
+- 스킬의 셸 스크립트가 샌드박스에서 안 뜨면(Windows 에서 Git Bash 가 Win32 오류 5 로 멈춤) 같은 일을 하는 스크립트를 작업대에 만들어 `java -cp <TLC JAR> tlc2.TLC` 를 직접 불러라. 스킬 설치본은 고치지 마라
+- 응답에는 성질마다 판정을 적어라 — TLC 통과면 검사한 크기와 상태 수, 반례면 단계마다 코드 줄. 반례마다 `reproduced` / `reachable at shipped settings` / `model-only` 라벨, 버그 심기에서 각 성질이 심은 버그를 잡았는지
+```

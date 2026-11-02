@@ -661,6 +661,11 @@ async function main() {
 }
 
 // 테스트에서 cleanup() 만 가져다 쓸 수 있게, 직접 실행됐을 때만 main 을 돈다.
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+// 🔴 연결 폴더(정션) 경로로 불러도 맞게 실행 경로를 실제 경로로 풀어 비교한다(live-consult.mjs 같은 자리 주석).
+if (process.argv[1] && (() => {
+    const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+    const a = pathToFileURL(real(process.argv[1])).href;
+    return process.platform === 'win32' ? a.toLowerCase() === import.meta.url.toLowerCase() : a === import.meta.url;
+})()) {
     await main();
 }

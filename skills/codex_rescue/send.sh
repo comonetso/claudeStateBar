@@ -22,9 +22,11 @@
 # CHAT 은 지금처럼 이 스크립트를 동기 Bash 로 직접 부른다.
 #
 # 환경변수
-#   CR_MODEL=<모델>       Codex 모델 지정. 미설정이면 codex 자체 설정값을 쓴다
-#   CR_EFFORT=<수준>      추론 수준 지정(low·medium·high 등 — 모델이 지원하는 값). 미설정이면 codex 설정값.
-#                         실행 전 확인(SKILL.md § 절차 2-1)에서 사용자가 바꿨을 때만 붙인다 (2026-09-13)
+#   CR_MODEL=<모델>       Codex 모델 지정.
+#   CR_EFFORT=<수준>      추론 수준 지정(low·medium·high 등 — 모델이 지원하는 값).
+#                         실행 전 확인(SKILL.md § 절차 2-1)에서 사용자가 고른 두 값을 **설정값과 같아도 늘** 붙인다
+#                         (2026-11-03, 1.18.2 — 예전엔 바꿨을 때만). 생략하면 새 대화는 codex 설정값, 실시간 되묻기는
+#                         bridge 가 config/read 로 채운다. 채우지 않으면 그 대화에 저장된 값으로 돌았다(261027_200406 실측).
 #   CR_SANDBOX=<모드>     read-only | workspace-write | danger-full-access (기본 workspace-write)
 #                         ★ workspace-write 는 **디스크 전체 읽기 · cwd//tmp 쓰기**를 이미 준다
 #                           (2026-08-25 실측). cwd 밖 쓰기와 .git 쓰기는 여전히 막힌다.
@@ -80,7 +82,7 @@ confirm_gate() {
   die "pre-run confirmation was skipped — stopping because CR_CONFIRMED=1 is not set.
   1. node $SELF_DIR/scripts/codex-status.mjs --cwd <project root>
   2. Ask the user model · reasoning (Codex's config values first) and depth (shallow / normal / deep) in one go, using the question frame of SKILL.md §2-1 → references/preflight.md exactly
-  3. Only after the answer, run again with CR_CONFIRMED=1 (plus CR_MODEL / CR_EFFORT only for values other than the config)
+  3. Only after the answer, run again with CR_CONFIRMED=1 plus CR_MODEL and CR_EFFORT set to the chosen values — both, even when they equal the config
   🔴 Never add it without an answer. If there is no answer or it is unclear, ask again."
 }
 
@@ -2913,7 +2915,12 @@ if [ -n "${CR_DRYRUN:-}" ]; then
   echo "root     : $ROOT"
   echo "mode     : $MODE / sandbox: $SANDBOX_SHOWN"
   [ -n "${CR_NET_POST:-}" ] && echo "POST allowed: $CR_NET_POST"
-  echo "model    : ${CR_MODEL:-(codex config)} / reasoning: ${CR_EFFORT:-(codex config)}"
+  _cr_omit=""
+  if [ -z "${CR_MODEL:-}" ] || [ -z "${CR_EFFORT:-}" ]; then
+    if [ "$KIND" = followup ]; then _cr_omit="   (omitted on a follow-up: the live path fills it from config/read)"
+    else _cr_omit="   (omitted: a new thread uses the codex config)"; fi
+  fi
+  echo "requested: model=${CR_MODEL:-(omitted)} / reasoning=${CR_EFFORT:-(omitted)}$_cr_omit"
   { [ "$KIND" = review ] || [ "$MODE" = review ]; } && echo "review target: $SCOPE ${SCOPE_VAL:+($SCOPE_VAL)} — given by: $SCOPE_VIA"
   echo "response : $RESP_REL (existed before the run: $RESP_EXISTED)"
   [ -n "$EDITLOG_REL" ] && echo "edit log : $EDITLOG_REL   ($([ "$FUP_NET" = 1 ] && printf 'measurement follow-up' || printf 'EDIT follow-up') — Codex writes it on every edit)"
@@ -2951,7 +2958,7 @@ if [ "$KIND" = review ]; then
   echo "→ Codex reviewing… (target: $SCOPE ${SCOPE_VAL:+$SCOPE_VAL})" >&2
 else
   echo "→ Codex running… (request: $REQ / sandbox: $SANDBOX_SHOWN)" >&2
-  [ -n "${CR_MODEL:-}${CR_EFFORT:-}" ] && echo "   model: ${CR_MODEL:-(config)} / reasoning: ${CR_EFFORT:-(config)}" >&2
+  [ -n "${CR_MODEL:-}${CR_EFFORT:-}" ] && echo "   requested model: ${CR_MODEL:-(omitted)} / reasoning: ${CR_EFFORT:-(omitted)}" >&2
 fi
 
 # ── 진행 상황을 밖에서 볼 수 있게 준비한다 ──────────────────────
@@ -3497,7 +3504,17 @@ else
   fi
 fi
 echo "mode     : $MODE / sandbox: $SANDBOX_SHOWN / codex exit: $RC"
-echo "model    : ${CR_MODEL:-(codex config)} / reasoning: ${CR_EFFORT:-(codex config)}"
+# 요청한 값과 실제 값을 나눠 적는다(2026-11-03, 1.18.2). 예전 "(codex config)" 는 "안 넘겼다"는 뜻이었는데 실제 값처럼
+# 읽혀 모델 비교를 틀렸다(261027_200406). 실제 값은 live-consult 가 이 차례의 Codex 기록(turn_context)에서 읽어 남긴다.
+echo "requested: model=${CR_MODEL:-(omitted)} / reasoning=${CR_EFFORT:-(omitted)}"
+_cr_ran=$(grep -m1 '^→ ran with:' "$ERRLOG" 2>/dev/null | sed 's/^→ ran with: *//')
+_cr_warn=$(grep -m1 '^⚠️ this turn ran with' "$ERRLOG" 2>/dev/null)
+if [ -n "$_cr_ran" ]; then
+  echo "ran with : $_cr_ran"
+  [ -n "$_cr_warn" ] && echo "$_cr_warn"
+else
+  echo "ran with : (not checked on this path — this turn's turn_context in the Codex rollout is the record)"
+fi
 echo "events   : $LOGD/${STAMP}_events.jsonl   (live record while running — the progress panel reads it)"
 echo "status   : $STATUS"
 if [ "$TEE_RC" != 0 ]; then

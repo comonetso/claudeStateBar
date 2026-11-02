@@ -14,6 +14,7 @@ Then:
 1. If the report has 🔴 **changes outside the response file**, **report them to the user first** — the skill's premise broke, and that comes before the review. **Never revert them yourself** — the user decides.
    (`🧪 N item(s) left in the Codex workbench` is **normal** — investigation traces in `.scratch/`, not a violation. `🧹 old records cleaned up …` is **normal** too — old records unrelated to this run were cleaned; relay it in one line. `⚠️ … items could not be deleted` is retried next time; mention it only if the same item keeps appearing.)
 2. Read `response_path`. **Never edit Codex's text.** Append a `## Claude 검토` section at the end.
+   **Which model ran:** the report's `ran with` line (this turn's Codex record). `requested` is only what was asked; `ran with : (not checked …)` means the old exec path, where this turn's `turn_context` in the Codex rollout is the record. Never state a model or compare models from `requested` alone. A `⚠️ this turn ran with … but … was requested` line goes to the user.
 3. It is done only after passing the **completion gate** below. Otherwise don't report it as done.
 4. Report the review (adopt / hold / reject, each with its reason, and the plan to apply) and get the user's decision.
 5. If there is no response file, read `.log/<stamp>_events.jsonl` and `_stderr.log` and report the cause to the user.

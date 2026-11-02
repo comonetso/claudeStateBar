@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import cp from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline';
 import { threadNameFromRequest } from './lib/thread-name.mjs';
 
 const IS_WIN = process.platform === 'win32';
@@ -572,8 +573,10 @@ async function cmdRun(opts, lib) {
         out(`thread       : ${resumeThread ? `resume thread/resume ${resumeThread} (turn ${turnSeq})` : 'new thread/start'}`);
         out(`sandbox      : ${sandbox}${network ? ' +net (turn/start sandboxPolicy.networkAccess)' : ''}   (approvalPolicy=never, fixed)`);
         out(`prompt       : ${promptFile ? promptFile + '   (file made by send.sh)' : 'built-in CONSULT prompt (no --prompt-file)'}`);
-        out(`model        : ${model || '(codex config)'}`);
-        out(`reasoning    : ${effort || '(codex config)'}`);
+        // 생략은 "설정값"이 아니다 — 이어받기에서는 그 대화에 저장된 값이 쓰여서 차례 전에 config/read 로 채운다(아래 5-b).
+        const omitted = resumeThread ? '(omitted — filled from config/read before the turn)' : '(omitted — a new thread uses the codex config)';
+        out(`model        : ${model || omitted}`);
+        out(`reasoning    : ${effort || omitted}`);
         out(`port         : ${port}`);
         out('app-server   : codex app-server --listen ws://127.0.0.1:<port>' +
             (IS_WIN ? ' -c windows.sandbox=unelevated' : ''));
@@ -854,6 +857,30 @@ async function cmdRun(opts, lib) {
         });
         conn.notify('initialized', {});
 
+        // ── 5-b) 이번 차례에 보낼 모델·추론 (2026-11-03, 1.18.2) ──
+        // 🔴 이어받기에서 model·effort 를 빼면 Codex 는 **설정값이 아니라 그 대화에 저장된 최신 값**으로 돈다.
+        //    서버 261027_200406 2차례 실측 — 설정값 sol/xhigh 를 골라 생략했는데 저장값 terra/max 로 돌았다
+        //    (Codex 조사 261102_235743). "필드 없음"은 "그대로 유지"라는 뜻이지 "설정값"이 아니다.
+        //    그래서 이어받기에서 빠진 값은 같은 연결의 config/read(프로필·레이어 반영 — codex-status.mjs 와 같은 방법)로
+        //    채운다. 못 채우면 차례를 시작하지 않는다 — 저장값으로 조용히 도는 것이 이 결함이었다.
+        //    새 대화는 이어받을 저장값이 없어 생략하면 설정값이 쓰이므로 그대로 둔다.
+        let turnModel = model;
+        let turnEffort = effort;
+        const turnSource = { model: model ? 'explicit' : 'omitted', effort: effort ? 'explicit' : 'omitted' };
+        if (resumeThread && (!turnModel || !turnEffort)) {
+            let cfg = null;
+            try {
+                const r = await conn.request('config/read', { cwd, includeLayers: false });
+                cfg = (r && r.config) || null;
+            } catch { cfg = null; }   // 응답·오류 전체를 로그에 남기지 않는다(설정 내용이 섞일 수 있다)
+            const safe = (v) => typeof v === 'string' && /^[A-Za-z0-9._-]+$/.test(v);
+            if (!turnModel && cfg && safe(cfg.model)) { turnModel = cfg.model; turnSource.model = 'config/read'; }
+            if (!turnEffort && cfg && safe(cfg.model_reasoning_effort)) { turnEffort = cfg.model_reasoning_effort; turnSource.effort = 'config/read'; }
+            if (!turnModel || !turnEffort) {
+                fail(EXIT.PRESTART_FAILED, 'a follow-up needs the model and the reasoning level: they were not passed and the Codex config does not set them — pass both --model and --effort');
+            }
+        }
+
         // ── 6) thread/start 또는 thread/resume ── (여기까지 실패 = PRESTART)
         let th;
         if (resumeThread) {
@@ -883,14 +910,18 @@ async function cmdRun(opts, lib) {
         if (resumeThread && threadId !== resumeThread) {
             fail(EXIT.PRESTART_FAILED, `thread/resume returned a different thread (asked ${resumeThread} · got ${threadId})`);
         }
+        // 이 대화의 Codex 기록(rollout) 경로 — 차례가 끝난 뒤 그 차례에 실제로 쓰인 값을 읽는 데 쓴다(아래 10-b).
+        const rolloutPath = (th && th.thread && typeof th.thread.path === 'string' && th.thread.path) || null;
         if (resumeThread) {
-            // 서버가 실제로 적용한 값을 남긴다 — 샌드박스가 요청대로 됐는지 사후에 대조하는 근거다.
+            // 이어받기 응답의 값은 **차례를 시작하기 전** 그 대화의 설정이다 — 샌드박스가 요청대로 됐는지 대조하는 근거.
+            // 🔴 그 차례의 실제 모델이 아니다. turn/start 가 바꾸면 여기엔 옛 값이 남는다
+            //    (서버 261027_200406 3차례 — 여기엔 terra/max, 실제 차례는 sol/xhigh). 실제 값은 아래 10-b.
             const applied = {
                 sandbox: th.sandbox ?? null, approvalPolicy: th.approvalPolicy ?? null,
                 model: th.model ?? null, reasoningEffort: th.reasoningEffort ?? null, cwd: th.cwd ?? null
             };
-            appendJson(appserverLog, { at: nowIso(), ms: Date.now() - t0, kind: 'resume-applied', threadId, ...applied });
-            err(`→ thread resumed (thread=${threadId} · turn ${turnSeq}) server applied: ${JSON.stringify(applied)}`);
+            appendJson(appserverLog, { at: nowIso(), ms: Date.now() - t0, kind: 'resume-snapshot-before-turn', threadId, ...applied });
+            err(`→ thread resumed (thread=${threadId} · turn ${turnSeq}) settings before this turn: ${JSON.stringify(applied)}`);
         }
         ctx.threadId = threadId;
         await runtime.patchState(stamp, { threadId });
@@ -942,13 +973,19 @@ async function cmdRun(opts, lib) {
         //    알림(1213ms)을 기다릴 필요가 없다.
         let turnRes;
         try {
-            // 모델·추론 수준은 실행 전 확인에서 사용자가 바꾼 경우에만 넘어온다(2026-09-13).
-            // 안 넘어오면 필드를 아예 빼서 codex 설정값을 그대로 쓴다.
+            // 모델·추론 수준 — 위 5-b 에서 정한 값(2026-11-03). 이어받기는 늘 두 값을 싣는다.
+            // 새 대화에서 생략된 값만 필드를 빼서 codex 설정값을 쓴다. 이 줄은 요청이지 실제 값의 증거가 아니다(10-b).
+            appendJson(appserverLog, {
+                at: nowIso(), ms: Date.now() - t0, kind: 'turn-requested', threadId,
+                model: turnModel || null, effort: turnEffort || null, source: turnSource
+            });
+            err(`→ turn requested: model=${turnModel || '(omitted — codex config)'} · reasoning=${turnEffort || '(omitted — codex config)'}` +
+                (resumeThread ? `   (source: model ${turnSource.model} · reasoning ${turnSource.effort})` : ''));
             turnRes = await conn.request('turn/start', {
                 threadId,
                 input: [{ type: 'text', text: prompt }],
-                ...(model ? { model } : {}),
-                ...(effort ? { effort } : {}),
+                ...(turnModel ? { model: turnModel } : {}),
+                ...(turnEffort ? { effort: turnEffort } : {}),
                 ...(network ? { sandboxPolicy: { type: 'workspaceWrite', networkAccess: true } } : {})
             });
         } catch (e) {
@@ -1129,6 +1166,26 @@ async function cmdRun(opts, lib) {
             }
         }
 
+        // ── 10-b) 이 차례에 실제로 쓰인 모델·추론 (2026-11-03, 1.18.2) ──
+        // 요청한 값도 이어받기 응답도 실제 값의 증거가 아니다 — 그 둘을 믿어 모델 품질 비교를 틀린 적이 있다
+        // (서버 261027_200406). Codex 기록(rollout)에서 **이 turnId 의** turn_context 만 읽는다. 대화의 마지막 값을
+        // 읽으면 다른 차례를 집는다. send.sh 가 "→ ran with:" 줄을 완료 보고에 옮긴다. 못 읽으면 요청값으로 메우지 않는다.
+        const observed = await readObservedTurn(rolloutPath, turnId).catch(() => null);
+        if (observed) {
+            appendJson(appserverLog, {
+                at: nowIso(), ms: Date.now() - t0, kind: 'turn-observed', threadId, turnId,
+                model: observed.model, effort: observed.effort, source: 'rollout.turn_context'
+            });
+            err(`→ ran with: model=${observed.model} · reasoning=${observed.effort || '(not recorded)'}   (this turn's Codex record)`);
+            const modelDiffers = !!turnModel && observed.model !== turnModel;
+            const effortDiffers = !!turnEffort && !!observed.effort && observed.effort !== turnEffort;
+            if (modelDiffers || effortDiffers) {
+                err(`⚠️ this turn ran with ${observed.model} / ${observed.effort || '?'} but ${turnModel || '(codex config)'} / ${turnEffort || '(codex config)'} was requested`);
+            }
+        } else {
+            err(`→ ran with: (not found in the Codex record${rolloutPath ? '' : ' — the thread reported no rollout path'})`);
+        }
+
         // 전달하지 못한 개입이 있으면 조용히 삼키지 않는다 — 사용자가 한 말이 사라진 것이다.
         const undelivered = await listUndeliveredThisRun();
 
@@ -1137,6 +1194,7 @@ async function cmdRun(opts, lib) {
             printRunSummary({
                 threadId, turnId, status: 'interrupted', steerDelivered, steerRejected,
                 undelivered, lastMessageFile, eventsFile, runtimeDir,
+                requested: { model: turnModel, effort: turnEffort }, observed,
                 exitClass: 'poststart-failed', note: fatalPost
             });
             err(`🔴 ${fatalPost} — 🔴 no automatic fallback. The same request would run twice.`);
@@ -1147,6 +1205,7 @@ async function cmdRun(opts, lib) {
         printRunSummary({
             threadId, turnId, status: turnStatus || 'unknown', steerDelivered, steerRejected,
             undelivered, lastMessageFile, eventsFile, runtimeDir,
+            requested: { model: turnModel, effort: turnEffort }, observed,
             exitClass: turnStatus === 'completed' ? 'ok' : 'turn-failed'
         });
 
@@ -1209,8 +1268,33 @@ function printRunSummary(s) {
     out(`events=${s.eventsFile || ''}`);
     out(`runtime=${s.runtimeDir || ''}`);
     out(`exit_class=${s.exitClass || ''}`);
+    // 요청한 값과 이 차례 Codex 기록의 실제 값(2026-11-03). 비어 있으면 생략했거나 기록에서 못 찾은 것이다.
+    const rq = s.requested || {};
+    const ob = s.observed || {};
+    out(`requested_model=${rq.model || ''}`);
+    out(`requested_effort=${rq.effort || ''}`);
+    out(`observed_model=${ob.model || ''}`);
+    out(`observed_effort=${ob.effort || ''}`);
     if (s.note) out(`note=${String(s.note).replace(/[\r\n]+/g, ' ')}`);
     out('END_LIVE_CONSULT_RESULT');
+}
+
+// 이 turnId 의 turn_context(차례를 시작할 때 Codex 가 남긴 그 차례의 실제 설정)를 rollout 에서 찾는다.
+// 대화의 마지막 turn_context 를 쓰면 다른 차례나 하위 호출을 집는다 — 반드시 turnId 로 고른다. 큰 파일이라 줄 단위로 읽는다.
+async function readObservedTurn(rolloutPath, turnId) {
+    if (!rolloutPath || !turnId || !fs.existsSync(rolloutPath)) return null;
+    let found = null;
+    const rl = createInterface({ input: fs.createReadStream(rolloutPath, { encoding: 'utf8' }), crlfDelay: Infinity });
+    for await (const line of rl) {
+        if (!line.includes('"turn_context"') || !line.includes(turnId)) continue;
+        let row;
+        try { row = JSON.parse(line); } catch { continue; }
+        const p = row && row.payload;
+        if (!row || row.type !== 'turn_context' || !p || p.turn_id !== turnId) continue;
+        if (typeof p.model !== 'string' || !p.model) continue;
+        found = { model: p.model, effort: typeof p.effort === 'string' && p.effort ? p.effort : null };
+    }
+    return found;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1507,8 +1591,9 @@ function printHelp() {
         '  --request-timeout-ms <ms>     RPC round-trip cap. default ' + PENDING_DECISION.requestTimeoutMs + '   🔴 decision needed',
         '                                (not the turn length — turn/completed arrives as a notification)',
         '  --turn-timeout-ms <ms>        turn cap. default 0 = unlimited (keeps classic CONSULT behavior)',
-        '  --model <model>               model for this turn. omitted: codex config',
-        '  --effort <level>              reasoning level for this turn (low, medium, high...). omitted: codex config',
+        '  --model <model>               model for this turn. omitted: a new thread uses the codex config;',
+        '                                a follow-up (--resume-thread) fills it from config/read (an omitted field keeps the thread\'s stored value otherwise)',
+        '  --effort <level>              reasoning level for this turn (low, medium, high...). omitted: as --model',
         '  --resume-thread <id>          follow-up: continue this thread with thread/resume instead of a new one',
         '  --turn-seq <N>                follow-up turn number (2 or more). Always with --resume-thread',
         '',
@@ -1630,10 +1715,16 @@ export {
 };
 
 // 직접 실행됐을 때만 CLI 로 동작한다. import 해서 함수만 쓰는 경우 main 이 돌면 안 된다.
+// 🔴 실행 경로가 연결 폴더(정션·심볼릭 링크)를 지나면 node 는 import.meta.url 을 실제 경로로 풀어 둔다 —
+// 그래서 실행 경로도 실제 경로로 풀어 비교한다(10-23: ~/.claude-hrg/plugins → ~/.claude/plugins 정션으로 부르자
+// steer 가 아무 출력 없이 0 으로 끝나 전달된 줄 알 뻔했다).
 const invokedDirectly = (() => {
     try {
-        return process.argv[1] &&
-            path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+        if (!process.argv[1]) return false;
+        const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+        const a = real(process.argv[1]);
+        const b = real(fileURLToPath(import.meta.url));
+        return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
     } catch { return true; }
 })();
 

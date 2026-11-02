@@ -27,20 +27,21 @@ For when you and the user want **another view once**, asked and answered on the 
 
 3. **Run synchronously.** 🔴 **Never `run_in_background`** — the opposite of the other modes; the point is to put the answer straight into the chat.
    Before the first `--start` turn, do §2-1 (preflight.md) — model and reasoning only, no depth question. Not for `--resume-stamp` turns.
+   🔴 **Carry the chosen pair on every turn** (1.18.2): put the same `CR_MODEL` · `CR_EFFORT` from the `--start` turn on each `--resume-stamp` turn, both even when they equal the config. A `--resume-stamp` turn without them runs on the config, not on the pair the user picked at the start.
    🔴 **Every turn takes exactly one of `--start` / `--resume-stamp`.** Without it the script refuses — it is the only signal that splits conversations per skill call.
 
    ```
    # first turn of this call — always a new document; send.sh issues the key
    Bash(timeout: 180000):
-     CR_CONFIRMED=1 bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --start --slug <slug> [--subject "<one line>"] "<question>"
+     CR_CONFIRMED=1 CR_MODEL=<model> CR_EFFORT=<level> bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --start --slug <slug> [--subject "<one line>"] "<question>"
 
-   # next turn of the same call — pass the previous stdout's `conversation key:` value as is
+   # next turn of the same call — pass the previous stdout's `conversation key:` value as is, and the same pair
    Bash(timeout: 180000):
-     bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --resume-stamp <key> --slug <slug> "<question>"
+     CR_MODEL=<model> CR_EFFORT=<level> bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --resume-stamp <key> --slug <slug> "<question>"
 
    # ★ a question that needs code — name it (likely the most common form)
    Bash(timeout: 180000):
-     CR_CONFIRMED=1 bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --start --slug <slug> \
+     CR_CONFIRMED=1 CR_MODEL=<model> CR_EFFORT=<level> bash "${CLAUDE_SKILL_DIR}/send.sh" --chat --start --slug <slug> \
        --look src/main.js --look src/db.js:40-120 "<question>"
    ```
 
