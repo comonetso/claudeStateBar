@@ -66,6 +66,20 @@ codex-rescue 1.18.3 (2026-11-03) says how to sign in when Codex is not signed in
 limit lookup reported only "authentication required"; it now adds that a person runs `codex login` in
 a terminal, because a run started then would fail the same way.
 
+android-check 0.2.0 (2026-11-10) keeps a flow that ARTEMIS found and runs it again without a model.
+After an ARTEMIS task succeeds, `flow save <name> --session <trace_id>` keeps the steps that changed the
+screen, and `flow run <name>` taps them again by their exact names through phone-harness, an optional
+tool installed with `uv tool install`. When a name is not on screen the run stops at that step without
+tapping anything and says which step it was, so ARTEMIS can take over from there; `flow show`, `flow
+script` and `flow list` read the saved flows. Saving accepts only a completed run, takes the starting app
+from the run's app-lock log and drops a tap that was repeated at once because the screen did not change.
+Replay checks the starting app and the foreground app before each action, reads typed text back, and
+stops rather than type non-ASCII text such as Korean, which `adb input text` cannot deliver. A name is
+matched before a resource id, because every title in Android's Settings list shares one id, and after
+a swipe the run waits for the screen to settle. `doctor` now also says whether phone-harness is
+installed and whether its usage reporting is off. On a Galaxy Z Flip6 three saved flows ran again in
+19 to 27 seconds each.
+
 ## [1.17.2] - 2026-10-22
 
 The workflow, background-task, Codex progress and Codex chat panels are now tabs of one panel, Claude
