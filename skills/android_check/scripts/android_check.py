@@ -14,12 +14,16 @@ Flutter 앱(Semantics → content-desc)과 네이티브 앱(text · resource-id 
   logwatch start|stop|status|read [--package P] [--errors] [--since "MM-DD hh:mm:ss"] [--tail N]
   app register --package P --type flutter|native --project-dir D [--run-args ...] [--install-task T]
   app start|reload|restart|stop|status|log --package P
+  flow save <이름> --session <ARTEMIS trace_id> [--keep-all]   ARTEMIS 가 찾은 길을 단계 목록으로 굳힌다
+  flow run <이름> [--from-step N] [--find-timeout 초]          폰 하네스로 AI 없이 다시 돌린다(막히면 그 단계)
+  flow show|script <이름> / flow list
 공통: --data-dir(비공개 설정 폴더, 보통 ${CLAUDE_PLUGIN_DATA}) --serial --display --json
 """
 
 import argparse
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -62,6 +66,7 @@ class Ctx:
         if os.path.exists(self.cfg_path):
             with open(self.cfg_path, encoding="utf-8") as f:
                 self.cfg = json.load(f)
+        self.cfg.setdefault("deny_packages", [])
         self.adb_bin = self.cfg.get("adb") or os.environ.get("ADB") or shutil.which("adb") or "adb"
         self._serial = a.serial
 
@@ -527,6 +532,656 @@ def cmd_runner(ctx):
     srv.serve_forever()
 
 
+# ───────────────────────── 길 굳히기 — ARTEMIS 가 찾은 길을 폰 하네스로 다시 돌린다 ─────────────────────────
+# 처음 보는 흐름은 ARTEMIS 가 화면을 보며 찾고(느리고 AI 비용), 찾은 길은 여기서 단계 목록으로 굳혀
+# 폰 하네스(phone-harness, adb 위 파이썬 도우미)로 AI 없이 다시 돌린다. 막히면 그 단계 번호와 화면 글을
+# 돌려주니, 그 자리부터 다시 ARTEMIS 에 맡긴다.
+
+SAME_SCREEN_DHASH = 4  # ARTEMIS 실측값(artemis.jsonc similarity_max_distance 주석: 같은 화면 ≤4, 다른 화면 ≥7)
+DROP_ACTIONS = {"report_task_status", "discard"}  # 끝 보고·버린 동작 — 화면을 움직이지 않는다
+
+
+def flows_dir(ctx):
+    return os.path.join(ctx.data_dir, "flows")
+
+
+def flow_path(ctx, name):
+    return os.path.join(flows_dir(ctx), re.sub(r'[\\/:*?"<>|\s]+', "_", name) + ".json")
+
+
+def artemis_db(ctx):
+    art = ctx.cfg.get("artemis_dir") or artemis_dir_from_claude()
+    p = art and os.path.join(art, "traces", "data_engine.db")
+    if not p or not os.path.exists(p):
+        sys.exit("ARTEMIS 실행 기록(traces/data_engine.db)을 찾지 못했습니다. `doctor` 로 ARTEMIS 위치를 보세요.")
+    return p
+
+
+def dhash_distance(a, b):
+    try:
+        return bin(int(a, 16) ^ int(b, 16)).count("1")
+    except (TypeError, ValueError):
+        return None
+
+
+def flow_db_snapshot(path):
+    """원본 DB/WAL 은 바이트로만 읽고, 확정된 WAL 페이지를 RAM 에 합친다."""
+    import sqlite3
+    import struct
+    from pathlib import Path
+
+    path, wal_path = Path(path), Path(str(path) + "-wal")
+    files = [path] + ([wal_path] if wal_path.exists() else [])
+    before = [(p.stat().st_size, p.stat().st_mtime_ns) for p in files]
+    data = bytearray(path.read_bytes())
+    wal = wal_path.read_bytes() if wal_path in files else b""
+    after = [(p.stat().st_size, p.stat().st_mtime_ns) for p in files]
+    if before != after or wal_path.exists() != (wal_path in files):
+        sys.exit("ARTEMIS 기록이 읽는 동안 바뀌었습니다. 잠시 뒤 다시 저장하세요.")
+    if len(data) < 100 or data[:16] != b"SQLite format 3\0":
+        sys.exit("ARTEMIS DB 헤더를 읽지 못했습니다.")
+    page_size = int.from_bytes(data[16:18], "big")
+    page_size = 65536 if page_size == 1 else page_size
+    if wal:
+        if len(wal) < 32:
+            sys.exit("ARTEMIS WAL 헤더가 불완전합니다. 다시 저장하세요.")
+        magic, version, wp, _, salt1, salt2, c1, c2 = struct.unpack(">8I", wal[:32])
+        if magic not in (0x377f0682, 0x377f0683) or version != 3007000 or wp != page_size:
+            sys.exit("ARTEMIS WAL 형식을 확인하지 못했습니다.")
+        byteorder = "big" if magic & 1 else "little"
+
+        def checksum(buf, a=0, b=0):
+            for offset in range(0, len(buf), 8):
+                x = int.from_bytes(buf[offset:offset + 4], byteorder)
+                y = int.from_bytes(buf[offset + 4:offset + 8], byteorder)
+                a = (a + x + b) & 0xffffffff
+                b = (b + y + a) & 0xffffffff
+            return a, b
+
+        if checksum(wal[:24]) != (c1, c2):
+            sys.exit("ARTEMIS WAL 체크섬이 맞지 않습니다.")
+        frames, committed, dbsize = [], 0, 0
+        size = 24 + page_size
+        for offset in range(32, len(wal) - size + 1, size):
+            pg, n, s1, s2, a, b = struct.unpack(">6I", wal[offset:offset + 24])
+            body = wal[offset + 24:offset + size]
+            if not pg or (s1, s2) != (salt1, salt2):
+                break  # WAL 재사용 뒤 남은 옛 frame
+            if checksum(wal[offset:offset + 8] + body, c1, c2) != (a, b):
+                break  # 아직 확정되지 않은 꼬리
+            c1, c2 = a, b
+            frames.append((pg, body))
+            if n:
+                committed, dbsize = len(frames), n
+        if committed:
+            data.extend(b"\0" * max(0, dbsize * page_size - len(data)))
+            for pg, body in frames[:committed]:
+                if pg <= dbsize:
+                    data[(pg - 1) * page_size:pg * page_size] = body
+            del data[dbsize * page_size:]
+    data[18:20] = b"\x01\x01"  # RAM DB 가 원본 WAL 을 다시 열지 않게 한다
+    con = sqlite3.connect(":memory:")
+    try:
+        con.deserialize(bytes(data))
+        con.execute("pragma query_only=ON")
+        if con.execute("pragma integrity_check").fetchall() != [("ok",)]:
+            sys.exit("ARTEMIS 기록의 일관성을 확인하지 못했습니다.")
+    except BaseException:
+        con.close()
+        raise
+    return con
+
+
+def locked_app_from_log(db_path, sid):
+    """앱을 잠그고 돈 ARTEMIS 실행(--locked-app)이면 그 패키지. 실행 로그의 잠금 준비 줄과 시작 전경 줄이
+    같은 앱을 가리킬 때만 믿는다. 잠근 실행은 그 앱 밖으로 나가지 못하므로 키보드·오버레이가 섞인 화면에서도
+    전경 근거가 된다(2026-11-10 실측: 설정 앱 실행 기록의 화면 tree 에 키보드 노드가 더 많았다)."""
+    log = os.path.join(os.path.dirname(db_path), sid, "stdout.log")
+    try:
+        with open(log, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    lock = re.search(r"Preparing app lock for: ([\w.]+)", text)
+    cur = re.search(r"Current foreground app: ([\w.]+)", text)
+    return lock.group(1) if lock and cur and lock.group(1) == cur.group(1) else ""
+
+
+def recorded_foreground(con, image, meta=None, locked=""):
+    """이름 추측 대신 기록의 전경 값, 잠근 실행이면 화면에 있는 잠근 앱, 아니면 한 앱만 남는 UI tree 를 사용한다."""
+    meta = meta or {}
+    pkg = meta.get("foreground_app")
+    if pkg:
+        return {"package": pkg, "activity": meta.get("foreground_activity") or ""}
+    row = con.execute("select ui_tree from images where image_name=?", (image,)).fetchone()
+    if not row or not row[0]:
+        return {}
+    try:
+        tree = json.loads(row[0])
+    except ValueError:
+        return {}
+    packages = set()
+
+    def walk(nodes):
+        for node in nodes if isinstance(nodes, list) else [nodes]:
+            if not isinstance(node, dict):
+                continue
+            p = node.get("package") or node.get("packageName")
+            if p and p not in ("android", "com.android.systemui"):
+                packages.add(p)
+            walk(node.get("children", []))
+
+    walk(tree)
+    if locked and locked in packages:
+        return {"package": locked, "activity": ""}
+    return {"package": packages.pop(), "activity": ""} if len(packages) == 1 else {}
+
+
+def flow_from_artemis(ctx, session):
+    """ARTEMIS 실행 기록의 단계들을 대본 단계로 옮긴다. 화면이 안 바뀐 헛동작은 뺀다(--keep-all 이면 둔다)."""
+    db_path = artemis_db(ctx)
+    con = flow_db_snapshot(db_path)
+    locked = ""
+    try:
+        q = ("select session_id, step_number, action_taken, summary, extra_metadata, pre_image_name, post_image_name "
+             "from steps where session_id {} order by cast(step_number as integer)")
+        rows = con.execute(q.format("= ?"), (session,)).fetchall() or con.execute(q.format("like ?"), (session + "%",)).fetchall()
+        sids = sorted({r[0] for r in rows})
+        if len(sids) == 1:
+            state = con.execute("select status from sessions where session_id=?", (sids[0],)).fetchone()
+            if not state or state[0] != "completed":
+                sys.exit("성공 완료(completed)한 ARTEMIS 실행만 저장할 수 있습니다.")
+            locked = locked_app_from_log(db_path, sids[0])
+        foregrounds = [recorded_foreground(con, r[5], json.loads(r[4] or "{}"), locked) for r in rows]
+        posts = [recorded_foreground(con, r[6], None, locked) for r in rows]
+    finally:
+        con.close()
+    sids = sorted({r[0] for r in rows})
+    if not rows:
+        sys.exit(f"ARTEMIS 기록에 '{session}' 실행이 없습니다(mobile_run_task 가 돌려준 trace_id 를 쓰세요).")
+    if len(sids) > 1:
+        sys.exit(f"'{session}' 로 시작하는 실행이 여럿입니다: {sids}")
+    steps, skipped = [], []
+    for index, (_sid, num, act, summary, meta, _pre, _post) in enumerate(rows):
+        num = int(num)
+        try:
+            d = json.loads(act or "{}")
+            m = json.loads(meta or "{}")
+        except ValueError:
+            skipped.append({"step": num, "why": "기록을 읽지 못함"})
+            continue
+        kind, args = d.get("action"), d.get("args") or {}
+        if kind in DROP_ACTIONS:
+            continue
+        goal = (args.get("target_description") or (summary or "").split(";")[0])[:200]
+        # 지문(64비트 dHash)만으로는 헛동작을 가리지 못한다 — 흰 바탕 목록 화면끼리는 거리 0 이 나온다
+        # (2026-11-10 A31 실측: 설정 메인에서 '디스플레이' 를 누른 진짜 동작이 전후·다음 단계 사진 모두 거리 0).
+        # 그래서 화면이 안 바뀐 데다 바로 다음 단계가 같은 동작을 다시 할 때만(재시도) 앞의 것을 뺀다.
+        nxt_meta, nxt_act = {}, {}
+        if index + 1 < len(rows):
+            try:
+                nxt_meta = json.loads(rows[index + 1][4] or "{}")
+                nxt_act = json.loads(rows[index + 1][2] or "{}")
+            except ValueError:
+                nxt_meta, nxt_act = {}, {}
+        gaps = [g for g in (dhash_distance(m.get("pre_image_dhash"), m.get("post_image_dhash")),
+                            dhash_distance(m.get("pre_image_dhash"), nxt_meta.get("pre_image_dhash"))) if g is not None]
+        moved = max(gaps) if gaps else None
+        same_key = lambda x: (x.get("action"), x.get("target_text") or "", x.get("target_resource_id") or "",
+                              json.dumps(x.get("normalized_coordinates") or x.get("args", {}).get("key")))
+        retried = bool(nxt_act) and same_key(nxt_act) == same_key(d)
+        if (kind in ("click", "tap", "long_press", "long_press_on", "swipe", "swipe_direction", "press_key")
+                and moved is not None and moved <= SAME_SCREEN_DHASH and retried and not ctx.a.keep_all):
+            skipped.append({"step": num, "action": kind, "why": f"화면이 안 바뀌어 바로 다시 한 동작(지문 거리 {moved})"})
+            continue
+        norm = d.get("normalized_coordinates")
+        if norm is None and d.get("coordinate_space") == "normalized":
+            norm = d.get("coordinates")
+        target = {"text": d.get("target_text") or "", "id": d.get("target_resource_id") or "",
+                  "norm": norm[:2] if norm else None}
+        base = {"from": num, "goal": goal, "expect": foregrounds[index]}
+        if kind in ("click", "tap"):
+            steps.append({"do": "tap", **target, **base})
+        elif kind in ("long_press", "long_press_on"):
+            steps.append({"do": "long_press", **target, **base})
+        elif kind == "swipe":
+            a_ = d.get("normalized_start_coordinates") or (norm[:2] if norm and len(norm) >= 4 else None)
+            b_ = d.get("normalized_end_coordinates") or (norm[2:4] if norm and len(norm) >= 4 else None)
+            if not (a_ and b_):
+                skipped.append({"step": num, "action": kind, "why": "밀기 좌표가 화면 비율로 남지 않음"})
+                continue
+            steps.append({"do": "swipe", "norm": a_, "norm_to": b_, **base})
+        elif kind == "swipe_direction":
+            steps.append({"do": "swipe_dir", "direction": d.get("direction") or args.get("direction"), **base})
+        elif kind == "press_key":
+            steps.append({"do": "key", "key": str(args.get("key") or d.get("key") or ""), **base})
+        elif kind == "wait_for_delay":
+            steps.append({"do": "wait", "ms": args.get("time_in_ms", d.get("time_in_ms", 1000)), **base})
+        elif kind in ("input_text", "focus_and_input_text"):
+            value = d.get("text") if d.get("text") is not None else args.get("text", "")
+            clear = (args.get("clear_exist", d.get("clear_exist", True)) if kind == "input_text" else
+                     d.get("clear_before_input", d.get("clear_existing", args.get("clear_existing", False))))
+            has_target = any((target["text"], target["id"], target["norm"]))
+            if args.get("target") is not None and not has_target:
+                skipped.append({"step": num, "action": kind, "why": "입력 대상을 기록에서 복원할 수 없음"})
+                continue
+            steps.append({"do": "input" if kind == "focus_and_input_text" or has_target else "type", **target,
+                          "value": value, "clear": clear, **base})
+        elif kind in ("launch_app", "launch") or (kind == "manage_app" and args.get("action", "launch") == "launch"):
+            # 다음 단계 직전 화면은 이 동작 뒤의 관측이다. app_name 은 패키지로 믿지 않는다.
+            after = foregrounds[index + 1] if index + 1 < len(rows) else posts[index]
+            pkg = after.get("package")
+            if not pkg:
+                skipped.append({"step": num, "action": kind, "why": "실행 뒤 전경 패키지를 확인하지 못함"})
+                continue
+            steps.append({"do": "launch", "package": pkg, **base})
+        else:  # execute_shell·stop_app 같은 것은 대본에 옮기지 않는다(셸 명령을 그대로 되풀이하면 위험하다)
+            skipped.append({"step": num, "action": kind, "why": "대본으로 옮기지 않는 동작"})
+    unsupported = [s for s in skipped if s.get("action") != "execute_shell" and "화면이 안 바뀌" not in s["why"]]
+    if unsupported:
+        sys.exit("미지원 단계 있음 — 부분 flow 를 저장하지 않습니다: " + json.dumps(unsupported, ensure_ascii=False))
+    return {"source": {"artemis_session": sids[0]}, "start": steps[0]["expect"] if steps else {},
+            "steps": steps, "skipped": skipped}
+
+
+def validate_flow(flow, start, timeout, deny_packages=()):
+    """대본 생성·기기 선택보다 먼저 전체 단계를 검증한다(건너뛸 단계도 포함)."""
+    def reject(why):
+        raise ValueError("flow 검증 실패: " + why)
+
+    def number(value):
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+    def package(value):
+        return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", value)
+
+    steps = flow.get("steps") if isinstance(flow, dict) else None
+    if not isinstance(steps, list) or not steps or type(start) is not int or not 1 <= start <= len(steps):
+        reject("1 ≤ --from-step ≤ 단계 수여야 합니다.")
+    if not number(timeout):
+        reject("찾기 시간은 유한한 0 이상 숫자여야 합니다.")
+    if not isinstance(deny_packages, (list, tuple)) or any(not package(p) for p in deny_packages):
+        reject("deny_packages 는 패키지 이름 목록이어야 합니다.")
+    if not isinstance(flow.get("start"), dict) or not package(flow["start"].get("package")):
+        reject("시작 전경 기록이 없습니다. ARTEMIS 기록에서 다시 저장하세요.")
+    for i, s in enumerate(steps, 1):
+        if not isinstance(s, dict) or s.get("do") not in ("tap", "long_press", "input", "type", "swipe", "swipe_dir", "key", "wait", "launch"):
+            reject(f"{i}단계의 do 를 알 수 없습니다.")
+        expect = s.get("expect")
+        if not isinstance(expect, dict) or not package(expect.get("package")):
+            reject(f"{i}단계의 전경 패키지 기록이 없습니다.")
+        if not isinstance(expect.get("activity", ""), str):
+            reject(f"{i}단계 activity 가 문자열이 아닙니다.")
+        for key in ("norm", "norm_to"):
+            v = s.get(key)
+            if v is not None and (not isinstance(v, (list, tuple)) or len(v) != 2 or
+                                  any(not number(n) or n > 1000 for n in v)):
+                reject(f"{i}단계 {key} 은 0~1000 좌표 두 개여야 합니다.")
+        do = s["do"]
+        if do in ("tap", "long_press", "input") and not (s.get("text") or s.get("id") or s.get("norm") is not None):
+            reject(f"{i}단계 대상이 없습니다.")
+        if any(not isinstance(s.get(k, ""), str) for k in ("text", "id")):
+            reject(f"{i}단계 대상 이름은 문자열이어야 합니다.")
+        if do == "swipe" and (s.get("norm") is None or s.get("norm_to") is None):
+            reject(f"{i}단계 밀기 좌표가 없습니다.")
+        if do == "swipe_dir" and s.get("direction") not in ("up", "down", "left", "right"):
+            reject(f"{i}단계 밀기 방향이 잘못됐습니다.")
+        if do == "key" and (not isinstance(s.get("key"), str) or
+                            not re.fullmatch(r"[A-Za-z0-9_]+", s["key"]) or
+                            not s["key"].upper().replace("KEYCODE_", "")):
+            reject(f"{i}단계 key 가 비었거나 잘못됐습니다.")
+        if do == "wait" and not number(s.get("ms")):
+            reject(f"{i}단계 기다림은 유한한 0 이상 숫자여야 합니다.")
+        if do in ("input", "type") and (not isinstance(s.get("value"), str) or type(s.get("clear", False)) is not bool):
+            reject(f"{i}단계 입력 값·clear 형식이 잘못됐습니다.")
+        if do == "launch" and not package(s.get("package")):
+            reject(f"{i}단계 실행 패키지가 잘못됐습니다.")
+    if flow["start"] != steps[0]["expect"]:
+        reject("시작 전경과 첫 단계의 전경 기록이 다릅니다.")
+
+
+FLOW_RUNNER = r'''
+import base64, json, re, time
+import xml.etree.ElementTree as ET
+FLOW = json.loads(base64.b64decode("@@FLOW@@").decode("utf-8"))
+START, FIND_TIMEOUT = @@START@@, @@TIMEOUT@@
+DENY_PACKAGES = @@DENY@@
+
+
+def _px(norm):
+    return min(W - 1, int(norm[0] * W / 1000)), min(H - 1, int(norm[1] * H / 1000))
+
+
+def _say(tag, **kw):
+    print(tag, json.dumps(kw, ensure_ascii=False), flush=True)
+
+
+def _find(step):
+    want_id, want_text = step.get("id") or "", step.get("text") or ""
+    deadline = time.time() + FIND_TIMEOUT
+    while True:
+        _guard(i, step)
+        nodes = ui()
+        _guard(i, step)
+        by_id = [n for n in nodes if want_id and n["id"] == want_id]
+        if want_text:
+            # 정확히 같은 이름만 — 포함 검색은 그 글자를 문장 속에 품은 글 덩어리·다른 단추를 잡는다
+            # (2026-11-10 실측: 닫힌 패널의 '사이드바 닫기' 를 찾다가 대화 글 덩어리를 눌렀다).
+            # 이름이 있으면 이름이 먼저다 — 아이디는 목록 항목끼리 같을 수 있다(2026-11-10 Z 플립6 실측:
+            # 설정 목록 제목이 모두 android:id/title 이라 '디스플레이' 대신 기록된 자리에 가까운 '배터리' 를 눌렀다).
+            named = find_nodes(want_text, exact=True, nodes=nodes)
+            hits = [n for n in named if n in by_id] or named
+        else:
+            hits = by_id
+        if hits:
+            tx, ty = _px(step["norm"]) if step.get("norm") else (0, 0)
+            # 누를 수 있는 것 먼저, 그다음 기록된 자리에 가까운 것
+            hits.sort(key=lambda n: (not n["clickable"], (n["x"] - tx) ** 2 + (n["y"] - ty) ** 2))
+            return hits[0], nodes
+        if time.time() >= deadline:
+            return None, nodes
+        time.sleep(0.5)
+
+
+def _stuck(i, step, nodes, why):
+    seen = [n["text"] or n["desc"] for n in nodes if n["text"] or n["desc"]][:20]
+    _say("FLOW_STUCK", step=i, goal=step.get("goal", ""), want=step.get("text") or step.get("id") or "",
+         why=why, visible=seen)
+    raise SystemExit(3)
+
+
+def _guard(i, step, initial=False):
+    expected = step["expect"]["package"]
+    now = current_app()
+    if now in DENY_PACKAGES:
+        _stuck(i, step, [], "금지 앱이 전경이다: " + now)
+    if not now or now != expected:
+        _stuck(i, step, [], ("시작 앱이 다르다" if initial else "동작 전 앱이 다르다") +
+               f": 기대 {expected}, 지금 {now or '확인 안 됨'}")
+    activity = step["expect"].get("activity") if initial else None
+    if activity:
+        out = shell("dumpsys activity activities")
+        m = (re.search(r"topResumedActivity=ActivityRecord\{[^}]*?\bu\d+ ([\w.]+/[\w.$]+)", out)
+             or re.search(r"mResumedActivity: ActivityRecord\{[^}]*?\bu\d+ ([\w.]+/[\w.$]+)", out))
+        actual = m.group(1) if m else "확인 안 됨"
+        if actual != activity:
+            _stuck(i, step, [], f"시작 activity 가 다르다: 기대 {activity}, 지금 {actual}")
+
+
+def _focused(i, step, point=None, previous=None):
+    # ui() 는 focused/password 속성을 버린다. 같은 UIAutomator 원본에서 확인한다.
+    _guard(i, step)
+    raw = shell("uiautomator dump /dev/tty")
+    try:
+        root = ET.fromstring(raw[raw.index("<?xml"):raw.rfind(">") + 1])
+    except (ValueError, ET.ParseError):
+        _stuck(i, step, [], "입력 포커스·지우기 결과를 읽지 못했다")
+    fields = [n for n in root.iter("node") if n.get("focused") == "true" and
+              n.get("class", "").endswith(("EditText", "AutoCompleteTextView")) and
+              n.get("package") == step["expect"]["package"]]
+    if len(fields) != 1 or fields[0].get("password") == "true":
+        _stuck(i, step, [], "읽을 수 있는 입력 칸의 포커스를 확인하지 못했다")
+    field = dict(fields[0].attrib)
+    bounds = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", field.get("bounds", ""))
+    if not bounds:
+        _stuck(i, step, [], "입력 칸 영역을 확인하지 못했다")
+    x1, y1, x2, y2 = map(int, bounds.groups())
+    if ((point is not None and not (x1 <= point[0] < x2 and y1 <= point[1] < y2)) or
+            (step.get("id") and field.get("resource-id") != step["id"]) or
+            (previous is not None and any(field.get(k) != previous.get(k) for k in ("resource-id", "bounds")))):
+        _stuck(i, step, [], "기록된 입력 칸과 포커스가 다르다")
+    _guard(i, step)
+    return field
+
+
+def _input(i, step, point=None):
+    field = _focused(i, step, point)
+    before = field.get("text", "")
+    if step.get("clear") and before:
+        _guard(i, step)
+        shell("input keycombination KEYCODE_CTRL_LEFT KEYCODE_A")
+        _guard(i, step)
+        shell("input keyevent KEYCODE_DEL")
+        field = _focused(i, step, point, field)
+        if field.get("text", "") != "":
+            _stuck(i, step, [], "입력 칸을 확실히 지우지 못했다 — 입력을 보내지 않는다")
+        before = ""
+    _guard(i, step)
+    if type_text(step["value"]) is False:
+        _stuck(i, step, [], "입력 helper 가 실패했다")
+    after = _focused(i, step, point, field)
+    if after.get("text", "") != before + step["value"]:
+        _stuck(i, step, [], "입력 결과가 기대한 값과 다르다")
+
+
+def _key(name):
+    name = re.sub(r"[^A-Z0-9_]", "", (name or "").upper().replace("KEYCODE_", ""))
+    if name == "BACK":
+        back()
+    elif name == "HOME":
+        home()
+    else:
+        shell("input keyevent KEYCODE_" + name)
+
+
+t_all = time.time()
+_guard(START, FLOW["steps"][START - 1], initial=True)
+_sizes = re.findall(r"(\d+)x(\d+)", shell("wm size"))
+W, H = map(int, _sizes[-1])  # Override size 가 있으면 그것이 마지막 줄
+final_stable, stable_error = False, ""
+for i, step in enumerate(FLOW["steps"], 1):
+    if i < START:
+        continue
+    t0, do, how, node = time.time(), step["do"], "", None
+    _guard(i, step)
+    if do in ("input", "type") and not step["value"].isascii():
+        _stuck(i, step, [], "이 Android type_text 경로는 한글 등 비ASCII 입력을 확인할 수 없다")
+    if do in ("tap", "long_press", "input"):
+        if step.get("text") or step.get("id"):
+            node, nodes = _find(step)
+            if node is None:  # 글자가 기록돼 있는데 안 보이면 화면이 다르다 — 좌표로 엉뚱한 곳을 누르지 않는다
+                _stuck(i, step, nodes, "기록된 글자가 화면에 없다")
+            (x, y), how = (node["x"], node["y"]), "글자"
+        elif step.get("norm"):
+            (x, y), how = _px(step["norm"]), "좌표"
+        else:
+            _stuck(i, step, [], "누를 곳 정보가 없다")
+        if do == "long_press":
+            _guard(i, step)
+            result = long_press(x, y)
+        else:
+            _guard(i, step)
+            result = tap(x, y)
+        if result is False:  # Android 정상 반환 None 은 실패가 아니다
+            _stuck(i, step, [], "동작 helper 가 실패했다")
+        if do == "input":
+            _input(i, step, (x, y))
+    elif do == "type":
+        _input(i, step)
+        how = "입력"
+    elif do == "swipe":
+        (x1, y1), (x2, y2) = _px(step["norm"]), _px(step["norm_to"])
+        _guard(i, step)
+        drag(x1, y1, x2, y2)
+        how = "밀기"
+    elif do == "swipe_dir":
+        _guard(i, step)
+        swipe(str(step.get("direction") or "up").lower())
+        how = "밀기"
+    elif do == "key":
+        _guard(i, step)
+        _key(step.get("key"))
+        how = "키"
+    elif do == "wait":
+        wait(step.get("ms", 1000) / 1000)
+        how = "기다림"
+    elif do == "launch":
+        if step["package"] in DENY_PACKAGES:
+            _stuck(i, step, [], "실행 대상이 금지 앱이다: " + step["package"])
+        _guard(i, step)
+        shell("monkey -p " + re.sub(r"[^A-Za-z0-9._]", "", step["package"]) + " -c android.intent.category.LAUNCHER 1")
+        how = "앱 열기"
+    nxt = FLOW["steps"][i] if i < len(FLOW["steps"]) else None
+    # 다음 단계가 글자로 찾는 단계면 그 글자가 뜰 때까지만 기다리면 된다(_find 가 기다린다).
+    # 화면 안정 대기는 시계·경과 시간처럼 계속 바뀌는 글이 있으면 끝까지(6초) 기다리므로 그때만 쓴다.
+    # 단 밀기 뒤에는 늘 기다린다 — 목록이 아직 미끄러지는 중에 찾은 자리를 누르면 옆 항목이 눌린다
+    # (2026-11-10 Z 플립6 실측: 밀기 직후 '디스플레이' 를 찾아 눌렀는데 '배터리 및 디바이스 케어' 가 열렸다).
+    if nxt is None or do in ("swipe", "swipe_dir") or (do != "wait" and not (nxt["do"] in ("tap", "long_press", "input") and (nxt.get("text") or nxt.get("id")))):
+        try:
+            stable = wait_stable() is True
+        except Exception as exc:
+            stable, stable_error = False, type(exc).__name__
+        if nxt is None:
+            final_stable = stable
+    _say("FLOW_STEP", step=i, do=do, how=how, s=round(time.time() - t0, 2), goal=step.get("goal", ""),
+         at=[x, y] if do in ("tap", "long_press", "input") else None)
+_say("FLOW_OK", steps=len(FLOW["steps"]), start=START, s=round(time.time() - t_all, 2),
+     final_stable=final_stable, warning="" if final_stable else "끝 화면 안정 확인 안 됨", stable_error=stable_error)
+'''
+
+
+def flow_script(flow, start, timeout, deny_packages=()):
+    validate_flow(flow, start, timeout, deny_packages)
+    blob = __import__("base64").b64encode(json.dumps(flow, ensure_ascii=False).encode("utf-8")).decode("ascii")
+    return (FLOW_RUNNER.replace("@@FLOW@@", blob).replace("@@START@@", str(int(start)))
+            .replace("@@TIMEOUT@@", repr(float(timeout))).replace("@@DENY@@", repr(list(deny_packages))))
+
+
+def phone_harness_bin(ctx):
+    return ctx.cfg.get("phone_harness") or shutil.which("phone-harness")
+
+
+def phone_harness_env(ctx, serial=True):
+    env = dict(os.environ, DO_NOT_TRACK="1", PHONE_HARNESS_NO_UPDATE_CHECK="1", PYTHONIOENCODING="utf-8",
+               PHONE_HARNESS_PLATFORM="android")
+    if serial:
+        env["ANDROID_SERIAL"] = ctx.serial
+    return env
+
+
+def describe_step(i, s):
+    where = s.get("text") or s.get("id") or (f"좌표 {s['norm']}" if s.get("norm") else "")
+    extra = {"swipe": f"{s.get('norm')}→{s.get('norm_to')}", "swipe_dir": s.get("direction"), "key": s.get("key"),
+             "wait": f"{s.get('ms')}ms", "launch": s.get("package"),
+             "input": f"'{where}' 에 {len(s.get('value') or '')}자 (지우기 {s.get('clear', False)})",
+             "type": f"{len(s.get('value') or '')}자 (지우기 {s.get('clear', False)})"}.get(s["do"])
+    return f"{i:3} {s['do']:<10} {extra or where!s:40.40} ← ARTEMIS {s.get('from')}단계 {s.get('goal', '')[:60]}"
+
+
+def cmd_flow(ctx):
+    a = ctx.a
+    os.makedirs(flows_dir(ctx), exist_ok=True)
+    if a.arg == "list":
+        names = sorted(f[:-5] for f in os.listdir(flows_dir(ctx)) if f.endswith(".json"))
+        for n in names:
+            fl = json.load(open(os.path.join(flows_dir(ctx), n + ".json"), encoding="utf-8"))
+            print(f"{n:30} 단계 {len(fl['steps']):3} · ARTEMIS {fl['source'].get('artemis_session', '')[:8]} · {fl.get('saved', '')}")
+        return print(f"(저장한 길 {len(names)}개 — {flows_dir(ctx)})")
+    if a.arg not in ("save", "run", "show", "script") or not a.name:
+        sys.exit("사용법: flow save <이름> --session <ARTEMIS trace_id> | flow run <이름> [--from-step N] | "
+                 "flow show <이름> | flow script <이름> | flow list")
+    path = flow_path(ctx, a.name)
+    if a.arg == "save":
+        if not a.session:
+            sys.exit("--session 이 필요합니다(mobile_run_task 가 돌려준 trace_id, 앞 몇 글자만 줘도 됨).")
+        if os.path.exists(path) and not a.force:
+            sys.exit(f"'{a.name}' 이 이미 있습니다. 덮어쓰려면 --force")
+        fl = flow_from_artemis(ctx, a.session)
+        fl.update({"name": a.name, "saved": time.strftime("%Y-%m-%d %H:%M"), "package": a.package or ""})
+        if not fl["steps"]:
+            sys.exit("옮길 단계가 없습니다(모두 헛동작이거나 옮기지 않는 동작). " + json.dumps(fl["skipped"], ensure_ascii=False))
+        try:
+            validate_flow(fl, 1, a.find_timeout, ctx.cfg.get("deny_packages", []))
+        except ValueError as exc:
+            sys.exit(str(exc))
+        if os.path.exists(path):
+            backup, n = path + ".bak", 0
+            while os.path.exists(backup):
+                n += 1
+                backup = path + f".bak.{n}"
+            with open(path, "rb") as src, open(backup, "xb") as dst:
+                shutil.copyfileobj(src, dst)
+            print(f"기존 flow 보존: {backup} — 새 실행은 기존 전체 경로와 다를 수 있습니다.")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(fl, f, ensure_ascii=False, indent=2)
+        print(f"저장: '{a.name}' · 단계 {len(fl['steps'])}개 · 뺀 단계 {len(fl['skipped'])}개 → {path}")
+        for i, s in enumerate(fl["steps"], 1):
+            print(describe_step(i, s))
+        for s in fl["skipped"]:
+            print(f"  뺌: ARTEMIS {s['step']}단계 {s.get('action', '')} — {s['why']}")
+        typed = sum(len(s.get("value") or "") for s in fl["steps"] if s["do"] in ("input", "type"))
+        if typed:
+            print(f"⚠️ 입력 글자 {typed}자가 이 파일에 그대로 저장됐습니다 — 비밀번호·인증번호가 섞였으면 지우세요: {path}")
+        return
+    if not os.path.exists(path):
+        sys.exit(f"'{a.name}' 이 없습니다. `flow list` 로 보세요.")
+    with open(path, encoding="utf-8") as f:
+        fl = json.load(f)
+    if a.arg == "show":
+        print(f"'{a.name}' · ARTEMIS {fl['source'].get('artemis_session')} · {fl.get('saved', '')}")
+        for i, s in enumerate(fl["steps"], 1):
+            print(describe_step(i, s))
+        return
+    start = 1 if a.from_step is None else a.from_step
+    try:
+        script = flow_script(fl, start, a.find_timeout, ctx.cfg.get("deny_packages", []))
+    except ValueError as exc:
+        sys.exit(str(exc))
+    if a.arg == "script":
+        return print(script)
+    ph = phone_harness_bin(ctx)
+    if not ph:
+        sys.exit("폰 하네스가 없습니다: `uv tool install --python 3.12 phone-harness` 뒤 "
+                 "`phone-harness config set telemetry false`")
+    budget = 60 + sum(a.find_timeout + 15 + (s["ms"] / 1000 if s["do"] == "wait" else 0)
+                      for s in fl["steps"][start - 1:])
+    t0 = time.time()
+    try:
+        r = subprocess.run([ph], input=script, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=phone_harness_env(ctx), creationflags=NO_WINDOW,
+                           timeout=budget)
+    except subprocess.TimeoutExpired:
+        sys.exit(f"폰 하네스가 {budget}초 안에 끝나지 않았습니다.")
+    ok = stuck = None
+    done = []
+    for line in r.stdout.splitlines():
+        tag, _, rest = line.partition(" ")
+        if tag == "FLOW_STEP":
+            s = json.loads(rest)
+            done.append(s)
+            if not a.json:
+                print(f"  ✅ {s['step']:3} {s['do']:<10} {s['how']:<5} {s['s']:5.1f}초  {s['goal'][:70]}")
+        elif tag == "FLOW_STUCK":
+            stuck = json.loads(rest)
+        elif tag == "FLOW_OK":
+            ok = json.loads(rest)
+    total = round(time.time() - t0, 1)
+    if stuck:
+        if a.json:
+            print(json.dumps({"status": "stuck", "stuck": stuck, "steps": done, "s": total}, ensure_ascii=False))
+            sys.exit(3)
+        print(f"  ⛔ {stuck['step']}단계에서 막힘 — {stuck['why']}: '{stuck['want']}'")
+        print(f"     이 단계가 하려던 일: {stuck['goal']}")
+        print(f"     지금 화면 글: {stuck['visible']}")
+        print(f"→ 이 화면에서부터 ARTEMIS 에 '{stuck['goal']}' 를 맡기고, 끝나면 `flow save {a.name} --session <새 trace_id> --force` "
+              f"로 다시 굳히세요. 앞 단계를 건너뛰려면 `--from-step {stuck['step']}`. ({total}초)")
+        sys.exit(3)
+    if not ok or r.returncode != 0:
+        if a.json:
+            print(json.dumps({"status": "error", "returncode": r.returncode, "steps": done, "s": total}, ensure_ascii=False))
+            sys.exit(1)
+        print(r.stdout[-2000:], r.stderr[-2000:])
+        sys.exit(f"폰 하네스 실행이 끝까지 가지 못했습니다(종료 코드 {r.returncode}, {total}초).")
+    warning = "" if ok.get("final_stable") is True else "끝 화면 안정 확인 안 됨"
+    if a.json:
+        return print(json.dumps({"status": "completed" if not warning else "unverified", "steps": done, "s": total,
+                                 "final_stable": not warning, "warning": warning, "result": ok}, ensure_ascii=False))
+    label = "동작 종료(안정 미확인)" if warning else "완료"
+    print(f"{label}: '{a.name}' {ok['steps'] - start + 1}단계 · {total}초 (폰 하네스 안 {ok['s']}초)")
+    if warning:
+        print(warning + " — 동작 종료만 확인했으며 목표 달성은 검증하지 않았습니다.")
+
+
 # ───────────────────────── 점검 ─────────────────────────
 
 def artemis_dir_from_claude():
@@ -583,6 +1238,7 @@ def cmd_setup(ctx):
     except ImportError:
         pass
     cfg["devices"], cfg["apps"] = {}, {}
+    cfg["deny_packages"] = []
     ctx.cfg = cfg
     ctx.save_cfg()
     print(json.dumps({"written": ctx.cfg_path, "notes": cfg}, ensure_ascii=False, indent=2))
@@ -648,6 +1304,19 @@ def cmd_doctor(ctx):
     except ImportError:
         pil = ctx.cfg.get("python_image") if ctx.cfg.get("python_image") and os.path.exists(ctx.cfg["python_image"]) else None
     row("반응 측정(Pillow)", bool(pil) or None, pil or "없음", "" if pil else "`pip install pillow` 또는 설정 python_image")
+    ph = phone_harness_bin(ctx)
+    if ph:
+        try:  # 사용 기록 전송은 설정을 안 하면 켜져 있다 — off·no 는 무시되고 false·0 만 먹는다(그 저장소 이슈 #145)
+            conf = subprocess.run([ph, "config"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  timeout=30, env=phone_harness_env(ctx, serial=False), creationflags=NO_WINDOW).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            conf = ""
+        off = bool(re.search(r"^telemetry\s+false\b", conf, re.M))
+        row("폰 하네스", True if off else None, f"{ph} · 사용 기록 {'꺼짐' if off else '켜짐 또는 확인 안 됨'}",
+            "" if off else "`phone-harness config set telemetry false`")
+    else:
+        row("폰 하네스", None, "설치 안 됨 — 찾은 길 다시 돌리기(flow run)만 빠진다",
+            "`uv tool install --python 3.12 phone-harness` 뒤 `phone-harness config set telemetry false`")
     if ready and (ctx.a.serial or len(ready) == 1):
         st = logwatch_state(ctx)
         info = json.load(open(st, encoding="utf-8")) if os.path.exists(st) else None
@@ -675,11 +1344,15 @@ def cmd_session_start(ctx):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("cmd", choices=["setup", "doctor", "elements", "tap", "back", "rotate", "screenshot",
-                                   "logwatch", "app", "runner", "session-start"])
+                                   "logwatch", "app", "runner", "session-start", "flow"])
     p.add_argument("arg", nargs="?")
+    p.add_argument("name", nargs="?")  # flow save|run|show|script <이름>
     for o in ("--data-dir", "--serial", "--display", "--package", "--shot", "--since", "--type", "--project-dir",
-              "--run-args", "--install-task"):
+              "--run-args", "--install-task", "--session"):
         p.add_argument(o)
+    p.add_argument("--from-step", type=int)
+    p.add_argument("--find-timeout", type=float, default=10.0)  # 폰 하네스 wait_for_text 의 기본값과 같게
+    p.add_argument("--keep-all", action="store_true")
     p.add_argument("--measure", action="store_true")
     p.add_argument("--log", action="store_true")
     p.add_argument("--errors", action="store_true")
@@ -692,7 +1365,7 @@ def main():
     ctx = Ctx(a)
 
     simple = {"setup": cmd_setup, "doctor": cmd_doctor, "logwatch": cmd_logwatch, "app": cmd_app,
-              "runner": cmd_runner, "session-start": cmd_session_start}
+              "runner": cmd_runner, "session-start": cmd_session_start, "flow": cmd_flow}
     if a.cmd in simple:
         return simple[a.cmd](ctx)
     if a.cmd == "elements":
